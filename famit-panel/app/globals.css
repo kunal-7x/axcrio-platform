@@ -462,4 +462,164 @@
     .recharts-sector {
         @apply stroke-transparent outline-none;
     }
+
+    /* ============================================================
+       PREMIUM DESIGN SYSTEM (feat/premium-ui) — additive utilities.
+       A calm, dense, top-1% SaaS language (Linear/Ramp/Stripe).
+       Built on the existing tokens; nothing above is removed.
+       ============================================================ */
+
+    /* Surface — the flagship card. Softer radius than the template's 2rem
+       so dense panels read as data tools, not marketing tiles. */
+    .surface {
+        @apply rounded-3xl bg-b-surface2 shadow-widget
+            dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
+    }
+
+    /* KPI / hero metric card. Big tabular number + label + room for a
+       sparkline or delta. Subtle inner top-light for premium depth. */
+    .kpi {
+        @apply relative flex flex-col gap-3 p-5 rounded-3xl bg-b-surface2 shadow-widget overflow-hidden
+            dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
+    }
+    .kpi-label {
+        @apply flex items-center gap-2 text-overline text-t-tertiary;
+    }
+    .kpi-value {
+        @apply text-h3 text-t-primary tracking-tight max-lg:text-h4;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-foot {
+        @apply flex items-center gap-2 text-caption text-t-secondary;
+    }
+    /* small square glyph chip that sits beside a KPI label */
+    .kpi-glyph {
+        @apply flex items-center justify-center size-7 shrink-0 rounded-lg bg-b-surface1 fill-t-secondary
+            dark:bg-shade-04/60;
+    }
+    .kpi-glyph svg {
+        @apply size-4;
+    }
+
+    /* Semantic pills — ONE badge language across every page. Built on the
+       existing label-* token classes; replaces the ad-hoc bg-green-100 pills. */
+    .pill {
+        @apply inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-caption font-medium whitespace-nowrap;
+    }
+    .pill-success {
+        @apply border border-[#00A656]/20 bg-[#00A656]/8 text-[#00A656];
+    }
+    .pill-danger {
+        @apply border border-[#FF6A55]/20 bg-[#FF6A55]/8 text-[#FF6A55];
+    }
+    .pill-warning {
+        @apply border border-[#EF9D0E]/20 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E];
+    }
+    .pill-info {
+        @apply border border-[#2A85FF]/20 bg-[#2A85FF]/8 text-[#2A85FF];
+    }
+    .pill-neutral {
+        @apply border border-s-stroke2 bg-b-surface1 text-t-secondary dark:bg-shade-04/50;
+    }
+    /* leading status dot inside a pill */
+    .pill-dot {
+        @apply size-1.5 rounded-full bg-current;
+    }
+
+    /* Dense, scannable data table. Sticky head, hairline rows, hover lift.
+       Apply to a <table> via class="data-table". */
+    .data-table {
+        @apply w-full text-body-2 border-separate border-spacing-0;
+    }
+    .data-table thead th {
+        @apply sticky top-0 z-1 h-11 px-5 text-left align-middle text-overline text-t-tertiary
+            bg-b-surface2 border-b border-s-subtle;
+    }
+    .data-table tbody td {
+        @apply h-14 px-5 align-middle border-b border-s-subtle/70;
+    }
+    .data-table tbody tr:last-child td {
+        @apply border-b-0;
+    }
+    .data-table tbody tr {
+        @apply transition-colors;
+    }
+    .data-table.is-clickable tbody tr {
+        @apply cursor-pointer hover:bg-b-surface1/60 dark:hover:bg-shade-04/30;
+    }
+    .data-table .td-num {
+        font-variant-numeric: tabular-nums;
+    }
+
+    /* Premium empty / loading states. Calm, centered, with a soft glyph. */
+    .state-block {
+        @apply flex flex-col items-center justify-center gap-3 py-14 px-6 text-center;
+    }
+    .state-glyph {
+        @apply flex items-center justify-center size-12 rounded-2xl bg-b-surface1 fill-t-tertiary
+            dark:bg-shade-04/50;
+    }
+    .state-glyph svg {
+        @apply size-6;
+    }
+    .state-title {
+        @apply text-sub-title-2 text-t-primary;
+    }
+    .state-sub {
+        @apply text-body-2 text-t-secondary max-w-80;
+    }
+
+    /* Skeleton shimmer for loading rows/blocks. */
+    .skeleton {
+        @apply rounded-lg bg-s-subtle;
+        background-image: linear-gradient(
+            90deg,
+            transparent 0,
+            rgba(123, 123, 123, 0.08) 40%,
+            rgba(123, 123, 123, 0.14) 50%,
+            rgba(123, 123, 123, 0.08) 60%,
+            transparent 100%
+        );
+        background-size: 200% 100%;
+        animation: skeleton-shimmer 1.4s ease-in-out infinite;
+    }
+    @keyframes skeleton-shimmer {
+        to {
+            background-position: -200% 0;
+        }
+    }
+
+    /* Thin progress meter (cap usage, etc.). */
+    .meter {
+        @apply w-full h-1.5 rounded-full bg-b-surface1 overflow-hidden dark:bg-shade-04/60;
+    }
+    .meter-fill {
+        @apply h-full rounded-full transition-[width] duration-500 ease-out;
+    }
+
+    /* Section subhead used above a card grid. */
+    .eyebrow {
+        @apply text-overline text-t-tertiary;
+    }
+
+    /* Subtle entrance for cards/rows so the panel feels alive, not flashy. */
+    .rise-in {
+        animation: rise-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    @keyframes rise-in {
+        from {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .rise-in,
+        .skeleton {
+            animation: none;
+        }
+    }
 }
