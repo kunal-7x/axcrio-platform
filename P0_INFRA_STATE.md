@@ -23,11 +23,17 @@ Scope (this session, per orchestrator narrowing + advisor):
      -> hook "leaks found: 1" -> commit EXIT 1, BLOCKED, HEAD unchanged. (NOTE: AWS AKIAIOSFODNN7EXAMPLE
      is gitleaks-ALLOWLISTED as a doc example -> first test falsely "passed"; corrected to ghp_ which is caught.)
 - U6 README.md (monorepo map) + CONTRIBUTING.md (branch model) ... DONE (commit 1705da4)
-- U7 CI workflows (backend/frontend/secrets) + validate YAML ... IN PROGRESS
+- U7 CI workflows (backend/frontend/secrets) + validate YAML ... DONE (commit 62b8b72)
      backend.yml + frontend.yml = DORMANT scaffolding (paths gate on backend/**, frontend/** which don't exist yet);
      secrets.yml = ACTIVE on every push/PR (full history). NO infra.yml (Terraform DROPPED). All 3 = valid YAML.
-- U8 final proof: gitleaks git . on committed repo = 0 ; git status clean
-- U9 build_log + HANDOFF + brain append
+- U8 final proof: gitleaks git . on committed repo = 0 ; git status clean ... DONE
+     gitleaks git . (5 commits) = "no leaks found" EXIT 0. git ls-files (415) vs danger patterns = 0 hits.
+     git check-ignore confirms .env.local/famit-panel/.env.local/fortress/cred.md/droplet_work/*/*.tgz IGNORED.
+     Live site panel.famit.in/api/stats = HTTP 200 (untouched).
+- U9 build_log + HANDOFF + brain append ... DONE
+     build_log/wave-build-P0-infra.md (full proof), HANDOFF.md P0-infra banner, brain mistakes/decisions/playbooks appended.
+
+## ALL UNITS DONE. Final HEAD = 62b8b72 (+ this STATE-final commit). NOT pushed (founder step).
 
 ## PROOF ANCHORS (fill as we go)
 - gitleaks version: 8.30.1
