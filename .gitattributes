@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.py   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.tf   text eol=lf
+*.sh   text eol=lf
+*.png  binary
+*.jpg  binary
+*.lock text eol=lf

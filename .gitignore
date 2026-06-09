@@ -1,0 +1,117 @@
+# ============================================================================
+#  SECRETS / CREDS — NEVER COMMIT.  (gitleaks staged-scan is the real net; this is line 1.)
+# ============================================================================
+.env
+.env.*
+!.env.example
+!*/.env.example
+!*/.env.local.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_ed25519
+id_ed25519.*
+id_rsa
+id_rsa.*
+*.ppk
+**/ALL_CREDENTIALS.md
+**/cred.md
+**/credentials*
+**/secret
+**/secrets.json
+**/*secret*.toml
+cloudflare.ini
+.npmrc
+
+# ----- fortress: secret-bearing playbook dir — IGNORE WHOLESALE (task mandate) -----
+fortress/
+fortress/**
+
+# ----- droplet_work: LIVE backend source + 30+ backup/secret-risk files.
+#       Curation (git mv the deployable .py into backend/) is DEFERRED to a later
+#       P1-coordinated unit (serializes on caller.py). Until then, keep the dir on
+#       disk as local scratch but do NOT track it (spec §4.1 option b). This also
+#       keeps the *.bak/*.w3bak backups and the cleanup.sql false-positive out of git.
+droplet_work/
+droplet_work/**
+
+# ============================================================================
+#  RUNTIME DATA / SERVER STATE / BACKUPS  (broad — backup suffixes are inconsistent)
+# ============================================================================
+**/var/
+**/transcripts/
+**/*.bak
+**/*.bak.*
+**/*bak[0-9]*
+**/*.w3bak*
+**/*.waveA*
+**/*.waveA2*
+**/*.P0bak*
+**/*.P2*bak*
+**/*.VFIXbak*
+**/*.BRAINbak*
+**/*.fallbackbak*
+**/*.pretenant.bak
+**/*.P2recon.bak
+**/.p0ts
+**/.p2ts
+*.tgz
+*.tar.gz
+*.zip
+
+# ============================================================================
+#  TERRAFORM  (Terraform is DROPPED for P0 — DO is managed via API directly.
+#  Kept here defensively in case any .tfstate/.tfvars ever lands on disk.)
+# ============================================================================
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+tfplan
+*.tfplan
+
+# ============================================================================
+#  NODE / NEXT  (frontend)
+# ============================================================================
+node_modules/
+.next/
+out/
+.pnpm-store/
+.turbo/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ============================================================================
+#  PYTHON  (backend)
+# ============================================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.mypy_cache/
+
+# ============================================================================
+#  CLAUDE (machine-local config/hooks/worktrees — keep OUT of the product repo)
+#  + EDITOR / OS
+# ============================================================================
+.claude/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ============================================================================
+#  TRANSIENT GATE / SCRATCH ARTIFACTS (diagnostic gitleaks report, etc.)
+# ============================================================================
+gitleaks-raw.json
+gitleaks-*.json

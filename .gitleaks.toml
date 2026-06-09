@@ -1,0 +1,23 @@
+title = "famit-revenue-os gitleaks config"
+
+[extend]
+useDefault = true   # all built-in rules (AWS, GCP, generic API keys, private keys, JWT, etc.)
+
+# Paths that are templates / pure structure (KEYS only, no values) — exempt from findings.
+[[allowlists]]
+description = "env + tfvars templates contain key names only, never values"
+paths = [
+  '''.*\.env\.example$''',
+  '''.*\.env\.local\.example$''',
+  '''.*\.tfvars\.example$''',
+]
+
+# The P0 design spec itself DOCUMENTS a fake secret as the pre-commit-hook test
+# (a deliberately-fake `sk_live_...` string, see design/p0-foundation.md step 7).
+# It is spec prose, not a live credential — exempt this one doc path so the gate
+# does not red on our own instructions. (Scoped to the single design file.)
+[[allowlists]]
+description = "p0-foundation design doc contains a documented FAKE test secret, not a real one"
+paths = [
+  '''design/p0-foundation\.md$''',
+]
