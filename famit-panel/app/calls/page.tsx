@@ -1,62 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
-import { getCalls, getCallDetail, type CallLog, type CallDetail } from "@/lib/api";
-
-function statusBadge(status: string) {
-    const map: Record<string, string> = {
-        answered: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        done: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        failed: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-        no_answer: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-        busy: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
-        calling: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        voicemail: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
-        no_human: "bg-b-surface3 text-t-secondary",
-        suppressed: "bg-b-surface3 text-t-tertiary",
-    };
-    return (
-        <span
-            className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[status] || "bg-b-surface3 text-t-secondary"}`}
-        >
-            {status}
-        </span>
-    );
-}
-
-function outcomeBadge(outcome: string) {
-    const map: Record<string, string> = {
-        interested: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        not_interested: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-        callback: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        no_answer: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-        voicemail: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
-        no_human: "bg-b-surface3 text-t-secondary",
-        opt_out: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-    };
-    if (!outcome) return null;
-    return (
-        <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[outcome] || "bg-b-surface3 text-t-secondary"}`}>
-            {outcome.replace(/_/g, " ")}
-        </span>
-    );
-}
-
-function interestBadge(interest: string) {
-    const map: Record<string, string> = {
-        high: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        medium: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-        low: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-    };
-    if (!interest) return null;
-    return (
-        <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[interest] || "bg-b-surface3 text-t-secondary"}`}>
-            {interest} interest
-        </span>
-    );
-}
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
+import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
+import {
+    getCalls,
+    getCallDetail,
+    type CallLog,
+    type CallDetail,
+} from "@/lib/api";
 
 function fmt(d: string) {
     if (!d) return "—";
@@ -67,7 +22,13 @@ function fmt(d: string) {
     }
 }
 
-function CallDetailModal({ callId, onClose }: { callId: string; onClose: () => void }) {
+function CallDetailModal({
+    callId,
+    onClose,
+}: {
+    callId: string;
+    onClose: () => void;
+}) {
     const [detail, setDetail] = useState<CallDetail | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
@@ -75,147 +36,230 @@ function CallDetailModal({ callId, onClose }: { callId: string; onClose: () => v
     useEffect(() => {
         getCallDetail(callId)
             .then(setDetail)
-            .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+            .catch((e) =>
+                setError(e instanceof Error ? e.message : "Failed to load")
+            )
             .finally(() => setLoading(false));
     }, [callId]);
 
-    // Close on backdrop click
     function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
         if (e.target === e.currentTarget) onClose();
     }
 
-    // Close on Escape
     useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === "Escape") onClose();
+        };
         document.addEventListener("keydown", handler);
         return () => document.removeEventListener("keydown", handler);
     }, [onClose]);
 
     return (
         <div
-            className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-shade-01/50 backdrop-blur-sm flex items-center justify-center p-4"
             onClick={handleBackdrop}
         >
-            <div className="bg-b-surface1 rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-xl">
+            <div className="surface w-full max-w-2xl max-h-[90vh] flex flex-col rise-in">
                 {/* Header */}
-                <div className="flex items-center justify-between p-6 border-b border-s-subtle shrink-0">
-                    <h2 className="text-h6 text-t-primary">Call Detail</h2>
+                <div className="flex items-center justify-between p-5 border-b border-s-subtle shrink-0">
+                    <div className="flex items-center gap-3">
+                        <span className="flex items-center justify-center size-9 rounded-xl bg-b-surface1 fill-t-secondary dark:bg-shade-04/60">
+                            <Icon name="chat" className="size-4 fill-inherit" />
+                        </span>
+                        <h2 className="text-h6 text-t-primary">Call Detail</h2>
+                    </div>
                     <button
                         onClick={onClose}
-                        className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-b-surface2 transition-colors text-t-secondary"
+                        className="flex items-center justify-center size-8 rounded-full text-t-secondary transition-colors hover:bg-b-surface1 hover:text-t-primary dark:hover:bg-shade-04/60"
+                        aria-label="Close"
                     >
-                        ×
+                        <Icon name="close" className="size-4 fill-current" />
                     </button>
                 </div>
 
                 {/* Body */}
-                <div className="overflow-y-auto p-6 space-y-5">
+                <div className="overflow-y-auto p-5 space-y-5 scrollbar-thin">
                     {loading && (
-                        <div className="flex items-center justify-center py-12 text-t-secondary gap-2">
-                            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                            </svg>
-                            Loading…
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="skeleton h-12" />
+                                <div className="skeleton h-12" />
+                                <div className="skeleton h-12" />
+                                <div className="skeleton h-12" />
+                            </div>
+                            <div className="skeleton h-20" />
+                            <div className="skeleton h-32" />
                         </div>
                     )}
 
                     {error && (
-                        <div className="p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">
+                        <div className="flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2">
+                            <Icon
+                                name="info"
+                                className="size-4 fill-primary-03 shrink-0"
+                            />
                             {error}
                         </div>
                     )}
 
                     {detail && (
                         <>
-                            {/* Call info */}
-                            <div className="grid grid-cols-2 gap-3 text-body-2">
-                                <div>
-                                    <span className="text-t-tertiary text-caption">Name</span>
-                                    <div className="font-medium text-t-primary">{detail.call.name}</div>
-                                </div>
-                                <div>
-                                    <span className="text-t-tertiary text-caption">Phone</span>
-                                    <div className="text-t-primary">{detail.call.phone}</div>
-                                </div>
-                                <div>
-                                    <span className="text-t-tertiary text-caption">Campaign</span>
-                                    <div className="text-t-primary">{detail.call.campaign_name}</div>
-                                </div>
-                                <div>
-                                    <span className="text-t-tertiary text-caption">Duration</span>
-                                    <div className="text-t-primary">{detail.call.duration_s != null ? `${detail.call.duration_s}s` : "—"}</div>
-                                </div>
+                            {/* Call info grid */}
+                            <div className="grid grid-cols-2 gap-3">
+                                <InfoCell label="Name" value={detail.call.name} strong />
+                                <InfoCell
+                                    label="Phone"
+                                    value={detail.call.phone}
+                                    mono
+                                />
+                                <InfoCell
+                                    label="Campaign"
+                                    value={detail.call.campaign_name}
+                                />
+                                <InfoCell
+                                    label="Duration"
+                                    value={
+                                        detail.call.duration_s != null
+                                            ? `${detail.call.duration_s}s`
+                                            : "—"
+                                    }
+                                    mono
+                                />
                             </div>
 
-                            {/* Outcome + Interest badges + opt-out */}
+                            {/* Outcome / interest / opt-out */}
                             <div className="flex flex-wrap gap-2">
                                 {detail.transcript?.opt_out && (
-                                    <span className="inline-flex px-2 py-0.5 rounded-full text-caption font-medium bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                                        Opted out / DND
-                                    </span>
+                                    <Badge variant="danger">Opted out / DND</Badge>
                                 )}
-                                {outcomeBadge(detail.transcript?.outcome ?? "")}
-                                {interestBadge(detail.transcript?.interest ?? "")}
+                                <OutcomeBadge
+                                    outcome={detail.transcript?.outcome ?? ""}
+                                />
+                                <InterestBadge
+                                    interest={detail.transcript?.interest ?? ""}
+                                />
                             </div>
 
                             {/* AI Summary */}
                             {detail.transcript?.summary && (
-                                <div className="bg-b-surface2 rounded-2xl p-4">
-                                    <div className="text-caption text-t-tertiary mb-2 font-medium uppercase tracking-wide">AI Summary</div>
-                                    <p className="text-body-2 text-t-primary leading-relaxed">{detail.transcript.summary}</p>
+                                <div className="p-4 rounded-2xl bg-b-surface1/70 border border-s-subtle dark:bg-shade-04/30">
+                                    <div className="eyebrow mb-2">AI Summary</div>
+                                    <p className="text-body-2 text-t-primary leading-relaxed">
+                                        {detail.transcript.summary}
+                                    </p>
                                 </div>
                             )}
 
                             {/* Next Action */}
                             {detail.transcript?.next_action && (
-                                <div className="bg-blue-50 dark:bg-blue-900/20 rounded-2xl p-4">
-                                    <div className="text-caption text-blue-600 dark:text-blue-400 mb-1 font-medium uppercase tracking-wide">Next Action</div>
-                                    <p className="text-body-2 text-t-primary">{detail.transcript.next_action}</p>
+                                <div className="p-4 rounded-2xl bg-primary-01/6 border border-primary-01/20">
+                                    <div className="eyebrow mb-1 text-primary-01">
+                                        Next Action
+                                    </div>
+                                    <p className="text-body-2 text-t-primary">
+                                        {detail.transcript.next_action}
+                                    </p>
                                 </div>
                             )}
 
                             {/* Transcript */}
-                            {detail.transcript?.turns && detail.transcript.turns.length > 0 && (
-                                <div>
-                                    <div className="text-caption text-t-tertiary mb-3 font-medium uppercase tracking-wide">Transcript</div>
-                                    <div className="space-y-3">
-                                        {detail.transcript.turns.map((turn, i) => (
-                                            <div
-                                                key={i}
-                                                className={`flex gap-3 ${turn.role === "agent" ? "flex-row" : "flex-row-reverse"}`}
-                                            >
-                                                <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-caption font-medium ${
-                                                    turn.role === "agent"
-                                                        ? "bg-b-surface3 text-t-secondary"
-                                                        : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                                                }`}>
-                                                    {turn.role === "agent" ? "A" : "L"}
-                                                </div>
-                                                <div className={`max-w-[80%] px-4 py-2 rounded-2xl text-body-2 ${
-                                                    turn.role === "agent"
-                                                        ? "bg-b-surface2 text-t-primary"
-                                                        : "bg-blue-50 text-blue-900 dark:bg-blue-900/20 dark:text-blue-100"
-                                                }`}>
-                                                    {turn.content}
-                                                </div>
-                                            </div>
-                                        ))}
+                            {detail.transcript?.turns &&
+                                detail.transcript.turns.length > 0 && (
+                                    <div>
+                                        <div className="eyebrow mb-3">
+                                            Transcript
+                                        </div>
+                                        <div className="space-y-3">
+                                            {detail.transcript.turns.map(
+                                                (turn, i) => {
+                                                    const isAgent =
+                                                        turn.role === "agent";
+                                                    return (
+                                                        <div
+                                                            key={i}
+                                                            className={`flex gap-2.5 ${
+                                                                isAgent
+                                                                    ? "flex-row"
+                                                                    : "flex-row-reverse"
+                                                            }`}
+                                                        >
+                                                            <span
+                                                                className={`shrink-0 flex items-center justify-center size-7 rounded-full text-caption font-medium ${
+                                                                    isAgent
+                                                                        ? "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
+                                                                        : "bg-primary-01/12 text-primary-01"
+                                                                }`}
+                                                            >
+                                                                {isAgent
+                                                                    ? "AI"
+                                                                    : "L"}
+                                                            </span>
+                                                            <div
+                                                                className={`max-w-[78%] px-3.5 py-2.5 rounded-2xl text-body-2 ${
+                                                                    isAgent
+                                                                        ? "bg-b-surface1 text-t-primary dark:bg-shade-04/40"
+                                                                        : "bg-primary-01/10 text-t-primary"
+                                                                }`}
+                                                            >
+                                                                {turn.content}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                }
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
-                            )}
+                                )}
 
-                            {/* No transcript state */}
-                            {(!detail.transcript?.turns || detail.transcript.turns.length === 0) &&
-                             !detail.transcript?.summary && (
-                                <div className="text-center py-6 text-t-secondary text-body-2">
-                                    No transcript available for this call
-                                </div>
-                            )}
+                            {/* No transcript */}
+                            {(!detail.transcript?.turns ||
+                                detail.transcript.turns.length === 0) &&
+                                !detail.transcript?.summary && (
+                                    <div className="state-block">
+                                        <span className="state-glyph">
+                                            <Icon
+                                                name="chat"
+                                                className="fill-inherit"
+                                            />
+                                        </span>
+                                        <div className="state-title">
+                                            No transcript available
+                                        </div>
+                                        <div className="state-sub">
+                                            This call didn’t produce a recorded
+                                            conversation.
+                                        </div>
+                                    </div>
+                                )}
                         </>
                     )}
                 </div>
             </div>
+        </div>
+    );
+}
+
+function InfoCell({
+    label,
+    value,
+    strong,
+    mono,
+}: {
+    label: string;
+    value: React.ReactNode;
+    strong?: boolean;
+    mono?: boolean;
+}) {
+    return (
+        <div className="flex flex-col gap-1 p-3 rounded-2xl bg-b-surface1/60 dark:bg-shade-04/30">
+            <span className="eyebrow">{label}</span>
+            <span
+                className={`text-body-2 text-t-primary ${
+                    strong ? "font-medium" : ""
+                } ${mono ? "tabular-nums" : ""}`}
+            >
+                {value}
+            </span>
         </div>
     );
 }
@@ -232,11 +276,19 @@ export default function CallLogsPage() {
             .finally(() => setLoading(false));
     }, []);
 
-    // Outcome breakdown
-    const breakdown = calls.reduce<Record<string, number>>((acc, c) => {
-        acc[c.status] = (acc[c.status] || 0) + 1;
-        return acc;
-    }, {});
+    // Real derived signals from the loaded calls.
+    const summary = useMemo(() => {
+        const total = calls.length;
+        const answered = calls.filter(
+            (c) => c.status === "answered" || c.status === "done"
+        ).length;
+        const breakdown = calls.reduce<Record<string, number>>((acc, c) => {
+            acc[c.status] = (acc[c.status] || 0) + 1;
+            return acc;
+        }, {});
+        const answerRate = total > 0 ? Math.round((answered / total) * 100) : 0;
+        return { total, answered, answerRate, breakdown };
+    }, [calls]);
 
     return (
         <Layout title="Call Logs">
@@ -247,29 +299,37 @@ export default function CallLogsPage() {
                 />
             )}
 
-            {/* Outcome breakdown */}
-            {calls.length > 0 && (
-                <div className="grid grid-cols-4 gap-4 mb-6 max-lg:grid-cols-2 max-sm:grid-cols-2">
-                    {Object.entries(breakdown).map(([status, count]) => (
-                        <div
-                            key={status}
-                            className="card p-4 flex flex-col gap-1"
-                        >
-                            <div className="text-caption text-t-tertiary capitalize">
-                                {status.replace(/_/g, " ")}
-                            </div>
-                            <div className="text-h5 text-t-primary">
-                                {count}
-                            </div>
-                        </div>
-                    ))}
+            {/* Summary KPIs */}
+            {!loading && calls.length > 0 && (
+                <div className="grid grid-cols-4 gap-3 mb-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+                    <MetricTile
+                        label="Total Calls"
+                        value={summary.total}
+                        tone="info"
+                    />
+                    <MetricTile
+                        label="Answered"
+                        value={summary.answered}
+                        tone="success"
+                    />
+                    <MetricTile
+                        label="Answer Rate"
+                        value={`${summary.answerRate}%`}
+                        tone="success"
+                        meter={summary.answerRate / 100}
+                    />
+                    <MetricTile
+                        label="No Answer"
+                        value={summary.breakdown["no_answer"] ?? 0}
+                        tone="warning"
+                    />
                 </div>
             )}
 
             {/* Main table */}
             <Card title="All Calls">
                 <div className="overflow-x-auto">
-                    <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                    <table className="data-table is-clickable">
                         <thead>
                             <tr>
                                 <th>Name</th>
@@ -278,37 +338,39 @@ export default function CallLogsPage() {
                                 <th>Status</th>
                                 <th>Started</th>
                                 <th>Ended</th>
-                                <th>Duration</th>
-                                <th>Score</th>
+                                <th className="text-right">Duration</th>
+                                <th className="text-right">Score</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading ? (
-                                <tr>
-                                    <td
-                                        colSpan={8}
-                                        className="py-8 text-center text-t-secondary"
-                                    >
-                                        <span className="inline-flex items-center gap-2">
-                                            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                            </svg>
-                                            Loading calls…
-                                        </span>
-                                    </td>
-                                </tr>
+                                [...Array(6)].map((_, i) => (
+                                    <tr key={i}>
+                                        {[...Array(8)].map((__, j) => (
+                                            <td key={j}>
+                                                <div className="skeleton h-4 w-16" />
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))
                             ) : calls.length === 0 ? (
                                 <tr>
-                                    <td
-                                        colSpan={8}
-                                        className="py-12 text-center text-t-secondary"
-                                    >
-                                        <div className="flex flex-col items-center gap-2">
-                                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="opacity-30">
-                                                <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 8.63 19.79 19.79 0 01.01 2.02 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/>
-                                            </svg>
-                                            <span className="text-t-tertiary">No calls yet — run a campaign to see results here</span>
+                                    <td colSpan={8}>
+                                        <div className="state-block">
+                                            <span className="state-glyph">
+                                                <Icon
+                                                    name="chat"
+                                                    className="fill-inherit"
+                                                />
+                                            </span>
+                                            <div className="state-title">
+                                                No calls yet
+                                            </div>
+                                            <div className="state-sub">
+                                                Run a campaign to see results
+                                                here — each row opens the full
+                                                transcript.
+                                            </div>
                                         </div>
                                     </td>
                                 </tr>
@@ -316,39 +378,42 @@ export default function CallLogsPage() {
                                 calls.map((c) => (
                                     <tr
                                         key={c.id}
-                                        className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors cursor-pointer"
                                         onClick={() => setSelectedCallId(c.id)}
-                                        title="Click to view transcript"
+                                        title="View transcript"
                                     >
-                                        <td className="font-medium">
+                                        <td className="font-medium text-t-primary">
                                             {c.name}
                                         </td>
-                                        <td className="text-t-secondary">
+                                        <td className="text-t-secondary td-num">
                                             {c.phone}
                                         </td>
                                         <td className="text-t-secondary">
                                             {c.campaign_name}
                                         </td>
-                                        <td>{statusBadge(c.status)}</td>
+                                        <td>
+                                            <StatusBadge status={c.status} />
+                                        </td>
                                         <td className="text-t-secondary">
                                             {fmt(c.started_at)}
                                         </td>
                                         <td className="text-t-secondary">
                                             {fmt(c.ended_at)}
                                         </td>
-                                        <td className="text-t-secondary">
+                                        <td className="text-t-secondary td-num text-right">
                                             {c.duration_s != null
                                                 ? `${c.duration_s}s`
                                                 : "—"}
                                         </td>
-                                        <td>
+                                        <td className="text-right">
                                             {c.interest != null ? (
-                                                <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${
-                                                    c.interest >= 70 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                                                    : c.interest >= 40 ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
-                                                    : "bg-b-surface3 text-t-secondary"
-                                                }`}>{c.interest}</span>
-                                            ) : "—"}
+                                                <ScorePill
+                                                    score={c.interest}
+                                                />
+                                            ) : (
+                                                <span className="text-t-tertiary">
+                                                    —
+                                                </span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))
@@ -358,5 +423,49 @@ export default function CallLogsPage() {
                 </div>
             </Card>
         </Layout>
+    );
+}
+
+function ScorePill({ score }: { score: number }) {
+    const variant =
+        score >= 70 ? "success" : score >= 40 ? "warning" : "neutral";
+    return <Badge variant={variant}>{score}</Badge>;
+}
+
+function MetricTile({
+    label,
+    value,
+    tone,
+    meter,
+}: {
+    label: string;
+    value: number | string;
+    tone: "info" | "success" | "warning" | "neutral";
+    meter?: number;
+}) {
+    const toneVar =
+        tone === "success"
+            ? "var(--chart-green)"
+            : tone === "warning"
+            ? "var(--primary-05)"
+            : tone === "info"
+            ? "var(--primary-01)"
+            : "var(--chart-min)";
+    return (
+        <div className="kpi rise-in">
+            <div className="eyebrow">{label}</div>
+            <div className="kpi-value">{value}</div>
+            {meter != null && (
+                <div className="meter">
+                    <div
+                        className="meter-fill"
+                        style={{
+                            width: `${Math.min(100, meter * 100)}%`,
+                            background: toneVar,
+                        }}
+                    />
+                </div>
+            )}
+        </div>
     );
 }
