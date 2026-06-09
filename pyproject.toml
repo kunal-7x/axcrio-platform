@@ -1,0 +1,13 @@
+[project]
+name = "livekit-agent-capsy"
+version = "0.1.0"
+description = "LiveKit voice agent connected to Vobiz SIP with selectable ElevenLabs/Sarvam STT/TTS and Groq Llama LLM."
+requires-python = ">=3.10"
+dependencies = [
+    "livekit-agents[elevenlabs,groq,sarvam,silero,turn-detector]~=1.3",
+    "livekit-api>=1.0.0",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.uv]
+package = false
