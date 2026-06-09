@@ -22,8 +22,10 @@ Scope (this session, per orchestrator narrowing + advisor):
      Hook committed 97facc9 (LF, core.hooksPath=.githooks). PROOF: planted fake GitHub PAT (ghp_...)
      -> hook "leaks found: 1" -> commit EXIT 1, BLOCKED, HEAD unchanged. (NOTE: AWS AKIAIOSFODNN7EXAMPLE
      is gitleaks-ALLOWLISTED as a doc example -> first test falsely "passed"; corrected to ghp_ which is caught.)
-- U6 README.md (monorepo map) + CONTRIBUTING.md (branch model) ... IN PROGRESS
-- U7 CI workflows (backend/frontend/secrets) + validate YAML
+- U6 README.md (monorepo map) + CONTRIBUTING.md (branch model) ... DONE (commit 1705da4)
+- U7 CI workflows (backend/frontend/secrets) + validate YAML ... IN PROGRESS
+     backend.yml + frontend.yml = DORMANT scaffolding (paths gate on backend/**, frontend/** which don't exist yet);
+     secrets.yml = ACTIVE on every push/PR (full history). NO infra.yml (Terraform DROPPED). All 3 = valid YAML.
 - U8 final proof: gitleaks git . on committed repo = 0 ; git status clean
 - U9 build_log + HANDOFF + brain append
 

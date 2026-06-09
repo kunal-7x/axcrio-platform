@@ -1,0 +1,37 @@
+# frontend CI — pnpm build + Playwright login smoke.
+#
+# DORMANT SCAFFOLDING (P0): the `frontend/` directory does not exist yet — the current
+# Next.js app lives in famit-panel/ and is git-mv'd under frontend/ in a later curation
+# unit (with a pnpm-lock.yaml generated via `pnpm import` and build-verified). Until then
+# the `paths:` filter never matches, so this workflow does not run. When frontend/ lands
+# (frontend/package.json + frontend/pnpm-lock.yaml + frontend/tests/e2e/login.spec.ts +
+# frontend/playwright.config.ts), this job becomes live as-is.
+name: frontend
+on:
+  push:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+jobs:
+  build-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run build
+      - run: pnpm exec playwright test

@@ -1,0 +1,33 @@
+# backend CI — ruff + pytest (uv), py3.12 (box reality).
+#
+# DORMANT SCAFFOLDING (P0): the `backend/` directory does not exist yet — curation
+# (git mv of droplet_work/*.py into backend/) is a later, P1-coordinated unit. Until
+# then the `paths:` filter below never matches, so this workflow does not run. When
+# backend/ lands (with backend/pyproject.toml + backend/uv.lock + backend/tests/), this
+# job becomes live as-is. conftest.py must os.environ.setdefault the 3 module-level keys
+# (LIVEKIT_API_KEY/_SECRET, GROQ_API_KEY) so `import caller` / pytest collection do not
+# KeyError on a bare CI runner (p0-foundation BLOCKER-1).
+name: backend
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python pin 3.12
+      - run: uv sync --frozen          # needs a committed backend/uv.lock
+      - run: uv run ruff check .
+      - run: uv run pytest -q
