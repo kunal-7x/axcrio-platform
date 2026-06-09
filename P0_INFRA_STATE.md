@@ -15,9 +15,10 @@ Scope (this session, per orchestrator narrowing + advisor):
 - U1 write 4 gate files (.gitignore/.gitleaks.toml/.gitattributes/.worktreeinclude) ... DONE
 - U2 raw gitleaks dir scan → confirm every finding is ignored ... DONE (50 findings, ALL in ignored paths: .env.local/.next/fortress/droplet_work; design-doc FP allowlisted)
 - U3 git init + commit gate files ALONE ... DONE (root commit cd54871, 4 files)
-- U4 git add . → gitleaks git --staged GATE (must be 0) → snapshot commit ... IN PROGRESS
+- U4 git add . → gitleaks git --staged GATE (must be 0) → snapshot commit ... DONE
      GATE RESULT: gitleaks git --staged = "no leaks found" EXIT 0 (406 files, 2.99MB scanned). Sanity cross-check: 0 danger paths staged.
-- U5 pre-commit hook + prove it blocks a planted real-format secret
+     Commits: cd54871 (gate files) + 03056f5 (snapshot, 406 files). Tree clean.
+- U5 pre-commit hook + prove it blocks a planted real-format secret ... IN PROGRESS
 - U6 README.md (monorepo map) + CONTRIBUTING.md (branch model)
 - U7 CI workflows (backend/frontend/secrets) + validate YAML
 - U8 final proof: gitleaks git . on committed repo = 0 ; git status clean

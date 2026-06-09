@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Block any commit that stages a secret. Fails the commit on a gitleaks finding.
+# (Belt-and-suspenders behind the .gitignore + CI gitleaks job.)
+set -e
+echo "[pre-commit] gitleaks staged scan..."
+gitleaks git --staged --config .gitleaks.toml --redact --no-banner --exit-code 1
+echo "[pre-commit] clean."
