@@ -1,4 +1,58 @@
-# LiveKit Agent Capsy
+# Famit / Axcrio — AI Revenue OS (monorepo)
+
+Strangler monorepo for the live AI tele-calling SaaS at **https://panel.famit.in**.
+The verdict is **STRANGLE & EVOLVE** — the live system keeps earning; every change is
+additive, flag-gated, and non-breaking. See `EXECUTION_PLAN.md` and `design/*.md`.
+
+## Intended layout (target — curation is phased, NOT yet performed)
+
+```
+caps/                      # this repo root
+├─ backend/                # uv-managed FastAPI /api + LiveKit voice agent (FLAT modules,
+│                          #   mirrors /opt/famit-agent exactly). NOT YET POPULATED — the
+│                          #   live source lives in droplet_work/ and is git-mv'd in later,
+│                          #   serialized with the Phase-1 Postgres work (see EXECUTION_PLAN).
+├─ frontend/               # pnpm-managed Next.js panel. NOT YET POPULATED — current app is
+│                          #   famit-panel/ ; moved under frontend/ in a later curation unit.
+├─ infra/                  # (DROPPED for P0) DigitalOcean is managed via the DO API directly,
+│                          #   not Terraform. No infra/ dir or terraform in this phase.
+├─ design/                 # execution-ready design specs (one per subsystem)
+├─ .github/workflows/      # CI: backend.yml + frontend.yml (dormant until curation) + secrets.yml
+├─ .githooks/pre-commit    # gitleaks staged-scan gate (core.hooksPath=.githooks)
+├─ droplet_work/           # LIVE backend source (gitignored until curated — local scratch)
+├─ famit-panel/            # LIVE frontend source (current Next.js app)
+└─ .gitignore .gitleaks.toml .gitattributes .worktreeinclude  # the secrets-gate
+```
+
+> Current state: this commit establishes the **git foundation + secrets-gate + CI scaffolding
+> + branch model**. It does NOT restructure `droplet_work/` → `backend/` or `famit-panel/` →
+> `frontend/`; that curation is a later, P1-coordinated unit (it serializes on the 3,422-line
+> `caller.py`). `backend/` and `frontend/` therefore do not exist yet, and the `backend.yml` /
+> `frontend.yml` CI jobs are dormant scaffolding (their `paths:` filters won't trigger until
+> those directories appear).
+
+## 🔒 THE SECRETS RULE (read before any commit)
+
+This box was compromised once. **A committed secret is an irreversible production incident.**
+- `.gitignore` is line 1 (`.env*`, `fortress/`, `droplet_work/`, `*.bak.*`, `*.tgz`, `.next/`,
+  `.venv/`, `.claude/`, SSH keys, `**/cred.md`, `**/ALL_CREDENTIALS.md`).
+- **`gitleaks` is the net** — `.githooks/pre-commit` runs `gitleaks git --staged` on every commit
+  and `.github/workflows/secrets.yml` runs it on every push/PR (full history). Both block on any
+  finding. If unsure whether something is a secret, treat it as one and ignore it.
+- Secrets live OUTSIDE the repo (`fortress/cred.md` is gitignored; `lead/ALL_CREDENTIALS.md` is
+  outside the tree). Founder must ROTATE the burned `.env.local` keys (Groq/ElevenLabs/Sarvam/Vobiz).
+
+## Contributing / branch model
+
+See `CONTRIBUTING.md`: worktree → `feat/*` → PR → green CI → squash-merge → protected `main`.
+
+---
+
+# LiveKit Agent Capsy (legacy standalone skeleton — NOT the deployed backend)
+
+> The section below documents the older standalone LiveKit skeleton under `src/`, `selfhost/`,
+> `scripts/` + the root `pyproject.toml`. It is **not** what runs in production (the live backend
+> is `droplet_work/`, deployed flat at `/opt/famit-agent`). Kept for reference; left in place.
 
 Realtime Hinglish voice agent using:
 
