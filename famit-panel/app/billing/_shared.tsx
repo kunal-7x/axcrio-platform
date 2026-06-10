@@ -152,7 +152,7 @@ export const VENDOR_COLORS = [
     "var(--primary-04)", // purple
     "var(--primary-05)", // amber
     "var(--chart-green)",
-    "#FF6A55",
+    "var(--primary-03)", // red-orange
 ];
 
 // Hero metric card. Big tabular number, eyebrow label with glyph chip, a

@@ -136,9 +136,9 @@ export default function BillingAuditPage() {
                                                 {delta == null ? (
                                                     <span className="text-t-tertiary">—</span>
                                                 ) : Math.abs(delta) < 0.005 ? (
-                                                    <span className="text-[#00A656]">matched</span>
+                                                    <span className="text-primary-02">matched</span>
                                                 ) : (
-                                                    <span className={delta > 0 ? "text-[#EF9D0E]" : "text-primary-01"}>
+                                                    <span className={delta > 0 ? "text-primary-05" : "text-primary-01"}>
                                                         {delta > 0 ? "+" : ""}{money(delta, currency)}
                                                     </span>
                                                 )}

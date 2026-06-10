@@ -116,7 +116,7 @@ export default function VendorDetailPage() {
             </div>
 
             {data?.status === "not_configured" && (
-                <div className="mb-3 p-3.5 rounded-2xl bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E] text-body-2 ring-1 ring-inset ring-[#EF9D0E]/20 flex items-center gap-2">
+                <div className="mb-3 p-3.5 rounded-2xl bg-primary-05/8 text-primary-05 text-body-2 ring-1 ring-inset ring-primary-05/20 flex items-center gap-2">
                     <Icon name="info" className="size-4 fill-current shrink-0" />
                     This vendor is not configured — add API keys on the server to enable live cost reporting.
                 </div>

@@ -78,7 +78,7 @@ export default function BillingPlanPage() {
                 <div
                     className={`mb-3 p-3.5 rounded-2xl text-body-2 flex items-center justify-between gap-3 ring-1 ring-inset ${
                         toast.type === "success"
-                            ? "bg-[#00A656]/8 text-[#00A656] ring-[#00A656]/20"
+                            ? "bg-primary-02/8 text-primary-02 ring-primary-02/20"
                             : "bg-primary-03/8 text-primary-03 ring-primary-03/20"
                     }`}
                 >
@@ -101,7 +101,7 @@ export default function BillingPlanPage() {
             )}
 
             {lowBalance && (
-                <div className="mb-3 p-3.5 rounded-2xl bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E] text-body-2 ring-1 ring-inset ring-[#EF9D0E]/20 flex items-center gap-2">
+                <div className="mb-3 p-3.5 rounded-2xl bg-primary-05/8 text-primary-05 text-body-2 ring-1 ring-inset ring-primary-05/20 flex items-center gap-2">
                     <Icon name="info" className="size-4 fill-current shrink-0" />
                     Insufficient balance — top up to continue placing calls. Calls are blocked while your prepaid balance is at or below zero.
                 </div>
