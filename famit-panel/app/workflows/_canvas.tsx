@@ -84,7 +84,7 @@ function NodeCard({
                     <span
                         title="Money node — gated by Budget + Approval"
                         className="grid place-items-center size-4 shrink-0 rounded-full"
-                        style={{ background: "#00A656" }}
+                        style={{ background: "var(--primary-02)" }}
                     >
                         <Icon name="wallet" className="size-2.5 fill-white" />
                     </span>
@@ -178,9 +178,9 @@ export default function WorkflowCanvas({
     const edges: WfEdge[] = def.edges;
 
     function edgeColor(e: WfEdge): string {
-        if (e.error) return "#FF6A55";
-        if (e.when === "true") return "#00A656";
-        if (e.when === "false") return "#EF9D0E";
+        if (e.error) return "var(--primary-03)";
+        if (e.when === "true") return "var(--primary-02)";
+        if (e.when === "false") return "var(--primary-05)";
         return "var(--color-s-highlight)";
     }
 
