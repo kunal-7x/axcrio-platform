@@ -1,13 +1,8 @@
 import { useState, useEffect } from "react";
-import { usePathname } from "next/navigation";
 import Button from "@/components/Button";
 import Select from "@/components/Select";
 import Logo from "@/components/Logo";
-import Icon from "@/components/Icon";
-import SearchGlobal from "./SearchGlobal";
 import User from "./User";
-import Notifications from "./Notifications";
-import Messages from "./Messages";
 
 const times = [
     { id: 1, name: "Publish now" },
@@ -31,15 +26,7 @@ const Header = ({
     onToggleSidebar,
 }: HeaderProps) => {
     const [time, setTime] = useState(times[0]);
-    const pathname = usePathname();
     const [hasOverflowHidden, setHasOverflowHidden] = useState(false);
-    const [visibleSearch, setVisibleSearch] = useState(false);
-
-    const isHideCreateButton =
-        pathname.includes("/customers/customer-list/") ||
-        pathname.includes("/income/refunds/") ||
-        pathname.includes("/shop/") ||
-        pathname.includes("/notifications");
 
     useEffect(() => {
         const observer = new MutationObserver((mutations) => {
@@ -96,49 +83,32 @@ const Header = ({
                         isWhite
                     />
                 </div>
-                {title && (
-                    <div className="mr-auto text-h4 max-lg:text-h5 max-md:hidden">
-                        {title}
-                    </div>
-                )}
+                {/* The page title is intentionally NOT rendered here — each page
+                    shows its own <PageHeader> masthead below the navbar, so a
+                    title in the navbar would duplicate it. */}
                 <div
-                    className={`flex items-center gap-3 ${
+                    className={`flex items-center gap-3 ml-auto ${
                         newProduct ? "hidden max-md:flex" : ""
                     } ${
-                        hideSidebar ? "grow max-lg:grow-0 max-lg:ml-auto" : ""
+                        hideSidebar ? "grow max-lg:grow-0 max-lg:ml-auto justify-end" : ""
                     }`}
                 >
+                    {/* A real, working primary action: jump to Run a campaign.
+                        (Replaces the template's dead "Create -> /products/new"
+                        link + the non-functional global search.) */}
                     {!newProduct && (
-                        <>
-                            <SearchGlobal
-                                className={`max-md:hidden ${
-                                    hideSidebar ? "mr-auto" : ""
-                                }`}
-                                onClose={() => setVisibleSearch(false)}
-                                visible={visibleSearch}
-                            />
-                            {!isHideCreateButton && (
-                                <Button
-                                    className="max-md:hidden"
-                                    isBlack
-                                    href="/products/new"
-                                    as="link"
-                                >
-                                    Create
-                                </Button>
-                            )}
-                        </>
+                        <Button
+                            className="max-md:hidden"
+                            isBlack
+                            href="/run"
+                            as="link"
+                            icon="send"
+                        >
+                            Run a Campaign
+                        </Button>
                     )}
-                    <Button
-                        className="!hidden max-lg:!flex max-md:!hidden"
-                        isWhite
-                        isCircle
-                        onClick={() => setVisibleSearch(true)}
-                    >
-                        <Icon name="search" />
-                    </Button>
-                    <Notifications />
-                    <Messages />
+                    {/* Theme toggle removed from the top navbar (lives in the
+                        sidebar footer / floating toggle instead). */}
                     <User />
                 </div>
                 {newProduct && (

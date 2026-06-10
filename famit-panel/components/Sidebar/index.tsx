@@ -16,7 +16,7 @@ type SidebarProps = {
     onCloseSidebar?: () => void;
 };
 
-// Decide if a nav item is visible for the current role.
+// Decide if a nav item (top-level OR a group child) is visible for the role.
 // `roles: "admin"`   -> admins only
 // `roles: "manager"` -> managers + admins (hidden for read-only agents)
 // no `roles`         -> everyone
@@ -27,6 +27,37 @@ function navVisible(item: { roles?: string }, me: ReturnType<typeof useMe>["me"]
     return true;
 }
 
+type NavChild = { title: string; href?: string; comingSoon?: boolean; roles?: string };
+type NavItem = {
+    title: string;
+    icon: string;
+    href?: string;
+    roles?: string;
+    list?: NavChild[];
+    section?: string;
+};
+
+// Filter a nav entry for the current role:
+//  - top-level gated entries hidden as before;
+//  - a COLLAPSIBLE GROUP has its CHILDREN filtered by their own `roles`, and the
+//    whole group is dropped if no visible children remain (so a vendor never sees
+//    an admin-only group and an agent never sees a manager-only one). Coming-soon
+//    children carry no role and always survive.
+function resolveNav(items: NavItem[], me: ReturnType<typeof useMe>["me"]): NavItem[] {
+    const out: NavItem[] = [];
+    for (const item of items) {
+        if (!navVisible(item, me)) continue;
+        if (item.list) {
+            const list = item.list.filter((c) => navVisible(c, me));
+            if (list.length === 0) continue;
+            out.push({ ...item, list });
+        } else {
+            out.push(item);
+        }
+    }
+    return out;
+}
+
 const Sidebar = ({
     visibleSidebar,
     hideSidebar,
@@ -35,8 +66,9 @@ const Sidebar = ({
     const { me } = useMe();
     // While role is unknown (no cache yet), show only the always-visible items
     // to avoid flashing admin-only links to a vendor. Cache makes this instant
-    // on subsequent loads.
-    const items = navigation.filter((item) => navVisible(item, me));
+    // on subsequent loads. resolveNav also filters group CHILDREN by role and
+    // drops a group left with no visible children.
+    const items = resolveNav(navigation as NavItem[], me);
     return (
     <div
         className={`fixed top-0 left-0 bottom-0 flex flex-col w-85 p-5 bg-b-surface1 transition-transform duration-300 max-4xl:w-70 max-3xl:w-60 max-xl:w-74 max-md:p-3 ${
@@ -64,16 +96,24 @@ const Sidebar = ({
             isWhite
         />
         <RemoveScroll
-            className="flex flex-col gap-1 grow overflow-auto -mx-5 px-5 scrollbar scrollbar-thumb-t-tertiary/50 scrollbar-track-b-surface2 max-md:-mx-3 max-md:px-3"
+            className="flex flex-col gap-1 grow overflow-auto -mx-5 px-5 scrollbar scrollbar-thin scrollbar-thumb-t-tertiary/30 scrollbar-track-transparent max-md:-mx-3 max-md:px-3"
             enabled={visibleSidebar}
         >
-            {items.map((item) =>
-                item.href ? (
-                    <NavLink key={item.title} value={item} />
-                ) : (
-                    <Dropdown key={item.title} value={item} />
-                )
-            )}
+            {items.map((item) => (
+                <div key={item.title} className="contents">
+                    {item.href ? (
+                        <NavLink
+                            value={{
+                                title: item.title,
+                                href: item.href,
+                                icon: item.icon,
+                            }}
+                        />
+                    ) : (
+                        <Dropdown value={item} />
+                    )}
+                </div>
+            ))}
         </RemoveScroll>
         <div className="mt-auto pt-6 max-md:pt-4">
             {/* <Button className="mb-3" icon="chat-think" isWhite isCircle /> */}

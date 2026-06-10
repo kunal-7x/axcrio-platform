@@ -1,0 +1,65 @@
+# Logto OSS — self-hosted OIDC for the platform (Phase F4 part 1).
+# Deployed on the EXISTING hatchet box (famit-hatchet 68.183.94.38 / priv 10.122.0.3).
+# - Its OWN Postgres (separate volume/db/role) — NEVER collides with Hatchet's broker PG.
+# - Core (3001) + Admin console (3002) bound to 127.0.0.1 ONLY -> reach via SSH tunnel.
+# - Resource-capped so the IdP cannot starve the box (spec RED-TEAM FIX #3).
+# - Image tag PINNED (NOT :latest) — supply-chain/repro (spec §10).
+# - ENDPOINT/ADMIN_ENDPOINT intentionally UNSET in this file -> Logto defaults to localhost,
+#   so the admin console + sign-in redirect work over the SSH tunnel while auth.famit.in DNS is
+#   not yet live. Set ENDPOINT=https://auth.famit.in (issuer) via logto.env ONLY once DNS/TLS exist
+#   and BEFORE any real client tokens are minted (the OIDC issuer is {ENDPOINT}/oidc).
+services:
+  logto-postgres:
+    image: postgres:15.6
+    container_name: logto-postgres
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 0.75
+    environment:
+      POSTGRES_USER: logto_app
+      POSTGRES_DB: logto
+      # POSTGRES_PASSWORD comes from logto.env (chmod 600 on the box; never committed)
+    env_file:
+      - ./logto.env
+    volumes:
+      - logto_postgres_data:/var/lib/postgresql/data
+    # NO ports: published — only reachable on the compose-internal network by the logto service.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logto_app -d logto"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - logto-net
+
+  logto:
+    image: ghcr.io/logto-io/logto:1.40.1
+    container_name: logto
+    restart: unless-stopped
+    depends_on:
+      logto-postgres:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 1.0
+    # First boot seeds the schema if empty, then starts. Idempotent across restarts
+    # (the seeder no-ops when the schema already exists).
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe || true && npm start"]
+    ports:
+      - "127.0.0.1:3001:3001"   # core / OIDC      -> SSH tunnel (later: nginx auth.famit.in)
+      - "127.0.0.1:3002:3002"   # admin console    -> SSH tunnel ONLY (never public)
+    environment:
+      - TRUST_PROXY_HEADER=1
+      - DATABASE_STATEMENT_TIMEOUT=DISABLE_TIMEOUT
+      # DB_URL + (optional, later) ENDPOINT/ADMIN_ENDPOINT come from logto.env
+    env_file:
+      - ./logto.env
+    networks:
+      - logto-net
+
+volumes:
+  logto_postgres_data:
+    name: logto_postgres_data
+
+networks:
+  logto-net:
+    name: logto-net

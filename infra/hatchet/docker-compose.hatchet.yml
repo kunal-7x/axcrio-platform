@@ -1,0 +1,111 @@
+# Hatchet self-hosted (V1) — POSTGRES-AS-BROKER variant (no RabbitMQ).
+# Deployed on an INDEPENDENT droplet (famit-hatchet), NOT the voice box.
+# All ports bound to 127.0.0.1 only — internals never public. Reach dashboard via SSH tunnel.
+# gRPC 7077 stays localhost for now; the FUTURE caller.py cutover opens it to the VPC private IP
+# (see F3_HATCHET_STATE.md / build_log). Source of truth: docs.hatchet.run self-hosting/docker-compose.
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15.6
+    command: postgres -c 'max_connections=1000'
+    restart: always
+    hostname: postgres
+    environment:
+      POSTGRES_USER: hatchet
+      POSTGRES_PASSWORD: ${HATCHET_PG_PASSWORD:-hatchet}
+      POSTGRES_DB: hatchet
+    volumes:
+      - hatchet_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d hatchet -U hatchet"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+
+  migration:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-migrate:latest
+    command: /hatchet/hatchet-migrate
+    environment:
+      DATABASE_URL: "postgres://hatchet:${HATCHET_PG_PASSWORD:-hatchet}@postgres:5432/hatchet"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  setup-config:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-admin:latest
+    command: /hatchet/hatchet-admin quickstart --skip certs --generated-config-dir /hatchet/config --overwrite=false
+    environment:
+      DATABASE_URL: "postgres://hatchet:${HATCHET_PG_PASSWORD:-hatchet}@postgres:5432/hatchet"
+      SERVER_MSGQUEUE_KIND: "postgres"
+      SERVER_AUTH_COOKIE_DOMAIN: "localhost:8080"
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: "127.0.0.1:7077"
+      SERVER_DEFAULT_ENGINE_VERSION: "V1"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "hatchet-engine:7070"
+    volumes:
+      - hatchet_certs:/hatchet/certs
+      - hatchet_config:/hatchet/config
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  hatchet-engine:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-engine:latest
+    command: /hatchet/hatchet-engine --config /hatchet/config
+    restart: on-failure
+    depends_on:
+      setup-config:
+        condition: service_completed_successfully
+      migration:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:7077:7070"   # gRPC — localhost only (future: open to VPC for caller.py)
+    environment:
+      DATABASE_URL: "postgres://hatchet:${HATCHET_PG_PASSWORD:-hatchet}@postgres:5432/hatchet"
+      SERVER_MSGQUEUE_KIND: "postgres"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: "127.0.0.1:7077"
+    volumes:
+      - hatchet_certs:/hatchet/certs
+      - hatchet_config:/hatchet/config
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+
+  hatchet-dashboard:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-dashboard:latest
+    command: sh ./entrypoint.sh --config /hatchet/config
+    restart: on-failure
+    ports:
+      - "127.0.0.1:8080:80"     # dashboard/API — localhost only, reach via SSH tunnel
+    depends_on:
+      setup-config:
+        condition: service_completed_successfully
+      migration:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgres://hatchet:${HATCHET_PG_PASSWORD:-hatchet}@postgres:5432/hatchet"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+volumes:
+  hatchet_postgres_data:
+  hatchet_config:
+  hatchet_certs:

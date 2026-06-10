@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
 import {
     sendWhatsApp,
     getWhatsAppLog,
@@ -83,26 +86,30 @@ export default function WhatsAppPage() {
         }
     }
 
-    const inputCls = "w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent";
+    const inputCls = "input-base w-full h-11 px-4 rounded-2xl text-body-2";
 
     // Surface the banner if any recent log entry shows skipped_no_config too.
     const anyUnconfigured = notConfigured || log.some((l) => l.status === "skipped_no_config");
 
     return (
         <Layout title="WhatsApp">
+            <PageHeader
+                eyebrow="Integrations"
+                title="WhatsApp"
+                subtitle="Send template or free-text messages and review the delivery log. Auto follow-ups fire after qualifying calls once creds are set."
+            />
             {toast && (
-                <div className={`mb-4 p-3 rounded-2xl text-body-2 flex items-center justify-between gap-3 ${
-                    toast.type === "success"
-                        ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                        : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
-                }`}>
-                    <span>{toast.msg}</span>
+                <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {toast.msg}
+                    </span>
                     <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
                 </div>
             )}
 
             {anyUnconfigured && (
-                <div className="mb-4 p-3 rounded-2xl bg-amber-50 text-amber-700 text-body-2 dark:bg-amber-900/20 dark:text-amber-400">
+                <div className="mb-4 p-3.5 rounded-2xl border border-[#EF9D0E]/20 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E] text-body-2">
                     WhatsApp not configured — paste your BSP credentials on the server (WA_API_URL / WA_API_KEY / WA_FROM in <code className="font-mono">.env</code>), then restart the service. Sending is wired and will work once creds are set.
                 </div>
             )}
@@ -112,10 +119,10 @@ export default function WhatsAppPage() {
                 <div className="flex-1 min-w-0">
                     <Card title="Sent Log">
                         {loadError && (
-                            <div className="mx-5 mb-3 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">{loadError}</div>
+                            <div className="mx-5 mb-3 toast toast-error"><span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-current" />{loadError}</span></div>
                         )}
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>When</th>
@@ -127,24 +134,34 @@ export default function WhatsAppPage() {
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr><td colSpan={5} className="py-8 text-center text-t-secondary">Loading…</td></tr>
+                                        [...Array(3)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(5)].map((__, j) => (
+                                                    <td key={j}><div className="skeleton h-4 w-20" /></td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : log.length === 0 ? (
-                                        <tr><td colSpan={5} className="py-12 text-center text-t-tertiary">No messages sent yet</td></tr>
+                                        <tr><td colSpan={5}>
+                                            <div className="state-block">
+                                                <span className="state-glyph"><Icon name="chat" className="fill-inherit" /></span>
+                                                <div className="state-title">No messages yet</div>
+                                                <div className="state-sub">Sent and auto-followup WhatsApp messages will be logged here.</div>
+                                            </div>
+                                        </td></tr>
                                     ) : (
                                         log.map((l, i) => (
-                                            <tr key={i} className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors">
-                                                <td className="text-t-secondary">{fmt(l.at)}</td>
-                                                <td className="text-t-secondary">{l.phone}</td>
-                                                <td className="font-mono text-xs">{l.template || "—"}</td>
+                                            <tr key={i}>
+                                                <td className="text-t-secondary whitespace-nowrap">{fmt(l.at)}</td>
+                                                <td className="text-t-secondary td-num">{l.phone}</td>
+                                                <td className="font-mono text-xs text-t-primary">{l.template || "—"}</td>
                                                 <td>
-                                                    <span className="inline-flex px-2 py-0.5 rounded-full text-caption font-medium bg-b-surface3 text-t-secondary">{l.kind}</span>
+                                                    <span className="pill pill-neutral">{l.kind}</span>
                                                 </td>
                                                 <td>
-                                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${
-                                                        l.ok ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                                                        : l.status === "skipped_no_config" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-                                                        : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                                                    }`}>{l.status}</span>
+                                                    <Badge variant={l.ok ? "success" : l.status === "skipped_no_config" ? "warning" : "danger"}>
+                                                        {l.status}
+                                                    </Badge>
                                                 </td>
                                             </tr>
                                         ))
@@ -185,7 +202,7 @@ export default function WhatsAppPage() {
                                 ) : (
                                     <div>
                                         <label className="block text-button mb-3 text-t-primary">Text</label>
-                                        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Hi! Thanks for your interest…" className="w-full h-24 px-4 py-3 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none resize-none hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent" />
+                                        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Hi! Thanks for your interest…" className="input-base w-full h-24 px-4 py-3 rounded-2xl text-body-2 resize-none" />
                                     </div>
                                 )}
                                 <div>

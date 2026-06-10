@@ -56,14 +56,14 @@ const Field = ({
                 {children}
                 {textarea ? (
                     <textarea
-                        className={`w-full h-24 px-4.5 py-3.5 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-colors resize-none hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 ${
+                        className={`w-full h-24 px-4.5 py-3.5 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-[color,border-color,box-shadow] duration-200 resize-none hover:border-s-highlight focus:border-primary-01/60 focus:ring-2 focus:ring-primary-01/30 placeholder:text-t-secondary/50 ${
                             validated ? "pr-14" : ""
                         } ${innerLabel ? "pl-6.5" : ""} ${classInput || ""}`}
                         {...inputProps}
                     ></textarea>
                 ) : (
                     <input
-                        className={`w-full h-12 px-4.5 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 ${
+                        className={`w-full h-12 px-4.5 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-[color,border-color,box-shadow] duration-200 hover:border-s-highlight focus:border-primary-01/60 focus:ring-2 focus:ring-primary-01/30 placeholder:text-t-secondary/50 ${
                             validated ? "pr-14" : ""
                         } ${innerLabel ? "pl-6.5" : ""} ${classInput || ""}`}
                         type={type || "text"}

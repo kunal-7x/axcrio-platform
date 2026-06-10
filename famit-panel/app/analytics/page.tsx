@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
+import PageHeader from "@/components/PageHeader";
 import { getAnalytics, getCampaigns, type AnalyticsFunnel, type Campaign } from "@/lib/api";
 import {
     ResponsiveContainer,
@@ -18,13 +19,24 @@ import {
     Cell,
 } from "recharts";
 
-const FUNNEL_COLORS = ["#6366f1", "#8b5cf6", "#a78bfa", "#c4b5fd", "#ddd6fe", "#e0e7ff", "#f0fdf4"];
+// Brand-blue funnel ramp (token-driven). Replaces the off-brand purple
+// gradient with a calm primary-01 -> lighter-blue descent so the funnel
+// reads as Famit, not a generic AI chart.
+const FUNNEL_COLORS = [
+    "var(--primary-01)",
+    "color-mix(in srgb, var(--primary-01) 82%, var(--backgrounds-surface2))",
+    "color-mix(in srgb, var(--primary-01) 64%, var(--backgrounds-surface2))",
+    "color-mix(in srgb, var(--primary-01) 48%, var(--backgrounds-surface2))",
+    "color-mix(in srgb, var(--primary-01) 34%, var(--backgrounds-surface2))",
+    "color-mix(in srgb, var(--primary-01) 22%, var(--backgrounds-surface2))",
+    "color-mix(in srgb, var(--primary-01) 14%, var(--backgrounds-surface2))",
+];
 
 function StatCard({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
     return (
-        <div className="card p-4 flex flex-col gap-1">
-            <div className="text-caption text-t-tertiary">{label}</div>
-            <div className="text-h5 text-t-primary">{value}</div>
+        <div className="kpi !gap-1.5 !p-4">
+            <div className="kpi-label">{label}</div>
+            <div className="text-h4 text-t-primary tabular-nums">{value}</div>
             {sub && <div className="text-caption text-t-tertiary">{sub}</div>}
         </div>
     );
@@ -70,18 +82,26 @@ export default function AnalyticsPage() {
 
     return (
         <Layout title="Analytics">
+            <PageHeader
+                eyebrow="Activity"
+                title="Analytics"
+                subtitle="Your end-to-end conversion funnel and outcome breakdown across every dialed lead — refreshed live."
+            />
             {error && (
-                <div className="mb-4 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">
-                    {error}
+                <div className="toast toast-error">
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {error}
+                    </span>
                 </div>
             )}
 
             {/* Filters */}
-            <div className="flex items-center gap-4 mb-6 flex-wrap">
+            <div className="flex items-end gap-3 mb-6 flex-wrap">
                 <div>
-                    <label className="block text-caption text-t-secondary mb-1">Campaign</label>
+                    <label className="block text-caption text-t-secondary mb-1.5">Campaign</label>
                     <select
-                        className="h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
+                        className="input-base h-10 px-3 rounded-xl text-body-2"
                         value={campaignId}
                         onChange={(e) => setCampaignId(e.target.value)}
                     >
@@ -93,11 +113,11 @@ export default function AnalyticsPage() {
                 </div>
                 <button
                     onClick={load}
-                    className="mt-5 h-10 px-4 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary hover:border-s-highlight transition-colors"
+                    className="h-10 px-4 input-base rounded-xl text-body-2 text-t-primary"
                 >
                     {loading ? "Refreshing…" : "Refresh"}
                 </button>
-                <span className="mt-5 text-caption text-t-tertiary">Auto-refreshes every 30s</span>
+                <span className="h-10 inline-flex items-center text-caption text-t-tertiary">Auto-refreshes every 30s</span>
             </div>
 
             {/* Summary stat cards */}
@@ -213,20 +233,20 @@ export default function AnalyticsPage() {
             {funnelData.length > 0 && (
                 <Card title="Funnel Details" className="mt-6">
                     <div className="overflow-x-auto">
-                        <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                        <table className="data-table">
                             <thead>
                                 <tr>
                                     <th>Stage</th>
                                     <th>Count</th>
-                                    <th>% of Dialed</th>
+                                    <th className="text-right">% of Dialed</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {funnelData.map((row, i) => (
-                                    <tr key={i} className="border-t border-s-subtle">
-                                        <td className="font-medium capitalize">{row.stage.replace(/_/g, " ")}</td>
-                                        <td className="text-t-primary">{row.count}</td>
-                                        <td className="text-t-secondary">
+                                    <tr key={i}>
+                                        <td className="font-medium text-t-primary capitalize">{row.stage.replace(/_/g, " ")}</td>
+                                        <td className="text-t-primary td-num">{row.count}</td>
+                                        <td className="text-t-secondary td-num text-right">
                                             {data && data.dialed > 0 ? `${((row.count / data.dialed) * 100).toFixed(1)}%` : "—"}
                                         </td>
                                     </tr>

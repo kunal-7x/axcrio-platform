@@ -34,7 +34,7 @@ const Button: React.FC<ButtonProps> = ({
     as = "button",
     ...props
 }) => {
-    const classes = `inline-flex items-center justify-center h-12 border rounded-3xl text-button transition-all cursor-pointer disabled:pointer-events-none ${
+    const classes = `inline-flex items-center justify-center h-12 border rounded-3xl text-button transition-all cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary-01/40 focus-visible:ring-offset-2 focus-visible:ring-offset-b-surface1 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 ${
         isWhite
             ? "bg-b-surface2 px-7 border-0 text-t-secondary fill-t-secondary hover:text-t-primary hover:fill-t-primary dark:bg-linear-to-b dark:from-[#2A2A2A] dark:to-[#202020]"
             : ""

@@ -4,24 +4,11 @@ import { useEffect, useState, useRef } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import { StatusBadge } from "@/lib/badges";
 import { getCampaigns, run, getStatus, RunError, type Campaign, type StatusLead, type RunResult } from "@/lib/api";
 import { useMe, canWrite } from "@/lib/auth";
-
-function statusBadge(status: string) {
-    const map: Record<string, string> = {
-        done: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        calling: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        queued: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-        failed: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-    };
-    return (
-        <span
-            className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[status] || "bg-b-surface3 text-t-secondary"}`}
-        >
-            {status}
-        </span>
-    );
-}
 
 export default function RunPage() {
     const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -122,18 +109,26 @@ export default function RunPage() {
 
     return (
         <Layout title="Run">
+            <PageHeader
+                eyebrow="Outreach"
+                title="Run a Call Run"
+                subtitle="Pick a campaign, drop in your leads, set concurrency and caps, then dial — live status streams in on the right."
+            />
             {toast && (
                 <div
-                    className={`mb-4 p-3 rounded-2xl text-body-2 flex items-start justify-between gap-3 ${
-                        toastType === "success" ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                        : toastType === "warning" ? "bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
-                        : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
+                    className={`toast items-start ${
+                        toastType === "success" ? "toast-success"
+                        : toastType === "warning" ? "border border-[#EF9D0E]/20 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E]"
+                        : "toast-error"
                     }`}
                 >
-                    <span>{toast}</span>
+                    <span className="flex items-start gap-2">
+                        <span className="size-1.5 rounded-full bg-current mt-1.5 shrink-0" />
+                        {toast}
+                    </span>
                     {queuedResult && (
                         <button
-                            className="shrink-0 px-3 py-1 border border-amber-500 rounded-2xl text-caption font-medium hover:bg-amber-100 transition-colors"
+                            className="shrink-0 px-3 h-7 inline-flex items-center border border-current/30 rounded-full text-caption font-medium transition-colors hover:bg-current/10"
                             onClick={async () => {
                                 setStarting(true);
                                 try {
@@ -159,14 +154,17 @@ export default function RunPage() {
             )}
 
             {insufficient && (
-                <div className="mb-4 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 flex items-center justify-between gap-3 dark:bg-red-900/20 dark:text-red-400">
-                    <span>Insufficient balance — top up to continue placing calls.</span>
-                    <a href="/billing" className="shrink-0 px-3 py-1 border border-red-400 rounded-2xl text-caption font-medium hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors">Go to Billing</a>
+                <div className="toast toast-error">
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        Insufficient balance — top up to continue placing calls.
+                    </span>
+                    <a href="/billing" className="shrink-0 px-3 h-7 inline-flex items-center border border-current/30 rounded-full text-caption font-medium transition-colors hover:bg-current/10">Go to Billing</a>
                 </div>
             )}
 
             {!writable && me && (
-                <div className="mb-4 p-3 rounded-2xl bg-b-surface2 text-t-secondary text-body-2">
+                <div className="mb-4 p-3.5 rounded-2xl surface text-t-secondary text-body-2">
                     Your role is read-only — you can view campaigns and live status, but cannot start call runs.
                 </div>
             )}
@@ -181,7 +179,7 @@ export default function RunPage() {
                                     Campaign
                                 </label>
                                 <select
-                                    className="w-full h-12 px-4 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight bg-transparent"
+                                    className="input-base w-full h-12 px-4 rounded-2xl text-body-2"
                                     value={campaignId}
                                     onChange={(e) =>
                                         setCampaignId(e.target.value)
@@ -205,7 +203,7 @@ export default function RunPage() {
                                     Leads (Name, Phone per line)
                                 </label>
                                 <textarea
-                                    className="w-full h-28 px-4 py-3 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-colors resize-none hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent"
+                                    className="input-base w-full h-28 px-4 py-3 rounded-2xl text-body-2 resize-none"
                                     placeholder={"John Doe, +919876543210\nJane Smith, +918765432109"}
                                     value={leadsText}
                                     onChange={(e) =>
@@ -236,7 +234,7 @@ export default function RunPage() {
                                     <input
                                         type="number"
                                         min="1"
-                                        className="w-full h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
+                                        className="input-base w-full h-10 px-3 rounded-xl text-body-2"
                                         value={concurrency || ""}
                                         onChange={(e) =>
                                             setConcurrency(
@@ -252,7 +250,7 @@ export default function RunPage() {
                                     <input
                                         type="number"
                                         min="0"
-                                        className="w-full h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
+                                        className="input-base w-full h-10 px-3 rounded-xl text-body-2"
                                         value={hourlyCap || ""}
                                         onChange={(e) =>
                                             setHourlyCap(
@@ -268,7 +266,7 @@ export default function RunPage() {
                                     <input
                                         type="number"
                                         min="0"
-                                        className="w-full h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
+                                        className="input-base w-full h-10 px-3 rounded-xl text-body-2"
                                         value={dailyCap || ""}
                                         onChange={(e) =>
                                             setDailyCap(
@@ -301,7 +299,7 @@ export default function RunPage() {
                         }
                     >
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>Name</th>
@@ -312,34 +310,41 @@ export default function RunPage() {
                                 <tbody>
                                     {!jobId ? (
                                         <tr>
-                                            <td
-                                                colSpan={3}
-                                                className="py-8 text-center text-t-secondary"
-                                            >
-                                                Start a run to see live status
+                                            <td colSpan={3}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph">
+                                                        <Icon name="send" className="fill-inherit" />
+                                                    </span>
+                                                    <div className="state-title">No active run</div>
+                                                    <div className="state-sub">
+                                                        Start a call run on the left and each lead&apos;s live status appears here.
+                                                    </div>
+                                                </div>
                                             </td>
                                         </tr>
                                     ) : liveLeads.length === 0 ? (
                                         <tr>
-                                            <td
-                                                colSpan={3}
-                                                className="py-8 text-center text-t-secondary"
-                                            >
-                                                Waiting for updates…
+                                            <td colSpan={3}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph">
+                                                        <Icon name="clock" className="fill-inherit" />
+                                                    </span>
+                                                    <div className="state-title">Waiting for updates…</div>
+                                                    <div className="state-sub">
+                                                        The dialer is spinning up — statuses refresh every few seconds.
+                                                    </div>
+                                                </div>
                                             </td>
                                         </tr>
                                     ) : (
                                         liveLeads.map((l, i) => (
-                                            <tr
-                                                key={i}
-                                                className="border-t border-s-subtle"
-                                            >
-                                                <td>{l.name}</td>
-                                                <td className="text-t-secondary">
+                                            <tr key={i}>
+                                                <td className="font-medium text-t-primary">{l.name}</td>
+                                                <td className="text-t-secondary td-num">
                                                     {l.num}
                                                 </td>
                                                 <td>
-                                                    {statusBadge(l.status)}
+                                                    <StatusBadge status={l.status} />
                                                 </td>
                                             </tr>
                                         ))

@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
+import PageHeader from "@/components/PageHeader";
 import KpiCard from "@/components/KpiCard";
+import Percentage from "@/components/Percentage";
 import Icon from "@/components/Icon";
 import { StatusBadge, ScoreBadge } from "@/lib/badges";
 import {
@@ -19,8 +21,8 @@ import {
 } from "@/lib/api";
 import {
     ResponsiveContainer,
-    BarChart,
-    Bar,
+    AreaChart,
+    Area,
     XAxis,
     YAxis,
     CartesianGrid,
@@ -36,6 +38,23 @@ function fmt(dateStr: string) {
     }
 }
 
+// Compact "x ago / time" for the recent-calls list — calmer than a full
+// locale string, keeps rows scannable. Falls back to fmt() for old dates.
+function fmtCompact(dateStr: string) {
+    if (!dateStr) return "—";
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const diff = Date.now() - d.getTime();
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return "just now";
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    if (day < 7) return `${day}d ago`;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export default function DashboardPage() {
     const [stats, setStats] = useState<Stats | null>(null);
     const [calls, setCalls] = useState<CallLog[]>([]);
@@ -43,11 +62,13 @@ export default function DashboardPage() {
     const [hotLeads, setHotLeads] = useState<Lead[]>([]);
     const [usage, setUsage] = useState<UsageData | null>(null);
     const [callsLoading, setCallsLoading] = useState(true);
+    const [statsLoading, setStatsLoading] = useState(true);
 
     useEffect(() => {
         getStats()
             .then(setStats)
-            .catch((e) => setError(e.message));
+            .catch((e) => setError(e.message))
+            .finally(() => setStatsLoading(false));
         getCalls()
             .then((r) => setCalls(r.calls.slice(0, 20)))
             .catch(() => {})
@@ -68,90 +89,160 @@ export default function DashboardPage() {
             ? Math.round((stats.answered / stats.total) * 100)
             : null;
 
+    // Honest day-over-day delta for Total Calls — derived ONLY from the real
+    // series (last point vs the previous). No fabricated period comparisons.
+    const trendDelta = useMemo(() => {
+        if (series.length < 2) return null;
+        const last = series[series.length - 1].amt;
+        const prev = series[series.length - 2].amt;
+        if (prev <= 0) return null;
+        const pct = Math.round(((last - prev) / prev) * 100);
+        if (pct === 0) return null; // Percentage renders 0 as "down" — skip flat.
+        return pct;
+    }, [series]);
+
+    const peakDay = useMemo(() => {
+        if (series.length === 0) return null;
+        return series.reduce((a, b) => (b.amt > a.amt ? b : a));
+    }, [series]);
+
     return (
         <Layout title="Dashboard">
+            <PageHeader
+                eyebrow="Overview"
+                title="Dashboard"
+                subtitle="Your live calling operation at a glance — volume, answer rate, hot leads and usage against your plan."
+            />
             {error && (
-                <div className="mb-6 flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2">
+                <div className="mb-3 flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2 rise-in">
                     <Icon name="info" className="size-4 fill-primary-03 shrink-0" />
                     {error}
                 </div>
             )}
 
-            {/* Hero KPI row */}
-            <div className="mb-3">
-                <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                    <KpiCard
-                        label="Total Calls"
-                        value={stats?.total ?? "—"}
-                        icon="chat"
-                        tone="info"
-                        spark={sparkData}
-                        sub={
-                            series.length > 0
-                                ? `${series.length} day window`
-                                : undefined
-                        }
-                        style={{ animationDelay: "0ms" }}
-                    />
-                    <KpiCard
-                        label="Answered"
-                        value={stats?.answered ?? "—"}
-                        icon="check-circle"
-                        tone="success"
-                        sub={
-                            answerRate != null ? (
-                                <span className="text-primary-02">
-                                    {answerRate}% answer rate
-                                </span>
-                            ) : undefined
-                        }
-                        meter={
-                            answerRate != null ? answerRate / 100 : null
-                        }
-                        style={{ animationDelay: "60ms" }}
-                    />
-                    <KpiCard
-                        label="In Progress"
-                        value={stats?.in_progress ?? "—"}
-                        icon="clock"
-                        tone="warning"
-                        sub={
-                            usage
-                                ? `${usage.active_now} active now`
-                                : undefined
-                        }
-                        style={{ animationDelay: "120ms" }}
-                    />
-                    <KpiCard
-                        label="Campaigns"
-                        value={stats?.campaigns ?? "—"}
-                        icon="dashboard"
-                        tone="neutral"
-                        sub={
-                            usage
-                                ? `${usage.month.calls} calls this month`
-                                : undefined
-                        }
-                        style={{ animationDelay: "180ms" }}
-                    />
-                </div>
-            </div>
+            {/* ── HERO: dominant call-volume metric + integrated trend chart ── */}
+            <div className="kpi rise-in mb-3 !p-0 overflow-hidden">
+                <div className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.6fr)] max-lg:grid-cols-1">
+                    {/* Left rail — the headline number */}
+                    <div className="relative flex flex-col justify-between gap-6 p-6 max-lg:p-5 max-lg:pb-0">
+                        <div className="flex items-center gap-2 text-overline text-t-tertiary">
+                            <span className="kpi-glyph fill-primary-02">
+                                <Icon name="chart" className="fill-inherit" />
+                            </span>
+                            Total Calls
+                        </div>
 
-            {/* Activity chart */}
-            {series.length > 0 && (
-                <Card title="Call Activity" className="mb-3">
-                    <div className="px-4 pb-4">
-                        <div className="h-64">
+                        <div>
+                            <div className="flex items-end gap-3 flex-wrap">
+                                <div className="text-h1 text-t-primary tracking-tight tabular-nums max-lg:text-h2">
+                                    {statsLoading ? (
+                                        <span className="skeleton inline-block h-12 w-28 align-bottom" />
+                                    ) : (
+                                        (stats?.total ?? "—")
+                                    )}
+                                </div>
+                                {trendDelta != null && (
+                                    <Percentage
+                                        value={trendDelta}
+                                        className="mb-2"
+                                    />
+                                )}
+                            </div>
+                            <div className="mt-2 text-body-2 text-t-secondary">
+                                {series.length > 0 ? (
+                                    <>
+                                        Across the last{" "}
+                                        <span className="text-t-primary font-medium">
+                                            {series.length} days
+                                        </span>
+                                        {trendDelta != null && (
+                                            <>
+                                                {" · "}
+                                                <span
+                                                    className={
+                                                        trendDelta > 0
+                                                            ? "text-primary-02"
+                                                            : "text-primary-03"
+                                                    }
+                                                >
+                                                    {trendDelta > 0 ? "up" : "down"}{" "}
+                                                    vs prior day
+                                                </span>
+                                            </>
+                                        )}
+                                    </>
+                                ) : (
+                                    "Live call volume will appear here."
+                                )}
+                            </div>
+
+                            {/* Mini real-signal chips */}
+                            <div className="flex flex-wrap items-center gap-2 mt-4 max-lg:mb-1">
+                                {answerRate != null && (
+                                    <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-b-surface1 text-caption text-t-secondary dark:bg-shade-04/50">
+                                        <span className="size-1.5 rounded-full bg-primary-02" />
+                                        {answerRate}% answered
+                                    </span>
+                                )}
+                                {peakDay && peakDay.amt > 0 && (
+                                    <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-b-surface1 text-caption text-t-secondary dark:bg-shade-04/50">
+                                        Peak {peakDay.amt} · {peakDay.name}
+                                    </span>
+                                )}
+                                {usage && (
+                                    <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-b-surface1 text-caption text-t-secondary dark:bg-shade-04/50">
+                                        {usage.active_now} active now
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Right — full-bleed gradient area chart (real series) */}
+                    <div className="relative min-h-56 p-2 pt-4 max-lg:min-h-44 border-l border-s-subtle max-lg:border-l-0 max-lg:border-t">
+                        {statsLoading ? (
+                            <div className="flex h-full items-end gap-2 px-4 pb-6">
+                                {[...Array(9)].map((_, i) => (
+                                    <div
+                                        key={i}
+                                        className="skeleton flex-1 rounded-md"
+                                        style={{
+                                            height: `${30 + ((i * 37) % 60)}%`,
+                                        }}
+                                    />
+                                ))}
+                            </div>
+                        ) : series.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart
+                                <AreaChart
                                     data={series}
                                     margin={{
                                         top: 8,
-                                        right: 8,
+                                        right: 12,
                                         left: 0,
                                         bottom: 0,
                                     }}
                                 >
+                                    <defs>
+                                        <linearGradient
+                                            id="heroArea"
+                                            x1="0"
+                                            y1="0"
+                                            x2="0"
+                                            y2="1"
+                                        >
+                                            <stop
+                                                offset="5%"
+                                                stopColor="var(--primary-02)"
+                                                stopOpacity={0.22}
+                                            />
+                                            <stop
+                                                offset="95%"
+                                                stopColor="var(--primary-02)"
+                                                stopOpacity={0}
+                                            />
+                                        </linearGradient>
+                                    </defs>
                                     <XAxis
                                         dataKey="name"
                                         axisLine={false}
@@ -160,6 +251,9 @@ export default function DashboardPage() {
                                             fontSize: "12px",
                                             fill: "var(--text-tertiary)",
                                         }}
+                                        height={28}
+                                        dy={8}
+                                        minTickGap={16}
                                     />
                                     <YAxis
                                         axisLine={false}
@@ -169,6 +263,7 @@ export default function DashboardPage() {
                                             fill: "var(--text-tertiary)",
                                         }}
                                         width={32}
+                                        allowDecimals={false}
                                     />
                                     <CartesianGrid
                                         strokeDasharray="5 7"
@@ -177,7 +272,7 @@ export default function DashboardPage() {
                                     />
                                     <Tooltip
                                         cursor={{
-                                            fill: "var(--backgrounds-surface3)",
+                                            stroke: "var(--stroke-stroke2)",
                                         }}
                                         contentStyle={{
                                             background:
@@ -185,20 +280,81 @@ export default function DashboardPage() {
                                             border: "1px solid var(--stroke-stroke2)",
                                             borderRadius: "12px",
                                             boxShadow: "var(--box-shadow-dropdown)",
+                                            fontSize: "12px",
+                                        }}
+                                        labelStyle={{
+                                            color: "var(--text-tertiary)",
+                                            marginBottom: "2px",
                                         }}
                                     />
-                                    <Bar
+                                    <Area
+                                        type="monotone"
                                         dataKey="amt"
-                                        fill="var(--primary-02)"
-                                        radius={[6, 6, 0, 0]}
-                                        maxBarSize={48}
+                                        name="Calls"
+                                        stroke="var(--primary-02)"
+                                        strokeWidth={2.5}
+                                        fillOpacity={1}
+                                        fill="url(#heroArea)"
+                                        activeDot={{
+                                            r: 5,
+                                            fill: "var(--backgrounds-surface2)",
+                                            stroke: "var(--primary-02)",
+                                            strokeWidth: 3,
+                                        }}
                                     />
-                                </BarChart>
+                                </AreaChart>
                             </ResponsiveContainer>
-                        </div>
+                        ) : (
+                            <div className="flex h-full items-center justify-center">
+                                <div className="state-sub text-center">
+                                    No activity yet — your call trend renders here
+                                    once a campaign runs.
+                                </div>
+                            </div>
+                        )}
                     </div>
-                </Card>
-            )}
+                </div>
+            </div>
+
+            {/* Secondary KPI row — real sub-signals, no fabricated deltas */}
+            <div className="grid grid-cols-3 gap-3 mb-3 max-md:grid-cols-1">
+                <KpiCard
+                    label="Answered"
+                    value={stats?.answered ?? "—"}
+                    icon="check-circle"
+                    tone="success"
+                    spark={sparkData}
+                    sub={
+                        answerRate != null ? (
+                            <span className="text-primary-02">
+                                {answerRate}% answer rate
+                            </span>
+                        ) : undefined
+                    }
+                    meter={answerRate != null ? answerRate / 100 : null}
+                    style={{ animationDelay: "60ms" }}
+                />
+                <KpiCard
+                    label="In Progress"
+                    value={stats?.in_progress ?? "—"}
+                    icon="clock"
+                    tone="warning"
+                    sub={usage ? `${usage.active_now} active now` : undefined}
+                    style={{ animationDelay: "120ms" }}
+                />
+                <KpiCard
+                    label="Campaigns"
+                    value={stats?.campaigns ?? "—"}
+                    icon="dashboard"
+                    tone="info"
+                    sub={
+                        usage
+                            ? `${usage.month.calls} calls this month`
+                            : undefined
+                    }
+                    style={{ animationDelay: "180ms" }}
+                />
+            </div>
 
             {/* Hot Leads + Usage */}
             <div className="grid grid-cols-2 gap-3 mb-3 max-lg:grid-cols-1">
@@ -206,10 +362,7 @@ export default function DashboardPage() {
                 <Card
                     title="Hot Leads"
                     headContent={
-                        <Link
-                            href="/leads?hot=1"
-                            className="action mr-1"
-                        >
+                        <Link href="/leads?hot=1" className="action mr-1">
                             View all
                             <Icon name="arrow-up-right" />
                         </Link>
@@ -229,13 +382,17 @@ export default function DashboardPage() {
                             </div>
                         ) : (
                             <div className="flex flex-col">
-                                {hotLeads.map((l) => (
-                                    <div
+                                {hotLeads.map((l, i) => (
+                                    <Link
                                         key={l.id}
-                                        className="flex items-center justify-between gap-3 px-2 py-3 rounded-2xl transition-colors hover:bg-b-surface1/60 dark:hover:bg-shade-04/30"
+                                        href={`/leads?hot=1`}
+                                        className="group flex items-center justify-between gap-3 px-2 py-3 rounded-2xl transition-colors hover:bg-b-surface1/60 dark:hover:bg-shade-04/30 rise-in"
+                                        style={{
+                                            animationDelay: `${i * 50}ms`,
+                                        }}
                                     >
                                         <div className="flex items-center gap-3 min-w-0">
-                                            <span className="flex items-center justify-center size-9 shrink-0 rounded-full bg-b-surface1 text-sub-title-2 text-t-secondary dark:bg-shade-04/60">
+                                            <span className="flex items-center justify-center size-9 shrink-0 rounded-full bg-b-surface1 text-sub-title-2 text-t-secondary transition-colors group-hover:text-t-primary dark:bg-shade-04/60">
                                                 {(l.name || "?")
                                                     .charAt(0)
                                                     .toUpperCase()}
@@ -260,7 +417,7 @@ export default function DashboardPage() {
                                             )}
                                             <ScoreBadge score={l.score} />
                                         </div>
-                                    </div>
+                                    </Link>
                                 ))}
                             </div>
                         )}
@@ -424,8 +581,10 @@ export default function DashboardPage() {
                                         <td>
                                             <StatusBadge status={c.status} />
                                         </td>
-                                        <td className="text-t-secondary">
-                                            {fmt(c.started_at)}
+                                        <td className="text-t-secondary whitespace-nowrap">
+                                            <span title={fmt(c.started_at)}>
+                                                {fmtCompact(c.started_at)}
+                                            </span>
                                         </td>
                                         <td className="text-t-secondary td-num text-right">
                                             {c.duration_s != null

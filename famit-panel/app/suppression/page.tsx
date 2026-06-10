@@ -4,20 +4,20 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
+
 import { getSuppression, addSuppression, deleteSuppression, type SuppressionEntry } from "@/lib/api";
 
-function reasonBadge(reason: string) {
-    const map: Record<string, string> = {
-        upload: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
-        opt_out_call: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-        manual: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-        api: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-    };
-    return (
-        <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[reason] || "bg-b-surface3 text-t-secondary"}`}>
-            {reason.replace(/_/g, " ")}
-        </span>
-    );
+// DND reasons -> ONE badge language (token-based, no raw colors).
+function ReasonBadge({ reason }: { reason: string }) {
+    const variant =
+        reason === "opt_out_call" ? "danger"
+        : reason === "manual" ? "warning"
+        : reason === "api" ? "info"
+        : "neutral";
+    return <Badge variant={variant}>{reason.replace(/_/g, " ")}</Badge>;
 }
 
 function fmtDate(d: string) {
@@ -80,9 +80,17 @@ export default function SuppressionPage() {
 
     return (
         <Layout title="Do-Not-Call">
+            <PageHeader
+                eyebrow="Activity"
+                title="Do-Not-Call"
+                subtitle="Numbers on this suppression list are never dialed. Add them by paste or CSV; opt-outs land here automatically."
+            />
             {toast && (
-                <div className={`mb-4 p-3 rounded-2xl text-body-2 ${toast.ok ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400" : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"}`}>
-                    {toast.msg}
+                <div className={`toast ${toast.ok ? "toast-success" : "toast-error"}`}>
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {toast.msg}
+                    </span>
                 </div>
             )}
 
@@ -91,54 +99,55 @@ export default function SuppressionPage() {
                 <div className="flex-1 min-w-0">
                     <Card title={`DND / Suppression List (${total})`}>
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>Phone</th>
                                         <th>Reason</th>
                                         <th>Source</th>
                                         <th>Added</th>
-                                        <th></th>
+                                        <th className="text-right">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr>
-                                            <td colSpan={5} className="py-8 text-center text-t-secondary">
-                                                <span className="inline-flex items-center gap-2">
-                                                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                                    </svg>
-                                                    Loading…
-                                                </span>
-                                            </td>
-                                        </tr>
+                                        [...Array(4)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(5)].map((__, j) => (
+                                                    <td key={j}><div className="skeleton h-4 w-20" /></td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : entries.length === 0 ? (
                                         <tr>
-                                            <td colSpan={5} className="py-12 text-center text-t-secondary">
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="opacity-30">
-                                                        <circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/>
-                                                    </svg>
-                                                    <span className="text-t-tertiary">No suppressed numbers yet</span>
+                                            <td colSpan={5}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph">
+                                                        <Icon name="block" className="fill-inherit" />
+                                                    </span>
+                                                    <div className="state-title">No suppressed numbers</div>
+                                                    <div className="state-sub">
+                                                        Add numbers on the right, or they&apos;ll appear here automatically when a lead opts out.
+                                                    </div>
                                                 </div>
                                             </td>
                                         </tr>
                                     ) : (
                                         entries.map((e) => (
-                                            <tr key={e.phone} className="border-t border-s-subtle">
-                                                <td className="font-medium">{e.phone}</td>
-                                                <td>{reasonBadge(e.reason)}</td>
+                                            <tr key={e.phone}>
+                                                <td className="font-medium text-t-primary td-num">{e.phone}</td>
+                                                <td><ReasonBadge reason={e.reason} /></td>
                                                 <td className="text-t-secondary text-caption">{e.source || "—"}</td>
-                                                <td className="text-t-secondary">{fmtDate(e.added_at)}</td>
+                                                <td className="text-t-secondary whitespace-nowrap">{fmtDate(e.added_at)}</td>
                                                 <td>
-                                                    <button
-                                                        onClick={() => handleDelete(e.phone)}
-                                                        className="text-caption text-red-500 hover:text-red-700 transition-colors"
-                                                    >
-                                                        Remove
-                                                    </button>
+                                                    <div className="flex justify-end">
+                                                        <button
+                                                            onClick={() => handleDelete(e.phone)}
+                                                            className="action hover:!text-primary-03 hover:!border-primary-03/30"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         ))
@@ -158,7 +167,7 @@ export default function SuppressionPage() {
                                     Paste numbers (Name, Phone or bare phone per line)
                                 </label>
                                 <textarea
-                                    className="w-full h-32 px-4 py-3 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-colors resize-none hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent"
+                                    className="input-base w-full h-32 px-4 py-3 rounded-2xl text-body-2 resize-none"
                                     placeholder={"+919876543210\nJohn Doe, +918765432109"}
                                     value={text}
                                     onChange={(e) => setText(e.target.value)}

@@ -1,31 +1,60 @@
-# PREMIUM-UI WAVE — STATE (feat/premium-ui)
+# PREMIUM-UI WAVE 2 — "SIGNAL" (founder said "still looks cheap")
 
-Founder #2 priority: make the panel WORLD-BEST (Linear/Vercel/Ramp/Stripe), not generic.
-NON-BREAKING: reuse existing components + endpoints. No API/route/logic changes.
-Branch: feat/premium-ui (off main). Baseline build GREEN (exit 0) before any change.
+Goal: WORLD-BEST premium (Linear/Vercel/Stripe/Ramp), DISTINCTIVE, cohesive ACROSS
+ALL pages. Restyle-only: NO API/route/logic/prop changes. Tokens only (b-/t-/s-),
+no raw hex / bg-white / bg-green-100. Dark-mode correct. Build exit 0. Ship LIVE if
+cohesive + build solid (advisor: don't stage-by-default; 3rd stage fails the goal).
 
-## HARD CONSTRAINTS (from advisor + lib/api.ts review)
-- NO prior-period data anywhere (Stats/Usage/Billing/BillingOverview have no last-period field).
-  => DO NOT fabricate "+12%" deltas. Use ONLY real signals: series sparklines, cap-ratios,
-     answer-rate = answered/total, outcome breakdowns. Delta only when a real prior exists.
-- Keep shared component PROP SIGNATURES unchanged (Card/Button/Table/Select). Restyle internals/CSS only.
-- Build-green != looks-premium (can't see pixels). This is the LIVE revenue panel =>
-  bias to STAGE-FOR-REVIEW on the branch unless confident. Do NOT blind-deploy a half-baked redesign.
-- Badge consolidation = the #1 cheap->premium lever (5 hand-rolled bg-green-100 fns today).
+## ROOT CAUSE (verified)
+Only 3 pages (dashboard/calls/leads) deeply restyled. The SHELL (Sidebar/Header/
+Logo/Layout) + LOGIN + ~16 pages still wear template chrome. Many pages use RAW
+Tailwind colors (bg-green-100, text-red-600, bg-red-50) off the token system +
+inline SVG spinners + hand-rolled modals. That mix = "cheap". Fix = elevate the
+shell + login + a SIGNATURE, then make every page speak ONE language.
 
-## TASKS
-- [DONE] Ground: read pages, components, tokens, lib/api.ts, kits. Baseline build exit 0.
-- [DONE] U1 design system: globals.css premium utilities + new Badge/KpiCard/Sparkline + lib/badges. COMMIT.
-- [DONE] U2 Dashboard (app/page.tsx). COMMIT.
-- [DONE] U3 Call Logs (app/calls/page.tsx). COMMIT.
-- [DONE] U4 Leads (app/leads/page.tsx). COMMIT.
-- [DONE] U5 Billing overview (app/billing/overview/page.tsx) + adopt Badge in _shared. COMMIT.
-- [DONE] VERIFY full build exit 0. (exit 0, all 42 routes compiled, zero TS/lint errors)
-- [DONE] Decide deploy vs stage; staged-for-review (visual review needed on live revenue panel).
-- [DONE] Write build_log/wave-build-premium-ui.md + update HANDOFF + brain.
+## DESIGN DIRECTION — "Signal" (a precise voice-ops console)
+- SIGNATURE MOTIF: a brand-blue (primary-01 #2A85FF) signal/waveform. Famit places
+  voice calls -> a tiny 3-bar equalizer glyph beside the wordmark + a thin blue
+  signal-line accent under the active sidebar item + a left accent bar on page
+  headers. Calm, not flashy.
+- WORDMARK: real "Famit" wordmark (Inter Display semibold, tight tracking) + the
+  signal glyph, replacing the generic PNG logo / "F" gradient box. Token colors.
+- UNIFIED PAGE HEADER: new components/PageHeader (eyebrow + title + subtitle +
+  action slot) used on every page so all pages share one masthead rhythm.
+- SHELL: sidebar nav group label/section, refined active state (signal accent),
+  cleaned header (REMOVE dead "Create -> /products/new", template Search/Msgs that
+  don't work; keep theme + user menu + a real page title).
 
-## ROLLBACK POINT
-- Pre-wave: branch main @ commit 670bf09-era tree. Live box /opt/famit-panel UNCHANGED (staged, not deployed).
-- All work isolated on feat/premium-ui; main untouched.
+## HARD CONSTRAINTS
+- Never touch a shared component's PROP signature. Restyle via className/markup/CSS.
+- No lib/api.ts, form-handler, fetch, or route changes.
+- Tokens only. After edits: grep changed files for bg-white|text-black|bg-(green|red|
+  yellow|blue)-[0-9]|text-(green|red)-[0-9] -> must be ZERO (dark-mode safety).
+- Verify past build-green: next build exit 0 + next start + curl routes 200.
 
-## STATUS: COMPLETE — staged for founder visual review (NOT deployed to live).
+## UNITS (verify each; crash-safe)
+- [DONE] U0 Orient + plan + advisor + frontend-design. Baseline build EXIT 0 (confirmed).
+- [DONE] U1 Signature + shell: globals.css ("signal" eq glyph, page-head, toast, nav-section,
+  nav-active-bar, brand-glow), components/PageHeader, Logo wordmark (bg-shade-01 always-dark),
+  Sidebar group labels, Header (removed dead Create->/products/new + fake Search/Notif/Msgs,
+  added "Run a Campaign" + ThemeButton + signal title), NavLink signal active bar. BUILD EXIT 0.
+- [DONE] U2 Login: branded split (always-dark bg-shade-01 brand panel + signal motif + glow +
+  feature chips), token-correct, input-base fields. BUILD EXIT 0. (white-on-dark utils OK there.)
+- [DONE] U3 Converted 8 off-token pages to ONE language + PageHeader: campaigns(ref), run,
+  callbacks, suppression, webhooks, whatsapp, vendors, analytics(funnel recolored brand-blue,
+  not purple), settings. All raw bg-*-100/text-*-600 -> Badge/pill-*/toast-*/state-block/data-table.
+  Each grep-clean. BUILD EXIT 0 (incremental checkpoints all passed).
+- [DONE] U4 Billing: new BillingHeader (PageHeader + tab strip) in _shared.tsx, added to
+  overview/vendors/explorer/audit/plan. Added PageHeader to dashboard/calls/leads too. BUILD running.
+- [DONE] U5 FULL VERIFY: un-sandboxed `next build` EXIT 0 (46 routes); tsc no new "Cannot find
+  name"; NO dangling statusBadge/reasonBadge refs; raw-color clean (only login white-on-dark);
+  local next start + curl all 19 routes 200; signature renders; zero runtime errors.
+- [DONE] U6 DEPLOYED LIVE per FORTRESS recipe. Backup /opt/famit-panel.bak.1781028098.
+  Box 127.0.0.1:3001 + public https://panel.famit.in/login = 200 w/ new look; authed /api = 200.
+- [DONE] U7 Appended build_log/wave-build-premium-ui.md (WAVE 2 section) + brain/mistakes+patterns.
+
+## ✅ STATUS: LIVE on https://panel.famit.in. Rollback = restore /opt/famit-panel.bak.1781028098 + restart.
+
+## ROLLBACK
+- Pre-wave tree = feat/premium-ui working copy (incl uncommitted base-uplift). NO git by me.
+- Live box /opt/famit-panel: BACK UP before deploy. Rollback = restore backup + systemctl restart famit-panel.

@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
 import {
     getBilling,
     getBillingLedger,
@@ -14,6 +16,7 @@ import {
     type Tenant,
 } from "@/lib/api";
 import { useMe, isAdmin } from "@/lib/auth";
+import { HeroCard, outcomeVariant, BillingHeader } from "../_shared";
 
 type Toast = { msg: string; type: "success" | "error" };
 
@@ -67,89 +70,164 @@ export default function BillingPlanPage() {
 
     return (
         <Layout title="Billing · Plan & Ledger">
+            <BillingHeader
+                title="Plan & Ledger"
+                subtitle="Your plan, rates and balance, plus a line-by-line ledger of every charged call."
+            />
             {toast && (
                 <div
-                    className={`mb-4 p-3 rounded-2xl text-body-2 flex items-center justify-between gap-3 ${
+                    className={`mb-3 p-3.5 rounded-2xl text-body-2 flex items-center justify-between gap-3 ring-1 ring-inset ${
                         toast.type === "success"
-                            ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                            : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
+                            ? "bg-[#00A656]/8 text-[#00A656] ring-[#00A656]/20"
+                            : "bg-primary-03/8 text-primary-03 ring-primary-03/20"
                     }`}
                 >
-                    <span>{toast.msg}</span>
+                    <span className="flex items-center gap-2">
+                        <Icon
+                            name={toast.type === "success" ? "check-circle" : "info"}
+                            className="size-4 fill-current shrink-0"
+                        />
+                        {toast.msg}
+                    </span>
                     <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
                 </div>
             )}
 
             {loadError && (
-                <div className="mb-4 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">
+                <div className="mb-3 p-3.5 rounded-2xl bg-primary-03/8 text-primary-03 text-body-2 ring-1 ring-inset ring-primary-03/20 flex items-center gap-2">
+                    <Icon name="info" className="size-4 fill-current shrink-0" />
                     {loadError}
                 </div>
             )}
 
             {lowBalance && (
-                <div className="mb-4 p-3 rounded-2xl bg-amber-50 text-amber-700 text-body-2 dark:bg-amber-900/20 dark:text-amber-400">
-                    Insufficient balance — top up to continue placing calls. (Calls are blocked while your prepaid balance is at or below zero.)
+                <div className="mb-3 p-3.5 rounded-2xl bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E] text-body-2 ring-1 ring-inset ring-[#EF9D0E]/20 flex items-center gap-2">
+                    <Icon name="info" className="size-4 fill-current shrink-0" />
+                    Insufficient balance — top up to continue placing calls. Calls are blocked while your prepaid balance is at or below zero.
                 </div>
             )}
 
-            {/* Summary cards */}
-            <div className="grid grid-cols-4 gap-4 mb-6 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                <div className="card p-4 flex flex-col gap-1">
-                    <div className="text-caption text-t-tertiary">Plan</div>
-                    <div className="text-h5 text-t-primary capitalize">{loading ? "…" : billing?.plan ?? "—"}</div>
-                </div>
-                <div className="card p-4 flex flex-col gap-1">
-                    <div className="text-caption text-t-tertiary">Balance</div>
-                    <div className={`text-h5 ${lowBalance ? "text-red-500" : "text-t-primary"}`}>
-                        {loading ? "…" : money(billing?.balance, currency)}
-                    </div>
-                </div>
-                <div className="card p-4 flex flex-col gap-1">
-                    <div className="text-caption text-t-tertiary">MTD Minutes / Calls</div>
-                    <div className="text-h5 text-t-primary">
-                        {loading ? "…" : `${billing?.month_to_date?.minutes ?? 0} / ${billing?.month_to_date?.calls ?? 0}`}
-                    </div>
-                </div>
-                <div className="card p-4 flex flex-col gap-1">
-                    <div className="text-caption text-t-tertiary">MTD Cost</div>
-                    <div className="text-h5 text-t-primary">
-                        {loading ? "…" : money(billing?.month_to_date?.cost, currency)}
-                    </div>
-                </div>
+            {/* Summary heroes */}
+            <div className="grid grid-cols-4 gap-3 mb-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+                <HeroCard
+                    label="Plan"
+                    glyph="cube"
+                    glyphClass="fill-primary-01"
+                    accent="var(--primary-01)"
+                    loading={loading}
+                    value={
+                        <span className="capitalize flex items-center gap-2">
+                            {billing?.plan ?? "—"}
+                            {billing?.plan && (
+                                <Badge variant={billing.plan === "prepaid" ? "info" : "neutral"}>
+                                    {billing.plan === "prepaid" ? "Prepaid" : "Postpaid"}
+                                </Badge>
+                            )}
+                        </span>
+                    }
+                    foot={`${money(billing?.rate_per_min, currency)}/min · ${money(billing?.rate_per_call, currency)}/call`}
+                />
+                <HeroCard
+                    label="Balance"
+                    glyph="wallet"
+                    glyphClass={lowBalance ? "fill-primary-03" : "fill-primary-02"}
+                    accent={lowBalance ? "var(--primary-03)" : "var(--primary-02)"}
+                    delay={70}
+                    loading={loading}
+                    value={
+                        <span className={lowBalance ? "text-primary-03" : undefined}>
+                            {money(billing?.balance, currency)}
+                        </span>
+                    }
+                    foot={billing?.plan === "prepaid" ? "Prepaid balance" : "Postpaid — billed in arrears"}
+                />
+                <HeroCard
+                    label="MTD Minutes / Calls"
+                    glyph="clock"
+                    glyphClass="fill-primary-04"
+                    accent="var(--primary-04)"
+                    delay={140}
+                    loading={loading}
+                    value={`${billing?.month_to_date?.minutes ?? 0} / ${billing?.month_to_date?.calls ?? 0}`}
+                    foot={`${billing?.included_minutes ?? 0} included min`}
+                />
+                <HeroCard
+                    label="MTD Cost"
+                    glyph="income"
+                    glyphClass="fill-primary-02"
+                    accent="var(--primary-02)"
+                    delay={210}
+                    loading={loading}
+                    value={money(billing?.month_to_date?.cost, currency)}
+                    foot="Current billing period"
+                />
             </div>
 
-            <div className="flex gap-6 max-lg:flex-col">
+            <div className="flex gap-3 max-lg:flex-col">
                 {/* Ledger */}
                 <div className="flex-1 min-w-0">
-                    <Card title="Recent Charges">
-                        <div className="px-5 pb-2 text-caption text-t-tertiary">
-                            Rates: {money(billing?.rate_per_min, currency)}/min + {money(billing?.rate_per_call, currency)}/call ·
-                            {" "}Included minutes: {billing?.included_minutes ?? 0}
-                        </div>
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                    <Card
+                        title="Recent Charges"
+                        headContent={
+                            <span className="ml-3 text-caption text-t-tertiary">
+                                {money(billing?.rate_per_min, currency)}/min + {money(billing?.rate_per_call, currency)}/call
+                            </span>
+                        }
+                    >
+                        <div className="overflow-x-auto px-3 pb-2">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>When</th>
                                         <th>Phone</th>
                                         <th>Outcome</th>
-                                        <th>Duration</th>
-                                        <th>Cost</th>
+                                        <th className="text-right">Duration</th>
+                                        <th className="text-right">Cost</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr><td colSpan={5} className="py-8 text-center text-t-secondary">Loading…</td></tr>
+                                        [...Array(6)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(5)].map((_, j) => (
+                                                    <td key={j}><div className="skeleton h-4 w-20" /></td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : ledger.length === 0 ? (
-                                        <tr><td colSpan={5} className="py-12 text-center text-t-tertiary">No charges yet</td></tr>
+                                        <tr>
+                                            <td colSpan={5}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph">
+                                                        <Icon name="income" className="fill-inherit" />
+                                                    </span>
+                                                    <div className="state-title">No charges yet</div>
+                                                    <div className="state-sub">
+                                                        Per-call charges appear here as calls are metered.
+                                                    </div>
+                                                </div>
+                                            </td>
+                                        </tr>
                                     ) : (
                                         ledger.map((e) => (
-                                            <tr key={e.id} className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors">
-                                                <td className="text-t-secondary">{fmt(e.at)}</td>
-                                                <td className="text-t-secondary">{e.phone}</td>
-                                                <td className="text-t-secondary capitalize">{(e.outcome || "").replace(/_/g, " ") || "—"}</td>
-                                                <td className="text-t-secondary">{e.duration_s != null ? `${e.duration_s}s` : "—"}</td>
-                                                <td className="font-medium">{money(e.cost, e.currency || currency)}</td>
+                                            <tr key={e.id}>
+                                                <td className="text-t-secondary whitespace-nowrap">{fmt(e.at)}</td>
+                                                <td className="text-t-secondary tabular-nums">{e.phone}</td>
+                                                <td>
+                                                    {e.outcome ? (
+                                                        <Badge variant={outcomeVariant(e.outcome)}>
+                                                            {e.outcome.replace(/_/g, " ")}
+                                                        </Badge>
+                                                    ) : (
+                                                        <span className="text-t-tertiary">—</span>
+                                                    )}
+                                                </td>
+                                                <td className="td-num text-right text-t-secondary">
+                                                    {e.duration_s != null ? `${e.duration_s}s` : "—"}
+                                                </td>
+                                                <td className="td-num text-right font-medium text-t-primary">
+                                                    {money(e.cost, e.currency || currency)}
+                                                </td>
                                             </tr>
                                         ))
                                     )}
@@ -214,13 +292,15 @@ function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void
         }
     }
 
-    const inputCls = "w-full h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight";
+    const labelCls = "block text-overline text-t-tertiary mb-1.5";
+    const inputCls =
+        "w-full h-10 px-3 input-base rounded-2xl text-body-2";
 
     return (
         <Card title="Admin · Set Plan & Rates">
             <form onSubmit={handleSave} className="px-5 pb-5 space-y-4">
                 <div>
-                    <label className="block text-caption text-t-secondary mb-2">Tenant</label>
+                    <label className={labelCls}>Tenant</label>
                     <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className={inputCls}>
                         {tenants.map((t) => (
                             <option key={t.tenant_id} value={t.tenant_id}>{t.name} ({t.tenant_id})</option>
@@ -228,7 +308,7 @@ function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void
                     </select>
                 </div>
                 <div>
-                    <label className="block text-caption text-t-secondary mb-2">Plan</label>
+                    <label className={labelCls}>Plan</label>
                     <select value={plan} onChange={(e) => setPlan(e.target.value as "prepaid" | "postpaid")} className={inputCls}>
                         <option value="postpaid">postpaid</option>
                         <option value="prepaid">prepaid</option>
@@ -236,31 +316,31 @@ function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Rate / min</label>
+                        <label className={labelCls}>Rate / min</label>
                         <input type="number" step="0.01" value={ratePerMin} onChange={(e) => setRatePerMin(e.target.value)} placeholder="0.00" className={inputCls} />
                     </div>
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Rate / call</label>
+                        <label className={labelCls}>Rate / call</label>
                         <input type="number" step="0.01" value={ratePerCall} onChange={(e) => setRatePerCall(e.target.value)} placeholder="0.00" className={inputCls} />
                     </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Currency</label>
+                        <label className={labelCls}>Currency</label>
                         <input type="text" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="INR" className={inputCls} />
                     </div>
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Included mins</label>
+                        <label className={labelCls}>Included mins</label>
                         <input type="number" value={includedMinutes} onChange={(e) => setIncludedMinutes(e.target.value)} placeholder="0" className={inputCls} />
                     </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Set balance</label>
+                        <label className={labelCls}>Set balance</label>
                         <input type="number" step="0.01" value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="absolute" className={inputCls} />
                     </div>
                     <div>
-                        <label className="block text-caption text-t-secondary mb-2">Top up (+)</label>
+                        <label className={labelCls}>Top up (+)</label>
                         <input type="number" step="0.01" value={topup} onChange={(e) => setTopup(e.target.value)} placeholder="adds" className={inputCls} />
                     </div>
                 </div>

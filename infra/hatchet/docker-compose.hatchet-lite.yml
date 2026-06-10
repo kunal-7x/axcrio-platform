@@ -1,0 +1,63 @@
+# Hatchet self-hosted (V1) — hatchet-lite single-container variant (spec §0.2).
+# Bundles API + dashboard (8888) + engine gRPC (7077) in one container; serves REST correctly
+# (the multi-container :latest stack left REST/dashboard-API on a 502 — see build log §7).
+# Postgres-as-broker (no RabbitMQ). All ports bound to 127.0.0.1 only — never public.
+# gRPC 7077 stays localhost for now; the FUTURE caller.py cutover opens it to the VPC private IP
+# and changes SERVER_GRPC_BROADCAST_ADDRESS to 10.122.0.3:7077 (re-issue token after that change).
+name: hatchet-lite
+services:
+  postgres:
+    image: postgres:15.6
+    command: postgres -c 'max_connections=200'
+    restart: always
+    environment:
+      POSTGRES_USER: hatchet
+      POSTGRES_PASSWORD: ${HATCHET_PG_PASSWORD:-hatchet}
+      POSTGRES_DB: hatchet
+    volumes:
+      - hatchet_lite_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d hatchet -U hatchet"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+
+  hatchet-lite:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:latest
+    restart: always
+    ports:
+      - "127.0.0.1:8888:8888"   # API + dashboard — localhost only, reach via SSH tunnel
+      - "127.0.0.1:7077:7077"   # gRPC — localhost only (future: open to VPC for caller.py)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://hatchet:${HATCHET_PG_PASSWORD:-hatchet}@postgres:5432/hatchet?sslmode=disable"
+      SERVER_MSGQUEUE_KIND: "postgres"
+      SERVER_AUTH_COOKIE_DOMAIN: "localhost"
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: "127.0.0.1:7077"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_URL: "http://localhost:8888"
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "t"
+      SERVER_DEFAULT_ENGINE_VERSION: "V1"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: "localhost:7077"
+    volumes:
+      - hatchet_lite_config:/config
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+
+volumes:
+  hatchet_lite_postgres_data:
+  hatchet_lite_config:

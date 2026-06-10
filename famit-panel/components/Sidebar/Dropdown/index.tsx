@@ -5,22 +5,34 @@ import AnimateHeight from "react-animate-height";
 import Icon from "@/components/Icon";
 import NavLink from "@/components/NavLink";
 
+type DropdownChild = {
+    title: string;
+    href?: string;
+    counter?: number;
+    comingSoon?: boolean;
+    roles?: string;
+};
+
 type DropdownProps = {
     value: {
         title: string;
         icon: string;
         href?: string;
-        list?: {
-            title: string;
-            href: string;
-            counter?: number;
-        }[];
+        list?: DropdownChild[];
     };
 };
 
 const Dropdown = ({ value }: DropdownProps) => {
     const pathname = usePathname();
-    const isActive = value.list?.some((item) => pathname.includes(item.href));
+    // Active if the current path equals a child href or is nested under it
+    // (segment-boundary match, so "/billing/vendors" does NOT activate the
+    // "/vendors" child — avoids two groups co-expanding on prefix collisions).
+    const isActive = value.list?.some(
+        (item) =>
+            item.href &&
+            (pathname === item.href ||
+                pathname.startsWith(item.href + "/"))
+    );
     const isActiveNewProduct =
         pathname === "/products/new" && value.title === "Products";
     const [height, setHeight] = useState<number | "auto">(
@@ -69,10 +81,27 @@ const Dropdown = ({ value }: DropdownProps) => {
                     {value.list?.map((item) => (
                         <div className="relative" key={item.title}>
                             <div className="absolute top-0 -left-[0.8125rem] bottom-[calc(50%-0.75px)] w-[0.8125rem] border-l border-b border-s-stroke2 rounded-bl-[10px]"></div>
-                            <NavLink
-                                value={item}
-                                onClick={() => setHeight("auto")}
-                            />
+                            {item.comingSoon || !item.href ? (
+                                // Future feature — a dimmed, non-clickable row
+                                // with a "Soon" pill. Deliberately NOT a <Link>
+                                // so it can never navigate to an unbuilt route.
+                                <div
+                                    className="flex items-center gap-2 h-11 px-3 text-button text-t-secondary/45 cursor-default select-none"
+                                    aria-disabled="true"
+                                >
+                                    <span className="truncate">{item.title}</span>
+                                    <span className="nav-soon ml-auto">Soon</span>
+                                </div>
+                            ) : (
+                                <NavLink
+                                    value={{
+                                        title: item.title,
+                                        href: item.href,
+                                        counter: item.counter,
+                                    }}
+                                    onClick={() => setHeight("auto")}
+                                />
+                            )}
                         </div>
                     ))}
                 </div>

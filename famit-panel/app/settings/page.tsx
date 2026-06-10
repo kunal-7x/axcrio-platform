@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
 
 export default function SettingsPage() {
     const router = useRouter();
@@ -19,6 +20,11 @@ export default function SettingsPage() {
 
     return (
         <Layout title="Settings">
+            <PageHeader
+                eyebrow="Account"
+                title="Settings"
+                subtitle="Manage your session and review platform details."
+            />
             <div className="max-w-2xl space-y-6">
                 {/* Account section */}
                 <Card title="Account">
@@ -31,7 +37,7 @@ export default function SettingsPage() {
                             {!showConfirm ? (
                                 <Button
                                     isStroke
-                                    className="h-9 px-5 text-red-500 border-red-200 hover:border-red-500 hover:text-red-600"
+                                    className="h-9 px-5 !text-primary-03 !border-primary-03/30 hover:!border-primary-03 hover:!text-primary-03"
                                     onClick={() => setShowConfirm(true)}
                                 >
                                     Sign out
@@ -41,13 +47,13 @@ export default function SettingsPage() {
                                     <span className="text-caption text-t-secondary">Confirm?</span>
                                     <button
                                         onClick={handleLogout}
-                                        className="px-3 py-1.5 rounded-2xl bg-red-500 text-white text-caption hover:bg-red-600 transition-colors"
+                                        className="inline-flex items-center h-8 px-3 rounded-full text-caption font-medium border border-[#FF6A55]/20 bg-[#FF6A55]/10 text-[#FF6A55] transition-colors hover:bg-[#FF6A55]/20"
                                     >
                                         Yes, sign out
                                     </button>
                                     <button
                                         onClick={() => setShowConfirm(false)}
-                                        className="px-3 py-1.5 rounded-2xl bg-b-surface2 text-t-secondary text-caption hover:bg-b-surface3 transition-colors"
+                                        className="inline-flex items-center h-8 px-3 rounded-full text-caption font-medium border border-s-stroke2 bg-b-surface1 text-t-secondary transition-colors hover:text-t-primary dark:bg-shade-04/50"
                                     >
                                         Cancel
                                     </button>

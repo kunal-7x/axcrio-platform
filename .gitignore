@@ -115,3 +115,10 @@ Thumbs.db
 # ============================================================================
 gitleaks-raw.json
 gitleaks-*.json
+
+# secret-bearing files caught by gitleaks 2026-06-10 — NEVER COMMIT
+groq_api.md
+**/groq_api.md
+**/app_id_secret*
+**/*_CONFIG_RESULT.md
+infra/logto/LOGTO_CONFIG_RESULT.md

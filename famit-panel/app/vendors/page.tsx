@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
 import { getTenants, createTenant, type Tenant, type Role } from "@/lib/api";
 
 function fmtDate(d: string) {
@@ -69,15 +72,17 @@ export default function VendorsPage() {
 
     return (
         <Layout title="Vendors">
+            <PageHeader
+                eyebrow="Admin"
+                title="Vendors"
+                subtitle="Create and manage the tenant accounts that share this platform. Each vendor sees only its own campaigns, leads and calls."
+            />
             {toast && (
-                <div
-                    className={`mb-4 p-3 rounded-2xl text-body-2 flex items-center justify-between gap-3 ${
-                        toast.type === "success"
-                            ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                            : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
-                    }`}
-                >
-                    <span>{toast.msg}</span>
+                <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {toast.msg}
+                    </span>
                     <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
                 </div>
             )}
@@ -87,12 +92,10 @@ export default function VendorsPage() {
                 <div className="flex-1 min-w-0">
                     <Card title="All Vendors">
                         {loadError && (
-                            <div className="mx-5 mb-3 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">
-                                {loadError}
-                            </div>
+                            <div className="mx-5 mb-3 toast toast-error"><span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-current" />{loadError}</span></div>
                         )}
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>Name</th>
@@ -103,51 +106,36 @@ export default function VendorsPage() {
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr>
-                                            <td colSpan={4} className="py-8 text-center text-t-secondary">
-                                                <span className="inline-flex items-center gap-2">
-                                                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                                    </svg>
-                                                    Loading vendors…
-                                                </span>
-                                            </td>
-                                        </tr>
+                                        [...Array(4)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(4)].map((__, j) => (
+                                                    <td key={j}><div className="skeleton h-4 w-24" /></td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : tenants.length === 0 ? (
                                         <tr>
-                                            <td colSpan={4} className="py-12 text-center text-t-secondary">
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="opacity-30">
-                                                        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-                                                        <circle cx="9" cy="7" r="4"/>
-                                                        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-                                                    </svg>
-                                                    <span className="text-t-tertiary">No vendors yet — create one on the right</span>
+                                            <td colSpan={4}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph"><Icon name="profile" className="fill-inherit" /></span>
+                                                    <div className="state-title">No vendors yet</div>
+                                                    <div className="state-sub">Create your first vendor account on the right to onboard a tenant.</div>
                                                 </div>
                                             </td>
                                         </tr>
                                     ) : (
-                                        tenants.map((t) => (
-                                            <tr key={t.tenant_id} className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors">
-                                                <td className="font-medium">{t.name}</td>
-                                                <td className="text-t-secondary">{t.email}</td>
-                                                <td>
-                                                    {(() => {
-                                                        const r = t.role || (t.is_admin ? "admin" : "manager");
-                                                        const cls = r === "admin"
-                                                            ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-                                                            : r === "agent"
-                                                            ? "bg-b-surface3 text-t-tertiary"
-                                                            : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
-                                                        return (
-                                                            <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${cls}`}>{r}</span>
-                                                        );
-                                                    })()}
-                                                </td>
-                                                <td className="text-t-secondary">{fmtDate(t.created_at)}</td>
-                                            </tr>
-                                        ))
+                                        tenants.map((t) => {
+                                            const r = t.role || (t.is_admin ? "admin" : "manager");
+                                            const variant = r === "admin" ? "info" : r === "agent" ? "neutral" : "success";
+                                            return (
+                                                <tr key={t.tenant_id}>
+                                                    <td className="font-medium text-t-primary">{t.name}</td>
+                                                    <td className="text-t-secondary">{t.email}</td>
+                                                    <td><Badge variant={variant}>{r}</Badge></td>
+                                                    <td className="text-t-secondary whitespace-nowrap">{fmtDate(t.created_at)}</td>
+                                                </tr>
+                                            );
+                                        })
                                     )}
                                 </tbody>
                             </table>
@@ -167,7 +155,7 @@ export default function VendorsPage() {
                                     type="text"
                                     value={name}
                                     onChange={(e) => setName(e.target.value)}
-                                    className="w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent"
+                                    className="input-base w-full h-11 px-4 rounded-2xl text-body-2"
                                     placeholder="Acme Corp"
                                     required
                                 />
@@ -181,7 +169,7 @@ export default function VendorsPage() {
                                     type="email"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
-                                    className="w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent"
+                                    className="input-base w-full h-11 px-4 rounded-2xl text-body-2"
                                     placeholder="vendor@company.com"
                                     required
                                 />
@@ -195,7 +183,7 @@ export default function VendorsPage() {
                                     type="password"
                                     value={password}
                                     onChange={(e) => setPassword(e.target.value)}
-                                    className="w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent"
+                                    className="input-base w-full h-11 px-4 rounded-2xl text-body-2"
                                     placeholder="Set a strong password"
                                     required
                                     minLength={6}
@@ -209,7 +197,7 @@ export default function VendorsPage() {
                                 <select
                                     value={role}
                                     onChange={(e) => setRole(e.target.value as Role)}
-                                    className="w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight bg-transparent"
+                                    className="input-base w-full h-11 px-4 rounded-2xl text-body-2"
                                 >
                                     <option value="manager">manager (full tenant actions)</option>
                                     <option value="agent">agent (read-only)</option>

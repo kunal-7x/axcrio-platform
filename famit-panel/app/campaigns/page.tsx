@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import { StatusBadge } from "@/lib/badges";
 import {
     getCampaigns,
     extract,
@@ -18,21 +21,6 @@ import {
     type ABResults,
 } from "@/lib/api";
 import { useMe, canWrite } from "@/lib/auth";
-
-function statusBadge(status: string) {
-    const map: Record<string, string> = {
-        active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-        inactive: "bg-b-surface3 text-t-secondary",
-        draft: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-    };
-    return (
-        <span
-            className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${map[status] || "bg-b-surface3 text-t-secondary"}`}
-        >
-            {status}
-        </span>
-    );
-}
 
 function fmtDate(d: string) {
     if (!d) return "—";
@@ -209,16 +197,19 @@ export default function CampaignsPage() {
 
     return (
         <Layout title="Campaigns">
+            <PageHeader
+                eyebrow="Outreach"
+                title="Campaigns"
+                subtitle="Paste a brief, let AI extract the pitch, and launch a voice campaign with your chosen agent voice, calling window and A/B variants."
+            />
+
             {/* Toast */}
             {toast && (
-                <div
-                    className={`mb-4 p-3 rounded-2xl text-body-2 flex items-center justify-between gap-3 ${
-                        toast.type === "success"
-                            ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                            : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
-                    }`}
-                >
-                    <span>{toast.msg}</span>
+                <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {toast.msg}
+                    </span>
                     <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
                 </div>
             )}
@@ -228,12 +219,15 @@ export default function CampaignsPage() {
                 <div className="flex-1 min-w-0">
                     <Card title="All Campaigns">
                         {loadError && (
-                            <div className="mx-5 mb-3 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">
-                                {loadError}
+                            <div className="mx-5 mb-3 toast toast-error">
+                                <span className="flex items-center gap-2">
+                                    <span className="size-1.5 rounded-full bg-current" />
+                                    {loadError}
+                                </span>
                             </div>
                         )}
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>Name</th>
@@ -241,46 +235,38 @@ export default function CampaignsPage() {
                                         <th>Product</th>
                                         <th>Status</th>
                                         <th>Created</th>
-                                        <th></th>
+                                        <th className="text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr>
-                                            <td
-                                                colSpan={6}
-                                                className="py-8 text-center text-t-secondary"
-                                            >
-                                                <span className="inline-flex items-center gap-2">
-                                                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                                    </svg>
-                                                    Loading campaigns…
-                                                </span>
-                                            </td>
-                                        </tr>
+                                        [...Array(4)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(6)].map((__, j) => (
+                                                    <td key={j}>
+                                                        <div className="skeleton h-4 w-20" />
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : campaigns.length === 0 ? (
                                         <tr>
-                                            <td
-                                                colSpan={6}
-                                                className="py-12 text-center text-t-secondary"
-                                            >
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="opacity-30">
-                                                        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                                                    </svg>
-                                                    <span className="text-t-tertiary">No campaigns yet — create one on the right</span>
+                                            <td colSpan={6}>
+                                                <div className="state-block">
+                                                    <span className="state-glyph">
+                                                        <Icon name="promote" className="fill-inherit" />
+                                                    </span>
+                                                    <div className="state-title">No campaigns yet</div>
+                                                    <div className="state-sub">
+                                                        Create your first campaign on the right — paste a brief and we extract the pitch for you.
+                                                    </div>
                                                 </div>
                                             </td>
                                         </tr>
                                     ) : (
                                         campaigns.map((c) => (
-                                            <tr
-                                                key={c.id}
-                                                className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors"
-                                            >
-                                                <td className="font-medium">
+                                            <tr key={c.id}>
+                                                <td className="font-medium text-t-primary">
                                                     {c.name}
                                                 </td>
                                                 <td className="text-t-secondary">
@@ -290,16 +276,16 @@ export default function CampaignsPage() {
                                                     {c.product}
                                                 </td>
                                                 <td>
-                                                    {statusBadge(c.status)}
+                                                    <StatusBadge status={c.status} />
                                                 </td>
-                                                <td className="text-t-secondary">
+                                                <td className="text-t-secondary whitespace-nowrap">
                                                     {fmtDate(c.created_at)}
                                                 </td>
                                                 <td>
-                                                    <div className="flex items-center gap-3 justify-end">
+                                                    <div className="flex items-center gap-2 justify-end">
                                                         <button
                                                             onClick={() => setAbCampaignId(c.id)}
-                                                            className="text-caption text-t-secondary hover:text-t-primary transition-colors"
+                                                            className="action"
                                                         >
                                                             A/B
                                                         </button>
@@ -308,7 +294,7 @@ export default function CampaignsPage() {
                                                                 onClick={() =>
                                                                     handleDelete(c.id)
                                                                 }
-                                                                className="text-caption text-red-500 hover:text-red-700 transition-colors"
+                                                                className="action hover:!text-primary-03 hover:!border-primary-03/30"
                                                             >
                                                                 Delete
                                                             </button>
@@ -458,7 +444,7 @@ export default function CampaignsPage() {
                                                                 title="Weight"
                                                                 className="w-16 h-9 px-2 border border-s-stroke2 rounded-xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
                                                             />
-                                                            <button type="button" onClick={() => removeVariant(idx)} className="text-caption text-red-500 hover:text-red-700">✕</button>
+                                                            <button type="button" onClick={() => removeVariant(idx)} className="text-caption text-t-tertiary transition-colors hover:text-primary-03">✕</button>
                                                         </div>
                                                         <input
                                                             type="text"
@@ -591,21 +577,24 @@ function ABResultsModal({ campaignId, onClose }: { campaignId: string; onClose: 
     })();
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={handleBackdrop}>
-            <div className="bg-b-surface1 rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-xl">
-                <div className="flex items-center justify-between p-6 border-b border-s-subtle shrink-0">
-                    <h2 className="text-h6 text-t-primary">A/B Results</h2>
-                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-b-surface2 transition-colors text-t-secondary">×</button>
+        <div className="fixed inset-0 z-50 bg-shade-01/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={handleBackdrop}>
+            <div className="surface w-full max-w-3xl max-h-[90vh] flex flex-col rise-in">
+                <div className="flex items-center justify-between p-5 border-b border-s-subtle shrink-0">
+                    <div className="flex items-center gap-2.5">
+                        <span className="signal-glyph !h-3.5" aria-hidden><i /><i /><i /></span>
+                        <h2 className="text-h6 text-t-primary">A/B Results</h2>
+                    </div>
+                    <button onClick={onClose} className="flex items-center justify-center size-8 rounded-full text-t-secondary transition-colors hover:bg-b-surface1 hover:text-t-primary dark:hover:bg-shade-04">×</button>
                 </div>
-                <div className="overflow-y-auto p-6">
+                <div className="overflow-y-auto p-5">
                     {loading && <div className="py-12 text-center text-t-secondary">Loading…</div>}
-                    {error && <div className="p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">{error}</div>}
+                    {error && <div className="toast toast-error"><span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-current" />{error}</span></div>}
                     {data && (
                         data.variants.length === 0 ? (
-                            <div className="py-8 text-center text-t-tertiary">No variants defined for this campaign.</div>
+                            <div className="state-block"><div className="state-sub">No variants defined for this campaign.</div></div>
                         ) : (
                             <div className="overflow-x-auto">
-                                <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-4 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                                <table className="data-table">
                                     <thead>
                                         <tr>
                                             <th>Variant</th>
@@ -614,24 +603,24 @@ function ABResultsModal({ campaignId, onClose }: { campaignId: string; onClose: 
                                             <th>Connected</th>
                                             <th>Interested</th>
                                             <th>Qualified</th>
-                                            <th>Avg Interest</th>
+                                            <th className="text-right">Avg Interest</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {data.variants.map((v) => (
-                                            <tr key={v.id} className={`border-t border-s-subtle ${winnerId === v.id ? "bg-green-50 dark:bg-green-900/20" : ""}`}>
-                                                <td className="font-medium">
+                                            <tr key={v.id} className={winnerId === v.id ? "bg-[#00A656]/8" : ""}>
+                                                <td className="font-medium text-t-primary">
                                                     {v.label}
                                                     {winnerId === v.id && (
-                                                        <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-caption font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">winner</span>
+                                                        <span className="pill pill-success ml-2">winner</span>
                                                     )}
                                                 </td>
-                                                <td className="text-t-secondary">{v.weight}</td>
-                                                <td className="text-t-secondary">{v.dialed}</td>
-                                                <td className="text-t-secondary">{v.connected}</td>
-                                                <td className="text-t-secondary">{v.interested}</td>
-                                                <td className="text-t-secondary">{v.qualified}</td>
-                                                <td className="font-medium">{v.avg_interest != null ? v.avg_interest.toFixed(1) : "—"}</td>
+                                                <td className="text-t-secondary td-num">{v.weight}</td>
+                                                <td className="text-t-secondary td-num">{v.dialed}</td>
+                                                <td className="text-t-secondary td-num">{v.connected}</td>
+                                                <td className="text-t-secondary td-num">{v.interested}</td>
+                                                <td className="text-t-secondary td-num">{v.qualified}</td>
+                                                <td className="font-medium text-t-primary td-num text-right">{v.avg_interest != null ? v.avg_interest.toFixed(1) : "—"}</td>
                                             </tr>
                                         ))}
                                     </tbody>

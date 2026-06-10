@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import PageHeader from "@/components/PageHeader";
+import Icon from "@/components/Icon";
+import Badge from "@/components/Badge";
 import {
     getWebhooks,
     createWebhook,
@@ -94,23 +97,27 @@ export default function WebhooksPage() {
         }
     }
 
-    const inputCls = "w-full h-11 px-4 border border-s-stroke2 rounded-full text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50 bg-transparent";
+    const inputCls = "input-base w-full h-11 px-4 rounded-2xl text-body-2";
 
     return (
         <Layout title="CRM Webhooks">
+            <PageHeader
+                eyebrow="Integrations"
+                title="CRM Webhooks"
+                subtitle="Push call outcomes, qualified leads and callbacks to your CRM in real time — every payload is HMAC-signed."
+            />
             {toast && (
-                <div className={`mb-4 p-3 rounded-2xl text-body-2 flex items-center justify-between gap-3 ${
-                    toast.type === "success"
-                        ? "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                        : "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400"
-                }`}>
-                    <span>{toast.msg}</span>
+                <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
+                    <span className="flex items-center gap-2">
+                        <span className="size-1.5 rounded-full bg-current" />
+                        {toast.msg}
+                    </span>
                     <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
                 </div>
             )}
 
-            <div className="mb-4 p-3 rounded-2xl bg-blue-50 text-blue-700 text-body-2 dark:bg-blue-900/20 dark:text-blue-400">
-                Each payload is signed — verify the <code className="font-mono">X-Famit-Signature</code> header (HMAC-SHA256 of the raw body using your secret). The event name is also sent in <code className="font-mono">X-Famit-Event</code>.
+            <div className="mb-4 p-3.5 rounded-2xl border border-[#2A85FF]/20 bg-[#2A85FF]/8 text-t-secondary text-body-2">
+                Each payload is signed — verify the <code className="font-mono text-t-primary">X-Famit-Signature</code> header (HMAC-SHA256 of the raw body using your secret). The event name is also sent in <code className="font-mono text-t-primary">X-Famit-Event</code>.
             </div>
 
             <div className="flex gap-6 max-lg:flex-col">
@@ -118,44 +125,58 @@ export default function WebhooksPage() {
                 <div className="flex-1 min-w-0">
                     <Card title="Registered Webhooks">
                         {loadError && (
-                            <div className="mx-5 mb-3 p-3 rounded-2xl bg-red-50 text-red-600 text-body-2 dark:bg-red-900/20 dark:text-red-400">{loadError}</div>
+                            <div className="mx-5 mb-3 toast toast-error"><span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-current" />{loadError}</span></div>
                         )}
                         <div className="overflow-x-auto">
-                            <table className="w-full text-body-2 [&_th]:h-13 [&_th,&_td]:px-5 [&_th,&_td]:py-3 [&_th]:align-middle [&_th]:text-left [&_th]:text-caption [&_th]:text-t-tertiary/80 [&_th]:font-normal">
+                            <table className="data-table">
                                 <thead>
                                     <tr>
                                         <th>URL</th>
                                         <th>Events</th>
                                         <th>Active</th>
                                         <th>Created</th>
-                                        {writable && <th></th>}
+                                        {writable && <th className="text-right">Action</th>}
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {loading ? (
-                                        <tr><td colSpan={writable ? 5 : 4} className="py-8 text-center text-t-secondary">Loading…</td></tr>
+                                        [...Array(3)].map((_, i) => (
+                                            <tr key={i}>
+                                                {[...Array(writable ? 5 : 4)].map((__, j) => (
+                                                    <td key={j}><div className="skeleton h-4 w-24" /></td>
+                                                ))}
+                                            </tr>
+                                        ))
                                     ) : webhooks.length === 0 ? (
-                                        <tr><td colSpan={writable ? 5 : 4} className="py-12 text-center text-t-tertiary">No webhooks yet</td></tr>
+                                        <tr><td colSpan={writable ? 5 : 4}>
+                                            <div className="state-block">
+                                                <span className="state-glyph"><Icon name="link" className="fill-inherit" /></span>
+                                                <div className="state-title">No webhooks yet</div>
+                                                <div className="state-sub">Register an endpoint on the right to start receiving signed events.</div>
+                                            </div>
+                                        </td></tr>
                                     ) : (
                                         webhooks.map((w) => (
-                                            <tr key={w.id} className="border-t border-s-subtle hover:bg-b-surface2/50 transition-colors">
-                                                <td className="font-medium break-all max-w-xs">{w.url}</td>
+                                            <tr key={w.id}>
+                                                <td className="font-medium text-t-primary break-all max-w-xs">{w.url}</td>
                                                 <td>
                                                     <div className="flex flex-wrap gap-1">
                                                         {w.events.map((ev) => (
-                                                            <span key={ev} className="inline-flex px-2 py-0.5 rounded-full text-caption font-medium bg-b-surface3 text-t-secondary">{ev}</span>
+                                                            <span key={ev} className="pill pill-neutral">{ev}</span>
                                                         ))}
                                                     </div>
                                                 </td>
                                                 <td>
-                                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-caption font-medium ${w.active ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : "bg-b-surface3 text-t-secondary"}`}>
+                                                    <Badge variant={w.active ? "success" : "neutral"} dot={w.active}>
                                                         {w.active ? "active" : "off"}
-                                                    </span>
+                                                    </Badge>
                                                 </td>
-                                                <td className="text-t-secondary">{fmt(w.created_at)}</td>
+                                                <td className="text-t-secondary whitespace-nowrap">{fmt(w.created_at)}</td>
                                                 {writable && (
                                                     <td>
-                                                        <button onClick={() => handleDelete(w.id)} className="text-caption text-red-500 hover:text-red-700 transition-colors">Delete</button>
+                                                        <div className="flex justify-end">
+                                                            <button onClick={() => handleDelete(w.id)} className="action hover:!text-primary-03 hover:!border-primary-03/30">Delete</button>
+                                                        </div>
                                                     </td>
                                                 )}
                                             </tr>

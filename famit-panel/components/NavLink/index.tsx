@@ -41,9 +41,13 @@ const NavLink = ({ value, onClick }: NavLinkProps) => {
             onClick={onClick}
         >
             {isActive && (
-                <div className="absolute inset-0 gradient-menu rounded-xl shadow-depth-menu">
-                    <div className="absolute inset-0.25 bg-b-pop rounded-[0.6875rem]"></div>
-                </div>
+                <>
+                    <div className="absolute inset-0 gradient-menu rounded-xl shadow-depth-menu">
+                        <div className="absolute inset-0.25 bg-b-pop rounded-[0.6875rem]"></div>
+                    </div>
+                    {/* Signal accent — the brand through-line on the active item */}
+                    <span className="nav-active-bar" aria-hidden />
+                </>
             )}
             {value.icon && (
                 <Icon

@@ -346,8 +346,15 @@
     .col-left {
         @apply w-[calc(100%-30.75rem)] mr-3 max-3xl:w-[calc(100%-23.75rem)] max-2xl:w-[calc(100%-22.25rem)] max-[1349px]:w-[calc(100%-20.25rem)] max-xl:w-[calc(100%-22.25rem)] max-lg:w-full max-lg:mr-0 max-lg:mb-3;
     }
+    /* The flagship panel surface — unified with .surface so the whole app
+       speaks ONE card language. Radius eased from 2rem -> 1.75rem (rounded-3xl)
+       so dense data panels read as a precise tool, not a marketing tile.
+       A hairline top-stroke (light) gives crisp Linear/Stripe edge definition;
+       dark keeps the inner top-light for depth. */
     .card {
-        @apply mb-3 p-3 rounded-4xl bg-b-surface2 shadow-widget last:mb-0 dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
+        @apply relative mb-3 p-3 rounded-3xl bg-b-surface2 shadow-widget last:mb-0
+            ring-1 ring-s-subtle ring-inset
+            dark:ring-0 dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
     }
     .chart-tooltip {
         @apply p-2 bg-b-dark1 rounded-lg text-t-light;
@@ -472,8 +479,8 @@
     /* Surface — the flagship card. Softer radius than the template's 2rem
        so dense panels read as data tools, not marketing tiles. */
     .surface {
-        @apply rounded-3xl bg-b-surface2 shadow-widget
-            dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
+        @apply rounded-3xl bg-b-surface2 shadow-widget ring-1 ring-s-subtle ring-inset
+            dark:ring-0 dark:shadow-[inset_0_0_0_1.5px_rgba(229,229,229,0.04),0px_5px_1.5px_-4px_rgba(8,8,8,0.5),0px_6px_4px_-4px_rgba(8,8,8,0.05)];
     }
 
     /* KPI / hero metric card. Big tabular number + label + room for a
@@ -602,6 +609,30 @@
         @apply text-overline text-t-tertiary;
     }
 
+    /* Premium focus ring — a soft brand halo + crisp inner stroke. The single
+       biggest "cheap -> considered" tell on inputs, selects and buttons.
+       Used on :focus-visible so it never fires on mouse click. */
+    .focus-ring {
+        @apply outline-none focus-visible:ring-2 focus-visible:ring-primary-01/35
+            focus-visible:border-primary-01/60;
+    }
+    /* Field/input shell — calm border that warms on hover and rings on focus.
+       Matches the input radius language without changing component markup. */
+    .input-base {
+        @apply border border-s-stroke2 bg-b-surface2 text-t-primary outline-none
+            transition-[color,border-color,box-shadow] duration-200
+            placeholder:text-t-secondary/50
+            hover:border-s-highlight
+            focus:border-primary-01/60 focus:ring-2 focus:ring-primary-01/30;
+    }
+
+    /* Interactive lift — for clickable cards/rows. Gentle rise + warmer
+       elevation on hover; settles instantly on press. Calm, not bouncy. */
+    .lift {
+        @apply transition-[transform,box-shadow] duration-200 ease-out
+            hover:-translate-y-px hover:shadow-depth active:translate-y-0;
+    }
+
     /* Subtle entrance for cards/rows so the panel feels alive, not flashy. */
     .rise-in {
         animation: rise-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -621,5 +652,131 @@
         .skeleton {
             animation: none;
         }
+    }
+
+    /* ============================================================
+       "SIGNAL" — the distinctive brand layer (premium-ui wave 2).
+       Famit places voice calls -> a brand-blue signal/waveform motif
+       carried through the wordmark, sidebar active state and page
+       mastheads. This is the single signature that makes the panel
+       feel designed, not assembled from a template. Calm, not flashy.
+       ============================================================ */
+
+    /* The signal glyph = 3 (or 4) animated equalizer bars beside the
+       wordmark. Pure CSS, brand-blue, honors reduced-motion. */
+    .signal-glyph {
+        @apply inline-flex items-end gap-[2px] h-4;
+    }
+    .signal-glyph i {
+        @apply block w-[2.5px] rounded-full bg-primary-01;
+        height: 35%;
+        transform-origin: bottom;
+        animation: signal-bar 1.1s ease-in-out infinite;
+    }
+    .signal-glyph i:nth-child(1) {
+        animation-delay: 0s;
+    }
+    .signal-glyph i:nth-child(2) {
+        animation-delay: 0.18s;
+    }
+    .signal-glyph i:nth-child(3) {
+        animation-delay: 0.36s;
+    }
+    .signal-glyph i:nth-child(4) {
+        animation-delay: 0.54s;
+    }
+    @keyframes signal-bar {
+        0%,
+        100% {
+            height: 30%;
+            opacity: 0.55;
+        }
+        50% {
+            height: 100%;
+            opacity: 1;
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .signal-glyph i {
+            animation: none;
+            height: 70%;
+        }
+        .signal-glyph i:nth-child(2) {
+            height: 100%;
+        }
+    }
+
+    /* The Famit wordmark — set in the display font, tight tracking, with
+       the signal dot color cue. Used in sidebar + login + header. */
+    .wordmark {
+        @apply inline-flex items-center gap-2 text-h6 font-semibold tracking-[-0.02em] text-t-primary;
+    }
+
+    /* Sidebar section label — a quiet overline that groups nav items so
+       the rail reads as an organized console, not a flat link list. */
+    .nav-section {
+        @apply px-3 pt-5 pb-2 text-overline text-t-tertiary/70 select-none first:pt-1;
+    }
+
+    /* "Soon" pill on a coming-soon (disabled) nav child — a calm, brand-blue
+       roadmap cue. Tiny so it reads as a label, not a CTA. */
+    .nav-soon {
+        @apply inline-flex items-center h-4 px-1.5 rounded-full text-[0.5625rem] font-semibold uppercase tracking-[0.08em]
+            border border-primary-01/25 bg-primary-01/8 text-primary-01;
+    }
+
+    /* Refined active nav item: the template pill + a left signal bar in
+       brand blue. The bar is the through-line that ties shell -> page. */
+    .nav-active-bar {
+        @apply absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-full bg-primary-01;
+        box-shadow: 0 0 10px -1px var(--primary-01);
+    }
+
+    /* Page masthead — ONE header rhythm for every page. A brand-blue
+       accent rule, an overline eyebrow, the title and an optional
+       subtitle, with a right-aligned action slot. Replaces the bare
+       template <title> so all pages share a precise, premium masthead. */
+    .page-head {
+        @apply relative flex items-start gap-4 mb-5 pl-4 max-md:pl-3;
+    }
+    .page-head::before {
+        content: "";
+        @apply absolute left-0 top-1 bottom-1 w-[3px] rounded-full;
+        background: linear-gradient(
+            to bottom,
+            var(--primary-01),
+            color-mix(in srgb, var(--primary-01) 25%, transparent)
+        );
+    }
+    .page-head-eyebrow {
+        @apply flex items-center gap-2 mb-1.5 text-overline text-t-tertiary;
+    }
+    .page-head-title {
+        @apply text-h4 max-lg:text-h5 text-t-primary;
+    }
+    .page-head-sub {
+        @apply mt-1 text-body-2 text-t-secondary max-w-2xl;
+    }
+
+    /* Toast — token-based success/error so notifications stop using the
+       raw bg-green-50/bg-red-50 that read as cheap. */
+    .toast {
+        @apply flex items-center justify-between gap-3 mb-4 p-3.5 rounded-2xl text-body-2;
+        animation: rise-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    .toast-success {
+        @apply border border-[#00A656]/20 bg-[#00A656]/8 text-[#00A656];
+    }
+    .toast-error {
+        @apply border border-[#FF6A55]/20 bg-[#FF6A55]/8 text-[#FF6A55];
+    }
+
+    /* Soft brand glow used behind the login mark + section heroes. */
+    .brand-glow {
+        background: radial-gradient(
+            60% 60% at 50% 0%,
+            color-mix(in srgb, var(--primary-01) 14%, transparent),
+            transparent 70%
+        );
     }
 }
