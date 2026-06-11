@@ -96,8 +96,56 @@ const GenerationQueue = ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [job.state, job.progress?.done, jobId]);
 
+    // SAFETY NET — the SSE stream is the primary signal, but if it degrades (proxy
+    // buffering, a server close without a terminal `done` frame, EventSource that
+    // connected but went quiet), the loader could spin forever even though the job
+    // already SUCCEEDED and the image is stored. So while a job is active and the
+    // live SSE state is still "loading", poll GET /jobs/{id}: the instant it reports
+    // a terminal state (succeeded/failed/cancelled) or carries asset_ids, pull the
+    // finished assets into the grid and fire onJobDone — unsticking "Rendering
+    // creative / 0 of 1". Stops as soon as the job is no longer loading.
+    useEffect(() => {
+        if (!jobId || job.state !== "loading") return;
+        let active = true;
+        const tick = async () => {
+            try {
+                const j = await getJob(jobId);
+                if (!active) return;
+                const st = (j.state || "").toLowerCase();
+                const terminal = st === "succeeded" || st === "done" || st === "completed";
+                const hasAssets = !!(j.asset_ids && j.asset_ids.length);
+                if (terminal || hasAssets) {
+                    if (hasAssets) {
+                        const page = await listAssets({
+                            limit: Math.max(expectedCount, j.asset_ids!.length),
+                        });
+                        const byId = new Map(page.assets.map((a) => [a.id, a]));
+                        const ordered = j.asset_ids!
+                            .map((id) => byId.get(id))
+                            .filter((a): a is Asset => !!a);
+                        if (active && ordered.length) setVariants(ordered);
+                    }
+                    if (st === "failed" || st === "error" || st === "cancelled") return;
+                    if (active) onJobDone();
+                }
+            } catch {
+                /* dormant / transient — keep polling until the job leaves loading */
+            }
+        };
+        const id = setInterval(tick, 2000);
+        // first probe after a short delay so the SSE path gets first crack
+        const kickoff = setTimeout(tick, 2500);
+        return () => {
+            active = false;
+            clearInterval(id);
+            clearTimeout(kickoff);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [jobId, job.state]);
+
     const isGenerating = !!jobId && job.state === "loading";
     const isFailed = job.state === "failed";
+    const isDone = job.state === "completed";
 
     const filtered = useMemo(() => {
         const src = variants.length ? variants : recentAssets;
@@ -106,8 +154,14 @@ const GenerationQueue = ({
         return src;
     }, [variants, recentAssets, segment]);
 
-    const doneCount = job.progress?.done ?? variants.length;
     const totalCount = job.progress?.total ?? expectedCount;
+    // Once the job has SUCCEEDED, the count must read "N of N ready" — even if the
+    // terminal SSE frame carried only `state:succeeded` and no final progress
+    // object (which left the old code stuck at "0 of N"). Otherwise track the live
+    // done count, falling back to however many variant cards have actually landed.
+    const doneCount = isDone
+        ? totalCount
+        : job.progress?.done ?? variants.length;
 
     // The header strip — segment Tabs + progress count (only with an active job).
     const head = (
@@ -140,8 +194,12 @@ const GenerationQueue = ({
                     </div>
                 )}
 
-                {/* PHASE 2+3: the skeleton/variant grid (same slots, morph in place) */}
-                {isGenerating && collapsed && (
+                {/* PHASE 2+3+4: the variant grid (skeletons morph in place into the
+                    finished cards). Stays mounted through `completed` — while jobId
+                    is still set and the job didn't fail — so the finished banner is
+                    DISPLAYED the instant the job succeeds, with no flash-to-empty
+                    before the parent folds it into the recent wall. */}
+                {((isGenerating && collapsed) || (isDone && !!jobId)) && (
                     <div className="flex flex-wrap">
                         {Array.from({ length: expectedCount }).map((_, i) => {
                             const v = variants[i];
@@ -153,6 +211,15 @@ const GenerationQueue = ({
                                     onApprove={onApprove}
                                     onUse={onUse}
                                 />
+                            ) : isDone ? (
+                                // job done but this slot's asset isn't resolved yet —
+                                // hold a ready skeleton, never a perpetual spinner
+                                <div
+                                    key={`done-skel-${i}`}
+                                    className="w-[calc(20%-1.5rem)] mt-6 mx-3 max-4xl:w-[calc(25%-1.5rem)] max-[1539px]:w-[calc(33.333%-1.5rem)] max-lg:w-[calc(50%-1.5rem)] max-md:w-[calc(100%-1.5rem)]"
+                                >
+                                    <CreativeSkeleton label={`Variant ${i + 1}`} state="ready" />
+                                </div>
                             ) : (
                                 <div
                                     key={`skel-${i}`}

@@ -33,6 +33,12 @@ final_env.md
 **/final_env.md
 .env.local
 **/.env.local
+# Y.local (and any *.local scratch) = working .env-style credential dumps
+# (LiveKit/Groq/OpenRouter/Vobiz/DO-PAT/HF/GCP/GitHub-PAT etc.). NEVER COMMIT.
+*.local
+**/*.local
+Y.local
+**/Y.local
 
 # ----- fortress: secret-bearing playbook dir — IGNORE WHOLESALE (task mandate) -----
 fortress/

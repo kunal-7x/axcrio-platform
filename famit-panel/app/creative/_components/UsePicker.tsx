@@ -21,7 +21,7 @@ import Button from "@/components/Button";
 import Field from "@/components/Field";
 import Select from "@/components/Select";
 import Icon from "@/components/Icon";
-import Image from "@/components/Image";
+import AssetImage from "./AssetImage";
 import type { SelectOption } from "@/types/select";
 import {
     approveAsset,
@@ -173,16 +173,7 @@ const UsePicker = ({ asset, open, onClose, onAttached, onApproved }: UsePickerPr
 
                     <div className="flex items-center gap-3 mt-5 p-3 rounded-3xl bg-b-surface1 dark:bg-shade-04/30">
                         <div className="relative size-14 shrink-0 rounded-2xl overflow-hidden">
-                            {src && (
-                                <Image
-                                    className="object-cover opacity-100"
-                                    src={src}
-                                    alt={asset.headline || "asset"}
-                                    fill
-                                    sizes="56px"
-                                    unoptimized
-                                />
-                            )}
+                            <AssetImage src={src} alt={asset.headline || "asset"} rounded="rounded-2xl" />
                         </div>
                         <div className="min-w-0">
                             <div className="text-button text-t-primary line-clamp-1">
@@ -221,14 +212,7 @@ const UsePicker = ({ asset, open, onClose, onAttached, onApproved }: UsePickerPr
                             <div className="max-w-72 ml-auto rounded-2xl overflow-hidden bg-b-surface2 ring-1 ring-s-subtle ring-inset shadow-widget">
                                 {src && (
                                     <div className="relative h-36">
-                                        <Image
-                                            className="object-cover opacity-100"
-                                            src={src}
-                                            alt="preview"
-                                            fill
-                                            sizes="288px"
-                                            unoptimized
-                                        />
+                                        <AssetImage src={src} alt="preview" rounded="rounded-none" />
                                     </div>
                                 )}
                                 <div className="p-3">

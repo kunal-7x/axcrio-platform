@@ -138,6 +138,9 @@ const CreatePanel = ({
     const [style, setStyle] = useState<SelectOption>(STYLES[0]);
     const [model, setModel] = useState<SelectOption>({ id: 0, name: "Auto (recommended)" });
     const [instruction, setInstruction] = useState("");
+    // The vendor's OWN raw image prompt. When filled it goes straight to the image
+    // AI (backend skips the Stage-1 LLM); blank → the auto campaign prompt is used.
+    const [customPrompt, setCustomPrompt] = useState("");
     const [advanced, setAdvanced] = useState(false);
     const [providers, setProviders] = useState<AssetProvider[]>([]);
     const [submitting, setSubmitting] = useState(false);
@@ -178,20 +181,30 @@ const CreatePanel = ({
         return per * (count.id || 5);
     }, [count]);
 
+    // A custom prompt bypasses the Stage-1 builder, so it counts as the instruction:
+    // the vendor can generate with EITHER the campaign instruction OR their own prompt.
+    const hasInstruction =
+        instruction.trim().length > 0 || customPrompt.trim().length > 0;
     const canGenerate =
-        enabled && !!selectedCampaign && instruction.trim().length > 0 && !submitting;
+        enabled && !!selectedCampaign && hasInstruction && !submitting;
 
     const handleGenerate = async () => {
         if (!canGenerate) return;
         setNotice(null);
         setSubmitting(true);
         try {
+            const trimmedCustom = customPrompt.trim();
             const result = await generate({
                 campaign_id: selectedCampaign?.id,
                 platform: platform.name,
                 asset_type: assetType.name,
                 count: count.id || 5,
-                instruction: instruction.trim(),
+                // instruction stays required server-side; when only the custom
+                // prompt is filled, mirror it so the body is never empty (the
+                // backend short-circuits on custom_prompt regardless).
+                instruction: instruction.trim() || trimmedCustom,
+                // the vendor's OWN prompt → straight to the image AI (Stage-1 skipped).
+                custom_prompt: trimmedCustom || undefined,
                 language: language.name === "Auto" ? undefined : language.name,
                 model: model.id === 0 ? undefined : providers[model.id - 1]?.provider_id,
                 // prefer the campaign's own brand kit (from its detail snapshot);
@@ -266,6 +279,23 @@ const CreatePanel = ({
                     onChange={(e) => setInstruction(e.target.value)}
                     classInput="!h-28"
                 />
+
+                {/* the vendor's own raw image prompt — goes STRAIGHT to the image AI */}
+                <div className="mt-4">
+                    <Field
+                        textarea
+                        label="Your own prompt (optional)"
+                        tooltip="Type an exact image prompt to send straight to the image AI. Leave blank to use the auto campaign prompt."
+                        placeholder="e.g. cinematic product shot of a gold watch on black marble, soft studio light, ultra-detailed"
+                        value={customPrompt}
+                        onChange={(e) => setCustomPrompt(e.target.value)}
+                        classInput="!h-24"
+                    />
+                    <p className="mt-2 text-caption text-t-tertiary">
+                        Leave blank to use the auto campaign prompt. When filled, this goes
+                        directly to the image AI.
+                    </p>
+                </div>
 
                 {/* Advanced disclosure — model / count / size / language / style */}
                 <button

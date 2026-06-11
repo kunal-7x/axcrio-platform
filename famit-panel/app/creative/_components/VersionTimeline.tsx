@@ -15,7 +15,7 @@
  */
 
 import { useState } from "react";
-import Image from "@/components/Image";
+import AssetImage from "./AssetImage";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
@@ -68,13 +68,10 @@ const VersionTimeline = ({ asset, onRestore, restoring }: VersionTimelineProps) 
                                     isSel ? "ring-primary-01/60" : "ring-s-subtle"
                                 }`}
                             >
-                                <Image
-                                    className="object-cover opacity-100"
+                                <AssetImage
                                     src={thumb(v)}
                                     alt={`Version ${v.version_no}`}
-                                    fill
-                                    sizes="112px"
-                                    unoptimized
+                                    rounded="rounded-2xl"
                                 />
                                 {isCurrent && (
                                     <div className="absolute top-1.5 left-1.5">
@@ -165,13 +162,10 @@ const ComparePane = ({
             <span className="text-button">{title}</span>
         </div>
         <div className="relative h-64 rounded-3xl overflow-hidden ring-1 ring-s-subtle ring-inset">
-            <Image
-                className="object-cover opacity-100"
+            <AssetImage
                 src={version.thumb_url || version.url || assetRawUrl(assetId, version.id)}
                 alt={title}
-                fill
-                sizes="(max-width: 767px) 100vw, 360px"
-                unoptimized
+                rounded="rounded-3xl"
             />
         </div>
         <p className="mt-2 text-caption text-t-secondary line-clamp-2">

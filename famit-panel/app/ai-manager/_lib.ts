@@ -87,11 +87,21 @@ export type AimSessionAction = {
     [k: string]: unknown;
 };
 
+// A row in the Call History list (GET /ai-manager/sessions). The PG-first backend
+// returns `id` (not session_id) + caller_phone/status/has_recording + provider meta;
+// older JSONL rows use session_id/caller_id — both are tolerated, read via sessionId().
 export type AimSession = {
-    session_id: string;
+    id?: string;
+    session_id?: string;
     tenant_id?: string;
+    vendor_id?: string;
+    user_id?: string;
     number_id?: string;
+    channel?: AimChannel | string;
+    provider_call_id?: string;
     caller_id?: string;
+    caller_phone?: string;
+    status?: string; // active | completed | failed | blocked
     started_at?: string;
     ended_at?: string;
     authed?: boolean;
@@ -100,7 +110,24 @@ export type AimSession = {
     actions?: AimSessionAction[];
     outcome?: string;
     n_actions?: number;
+    // recording summary (durable handle lives server-side; list only flags presence)
+    has_recording?: boolean;
+    recording_status?: string; // pending | recording | done | failed | ""
+    recording_duration_s?: number;
+    // provider metadata
+    llm_provider?: string;
+    stt_provider?: string;
+    tts_provider?: string;
 };
+
+// Canonical session id regardless of which field the backend used (PG `id` vs JSONL `session_id`).
+export function sessionId(s: AimSession | AimSessionDetail): string {
+    return s.id || s.session_id || "";
+}
+// Canonical caller label (PG caller_phone vs JSONL caller_id).
+export function sessionCaller(s: AimSession | AimSessionDetail): string {
+    return s.caller_phone || s.caller_id || "";
+}
 
 // The capability families a number can be granted (mirrors registry.KNOWN_GRANTS).
 export const KNOWN_GRANTS = [
@@ -212,8 +239,23 @@ function writeDelete<T>(path: string): Promise<T> {
 // ---- public reads (never throw) ----
 export const getAimStatus = () => read<AimStatus>("/ai-manager/status");
 export const getAimNumbers = () => read<{ numbers: AimNumber[] }>("/ai-manager/numbers");
-export const getAimSessions = (limit = 50) =>
-    read<{ sessions: AimSession[] }>(`/ai-manager/sessions?limit=${limit}`);
+// Call History list. Server-scoped to the authenticated tenant (token + RLS).
+// `source` is "pg" (truth) or "jsonl" (PG-down fallback) — surfaced for diagnostics.
+export type AimSessionFilters = {
+    limit?: number;
+    offset?: number;
+    channel?: string;
+    status?: string;
+};
+export const getAimSessions = (f: AimSessionFilters = {}) =>
+    read<{ sessions: AimSession[]; source?: string }>(
+        `/ai-manager/sessions${aimQs({
+            limit: f.limit ?? 50,
+            offset: f.offset,
+            channel: f.channel,
+            status: f.status,
+        })}`,
+    );
 
 // ---- public mutations (throw friendly on failure) ----
 export const registerAimNumber = (body: {
@@ -605,9 +647,12 @@ export function commandIntent(c: AimHistoryCommand): string {
 
 // A single transcript turn inside a session (PIN-masked server-side per §7).
 export type AimTurn = {
-    role: string; // "user" | "assistant" | "system"
+    role: string; // backend: "agent" | "user"  (tolerated: "assistant" | "system")
     text: string;
+    seq?: number;
     at?: string;
+    created_at?: string; // backend uses created_at; the page falls back to `at`
+    command_id?: string;
     masked?: boolean;
 };
 
@@ -636,7 +681,17 @@ export type AimSessionDetail = {
     stt_provider?: string;
     tts_provider?: string;
     llm_provider?: string;
-    recording_url?: string;
+    n_actions?: number;
+    // recording: durable handle (bucket+key) lives server-side; the panel plays via the
+    // short-lived presigned URL the detail endpoint mints (empty when boto3/recording off).
+    recording_status?: string; // pending | recording | done | failed | ""
+    recording_egress_id?: string;
+    recording_bucket?: string;
+    recording_key?: string;
+    recording_url?: string; // legacy/static URL if ever persisted
+    recording_presigned_url?: string; // minted per-read; preferred for playback
+    recording_duration_s?: number;
+    has_recording?: boolean;
     metadata?: Record<string, unknown>;
 };
 
@@ -716,8 +771,20 @@ export const getAimCommandHistory = (f: AimCommandFilters = {}) =>
 export const getAimCommandDetail = (id: string) =>
     read<AimHistoryCommand>(`/ai-manager/commands/${encodeURIComponent(id)}`);
 
-export const getAimSessionDetail = (id: string) =>
-    read<AimSessionDetail>(`/ai-manager/sessions/${encodeURIComponent(id)}`);
+// Session detail. The PG-first backend NESTS the record under `session` and injects a
+// freshly-minted `recording_presigned_url`; the older JSONL path returned the record
+// flat. We unwrap `{session}` to a flat AimSessionDetail so the page reads one shape.
+export const getAimSessionDetail = async (id: string): Promise<ReadResult<AimSessionDetail>> => {
+    const r = await read<{ session?: AimSessionDetail } & AimSessionDetail>(
+        `/ai-manager/sessions/${encodeURIComponent(id)}`,
+    );
+    if (r.kind !== "ok") return r;
+    // tolerate both {session:{...}} (PG) and a flat record (legacy/JSONL)
+    const data = (r.data && typeof r.data === "object" && "session" in r.data && r.data.session
+        ? r.data.session
+        : r.data) as AimSessionDetail;
+    return { kind: "ok", data };
+};
 
 export const getAimAuditLogs = (q: { session_id?: string; command_id?: string; limit?: number } = {}) =>
     read<{ logs: AimAuditLog[] }>(

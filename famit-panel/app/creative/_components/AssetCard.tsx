@@ -15,7 +15,7 @@
  */
 
 import { useState } from "react";
-import Image from "@/components/Image";
+import AssetImage from "./AssetImage";
 import Checkbox from "@/components/Checkbox";
 import Badge from "@/components/Badge";
 import Icon from "@/components/Icon";
@@ -104,20 +104,7 @@ const AssetCard = ({
                     </Badge>
                 </div>
 
-                {src ? (
-                    <Image
-                        className="object-cover opacity-100 rounded-3xl"
-                        src={src}
-                        alt={asset.headline || "Creative asset"}
-                        fill
-                        sizes="(max-width: 767px) 100vw, 280px"
-                        unoptimized
-                    />
-                ) : (
-                    <div className="absolute inset-0 flex items-center justify-center rounded-3xl bg-b-surface1 fill-t-tertiary dark:bg-shade-04/40">
-                        <Icon name="camera-stroke" />
-                    </div>
-                )}
+                <AssetImage src={src} alt={asset.headline || "Creative asset"} rounded="rounded-3xl" />
             </div>
 
             {/* title + score */}

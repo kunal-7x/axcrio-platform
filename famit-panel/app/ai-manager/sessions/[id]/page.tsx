@@ -49,6 +49,13 @@ import {
 
 /* ----------------------------------------------------------------- helpers */
 
+// seconds -> m:ss (recording length display)
+function fmtClock(sec?: number | null): string {
+    if (sec == null || !Number.isFinite(sec) || sec <= 0) return "—";
+    const s = Math.round(sec);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
 function durationOf(a?: string | null, b?: string | null): string {
     if (!a || !b) return "—";
     try {
@@ -126,18 +133,35 @@ export default function AimSessionDetailPage() {
     const sessionError = session?.kind === "error" ? session.message : "";
 
     const turns: AimTurn[] = useMemo(() => {
-        if (!s) return [];
-        if (s.turns && s.turns.length) return s.turns;
-        // tolerate the list-shape {role,text}[] too
-        return [];
+        if (!s || !s.turns || !s.turns.length) return [];
+        // backend orders by (seq, created_at); keep a stable sort defensively.
+        return [...s.turns].sort((a, b) => {
+            const sa = typeof a.seq === "number" ? a.seq : 0;
+            const sb = typeof b.seq === "number" ? b.seq : 0;
+            if (sa !== sb) return sa - sb;
+            const ta = a.created_at || a.at || "";
+            const tb = b.created_at || b.at || "";
+            return ta < tb ? -1 : ta > tb ? 1 : 0;
+        });
     }, [s]);
 
     const commands: AimHistoryCommand[] = s?.commands || [];
     const logs = audit?.kind === "ok" ? audit.data.logs || [] : [];
     const runRows = runs?.kind === "ok" ? runs.data.runs || [] : [];
 
-    const caller = s?.caller_id || s?.caller_phone || "—";
-    const recordingUrl = s?.recording_url;
+    const caller = s?.caller_phone || s?.caller_id || "—";
+    // Prefer the freshly-minted presigned URL; fall back to any static recording_url.
+    const recordingUrl = s?.recording_presigned_url || s?.recording_url || "";
+    const recStatus = (s?.recording_status || "").toLowerCase();
+    // A recording exists server-side (handle persisted) even if we can't mint a URL
+    // right now (boto3 not installed / recording dormant) -> show "link unavailable".
+    const hasRecording =
+        !!s?.has_recording ||
+        !!s?.recording_key ||
+        recStatus === "done" ||
+        recStatus === "recording" ||
+        recStatus === "pending" ||
+        !!recordingUrl;
 
     return (
         <Layout title="Session">
@@ -233,14 +257,52 @@ export default function AimSessionDetailPage() {
                             {s.started_at && (
                                 <span className="text-caption text-t-tertiary">Started {fmt(s.started_at)}</span>
                             )}
-                            {recordingUrl && (
-                                <Link
-                                    href={`/ai-manager/sessions/${encodeURIComponent(id)}/play`}
-                                    className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
-                                >
-                                    <Icon name="camera-video" className="size-3.5 fill-current" />
-                                    Open in Player
-                                </Link>
+                            {hasRecording && (
+                                <span className="ml-auto inline-flex items-center gap-1.5 text-caption text-t-secondary">
+                                    <Icon name="camera-video" className="size-3.5 fill-t-tertiary" />
+                                    Recorded
+                                    {typeof s.recording_duration_s === "number" && s.recording_duration_s > 0 && (
+                                        <span className="text-t-tertiary tabular-nums">
+                                            · {fmtClock(s.recording_duration_s)}
+                                        </span>
+                                    )}
+                                </span>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ---- Recording player ---- */}
+                    {s && hasRecording && (
+                        <div className="mt-4 pt-4 border-t border-s-subtle">
+                            {recordingUrl ? (
+                                <div className="flex items-center gap-3 max-sm:flex-col max-sm:items-stretch">
+                                    <span className="grid place-items-center size-9 shrink-0 rounded-xl bg-primary-01/10 fill-primary-01 max-sm:hidden">
+                                        <Icon name="camera-video" className="size-4 fill-inherit" />
+                                    </span>
+                                    <audio
+                                        controls
+                                        preload="none"
+                                        src={recordingUrl}
+                                        className="h-10 w-full max-w-xl"
+                                    >
+                                        Your browser does not support the audio element.
+                                    </audio>
+                                    <a
+                                        href={recordingUrl}
+                                        download
+                                        className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
+                                    >
+                                        <Icon name="download" className="size-3.5 fill-current" />
+                                        Download
+                                    </a>
+                                </div>
+                            ) : (
+                                <div className="flex items-center gap-2.5 text-caption text-t-tertiary">
+                                    <Icon name="camera-video" className="size-4 fill-t-tertiary shrink-0" />
+                                    {recStatus === "pending" || recStatus === "recording"
+                                        ? "Recording in progress — the audio link appears once the call ends and uploads."
+                                        : "This call was recorded — the playback link is being prepared and will appear here shortly."}
+                                </div>
                             )}
                         </div>
                     )}
@@ -395,7 +457,9 @@ function TranscriptTurn({ turn }: { turn: AimTurn }) {
                     {turn.masked && <Badge variant="neutral">masked</Badge>}
                 </div>
                 {turn.text}
-                {turn.at && <div className="text-caption text-t-tertiary mt-1">{fmt(turn.at)}</div>}
+                {(turn.created_at || turn.at) && (
+                    <div className="text-caption text-t-tertiary mt-1">{fmt(turn.created_at || turn.at)}</div>
+                )}
             </div>
         </div>
     );

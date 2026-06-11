@@ -6,7 +6,50 @@
 > run-ID. The orchestrator updates this on every launch/completion. APPEND-ONLY history —
 > never delete past entries (founder rule).
 
-Last updated: 2026-06-11
+Last updated: 2026-06-12
+
+## 2026-06-12 — ⛔ INBOUND AI MANAGER E2E VERIFICATION: STILL BROKEN ON A REAL CALL (honest verdict)
+**Brutally-honest verification of the inbound voice product. The prior wave's "VOICE FIX
+COMPLETE / no longer crashes on STT" claim is FALSIFIED by live evidence.**
+
+- ❌ **VOICE (item 1) = FAIL.** A REAL inbound call reached the box Jun 11 19:37:38
+  (room `aim-_06375548830_…`, agent_name=manager) — so trunk/dispatch/SIP routing WORK.
+  The agent then **crashed identically to before**: `APIConnectionError: Failed to connect
+  to STT WebSocket` → `_resolve_host` CancelledError/TimeoutError → `process exiting` at
+  19:38:09, BEFORE any greeting. The "fix" (widened `stt_conn_options` max_retry=6/timeout=20
+  in `aim_voice_agent.py`, mtime 19:19, running pid 1728381) **was live and did NOT help** —
+  each retry's DNS `_resolve_host` hung the full timeout. **6/6 inbound STT connects on Jun 11
+  FAILED (0 ever reached "connected successfully").**
+- 🔬 **Root cause is NOT keys/network/venv** — proven: from the agent's *exact* venv+env in a
+  standalone process, `sarvam.STT().stream()` → "WebSocket connected successfully" (clean).
+  And the EARNER (`agent.py`, same Sarvam STT, same `.env`, same `/opt/capsy-agent/.venv`)
+  = **30/30 STT connects succeeded** over 3 days, last real call 18:48:47 connected in 0.4s.
+  DNS resolves fine now (api.sarvam.ai→20.235.220.20, 22ms connect). **The hang is specific to
+  the inbound LiveKit job subprocess at session startup** — most likely the inbound entrypoint/
+  imports starve the job-process event loop (or its getaddrinfo thread-executor) during the
+  window STT tries to resolve DNS, so every retry's `_resolve_host` times out. NOT isolated to a
+  single line yet, but the empirical split (inbound 0/6 vs earner 30/30, same box) is unambiguous.
+- ❌ **LOGGED (item 2) = FAIL (by consequence).** `ai_manager_sessions` = **0 rows**,
+  `ai_manager_session_turns` = **0 rows**. No call has ever survived to produce a transcript/
+  recording. Schema + read API + recorder exist but have never recorded a real call.
+- ⚠️ **PANEL (item 3) = PARTIAL.** `panel.famit.in/ai-manager` 200, Calls tab + Session Detail
+  routes render 200 — but the list is **empty** (no sessions exist). Cannot prove a real
+  transcript/recording renders until a call actually completes.
+- ✅ **REGRESSION (item 4) = PASS.** Earner UNTOUCHED + HEALTHY: `agent.py` md5
+  `9150fabe4ff62b4b4470f9a87df346e5` (matches prior), famit-agent NRestarts=0, all 4 services
+  active, ports 8090+8091 listening, famit-caller :8209 /health=200, last earner call ran full
+  ~2.5min lifecycle clean, **0 Traceback/ERROR/APIConnection in earner since 19:00**, zero 5xx.
+
+**REMAINING GAP / NEXT STEP (the real fix, not another retry band-aid):** the STT connect must
+not depend on the job subprocess's event loop being free at startup. Options, in order:
+(1) **prewarm the STT/DNS** — resolve api.sarvam.ai + warm an aiohttp connector in the worker
+`prewarm_fnc` (runs in the parent, before the job loop is busy), or pin a short-TTL DNS cache;
+(2) audit the inbound entrypoint for any sync/blocking call before/around `session.start` that
+starves the loop and move it off-thread / after first audio; (3) start the AgentSession with STT
+deferred until after greeting (greet on join is TTS-only, doesn't need STT) so a slow STT connect
+can't gate the greeting. Verify by a REAL test call (founder-gated on Vobiz routing + a call from
++917861019021) showing "WebSocket connected successfully" + audible greeting + a logged session row.
+Build log: `memory/build_log/wave-build-inbound-aim.md`. HOWTO (honest): `HOWTO-inbound-call.md`.
 
 ## 2026-06-11 — ARCHITECTURE DOC WAVE (master ARCHITECTURE.md + 6 deep-dives) ✅
 - Wrote `ARCHITECTURE.md` at repo root — the single onboarding map a new Claude-Code teammate reads to
@@ -72,8 +115,9 @@ Last updated: 2026-06-11
 ## A. CURRENT SNAPSHOT (what's live / building / queued)
 - **LIVE & verified:** voice calling (Run-a-Campaign), leads/calls/billing meter, multi-tenant Postgres+RLS, the 6 cred-free modules (forms, support, ai-manager-basic, workflow-studio, booking, funnels), Run-Campaign upgrade (CSV+Excel+filters), React-Flow Workflow builder, premium "Signal" UI + **Gilroy font + real logo**, the overhauled module pages. panel.famit.in healthy.
 - **AI MANAGER: ✅ DONE + ACTIVATED + 🎉 TEST CONSOLE FOUNDER-VERIFIED (2026-06-10)** — PIN `2468` set for tenant `admin`; the live Test Console runs the full loop (safe command read-only, risky command demands PIN `2468`, unsafe command blocked). All §10 routes 200 (`POST /ai-manager/commands/test` live). Note: PIN UI lives on `/ai-manager/users` (not `/setup`); `/ai-manager/history` should redirect to `/ai-manager/commands` — both minor, queued for frontend polish. Flags: `AIM_ENABLED=1 FEATURE_AI_MANAGER=1 AIM_LLM_PROVIDER=groq WORKFORCE_ENABLED=1`.
+- **AI MANAGER INBOUND PHONE LINE: ✅ ARMED our-side + ARM-VERIFIED (2026-06-11)** — call +918071583488 -> a SEPARATE LiveKit worker `agent_name="manager"` (`aim-voice-agent.service`, :8091, worker `AW_oB4R2aoYkBBp`) answers -> PIN -> NLU -> risk gate -> step-up -> EXECUTE via the AIM brain (same `CommandMachine`/`delegate.execute` as the chat Test Console). PIN now **`4827`** (firewall `check_pin("admin","4827")=True`). ADDITIVE: new inbound trunk `ST_K785ASpNh5ow` + dispatch `SDR_RaCvweSMA2p5` + tcp/5060 listener + 10-Vobiz-IP DOCKER-USER/UFW allowlist; **outbound earner trunks/agent BYTE-IDENTICAL + a live outbound call ran during wiring AND during arm-verify (0 5xx, 0 errors today)**. Arm-verify FOUND+FIXED 2 enrollment gaps (Unit 6 was never applied): seeded `ai_manager` registry for +917861019021 (3 caller-ID forms, tenant=admin/role=admin/verified) + set full `KNOWN_GRANTS` — else the live call would have hit `reject:unregistered` before the PIN, and risky cmds were perm-denied. End-to-end brain proof PASSES (PIN 4827 verifies, safe cmd no re-PIN, risky cmd demands step-up, scope-bound token mints+verifies, wrong-scope=None, 0 PIN leak). **REMAINING (founder-only):** point Vobiz inbound trunk URI -> `sip:168.144.153.145:5060` Transport **TCP** + link DID, then place the live call. Founder HOWTO: `caps/HOWTO-inbound-call.md`. Ledger `droplet_work/INBOUND_AIM_DEPLOY_STATE.md`; build log `memory/build_log/wave-build-inbound-aim.md`.
 - **BUILDING NOW:** (a) Control Layer build — run `wf_f3ae354a-1a7` (entitlement engine + HIDE=404/LOCK=402 middleware + Super Admin UI, dormant until T1–T18). (b) **UI OVERHAUL research** (read-only) — run `wf_d1baa873-edb`: founder VERY frustrated with UI; port his NEW reference React kit `C:\Users\kunal\Desktop\core-2-dashboard-builder-react` to ALL pages, fix font (looked unchanged = Gilroy 2-weight fallback to Inter), clean headings (no subtitle), consult frontend-design skill. → `UI_OVERHAUL_PLAN.md`.
-- **QUEUED (after Control Layer build; UI overhaul + voice can run parallel = different boxes):** (1) **UI OVERHAUL BUILD** — port the reference kit to every page + adopt its font app-wide + clean headings + simplify (esp. AI Manager); supersedes the minor polish (also fixes `/ai-manager/history`→`/commands`, PIN UI on setup). (2) AI Manager INBOUND voice wiring (TCP 5060 + allowlist 10 Vobiz IPs + inbound trunk/dispatch → AI Manager agent) per `design/aim-inbound-wiring-plan.md`; needs founder PIN (`2468` set). DID `+918071583488`, test caller `+917861019021`.
+- **QUEUED (after Control Layer build; UI overhaul + voice can run parallel = different boxes):** (1) **UI OVERHAUL BUILD** — port the reference kit to every page + adopt its font app-wide + clean headings + simplify (esp. AI Manager); supersedes the minor polish (also fixes `/ai-manager/history`→`/commands`, PIN UI on setup). (2) ✅ DONE — AI Manager INBOUND voice wiring ARMED + ARM-VERIFIED 2026-06-11 (TCP 5060 + 10 Vobiz IPs + inbound trunk `ST_K785ASpNh5ow`/dispatch `SDR_RaCvweSMA2p5` -> `manager` agent + registry/grants seeded; PIN `4827`). Only Vobiz-side URI->TCP + DID-link remains, then the founder's live call. See the AI MANAGER INBOUND line above + `HOWTO-inbound-call.md`.
 
 ## B. WAVE LEDGER (run-IDs for resume; newest first)
 | Wave | Run ID | Status | Builds / Result |
@@ -176,3 +220,43 @@ Inter Display app-wide (Gilroy removed from body cascade) + clean single-line he
   0 hidden reveals in print media, nav+sticky hidden, 8-page clean PDF, no cut cards. Mobile+desktop
   overflow_px=0 at true window sizes. README.md written for founder (open / Ctrl+P->PDF / swap
   logo+testimonials). NO git. _qa scratch (chrome profiles/screens/scripts) removed after pass.
+
+- FIX-FOUNDER-FLOWS wave (2026-06-11) — the 3 "still broken in the browser" flows, verified at the
+  USER->backend chain (not API bypass), then deployed. Report `memory/build_log/wave-build-fix-founder-flows.md`,
+  ledger `caps/FIX_WAVE_STATE.md`.
+  • FLOW 1 CONTROL = **FIXED + DEPLOYED**. Stale doc was wrong (nav already had feature_key + RouteEntitlementGate
+    mounted). REAL bug = FE/backend KEY MISMATCH: nav authored bare module keys `grow`/`sell`/`engage`/`ai_manager`/
+    `command`/`automate`/`intelligence`, but `/me/entitlements` modes uses `mod.grow`... -> module HIDE never dropped
+    the sidebar group (page children matched, so only the empty group header lingered). Live bundle confirmed buggy.
+    FE-only fix in `contstants/navigation.tsx` + `lib/api.ts FEATURE_REGISTRY` (module keys->mod.*, billing->
+    money.billing_overview). tsc/build clean. Deployed to live panel (backup `.next.CLfixbak.20260611-183733`).
+    Final live flow: admin HIDE mod.grow -> vendor modes['mod.grow']=hidden -> nav drops Grow + /campaigns 404;
+    LOCK->402; admin bypass; restore->on/200. Vendor genuinely cannot see it now. Backend untouched (already correct).
+  • FLOW 2 WORKFLOW = **PASS** (already built; engine LIVE). /workflows mounted (FEATURE_WORKFLOWS=1). Editor has
+    blank-from-scratch + click-to-add node + fullscreen+Esc. Live chain: create->save{draft}->validate ok->publish
+    v1->RUN ok run_id engine:in_process status:COMPLETED steps:2. Add node + save + publish + RUN executes for real.
+  • FLOW 3 WHATSAPP = **PASS**. whatsapp_builder mounted (FEATURE_WHATSAPP_BUILDER=1). AI generate (funded admin)
+    -> 3 Meta-compliant templates (groq llama-4-scout); validate authority passed; submit-to-meta route present.
+    Broke vendor -> insufficient_credits (₹4 est) = correct credit gate, not a bug.
+  • REGRESSION = **PASS**: core /campaigns /leads /me /me/entitlements /calls 200; famit-caller + famit-bridge(voice)
+    active; zero 5xx; test tenant clean; temp scripts removed from both boxes.
+
+## 2026-06-11 — CREATIVE STUDIO image-render fix (broken-icon / stuck-on-Rendering) ✅
+- SYMPTOM: thumbnails = broken-image icon; Generate sticks on "Rendering / 0 of 1" though the job
+  SUCCEEDS and the image IS stored. Browser couldn't DISPLAY the bytes.
+- ROOT CAUSE: private DO Spaces bucket (`capsy-recordings`, ACLs disabled) → direct private URL 403s
+  an `<img>`, and the `/raw` proxy needs X-Auth an `<img>` can't send → 401. FIX (already built by a
+  prior session, now VERIFIED LIVE): backend `ai_asset/store.py:_presign_row_urls` rewrites
+  url/thumb_url to a fresh 24h boto3 presigned GET (`creative.asset_library.spaces.presign`);
+  `/raw` 302-redirects spaces versions to it; frontend `app/creative/_components/AssetImage.tsx` =
+  native `<img>` (not next/image) with onError placeholder.
+- LIVE PROOF (curl as the browser `<img>`, UNAUTHENTICATED): list → presigned spaces url returns
+  **200 image/jpeg 63436 bytes** (magic ffd8ffe1). Generate n=1 pollinations (₹0, no OpenRouter) →
+  succeeded → new asset `ca_f500eeccdf8e4343` storage=spaces → presigned url **200 image/jpeg 63436b**.
+- SECONDARY (NOT code-fixable): 24 orphaned `local` rows (admin tenant) have EMPTY local_path AND url
+  (pre-Spaces failures, no bytes anywhere) → always broken icon. Recommend one-time DB cleanup.
+- FRONTEND DEPLOY: panel-box source == local (md5 identical). Rebuilt+redeployed panel so live build
+  embeds the verified AssetImage; backup `.next.renderfixbak.20260611-165608`. Build OOM-SIGKILLed on
+  the 1.9Gi box; added temp 3G swap (`/swapfile.build`) to complete it.
+- REGRESSION: caller/agent/bridge/aim-voice-agent/aiasset active; /campaigns 200; aiasset /status 200;
+  OpenRouter never called. Live earner untouched. Detail: `memory/build_log/wave-build-fix-platform.md` §image-render.

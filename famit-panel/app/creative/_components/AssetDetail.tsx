@@ -21,9 +21,9 @@ import Field from "@/components/Field";
 import Button from "@/components/Button";
 import Badge from "@/components/Badge";
 import Spinner from "@/components/Spinner";
-import Image from "@/components/Image";
 import Icon from "@/components/Icon";
 import type { TabsOption } from "@/types/tabs";
+import AssetImage from "./AssetImage";
 import VersionTimeline from "./VersionTimeline";
 import UsePicker from "./UsePicker";
 import {
@@ -163,20 +163,7 @@ const AssetDetail = ({ asset, open, onClose, onChanged }: AssetDetailProps) => {
                     <div className="grow overflow-y-auto px-6 pt-6 pb-4 scrollbar-none max-md:px-4">
                         {/* large preview */}
                         <div className="relative h-72 rounded-3xl overflow-hidden ring-1 ring-s-subtle ring-inset bg-b-surface1 dark:bg-shade-04/40">
-                            {src ? (
-                                <Image
-                                    className="object-cover opacity-100"
-                                    src={src}
-                                    alt={a.headline || "asset"}
-                                    fill
-                                    sizes="(max-width: 767px) 100vw, 420px"
-                                    unoptimized
-                                />
-                            ) : (
-                                <div className="absolute inset-0 flex items-center justify-center fill-t-tertiary">
-                                    <Icon name="camera-stroke" />
-                                </div>
-                            )}
+                            <AssetImage src={src} alt={a.headline || "asset"} rounded="rounded-3xl" />
                         </div>
 
                         {/* headline + badges */}

@@ -226,6 +226,10 @@ export type GenerateBody = {
     model?: string;
     brand_kit_id?: string;
     idempotency_key?: string;
+    /** The vendor's own raw image prompt. When present the backend SKIPS the
+     *  Stage-1 LLM prompt-builder and sends this text VERBATIM to the image AI
+     *  (ai_asset prompt_builder short-circuit). Blank → auto campaign prompt. */
+    custom_prompt?: string;
 };
 
 export type GenerateResult = {
@@ -326,6 +330,9 @@ export async function generate(body: GenerateBody): Promise<GenerateResult> {
     if (body.language) payload.language = body.language;
     if (body.model) payload.model = body.model;
     if (body.brand_kit_id) payload.brand_kit_id = body.brand_kit_id;
+    // The vendor's own prompt goes STRAIGHT to the image AI (backend skips Stage-1).
+    if (body.custom_prompt && body.custom_prompt.trim())
+        payload.custom_prompt = body.custom_prompt.trim();
     const res = await fetch(`${ASSET_BASE}/generate`, {
         method: "POST",
         headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },

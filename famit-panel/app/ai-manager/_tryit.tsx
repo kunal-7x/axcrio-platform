@@ -141,7 +141,7 @@ export default function TryItTab({ seedQuery = "" }: { seedQuery?: string }) {
     const threadRef = useRef<HTMLDivElement>(null);
 
     const loadSessions = useCallback(() => {
-        getAimSessions(20).then(setSessions);
+        getAimSessions({ limit: 20 }).then(setSessions);
     }, []);
     useEffect(() => {
         loadSessions();

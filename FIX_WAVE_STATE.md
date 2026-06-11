@@ -54,5 +54,19 @@ Stale doc said engine dormant + no click-add/blank/fullscreen. ALL OUTDATED — 
   Manual path = select/edit/approve a generated variation + submit-to-meta (routes present).
 => create a WhatsApp template (AI) -> created, Meta-compliant. WORKS (vendor needs wallet credits).
 
-## FLOW 4 — REGRESSION
-TODO: core /campaigns /leads /me 200, services active incl voice, zero 5xx.
+## FLOW 1 — DEPLOYED + VERIFIED (PASS)
+- Local: navigation.tsx + api.ts edited, tsc EXITCODE=0, next build EXITCODE=0.
+- Deployed to live panel root@143.110.247.249:/opt/famit-panel (.next via tarball, source files scp'd).
+  BACKUP: /opt/famit-panel/.next.CLfixbak.20260611-183733 (593M) + *.CLfixbak.20260611-183733 source.
+- Verified deployed bundle: bare module keys feature_key:"grow"/"sell"/... = 0; now mod.grow etc.
+- Panel healthy: localhost:3001/login 200, panel.famit.in/login 200, service active, no errors.
+- FINAL FOUNDER FLOW (live backend, test vendor 013a13841fd5):
+  admin HIDE mod.grow -> vendor modes['mod.grow']=hidden (deployed nav reads this -> drops Grow group);
+  child grow.campaigns rolled hidden; vendor GET /campaigns 404; ADMIN GET /campaigns 200 (bypass);
+  LOCK grow.campaigns -> 402 (proven separately); RESTORE -> all 'on', /campaigns 200. PASS.
+
+## FLOW 4 — REGRESSION — PASS
+core /campaigns /leads /me /me/entitlements /calls all 200 (vendor token); famit-caller + famit-bridge(voice) active; zero 5xx. Test tenant clean (no leftover overrides). Both boxes temp-cleaned.
+
+## ROLLBACK (if needed)
+Panel: cd /opt/famit-panel; rm -rf .next; mv .next.CLfixbak.20260611-183733 .next; restore the two *.CLfixbak source files; systemctl restart famit-panel. Backend untouched all along.
