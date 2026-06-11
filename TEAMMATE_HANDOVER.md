@@ -4,9 +4,12 @@ Welcome. This is the Famit / Axcrio platform repo. It is a **private** GitHub
 repo. Below is everything you need to clone, branch, and start — plus the list of
 secret files you must get **separately** (they are deliberately NOT in git).
 
+**Repo URL (private):** https://github.com/kunal-7x/axcrio-platform
+(ask the founder for collaborator access if `git clone` 404s.)
+
 ## 1. Clone + branch (never push to `main`)
 ```bash
-git clone <REPO_URL>          # the private repo URL (see top of this file once filled)
+git clone https://github.com/kunal-7x/axcrio-platform.git
 cd <repo>
 git checkout -b feat/<your-name>   # always work on your own branch
 # ...do work, commit per verified unit...
