@@ -22,7 +22,7 @@ import GenerationLoader, { type GenerationLoaderState } from "@/components/Gener
 import AiSuggestionCard from "../_components/AiSuggestionCard";
 import ComingSoon from "../_components/ComingSoon";
 import NoInventNote from "../_components/NoInventNote";
-import { generateTemplates } from "../_lib/waapi";
+import { generateTemplates, submitTemplateToMeta, type MetaReview } from "../_lib/waapi";
 import { type StepCtx, type TemplateSuggestion } from "../_lib/types";
 
 // A small inline panel for the "engine ran but produced nothing" case (real
@@ -75,7 +75,11 @@ export default function TemplatesStep({ campaign, context, draft, setDraft, goTo
     const [loaderState, setLoaderState] = useState<GenerationLoaderState>("loading");
     const [suggestions, setSuggestions] = useState<TemplateSuggestion[]>([]);
     const [rationale, setRationale] = useState<string>("");
+    const [partial, setPartial] = useState(false);
     const [failure, setFailure] = useState<{ message: string; errorCode?: string }>({ message: "" });
+    // per-card Meta review + in-flight submit (keyed by template_id)
+    const [reviewMap, setReviewMap] = useState<Record<string, MetaReview>>({});
+    const [submittingId, setSubmittingId] = useState<string>("");
 
     const run = useCallback(async () => {
         setPhase("loading");
@@ -100,6 +104,7 @@ export default function TemplatesStep({ campaign, context, draft, setDraft, goTo
         }
         setSuggestions(r.suggestions);
         setRationale(r.rationale || "");
+        setPartial(!!r.partial);
         setLoaderState("completed");
     }, [campaign?.id, context.goal, context.audience, draft.language]);
 
@@ -116,9 +121,35 @@ export default function TemplatesStep({ campaign, context, draft, setDraft, goTo
             angle: s.angle,
             language: s.language || draft.language,
             campaign_id: campaign?.id,
+            // carry the persisted row id so Preview/Approval can submit THIS
+            // template to Meta (approve → submit-to-meta → poll status).
+            template_id: s.template_id,
+            meta_template_status: "none",
         });
         notify("Template applied — review and refine it next", "success");
         goTo("preview");
+    };
+
+    // Submit THIS suggestion's persisted row to Meta directly (approve → submit).
+    // Dormant-safe: a not-connected backend shows a toast, never an error wall.
+    const submitMeta = async (s: TemplateSuggestion) => {
+        if (!s.template_id) {
+            notify("Open this template and submit it from the Approval step", "error");
+            return;
+        }
+        setSubmittingId(s.template_id);
+        const r = await submitTemplateToMeta({ templateId: s.template_id });
+        setSubmittingId("");
+        if (!r.configured) {
+            notify("WhatsApp isn’t connected on this account yet", "error");
+            return;
+        }
+        if (r.submitted) {
+            setReviewMap((m) => ({ ...m, [s.template_id!]: r.review }));
+            notify("Sent to Meta for review", "success");
+        } else {
+            notify(r.message || "Couldn’t submit to Meta right now", "error");
+        }
     };
 
     // Seed a blank manual draft (keeps any chosen language) and jump to the
@@ -204,6 +235,15 @@ export default function TemplatesStep({ campaign, context, draft, setDraft, goTo
             }
         >
             <div className="px-5 pb-5 pt-1 flex flex-col gap-4 max-lg:px-3">
+                {partial && (
+                    <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle text-body-2 text-t-secondary">
+                        <Icon className="shrink-0 mt-px fill-primary-05 !size-4" name="info" />
+                        <span>
+                            We wrote these from your campaign — a couple were finished with our
+                            built-in copywriter rather than the AI. They’re ready to use; refine any of them next.
+                        </span>
+                    </div>
+                )}
                 {rationale && (
                     <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle text-body-2 text-t-secondary">
                         <Icon className="shrink-0 mt-px fill-primary-01 !size-4" name="magic-pencil" />
@@ -218,6 +258,9 @@ export default function TemplatesStep({ campaign, context, draft, setDraft, goTo
                             suggestion={s}
                             onUse={() => use(s)}
                             onRegenerate={() => setPhase("idle")}
+                            onSubmitMeta={s.template_id ? () => submitMeta(s) : undefined}
+                            submitting={!!s.template_id && submittingId === s.template_id}
+                            review={(s.template_id && reviewMap[s.template_id]) || "none"}
                         />
                     ))}
                 </div>

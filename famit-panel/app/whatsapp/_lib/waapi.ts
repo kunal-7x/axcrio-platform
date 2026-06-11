@@ -131,6 +131,22 @@ function asSuggestion(r: Record<string, unknown>, i: number): TemplateSuggestion
         | null;
     const buttons = Array.isArray(r.buttons) ? (r.buttons as Record<string, unknown>[]) : [];
     const firstBtn = buttons.length ? buttons[0] : null;
+    // The persisted row carries `template_id` + lifecycle `status` + a `compliance`
+    // object. We thread template_id through so the builder can later approve →
+    // submit-to-Meta → poll meta-status against THIS exact row (the LIVE path).
+    const templateId =
+        (r.template_id as string) ?? (r.id as string) ?? undefined;
+    const compliance = (r.compliance && typeof r.compliance === "object"
+        ? (r.compliance as Record<string, unknown>)
+        : null);
+    // Meta-valid enough to submit? Tolerant of a few backend shapes; defaults to
+    // true (the approve gate is the real authority — we never block optimistically).
+    const canSubmit =
+        compliance == null
+            ? true
+            : (compliance.ok as boolean | undefined) ??
+              (compliance.valid as boolean | undefined) ??
+              (Array.isArray(compliance.errors) ? compliance.errors.length === 0 : true);
     return {
         id: String(r.id ?? r.template_id ?? `t${i}`),
         name: String(r.name ?? r.template_name ?? `Template ${i + 1}`),
@@ -144,6 +160,9 @@ function asSuggestion(r: Record<string, unknown>, i: number): TemplateSuggestion
         media_rec: (r.media_rec as string) ?? (r.media_recommendation as string) ?? undefined,
         language: (r.language as string) ?? undefined,
         rationale: (r.rationale as string) ?? undefined,
+        template_id: templateId,
+        status: (r.status as string) ?? undefined,
+        canSubmit,
     };
 }
 
@@ -170,6 +189,10 @@ export type GenerateResult = {
     suggestions: TemplateSuggestion[];
     rationale?: string;
     ok: boolean;
+    // The engine produced templates but flagged the run as partial (e.g. a model
+    // hiccup fell back to deterministic copy). NOT a failure — show the cards + a
+    // small note. `ok` stays true; `partial` just drives the advisory banner.
+    partial?: boolean;
     errorCode?: string; // e.g. "insufficient_credits"
     message?: string; // founder-readable explanation
     estimateMinor?: number; // credits the run would cost (paise)
@@ -224,6 +247,12 @@ export async function generateTemplates(input: {
             );
             // The route answers 200 even on failure, signalling via
             // status:"error:<code>" and/or error:"<code>". Normalize that.
+            //   • "accepted" / "draft" / "partial"  → SUCCESS shape (real templates).
+            //   • "error" / "error:<code>"           → real failure (credits/empty/…).
+            // CRITICAL (the fix): a "partial" bundle that STILL carries templates is
+            // a SUCCESS — the founder gets the AI/fallback cards plus a small note,
+            // NEVER a "couldn't generate / try again" wall. We only fail on a status
+            // that starts with "error" OR a genuinely empty grid.
             const statusStr = String(d.status ?? "");
             const rawErr =
                 (d.error as string) ??
@@ -231,17 +260,158 @@ export async function generateTemplates(input: {
                 "";
             const estimateMinor =
                 typeof d.estimate_minor === "number" ? d.estimate_minor : undefined;
-            const hadError = !!rawErr || statusStr.startsWith("error");
+            const partial = statusStr === "partial" || statusStr.startsWith("partial");
+            // A real failure = an explicit error status/code. A non-empty grid is a
+            // success even when the status string is unexpected (forward-compatible).
+            const hadError = statusStr.startsWith("error") || (!!rawErr && suggestions.length === 0);
             const ok = !hadError && suggestions.length > 0;
             return {
                 suggestions,
                 rationale: (d.rationale as string) ?? undefined,
                 ok,
+                partial: ok && partial,
                 errorCode: rawErr || (hadError ? "unknown" : suggestions.length ? undefined : "empty"),
                 message: ok
                     ? undefined
                     : explainGenError(rawErr || "empty", estimateMinor),
                 estimateMinor,
+            };
+        }
+    );
+}
+
+// ── ③b Submit-to-Meta — the LIVE builder gate → Meta review ─────────────────
+// The persisted ai_wa_templates row drives three real routes (all token-derived,
+// prefix /whatsapp/campaign):
+//   POST …/templates/{id}/approve        — builder-internal gate (must pass first)
+//   POST …/templates/{id}/attach-banner  — bind an approved Creative asset_id as
+//                                           the IMAGE header (backend then resolves
+//                                           bytes → DO Spaces → Meta resumable handle)
+//   POST …/templates/{id}/submit-to-meta — submit the APPROVED template to Meta
+//   GET  …/templates/{id}/meta-status    — poll PENDING/APPROVED/REJECTED
+// All dormant-safe: a 404/503/network resolves to {configured:false} (the surface
+// shows a calm "not connected" note), NEVER an error wall.
+
+export type MetaReview = "none" | "pending" | "approved" | "rejected";
+
+function normalizeReview(s: unknown): MetaReview {
+    const v = String(s ?? "").toLowerCase();
+    if (v === "approved") return "approved";
+    if (v === "rejected") return "rejected";
+    if (v === "pending" || v === "submitted" || v === "in_review") return "pending";
+    return "none";
+}
+
+// Bind an APPROVED Creative asset as the template's IMAGE header. The backend
+// resolves the asset's URL → resumable upload → header_handle at submit time.
+export async function attachBanner(
+    templateId: string,
+    assetId: string
+): Promise<Dormant<{ ok: boolean; error?: string }>> {
+    return safePost(
+        `/whatsapp/campaign/templates/${encodeURIComponent(templateId)}/attach-banner`,
+        { asset_id: assetId },
+        (data) => {
+            const d = (data ?? {}) as Record<string, unknown>;
+            const status = String(d.status ?? "");
+            return {
+                ok: status !== "refused" && status !== "error",
+                error: (d.error as string) ?? undefined,
+            };
+        }
+    );
+}
+
+// Approve (builder gate) → optionally attach a banner → submit to Meta, in one
+// call the founder triggers from one "Submit to Meta" button. Returns the live
+// review state + any human-readable reason. Dormant-safe end to end.
+export type SubmitResult = {
+    submitted: boolean;
+    review: MetaReview;
+    metaTemplateId?: string;
+    // a founder-readable reason when NOT submitted (refused gate / Meta error)
+    message?: string;
+};
+
+function explainSubmit(code: string): string {
+    switch (code) {
+        case "template_not_approved":
+            return "The template didn’t pass the internal quality gate, so it wasn’t sent to Meta. Edit the copy and try again.";
+        case "asset_not_approved":
+            return "The attached banner isn’t approved yet. Approve the banner first, then submit.";
+        case "asset_not_found_or_cross_tenant":
+        case "cross_tenant_asset":
+            return "That banner couldn’t be found for your account. Pick a banner you own, then submit.";
+        case "not_configured":
+            return "WhatsApp isn’t connected on this account yet, so the template can’t be submitted to Meta.";
+        default:
+            return code.startsWith("http_")
+                ? "Meta couldn’t accept the template just now. Try again in a moment."
+                : "The template couldn’t be submitted to Meta right now. Try again.";
+    }
+}
+
+export async function submitTemplateToMeta(input: {
+    templateId: string;
+    assetId?: string; // optional banner to bind as the IMAGE header before submit
+}): Promise<Dormant<SubmitResult>> {
+    const { templateId, assetId } = input;
+    if (!templateId) return { configured: false, reason: "no_template" };
+
+    // 1) builder-internal approve gate (submit-to-Meta requires status=approved)
+    const appr = await safePost(
+        `/whatsapp/campaign/templates/${encodeURIComponent(templateId)}/approve`,
+        {},
+        (data) => {
+            const d = (data ?? {}) as Record<string, unknown>;
+            return { status: String(d.status ?? ""), error: (d.error as string) ?? "" };
+        }
+    );
+    if (!appr.configured) return { configured: false, reason: appr.reason };
+    if (appr.status === "refused") {
+        return { configured: true, submitted: false, review: "none", message: explainSubmit(appr.error || "template_not_approved") };
+    }
+
+    // 2) optional banner attach (best-effort — a failed attach must NOT block a
+    //    text-only submit; we surface it only if it refuses)
+    if (assetId) {
+        const at = await attachBanner(templateId, assetId);
+        if (at.configured && !at.ok) {
+            return { configured: true, submitted: false, review: "none", message: explainSubmit(at.error || "asset_not_approved") };
+        }
+    }
+
+    // 3) submit to Meta
+    return safePost(
+        `/whatsapp/campaign/templates/${encodeURIComponent(templateId)}/submit-to-meta`,
+        {},
+        (data) => {
+            const d = (data ?? {}) as Record<string, unknown>;
+            const status = String(d.status ?? "");
+            const submitted = status === "submitted";
+            const code = (d.error as string) || (d.detail as string) || status;
+            return {
+                submitted,
+                review: submitted ? normalizeReview(d.review_status ?? "PENDING") : "none",
+                metaTemplateId: (d.meta_template_id as string) || undefined,
+                message: submitted ? undefined : explainSubmit(code || "unknown"),
+            };
+        }
+    );
+}
+
+// Poll a submitted template's Meta review state (for the PENDING→APPROVED badge).
+export async function getMetaStatus(
+    templateId: string
+): Promise<Dormant<{ review: MetaReview; rejectionReason?: string }>> {
+    if (!templateId) return { configured: false, reason: "no_template" };
+    return safeGet(
+        `/whatsapp/campaign/templates/${encodeURIComponent(templateId)}/meta-status`,
+        (data) => {
+            const d = (data ?? {}) as Record<string, unknown>;
+            return {
+                review: normalizeReview(d.review_status),
+                rejectionReason: (d.rejection_reason as string) || undefined,
             };
         }
     );

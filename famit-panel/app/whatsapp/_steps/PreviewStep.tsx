@@ -44,21 +44,36 @@ export default function PreviewStep({ draft, setDraft, goTo, writable, notify }:
                             onChange={(e) => setDraft({ name: e.target.value })}
                         />
 
-                        {/* attached banner row */}
-                        <div className="flex items-center gap-3 p-3 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle">
-                            <div className="relative size-14 shrink-0 rounded-2xl overflow-hidden bg-b-surface1">
+                        {/* header banner — becomes the WhatsApp IMAGE header on the
+                            template. Bound to an approved Creative asset (asset_id);
+                            on Submit-to-Meta the backend turns it into a real Meta
+                            header_handle. No banner ⇒ a clean text-header template. */}
+                        <div>
+                            <div className="mb-3 text-button">Header banner <span className="text-caption text-t-tertiary font-normal">(optional — shows above the message)</span></div>
+                            <div className="flex items-center gap-3 p-3 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle">
+                                <div className="relative size-14 shrink-0 rounded-2xl overflow-hidden bg-b-surface1">
+                                    {draft.asset_url ? (
+                                        <Image className="object-cover" src={draft.asset_url} alt="" fill sizes="56px" />
+                                    ) : (
+                                        <div className="flex items-center justify-center h-full"><Icon className="fill-t-tertiary" name="camera" /></div>
+                                    )}
+                                </div>
+                                <div className="grow min-w-0">
+                                    <div className="text-button text-t-primary">{draft.asset_url ? "Banner attached" : "No banner"}</div>
+                                    <div className="text-caption text-t-tertiary">{draft.asset_url ? "Sent as the WhatsApp header image" : "Pick or generate one — it’s sent to Meta with the template"}</div>
+                                </div>
                                 {draft.asset_url ? (
-                                    <Image className="object-cover" src={draft.asset_url} alt="" fill sizes="56px" />
+                                    <>
+                                        <Button isStroke icon="camera" onClick={() => goTo("creative")}>Change</Button>
+                                        <Button isStroke icon="magic-pencil" onClick={() => goTo("banner")}>Generate</Button>
+                                    </>
                                 ) : (
-                                    <div className="flex items-center justify-center h-full"><Icon className="fill-t-tertiary" name="camera" /></div>
+                                    <>
+                                        <Button isStroke icon="camera" onClick={() => goTo("creative")}>Add banner</Button>
+                                        <Button isStroke icon="magic-pencil" onClick={() => goTo("banner")}>Generate</Button>
+                                    </>
                                 )}
                             </div>
-                            <div className="grow min-w-0">
-                                <div className="text-button text-t-primary">{draft.asset_url ? "Banner attached" : "No banner"}</div>
-                                <div className="text-caption text-t-tertiary">Header media</div>
-                            </div>
-                            <Button isStroke onClick={() => goTo("creative")}>Change</Button>
-                            <Button isStroke onClick={() => goTo("banner")}>Edit</Button>
                         </div>
 
                         <Field

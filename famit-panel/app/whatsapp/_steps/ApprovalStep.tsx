@@ -1,21 +1,27 @@
 // ⑦ APPROVAL — the content-policy gate (two gates, in order). A review card +
 // a creative-quality checklist, then (a) asset-approval (creative.approve) and
-// (b) WhatsApp send-approval. Meta template status is SHOWN, never faked.
+// (b) the LIVE Submit-to-Meta gate: approve (builder) → submit-to-Meta → poll the
+// real PENDING/APPROVED/REJECTED review state. Meta's status is SHOWN, never faked.
 //
-// Non-writers see read-only state. The asset-approval call is DORMANT-SAFE: when
-// :8310 is dormant the gate degrades to a calm "approval not yet wired" state and
-// the user can still proceed to Audience (the LIVE path) for open-session/manual.
+// Non-writers see read-only state. Every backend call is DORMANT-SAFE: when the
+// builder/asset service is dormant the gate degrades to a calm "not connected"
+// note and the user can still proceed to Audience (the LIVE open-session path).
 
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Badge from "@/components/Badge";
 import Icon from "@/components/Icon";
 import Modal from "@/components/Modal";
 import PhonePreview from "../_components/PhonePreview";
-import { approveAsset } from "../_lib/waapi";
+import {
+    approveAsset,
+    submitTemplateToMeta,
+    getMetaStatus,
+    type MetaReview,
+} from "../_lib/waapi";
 import { type StepCtx } from "../_lib/types";
 
 const CHECKS = [
@@ -25,9 +31,38 @@ const CHECKS = [
     { label: "Platform-fit (WhatsApp)", ok: true },
 ];
 
+// Map the four Meta review states → premium Badge + label (shown, never faked).
+function reviewBadge(review: MetaReview) {
+    switch (review) {
+        case "approved":
+            return { variant: "success" as const, label: "Approved by Meta" };
+        case "rejected":
+            return { variant: "danger" as const, label: "Rejected by Meta" };
+        case "pending":
+            return { variant: "warning" as const, label: "Pending Meta approval" };
+        default:
+            return { variant: "neutral" as const, label: "Not submitted" };
+    }
+}
+
 export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }: StepCtx) {
     const [confirm, setConfirm] = useState(false);
     const [busy, setBusy] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [submitNote, setSubmitNote] = useState<string>("");
+
+    // The live Meta review state for the persisted template row. Seeded from the
+    // draft, then refreshed by submit + polling.
+    const seedReview: MetaReview =
+        draft.meta_template_status === "approved"
+            ? "approved"
+            : draft.meta_template_status === "rejected"
+            ? "rejected"
+            : draft.meta_template_status === "pending"
+            ? "pending"
+            : "none";
+    const [review, setReview] = useState<MetaReview>(seedReview);
+    const [rejectionReason, setRejectionReason] = useState<string>(draft.meta_rejection_reason || "");
 
     async function approve() {
         setBusy(true);
@@ -43,21 +78,70 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
         goTo("audience");
     }
 
+    // ── LIVE Submit-to-Meta: approve (builder) → optional banner attach → submit.
+    const doSubmit = useCallback(async () => {
+        if (!draft.template_id) {
+            setSubmitNote(
+                "This template wasn’t created through the AI builder, so it can’t be submitted to Meta automatically. Use an AI-generated template, or send it as an open-session message."
+            );
+            return;
+        }
+        setSubmitting(true);
+        setSubmitNote("");
+        const r = await submitTemplateToMeta({
+            templateId: draft.template_id,
+            assetId: draft.asset_id, // bind the banner as the IMAGE header (if any)
+        });
+        if (!r.configured) {
+            setSubmitNote(
+                "WhatsApp isn’t connected on this account yet — the template can’t be submitted to Meta. You can still send open-session messages."
+            );
+            setSubmitting(false);
+            return;
+        }
+        if (r.submitted) {
+            setReview(r.review);
+            setDraft({
+                meta_template_status: r.review === "approved" ? "approved" : r.review === "rejected" ? "rejected" : "pending",
+                meta_template_id: r.metaTemplateId,
+            });
+            notify("Sent to Meta for review — we’ll track the status here", "success");
+        } else {
+            setSubmitNote(r.message || "The template couldn’t be submitted to Meta right now.");
+        }
+        setSubmitting(false);
+    }, [draft.template_id, draft.asset_id, setDraft, notify]);
+
+    // ── Poll the real Meta review state while PENDING (every 12s, self-cleaning).
+    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    useEffect(() => {
+        if (review !== "pending" || !draft.template_id) return;
+        const tick = async () => {
+            const r = await getMetaStatus(draft.template_id!);
+            if (!r.configured) return;
+            if (r.review !== "none" && r.review !== "pending") {
+                setReview(r.review);
+                if (r.rejectionReason) setRejectionReason(r.rejectionReason);
+                setDraft({
+                    meta_template_status: r.review,
+                    meta_rejection_reason: r.rejectionReason,
+                });
+            }
+        };
+        pollRef.current = setInterval(tick, 12000);
+        return () => {
+            if (pollRef.current) clearInterval(pollRef.current);
+        };
+    }, [review, draft.template_id, setDraft]);
+
     const assetState = draft.asset_approved
         ? { variant: "success" as const, label: "Approved" }
         : draft.asset_id
         ? { variant: "warning" as const, label: "Pending approval" }
         : { variant: "neutral" as const, label: "No banner" };
 
-    const metaStatus = draft.meta_template_status || "none";
-    const metaBadge =
-        metaStatus === "approved"
-            ? { variant: "success" as const, label: "Approved" }
-            : metaStatus === "rejected"
-            ? { variant: "danger" as const, label: "Rejected" }
-            : metaStatus === "pending"
-            ? { variant: "warning" as const, label: "Pending Meta approval" }
-            : { variant: "neutral" as const, label: "Not submitted" };
+    const metaBadge = reviewBadge(review);
+    const canSubmit = review === "none" || review === "rejected";
 
     return (
         <>
@@ -83,6 +167,7 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
                                 </div>
                                 <Badge variant={assetState.variant}>{assetState.label}</Badge>
                             </div>
+
                             <div className="flex items-center gap-3 p-3.5 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle">
                                 <div className="grow">
                                     <div className="text-button text-t-primary">Meta template approval</div>
@@ -91,10 +176,53 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
                                 <Badge variant={metaBadge.variant}>{metaBadge.label}</Badge>
                             </div>
 
+                            {/* live rejection reason, surfaced verbatim from Meta */}
+                            {review === "rejected" && rejectionReason && (
+                                <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface1 ring-1 ring-s-subtle text-body-2 text-t-secondary">
+                                    <Icon className="shrink-0 mt-px fill-primary-05 !size-4" name="info" />
+                                    <span>
+                                        <span className="text-t-primary">Meta’s reason:</span> {rejectionReason}
+                                    </span>
+                                </div>
+                            )}
+
+                            {/* submit note (refused gate / not-an-AI-template / dormant) */}
+                            {submitNote && (
+                                <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface1 ring-1 ring-s-subtle text-body-2 text-t-secondary">
+                                    <Icon className="shrink-0 mt-px fill-primary-05 !size-4" name="info" />
+                                    <span>{submitNote}</span>
+                                </div>
+                            )}
+
                             {writable ? (
-                                <Button isBlack className="w-full" disabled={busy} onClick={() => setConfirm(true)}>
-                                    Approve &amp; continue to audience
-                                </Button>
+                                <>
+                                    {/* LIVE Submit-to-Meta — approve (builder) → submit */}
+                                    {canSubmit && (
+                                        <Button
+                                            isStroke
+                                            className="w-full"
+                                            icon="upload"
+                                            disabled={submitting}
+                                            onClick={doSubmit}
+                                        >
+                                            {submitting
+                                                ? "Submitting to Meta…"
+                                                : review === "rejected"
+                                                ? "Fix & resubmit to Meta"
+                                                : "Submit template to Meta"}
+                                        </Button>
+                                    )}
+                                    {review === "pending" && (
+                                        <div className="flex items-center gap-2 p-3.5 rounded-3xl bg-b-surface1 text-caption text-t-tertiary">
+                                            <Icon className="fill-t-tertiary !size-4" name="clock" />
+                                            Submitted — waiting on Meta. This status updates automatically.
+                                        </div>
+                                    )}
+
+                                    <Button isBlack className="w-full" disabled={busy} onClick={() => setConfirm(true)}>
+                                        Approve &amp; continue to audience
+                                    </Button>
+                                </>
                             ) : (
                                 <div className="flex items-center gap-2 p-3.5 rounded-3xl bg-b-surface1 text-caption text-t-tertiary">
                                     <Icon className="fill-t-tertiary !size-4" name="lock" />

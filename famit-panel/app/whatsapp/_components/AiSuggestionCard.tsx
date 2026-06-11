@@ -13,7 +13,22 @@ type AiSuggestionCardProps = {
     onUse: () => void;
     onRegenerate?: () => void;
     onMore?: () => void;
+    // Direct "Submit to Meta" on the card (approve → submit-to-Meta on THIS row).
+    onSubmitMeta?: () => void;
+    submitting?: boolean;
+    // live Meta review state for this template (badge): none|pending|approved|rejected
+    review?: "none" | "pending" | "approved" | "rejected";
     busy?: boolean;
+};
+
+const REVIEW_BADGE: Record<
+    NonNullable<AiSuggestionCardProps["review"]>,
+    { variant: "success" | "danger" | "warning" | "neutral"; label: string } | null
+> = {
+    none: null,
+    pending: { variant: "warning", label: "Pending Meta" },
+    approved: { variant: "success", label: "Approved by Meta" },
+    rejected: { variant: "danger", label: "Rejected by Meta" },
 };
 
 // Highlight {{n}} personalization tokens inline (master: tokens are real merge
@@ -39,17 +54,21 @@ const AiSuggestionCard = ({
     onUse,
     onRegenerate,
     onMore,
+    onSubmitMeta,
+    submitting,
+    review = "none",
     busy,
-}: AiSuggestionCardProps) => (
+}: AiSuggestionCardProps) => {
+    const reviewBadge = REVIEW_BADGE[review];
+    return (
     <div className="flex flex-col p-5 rounded-3xl bg-b-surface2 ring-1 ring-s-subtle">
         <div className="flex items-start gap-3">
             <div className="grow min-w-0">
                 <div className="text-sub-title-1 text-t-primary truncate">{suggestion.name}</div>
-                {suggestion.angle && (
-                    <Badge className="mt-1.5" variant="info">
-                        {suggestion.angle}
-                    </Badge>
-                )}
+                <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {suggestion.angle && <Badge variant="info">{suggestion.angle}</Badge>}
+                    {reviewBadge && <Badge variant={reviewBadge.variant}>{reviewBadge.label}</Badge>}
+                </div>
             </div>
         </div>
 
@@ -75,6 +94,11 @@ const AiSuggestionCard = ({
             <Button isBlack onClick={onUse} disabled={busy}>
                 Use this
             </Button>
+            {onSubmitMeta && review !== "approved" && review !== "pending" && (
+                <Button isStroke icon="upload" onClick={onSubmitMeta} disabled={busy || submitting}>
+                    {submitting ? "Submitting…" : review === "rejected" ? "Resubmit to Meta" : "Submit to Meta"}
+                </Button>
+            )}
             {onRegenerate && (
                 <Button isStroke icon="magic-pencil" onClick={onRegenerate} disabled={busy}>
                     Regenerate
@@ -87,6 +111,7 @@ const AiSuggestionCard = ({
             )}
         </div>
     </div>
-);
+    );
+};
 
 export default AiSuggestionCard;

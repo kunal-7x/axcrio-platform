@@ -90,6 +90,13 @@ export type TemplateSuggestion = {
     media_rec?: string; // "pair with a WhatsApp poster"
     language?: string;
     rationale?: string; // "Built from: objective=…, audience=…"
+    // The persisted backend row id (ai_wa_templates.template_id). Carried so the
+    // builder can later approve → submit-to-Meta → poll meta-status on THIS row.
+    template_id?: string;
+    // The builder-internal lifecycle status (draft | approved | submitted | …).
+    status?: string;
+    // Whether the backend says this template is Meta-valid enough to submit.
+    canSubmit?: boolean;
 };
 
 // ── The draft template being assembled (carried across steps) ───────────────
@@ -109,6 +116,13 @@ export type TemplateDraft = {
     // gates (surfaced as chips on ⑦/⑨)
     asset_approved?: boolean;
     meta_template_status?: "none" | "pending" | "approved" | "rejected";
+    // the persisted ai_wa_templates row this draft was applied from — REQUIRED to
+    // approve → submit-to-Meta → poll meta-status (the LIVE builder backend path).
+    template_id?: string;
+    // Meta's own returned id once submitted (provenance; shown read-only).
+    meta_template_id?: string;
+    // Meta's rejection reason, surfaced verbatim when status === "rejected".
+    meta_rejection_reason?: string;
 };
 
 export const EMPTY_DRAFT: TemplateDraft = {
