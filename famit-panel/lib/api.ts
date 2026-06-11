@@ -43,6 +43,19 @@ export type Lead = {
     last_outcome?: string;
     last_call_at?: string;
     hot?: boolean;
+    // Run-Campaign audience builder (additive, back-compat) — present only on
+    // leads added via a file upload; legacy rows omit these.
+    tags?: string[];
+    batch_id?: string;
+    source_file?: string;
+};
+
+// An uploaded-file lead batch (one CSV/XLSX import = one logical batch).
+export type UploadBatch = {
+    batch_id: string;
+    source_file: string;
+    count: number;
+    added_at: string;
 };
 
 export type CallLog = {
@@ -130,6 +143,211 @@ export async function getMe(): Promise<Me> {
     return res.json();
 }
 
+// ---- Control Layer (CL-F0) — versioned entitlements ----
+// The 3-state verdict the backend resolves per feature_key. Matches the
+// `/me/entitlements` contract in design/control-realtime-enforcement.md §1.2.
+//   "on"     -> fully available
+//   "locked" -> visible-but-locked (upsell overlay; backend 402s the route)
+//   "hidden" -> gone everywhere   (backend 404s the route — no existence leak)
+export type EntitlementMode = "on" | "locked" | "hidden";
+
+export type EntitlementsPayload = {
+    version: number;
+    status: string; // active | trial | suspended | disabled | expired
+    plan: string;
+    modes: Record<string, EntitlementMode>;
+};
+
+// Conditional GET with If-None-Match. Returns:
+//   { payload, etag }  on a 200 (a real change — caller swaps the map)
+//   { notModified:true, etag } on a 304 (cheap no-op — nothing changed)
+// Never throws on 304; a 401 still redirects via handle401. A missing/older
+// backend (404 on the route) resolves to a permissive all-on map so the panel
+// degrades to its pre-control behaviour (resting-state parity).
+export type EntitlementsFetch =
+    | { notModified: true; etag: string | null; status: number }
+    | { notModified: false; payload: EntitlementsPayload; etag: string | null; status: number };
+
+export async function getEntitlements(etag?: string | null): Promise<EntitlementsFetch> {
+    const headers: Record<string, string> = { ...(authHeaders() as Record<string, string>) };
+    if (etag) headers["If-None-Match"] = etag;
+    const res = await fetch(`${BASE}/me/entitlements`, { headers, cache: "no-store" });
+    await handle401(res);
+    const respEtag = res.headers.get("ETag");
+    if (res.status === 304) {
+        return { notModified: true, etag: etag ?? respEtag, status: 304 };
+    }
+    if (res.status === 404) {
+        // Backend hasn't shipped the endpoint yet (CONTROL disabled / older box).
+        // Resolve to a permissive map so nothing is hidden/locked pre-control.
+        return {
+            notModified: false,
+            status: 404,
+            etag: null,
+            payload: { version: 0, status: "active", plan: "", modes: {} },
+        };
+    }
+    if (!res.ok) throw new Error("Failed to fetch entitlements");
+    const payload = (await res.json()) as EntitlementsPayload;
+    return { notModified: false, payload, etag: respEtag ?? null, status: 200 };
+}
+
+// ============================================================
+// CL-F3 — SUPER ADMIN control plane (/admin/*) bindings.
+// All admin-gated server-side (require_super_admin -> 403 for vendors / legacy-pw;
+// tenant ALWAYS token-derived). Every write is audited to the immutable events leg
+// (channel=control). These are COSMETIC clients — the backend choke-point is the
+// only real boundary. Each call degrades gracefully on a 404 (older box / CONTROL
+// off / route not mounted) to an empty-but-valid shape so the page never error-walls.
+// Contract: caller.py /admin/{features,flags,plans,vendors} + /audit?channel=control.
+// ============================================================
+
+// The 3-state verdict, reused from the entitlement contract above.
+export type FeatureMode = EntitlementMode; // "on" | "locked" | "hidden"
+
+// One row of the global feature_registry catalog.
+export type FeatureRegistryRow = {
+    key: string;
+    kind: string; // module | page | feature | action | integration | ai_agent | api
+    parent_key: string | null;
+    label: string;
+    nav_href: string | null;
+    api_prefixes?: string[];
+    default_mode: FeatureMode;
+    is_core: boolean;
+    min_role?: string | null;
+    sort_order?: number;
+};
+
+export async function getAdminFeatures(): Promise<{ features: FeatureRegistryRow[] }> {
+    const res = await fetch(`${BASE}/admin/features`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { features: [] };
+    if (!res.ok) throw new Error("Failed to fetch feature catalog");
+    return res.json();
+}
+
+// Global default_mode per feature_key (the baseline every vendor inherits).
+export async function getAdminFlags(): Promise<{ flags: Record<string, FeatureMode> }> {
+    const res = await fetch(`${BASE}/admin/flags`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { flags: {} };
+    if (!res.ok) throw new Error("Failed to fetch global flags");
+    return res.json();
+}
+
+export type SetFlagResult = { ok: boolean; feature_key: string; before?: FeatureMode; after?: FeatureMode };
+
+// Set the GLOBAL baseline for one feature (affects ALL vendors unless overridden).
+export async function setAdminFlag(featureKey: string, mode: FeatureMode): Promise<SetFlagResult> {
+    const fd = new FormData();
+    fd.append("mode", mode);
+    const res = await fetch(`${BASE}/admin/flags/${encodeURIComponent(featureKey)}`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to set flag");
+    return res.json();
+}
+
+// A plan = a reusable bundle of per-feature entitlements + usage limits.
+export type AdminPlan = {
+    plan_id: string;
+    name: string;
+    is_default: boolean;
+    entitlements: Record<string, FeatureMode>; // only features it overrides off-default
+    limits: Record<string, number>; // max_concurrency, daily_call_cap, monthly_minutes_cap, ...
+};
+
+export async function getAdminPlans(): Promise<{ plans: AdminPlan[] }> {
+    const res = await fetch(`${BASE}/admin/plans`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { plans: [] };
+    if (!res.ok) throw new Error("Failed to fetch plans");
+    return res.json();
+}
+
+export async function createAdminPlan(data: { plan_id: string; name?: string; description?: string }): Promise<{ ok: boolean; plan_id: string; name: string }> {
+    const fd = new FormData();
+    fd.append("plan_id", data.plan_id);
+    if (data.name) fd.append("name", data.name);
+    if (data.description) fd.append("description", data.description);
+    const res = await fetch(`${BASE}/admin/plans`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to create plan");
+    return res.json();
+}
+
+// Replace a plan's entitlement + limit bundle (the backend wipes + re-inserts both
+// sets, then bumps every tenant on the plan). Sent as JSON per the PUT contract.
+export async function updateAdminPlan(
+    planId: string,
+    body: { entitlements: Record<string, FeatureMode>; limits: Record<string, number> }
+): Promise<{ ok: boolean; plan_id: string; entitlements: Record<string, FeatureMode>; limits: Record<string, number> }> {
+    const res = await fetch(`${BASE}/admin/plans/${encodeURIComponent(planId)}`, {
+        method: "PUT",
+        headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update plan");
+    return res.json();
+}
+
+// Executive vendor row for the Usage analytics + Audit vendor filter.
+// NOTE: the vendor list type + getAdminVendors() live in the CL-F1 block below
+// (richer AdminVendor / AdminVendorsResponse with an executive summary + a
+// /usage/all+/tenants fallback). This unit (CL-F3) reuses those — see Usage page.
+
+// One immutable audit event (the events leg, channel=control). meta carries the
+// permission-change before/after, the target vendor, and the acting admin.
+export type AuditEvent = {
+    ts?: string;
+    epoch?: number;
+    actor: string;
+    actor_role?: string;
+    action: string;
+    object_type?: string;
+    object_id?: string;
+    ip?: string;
+    channel: string;
+    tenant_id: string;
+    meta?: {
+        target_tenant?: string | null;
+        feature_key?: string | null;
+        old_value?: string | null;
+        new_value?: string | null;
+        reason?: string;
+        real_admin?: string;
+        act_as?: string | null;
+        auth_method?: string;
+    };
+};
+
+export type AuditPage = {
+    events: AuditEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+    note?: string;
+};
+
+// The permission-change log. channel defaults to "control" (every /admin/* write).
+export async function getControlAudit(opts?: { limit?: number; offset?: number; action?: string; channel?: string }): Promise<AuditPage> {
+    const params = new URLSearchParams();
+    params.set("channel", opts?.channel ?? "control");
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    if (opts?.action) params.set("action", opts.action);
+    const res = await fetch(`${BASE}/audit?${params.toString()}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { events: [], total: 0, limit: opts?.limit ?? 100, offset: opts?.offset ?? 0 };
+    if (!res.ok) throw new Error("Failed to fetch audit log");
+    return res.json();
+}
+
 // ---- Campaigns ----
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {
     const res = await fetch(`${BASE}/campaigns`, {
@@ -180,10 +398,11 @@ export async function extract(brief: string): Promise<ExtractedFields> {
 }
 
 // ---- Leads ----
-export async function getLeads(opts?: { hot?: boolean; sort?: string }): Promise<{ leads: Lead[] }> {
+export async function getLeads(opts?: { hot?: boolean; sort?: string; batch?: string }): Promise<{ leads: Lead[] }> {
     const params = new URLSearchParams();
     if (opts?.hot) params.set("hot", "1");
     if (opts?.sort) params.set("sort", opts.sort);
+    if (opts?.batch) params.set("batch", opts.batch);
     const qs = params.toString();
     const res = await fetch(`${BASE}/leads${qs ? `?${qs}` : ""}`, {
         headers: authHeaders(),
@@ -193,12 +412,26 @@ export async function getLeads(opts?: { hot?: boolean; sort?: string }): Promise
     return res.json();
 }
 
+// Distinct upload batches for the tenant. Graceful: if the backend has not
+// shipped GET /leads/batches yet (404), resolve to an empty list so the UI
+// degrades to all-stored instead of erroring.
+export async function getLeadBatches(): Promise<{ batches: UploadBatch[] }> {
+    const res = await fetch(`${BASE}/leads/batches`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { batches: [] };
+    if (!res.ok) throw new Error("Failed to fetch lead batches");
+    const data = await res.json().catch(() => ({}));
+    return { batches: Array.isArray(data?.batches) ? data.batches : [] };
+}
+
 export async function addLeads(
     text: string,
     file?: File | null
-): Promise<{ added: number; total: number }> {
+): Promise<{ added: number; total: number; batch_id?: string; source_file?: string }> {
     const fd = new FormData();
     fd.append("leads", text);
+    // CSV + XLSX both ride the same "csv" form field; the server routes by
+    // filename/content-type (openpyxl for .xlsx, stdlib csv otherwise).
     if (file) fd.append("csv", file);
     const res = await fetch(`${BASE}/leads`, {
         method: "POST",
@@ -220,6 +453,11 @@ export type RunPayload = {
     daily_cap?: number;
     csv?: File | null;
     force?: boolean;
+    // Run-Campaign audience builder: explicit, resolved audience. When present
+    // the backend dials exactly these (BOLA-guarded to the tenant's own leads)
+    // and ignores use_stored/leads. Sent as a comma-separated string for
+    // maximum form-field compatibility.
+    lead_ids?: string[];
 };
 
 export type RunResult = {
@@ -260,6 +498,8 @@ export async function run(
         fd.append("daily_cap", String(payload.daily_cap));
     if (payload.csv) fd.append("csv", payload.csv);
     if (payload.force) fd.append("force", "1");
+    if (payload.lead_ids && payload.lead_ids.length > 0)
+        fd.append("lead_ids", payload.lead_ids.join(","));
     const res = await fetch(`${BASE}/run`, {
         method: "POST",
         headers: authHeaders(),
@@ -380,6 +620,479 @@ export async function createTenant(data: { name: string; email: string; password
     await handle401(res);
     if (!res.ok) throw new Error("Failed to create vendor");
     return res.json();
+}
+
+// ============================================================
+// CONTROL LAYER (CL-F1) — Super Admin fleet binding (THE canonical /admin/vendors
+// client; CL-F3's Usage/Audit pages reuse AdminVendor + getAdminVendors from here,
+// per the note in the CL-F3 block above). The /admin/* surface is the admin plane:
+// admin-gated server-side by require_super_admin (which EXCLUDES the legacy static
+// password — the #1 security finding) and tenant ALWAYS token-derived. This is a
+// COSMETIC read; the backend choke-point is the only real boundary.
+//
+// GRACEFUL: if /admin/vendors isn't mounted yet (404 while CONTROL_ENABLED=0), we
+// compose an equivalent list from the two endpoints that ARE live + admin-gated —
+// /usage/all (per-tenant calls/minutes) joined with /tenants (name/email/role) —
+// so the Super Admin pages render real data today and auto-upgrade to the richer
+// payload the moment the route lands.
+// ============================================================
+
+// A vendor (tenant) account status in the control plane.
+export type VendorAccountStatus =
+    | "active"
+    | "trial"
+    | "suspended"
+    | "disabled"
+    | "expired";
+
+// One vendor row as the Super Admin pages render it (a flattened executive view
+// of the spec's {tenant_id,name,email,plan,status,created_at,usage_summary,health}).
+// All rollup fields optional so a partial backend / the composed fallback degrade
+// gracefully.
+export type AdminVendor = {
+    tenant_id: string;
+    name: string;
+    email: string;
+    plan?: string;
+    status?: VendorAccountStatus;
+    created_at?: string;
+    role?: Role;
+    usage_summary?: {
+        calls_today?: number;
+        calls_30d?: number;
+        minutes_30d?: number;
+        credits_burned?: number;
+        active_now?: number;
+    };
+    health?: {
+        last_activity?: string;
+        last_login?: string;
+        last_call_at?: string;
+        alerts?: number;
+    };
+};
+
+export type AdminVendorSummary = {
+    total: number;
+    active: number;
+    suspended: number;
+    trial?: number;
+    disabled?: number;
+    expired?: number;
+    calls_today?: number;
+    minutes_30d?: number;
+    credits_burned?: number;
+    alerts?: number;
+};
+
+export type AdminVendorsResponse = {
+    vendors: AdminVendor[];
+    // Fleet KPI rollup the Control Overview reads directly. Optional: derived
+    // client-side when a backend omits it (and always supplied by the fallback).
+    summary?: AdminVendorSummary;
+    currency?: string;
+};
+
+function coerceVendorStatus(s?: string | null): VendorAccountStatus {
+    const v = (s || "").toLowerCase();
+    if (v === "suspended" || v === "disabled" || v === "expired" || v === "trial" || v === "active") {
+        return v as VendorAccountStatus;
+    }
+    // Legacy tenant store has no status field yet — treat as active.
+    return "active";
+}
+
+// Normalize a raw /admin/vendors row into the flat AdminVendor view. The backend
+// may send the executive `{usage:{today,month}, health:{active_now,last_call}}`
+// shape (spec §4) OR already-flattened `usage_summary`/`health` — accept both.
+function toAdminVendor(r: Record<string, unknown>): AdminVendor {
+    const usage = (r.usage ?? {}) as { today?: { calls?: number; minutes?: number }; month?: { calls?: number; minutes?: number } };
+    const us = (r.usage_summary ?? {}) as AdminVendor["usage_summary"];
+    const h = (r.health ?? {}) as { active_now?: number; last_call?: string; last_activity?: string; last_call_at?: string; last_login?: string; alerts?: number };
+    return {
+        tenant_id: String(r.tenant_id ?? ""),
+        name: String(r.name ?? r.tenant_id ?? ""),
+        email: String(r.email ?? ""),
+        role: r.role as Role | undefined,
+        plan: (r.plan as string | null) ?? undefined,
+        status: coerceVendorStatus(r.status as string | undefined),
+        created_at: r.created_at as string | undefined,
+        usage_summary: {
+            calls_today: us?.calls_today ?? usage.today?.calls ?? 0,
+            calls_30d: us?.calls_30d ?? usage.month?.calls ?? 0,
+            minutes_30d: us?.minutes_30d ?? usage.month?.minutes ?? 0,
+            credits_burned: us?.credits_burned ?? 0,
+            active_now: us?.active_now ?? h.active_now ?? 0,
+        },
+        health: {
+            last_activity: h.last_activity ?? h.last_call ?? undefined,
+            last_call_at: h.last_call_at ?? h.last_call ?? undefined,
+            last_login: h.last_login ?? undefined,
+            alerts: h.alerts ?? 0,
+        },
+    };
+}
+
+function deriveVendorSummary(vendors: AdminVendor[]): AdminVendorSummary {
+    const count = (st: string) => vendors.filter((v) => (v.status ?? "active") === st).length;
+    return {
+        total: vendors.length,
+        active: count("active"),
+        suspended: count("suspended"),
+        trial: count("trial"),
+        disabled: count("disabled"),
+        expired: count("expired"),
+        calls_today: vendors.reduce((s, v) => s + (v.usage_summary?.calls_today ?? 0), 0),
+        minutes_30d: vendors.reduce((s, v) => s + (v.usage_summary?.minutes_30d ?? 0), 0),
+        credits_burned: vendors.reduce((s, v) => s + (v.usage_summary?.credits_burned ?? 0), 0),
+        alerts: vendors.reduce((s, v) => s + (v.health?.alerts ?? 0), 0),
+    };
+}
+
+// GET /admin/vendors — the fleet list (THE single /admin/vendors client).
+export async function getAdminVendors(): Promise<AdminVendorsResponse> {
+    const res = await fetch(`${BASE}/admin/vendors`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.ok) {
+        const data = (await res.json()) as { vendors?: Record<string, unknown>[]; summary?: AdminVendorSummary; currency?: string };
+        const vendors = (data.vendors || []).map(toAdminVendor);
+        return { vendors, summary: data.summary ?? deriveVendorSummary(vendors), currency: data.currency };
+    }
+    if (res.status !== 404) throw new Error("Failed to load vendors");
+
+    // ---- Fallback: compose from /usage/all + /tenants (both admin-gated) ----
+    const [usage, tenants] = await Promise.all([
+        getUsageAll().catch(() => ({ tenants: [] as TenantUsageRow[] })),
+        getTenants().catch(() => ({ tenants: [] as Tenant[] })),
+    ]);
+    const tById = new Map(tenants.tenants.map((t) => [t.tenant_id, t]));
+    const uById = new Map(usage.tenants.map((u) => [u.tenant_id, u]));
+    const ids = new Set<string>([...tById.keys(), ...uById.keys()]);
+
+    const vendors: AdminVendor[] = [...ids].map((id) => {
+        const t = tById.get(id);
+        const u = uById.get(id);
+        return {
+            tenant_id: id,
+            name: t?.name || u?.name || id,
+            email: t?.email || "",
+            role: t?.role,
+            plan: undefined,
+            status: coerceVendorStatus(undefined),
+            created_at: t?.created_at,
+            usage_summary: {
+                calls_today: u?.today.calls ?? 0,
+                calls_30d: u?.month.calls ?? 0,
+                minutes_30d: u?.month.minutes ?? 0,
+                active_now: u?.active_now ?? 0,
+            },
+            health: {},
+        };
+    });
+
+    return { vendors, summary: deriveVendorSummary(vendors) };
+}
+
+// ---- Back-compat aliases for the CL-F1 pages (authored against Fleet* names).
+// Same single binding — no extra fetch. Keeps both naming worlds compiling.
+export type FleetVendor = AdminVendor;
+export type FleetSummary = AdminVendorSummary;
+export type FleetVendorsResponse = AdminVendorsResponse;
+export const getFleetVendors = getAdminVendors;
+
+// ============================================================
+// CONTROL LAYER (CL-F2) — Vendor Workspace + the PERMISSION MATRIX
+// The single-vendor admin surface: GET /admin/vendors/{id} returns the full
+// profile + the RESOLVED entitlement map (effective mode + provenance) + usage
+// + health + wallet. The matrix writes per-vendor overrides. Every write is
+// admin-gated + audited server-side (channel="control"); the BACKEND middleware
+// (require_super_admin, legacy-auth EXCLUDED) is the only real boundary — these
+// bindings are cosmetic admin tooling. tenant_id is token-derived, never body.
+// Reuses CL-F3's FeatureMode + AdminPlan/getAdminPlans + CL-F1's
+// VendorAccountStatus (one client, no re-declaration).
+// Contract: design/spec-control-layer.md §4 + design/control-datamodel.md §3.
+// ============================================================
+
+// Where a resolved mode came from (the resolution chain) — drives the
+// provenance pill in the matrix. "status" = forced by a suspended/disabled gate;
+// "parent" = rolled down from a hidden/locked ancestor module.
+export type EntitlementProvenance =
+    | "global"
+    | "plan"
+    | "override"
+    | "status"
+    | "parent";
+
+// One catalog node of the feature_registry (design/control-datamodel.md §0).
+export type FeatureRegistryNode = {
+    key: string; // canonical dot-path, e.g. "engage.calls"
+    kind: "module" | "page" | "feature" | "action" | "integration" | "ai_agent" | "api";
+    parent_key: string | null;
+    label: string;
+    nav_href?: string | null;
+    is_core?: boolean;
+    sort_order?: number;
+};
+
+// One resolved matrix row: the catalog node + its effective mode for THIS vendor
+// + where that mode came from + (if set) the raw per-vendor override + the
+// global/plan hints.
+export type ResolvedEntitlement = FeatureRegistryNode & {
+    mode: FeatureMode; // effective, post-rolldown
+    provenance: EntitlementProvenance;
+    override?: FeatureMode | null; // the explicit per-vendor override row, if any
+    default_mode?: FeatureMode; // the global registry baseline
+    plan_mode?: FeatureMode | null; // the plan-layer mode, if the plan sets one
+};
+
+// GET /admin/vendors/{id} payload — one fetch feeds the whole workspace.
+export type AdminVendorDetail = {
+    tenant_id: string;
+    name: string;
+    email: string;
+    phone?: string;
+    role?: Role;
+    plan?: string;
+    status?: VendorAccountStatus;
+    created_at?: string;
+    ent_version?: number;
+    entitlements: ResolvedEntitlement[]; // the resolved permission matrix
+    usage?: {
+        calls_today?: number;
+        calls_30d?: number;
+        minutes_30d?: number;
+        credits_burned?: number;
+        active_now?: number;
+        leads?: number;
+        campaigns?: number;
+        whatsapp_30d?: number;
+        spend_30d?: number;
+    };
+    limits?: {
+        max_concurrency?: number;
+        daily_call_cap?: number;
+        monthly_minutes_cap?: number;
+    };
+    health?: {
+        last_activity?: string;
+        last_login?: string;
+        last_call_at?: string;
+        last_campaign_at?: string;
+        alerts?: number;
+    };
+    wallet?: {
+        balance?: number;
+        held?: number;
+        currency?: string;
+    };
+};
+
+// ---- STATIC FEATURE REGISTRY SEED -------------------------------------------
+// Verbatim from design/control-datamodel.md §0 (the catalog derived 1:1 from the
+// live nav). The fallback catalog when the backend hasn't shipped
+// /admin/vendors/{id} yet (CONTROL_ENABLED=0): every row resolves to "on" so the
+// matrix renders the real feature tree on the current backend and auto-upgrades
+// to the server's resolved map the moment it lands. Admin-only nav is excluded
+// (role-gated, never entitlement-gated — §0 note).
+export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
+    // KEY ALIGNMENT (2026-06-11 fix): module keys MUST carry the backend `mod.`
+    // prefix and billing the `money.billing_overview` key — the live backend
+    // /me/entitlements `modes` map (var/control/registry.json) keys every module
+    // as `mod.*`. The premium-UI nav previously authored bare `grow`/`sell`/...
+    // which are ABSENT from the backend map -> resolved permissive "on" -> a
+    // module HIDE never dropped the group header in the sidebar. Page child keys
+    // (grow.campaigns, sell.leads, ...) already matched and are unchanged. This
+    // registry feeds RouteEntitlementGate's pathname->key map + the CONTROL_ENABLED=0
+    // fallback matrix; with control LIVE the matrix uses the backend's own keys.
+    { key: "mod.command", kind: "module", parent_key: null, label: "Command", is_core: true, sort_order: 0 },
+    { key: "command.dashboard", kind: "page", parent_key: "mod.command", label: "Dashboard", nav_href: "/", is_core: true, sort_order: 1 },
+
+    { key: "mod.ai_manager", kind: "module", parent_key: null, label: "AI Manager", sort_order: 10 },
+    { key: "ai_manager.overview", kind: "page", parent_key: "mod.ai_manager", label: "Overview", nav_href: "/ai-manager/overview", sort_order: 11 },
+    { key: "ai_manager.test", kind: "page", parent_key: "mod.ai_manager", label: "Test Console", nav_href: "/ai-manager/test", sort_order: 12 },
+    { key: "ai_manager.commands", kind: "page", parent_key: "mod.ai_manager", label: "Command History", nav_href: "/ai-manager/commands", sort_order: 13 },
+    { key: "ai_manager.approvals", kind: "page", parent_key: "mod.ai_manager", label: "Pending Approvals", nav_href: "/ai-manager/approvals", sort_order: 14 },
+    { key: "ai_manager.capabilities", kind: "page", parent_key: "mod.ai_manager", label: "Capabilities", nav_href: "/ai-manager/capabilities", sort_order: 15 },
+    { key: "ai_manager.setup", kind: "page", parent_key: "mod.ai_manager", label: "Setup", nav_href: "/ai-manager/setup", sort_order: 16 },
+    { key: "ai_manager.users", kind: "page", parent_key: "mod.ai_manager", label: "Authorized Users", nav_href: "/ai-manager/users", sort_order: 17 },
+
+    { key: "mod.grow", kind: "module", parent_key: null, label: "Grow", sort_order: 20 },
+    { key: "grow.campaigns", kind: "page", parent_key: "mod.grow", label: "Campaigns", nav_href: "/campaigns", sort_order: 21 },
+    { key: "grow.campaigns.create", kind: "action", parent_key: "grow.campaigns", label: "Create campaign", sort_order: 22 },
+    { key: "grow.ads", kind: "page", parent_key: "mod.grow", label: "Ad Automation", nav_href: "/ads", sort_order: 23 },
+    { key: "grow.funnels", kind: "page", parent_key: "mod.grow", label: "Funnels", nav_href: "/funnels", sort_order: 24 },
+    { key: "grow.forms", kind: "page", parent_key: "mod.grow", label: "Form Builder", nav_href: "/forms", sort_order: 25 },
+
+    { key: "mod.sell", kind: "module", parent_key: null, label: "Sell", sort_order: 30 },
+    { key: "sell.leads", kind: "page", parent_key: "mod.sell", label: "Leads", nav_href: "/leads", sort_order: 31 },
+    { key: "sell.leads.export", kind: "action", parent_key: "sell.leads", label: "Export leads", sort_order: 32 },
+    { key: "sell.crm", kind: "page", parent_key: "mod.sell", label: "CRM", nav_href: "/crm", sort_order: 33 },
+
+    { key: "mod.engage", kind: "module", parent_key: null, label: "Engage", sort_order: 40 },
+    { key: "engage.run", kind: "page", parent_key: "mod.engage", label: "Run a Campaign", nav_href: "/run", sort_order: 41 },
+    { key: "engage.calls", kind: "page", parent_key: "mod.engage", label: "Call Logs", nav_href: "/calls", sort_order: 42 },
+    { key: "engage.callbacks", kind: "page", parent_key: "mod.engage", label: "Callbacks", nav_href: "/callbacks", sort_order: 43 },
+    { key: "engage.whatsapp", kind: "page", parent_key: "mod.engage", label: "WhatsApp", nav_href: "/whatsapp", sort_order: 44 },
+    { key: "engage.support", kind: "page", parent_key: "mod.engage", label: "Customer Support", nav_href: "/support", sort_order: 45 },
+    { key: "engage.booking", kind: "page", parent_key: "mod.engage", label: "Booking", nav_href: "/booking", sort_order: 46 },
+
+    { key: "mod.automate", kind: "module", parent_key: null, label: "Automate", sort_order: 50 },
+    { key: "automate.workflows", kind: "page", parent_key: "mod.automate", label: "Workflows", nav_href: "/workflows", sort_order: 51 },
+    { key: "automate.webhooks", kind: "page", parent_key: "mod.automate", label: "Webhooks", nav_href: "/webhooks", sort_order: 52 },
+
+    { key: "mod.money", kind: "module", parent_key: null, label: "Money", sort_order: 60 },
+    { key: "money.payments", kind: "page", parent_key: "mod.money", label: "Payments", nav_href: "/payments", sort_order: 61 },
+    { key: "money.billing_overview", kind: "page", parent_key: "mod.money", label: "Billing", nav_href: "/billing/overview", is_core: true, sort_order: 62 },
+
+    { key: "mod.intelligence", kind: "module", parent_key: null, label: "Intelligence", sort_order: 70 },
+    { key: "intelligence.analytics", kind: "page", parent_key: "mod.intelligence", label: "Analytics", nav_href: "/analytics", sort_order: 71 },
+
+    { key: "mod.foundation", kind: "module", parent_key: null, label: "Foundation", is_core: true, sort_order: 80 },
+    { key: "foundation.suppression", kind: "page", parent_key: "mod.foundation", label: "Do-Not-Call", nav_href: "/suppression", sort_order: 81 },
+    { key: "core.settings", kind: "page", parent_key: "mod.foundation", label: "Settings", nav_href: "/settings", is_core: true, sort_order: 82 },
+];
+
+// Compose the fallback resolved matrix: every catalog node resolves to "on" with
+// provenance "global" (the resting/default-plan state — byte-identical to today).
+function fallbackEntitlements(): ResolvedEntitlement[] {
+    return FEATURE_REGISTRY.map((n) => ({
+        ...n,
+        mode: "on" as FeatureMode,
+        provenance: "global" as EntitlementProvenance,
+        override: null,
+        default_mode: "on" as FeatureMode,
+        plan_mode: null,
+    }));
+}
+
+// GET /admin/vendors/{id} — the full workspace payload. GRACEFUL: if the backend
+// hasn't shipped the route (404 while CONTROL_ENABLED=0), compose an equivalent
+// shape from /tenants + /usage/all + the static registry so the workspace renders
+// real identity + usage and the full (all-"on") matrix on the current backend,
+// and auto-upgrades to the server's resolved map the moment it lands.
+export async function getAdminVendor(id: string): Promise<AdminVendorDetail> {
+    const res = await fetch(`${BASE}/admin/vendors/${encodeURIComponent(id)}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.ok) {
+        const data = (await res.json()) as Partial<AdminVendorDetail>;
+        return {
+            tenant_id: data.tenant_id || id,
+            name: data.name || id,
+            email: data.email || "",
+            phone: data.phone,
+            role: data.role,
+            plan: data.plan,
+            status: coerceVendorStatus(data.status),
+            created_at: data.created_at,
+            ent_version: data.ent_version,
+            entitlements: data.entitlements && data.entitlements.length ? data.entitlements : fallbackEntitlements(),
+            usage: data.usage,
+            limits: data.limits,
+            health: data.health,
+            wallet: data.wallet,
+        };
+    }
+    if (res.status !== 404) throw new Error("Failed to load vendor");
+
+    // ---- Fallback: compose from /tenants + /usage/all (both admin-gated) ----
+    const [tenants, usage] = await Promise.all([
+        getTenants().catch(() => ({ tenants: [] as Tenant[] })),
+        getUsageAll().catch(() => ({ tenants: [] as TenantUsageRow[] })),
+    ]);
+    const t = tenants.tenants.find((x) => x.tenant_id === id);
+    const u = usage.tenants.find((x) => x.tenant_id === id);
+    return {
+        tenant_id: id,
+        name: t?.name || u?.name || id,
+        email: t?.email || "",
+        role: t?.role,
+        plan: undefined,
+        status: coerceVendorStatus(undefined),
+        created_at: t?.created_at,
+        entitlements: fallbackEntitlements(),
+        usage: {
+            calls_today: u?.today.calls ?? 0,
+            calls_30d: u?.month.calls ?? 0,
+            minutes_30d: u?.month.minutes ?? 0,
+            active_now: u?.active_now ?? 0,
+        },
+        limits: u?.limits,
+        health: {},
+        wallet: {},
+    };
+}
+
+// PUT /admin/vendors/{id}/entitlements/{feature_key} — set a per-vendor override
+// (on|locked|hidden). Bumps the tenant's ent_version server-side (real-time
+// invalidation). Audited (set_override). Optimistic-friendly: the caller flips
+// the row first and reconciles on resolve/failure.
+export async function setVendorEntitlement(
+    id: string,
+    featureKey: string,
+    mode: FeatureMode,
+    reason?: string
+): Promise<{ ok: boolean; version?: number }> {
+    const fd = new FormData();
+    fd.append("mode", mode);
+    if (reason) fd.append("reason", reason);
+    const res = await fetch(
+        `${BASE}/admin/vendors/${encodeURIComponent(id)}/entitlements/${encodeURIComponent(featureKey)}`,
+        { method: "PUT", headers: authHeaders(), body: fd }
+    );
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update permission");
+    return res.json().catch(() => ({ ok: true }));
+}
+
+// DELETE the per-vendor override → revert to plan/global. Audited (set_override).
+export async function clearVendorEntitlement(
+    id: string,
+    featureKey: string
+): Promise<{ ok: boolean; version?: number }> {
+    const res = await fetch(
+        `${BASE}/admin/vendors/${encodeURIComponent(id)}/entitlements/${encodeURIComponent(featureKey)}`,
+        { method: "DELETE", headers: authHeaders() }
+    );
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to reset permission");
+    return res.json().catch(() => ({ ok: true }));
+}
+
+// PUT /admin/vendors/{id}/plan — assign a plan (writes plan limits → caps).
+// Bumps ent_version. Audited (set_plan).
+export async function setVendorPlan(id: string, planId: string): Promise<{ ok: boolean }> {
+    const fd = new FormData();
+    fd.append("plan_id", planId);
+    const res = await fetch(`${BASE}/admin/vendors/${encodeURIComponent(id)}/plan`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to assign plan");
+    return res.json().catch(() => ({ ok: true }));
+}
+
+// PUT /admin/vendors/{id}/status — active/trial/suspended/disabled/expired.
+// `disabled` needs a firewall step-up server-side; the reason is REQUIRED for
+// suspend/disable (captured in the confirm Modal). Bumps ent_version. Audited
+// (set_status). Suspension = instant token revoke + data preserved (spec §8.2).
+export async function setVendorStatus(
+    id: string,
+    status: VendorAccountStatus,
+    reason?: string
+): Promise<{ ok: boolean }> {
+    const fd = new FormData();
+    fd.append("status", status);
+    if (reason) fd.append("reason", reason);
+    const res = await fetch(`${BASE}/admin/vendors/${encodeURIComponent(id)}/status`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update status");
+    return res.json().catch(() => ({ ok: true }));
 }
 
 // ---- Stats ----

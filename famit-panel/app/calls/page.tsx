@@ -2,12 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
-import Card from "@/components/Card";
-import PageHeader from "@/components/PageHeader";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
-import KpiCard from "@/components/KpiCard";
-import Sparkline from "@/components/Sparkline";
+import Search from "@/components/Search";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import {
     getCalls,
@@ -61,7 +60,6 @@ function fmtRelative(d: string) {
     return "";
 }
 
-const ANSWERED = new Set(["answered", "done", "called", "qualified", "interested"]);
 const LIVE = new Set(["calling", "in_progress"]);
 
 /* ================================================================== */
@@ -121,13 +119,7 @@ function CallDetailModal({
                 {/* ---- Hero header ---- */}
                 <div className="relative shrink-0 px-6 pt-6 pb-5 border-b border-s-subtle">
                     {/* soft brand wash */}
-                    <div
-                        className="pointer-events-none absolute inset-x-0 top-0 h-24 opacity-60"
-                        style={{
-                            background:
-                                "radial-gradient(120% 100% at 0% 0%, rgba(42,133,255,0.10), transparent 70%)",
-                        }}
-                    />
+                    <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-br from-primary-01/10 to-transparent opacity-60" />
                     <div className="relative flex items-start justify-between gap-4">
                         <div className="flex items-center gap-3.5 min-w-0">
                             <span className="flex items-center justify-center size-12 shrink-0 rounded-2xl bg-primary-01/12 text-primary-01 text-sub-title-2 font-semibold tabular-nums">
@@ -204,7 +196,7 @@ function CallDetailModal({
                     )}
 
                     {error && (
-                        <div className="flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2">
+                        <div className="flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 text-primary-03 text-body-2">
                             <Icon
                                 name="info"
                                 className="size-4 fill-primary-03 shrink-0"
@@ -242,13 +234,13 @@ function CallDetailModal({
 
                             {/* AI Summary */}
                             {t?.summary && (
-                                <div className="p-4 rounded-2xl bg-b-surface1/70 border border-s-subtle dark:bg-shade-04/30">
+                                <div className="p-4 rounded-2xl bg-b-surface1/70 dark:bg-shade-04/30">
                                     <div className="flex items-center gap-2 mb-2">
                                         <Icon
                                             name="feather"
                                             className="size-3.5 fill-t-tertiary"
                                         />
-                                        <div className="eyebrow">AI Summary</div>
+                                        <div className="eyebrow">AI summary</div>
                                     </div>
                                     <p className="text-body-2 text-t-primary leading-relaxed">
                                         {t.summary}
@@ -258,7 +250,7 @@ function CallDetailModal({
 
                             {/* Next Action */}
                             {t?.next_action && (
-                                <div className="flex gap-3 p-4 rounded-2xl bg-primary-01/[0.06] border border-primary-01/20">
+                                <div className="flex gap-3 p-4 rounded-2xl bg-primary-01/[0.06]">
                                     <span className="flex items-center justify-center size-8 shrink-0 rounded-xl bg-primary-01/12">
                                         <Icon
                                             name="reply"
@@ -384,6 +376,7 @@ function StatChip({
 export default function CallLogsPage() {
     const [calls, setCalls] = useState<CallLog[]>([]);
     const [loading, setLoading] = useState(true);
+    const [query, setQuery] = useState("");
     const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
 
     useEffect(() => {
@@ -393,116 +386,36 @@ export default function CallLogsPage() {
             .finally(() => setLoading(false));
     }, []);
 
-    /* ---- Real derived signals (no fabricated deltas) ---- */
-    const m = useMemo(() => {
-        const total = calls.length;
-        const answered = calls.filter((c) => ANSWERED.has(c.status)).length;
-        const live = calls.filter((c) => LIVE.has(c.status)).length;
-        const answerRate = total > 0 ? Math.round((answered / total) * 100) : 0;
+    const liveCount = useMemo(
+        () => calls.filter((c) => LIVE.has(c.status)).length,
+        [calls]
+    );
 
-        const breakdown = calls.reduce<Record<string, number>>((acc, c) => {
-            acc[c.status] = (acc[c.status] || 0) + 1;
-            return acc;
-        }, {});
+    // Client-side search over the loaded set (no API change).
+    const visibleCalls = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return calls;
+        return calls.filter(
+            (c) =>
+                c.name?.toLowerCase().includes(q) ||
+                c.phone?.toLowerCase().includes(q) ||
+                c.campaign_name?.toLowerCase().includes(q)
+        );
+    }, [calls, query]);
 
-        // Talk time only over calls that actually connected & have a duration.
-        const durations = calls
-            .map((c) => c.duration_s)
-            .filter((d): d is number => typeof d === "number" && d > 0);
-        const totalTalk = durations.reduce((a, b) => a + b, 0);
-        const avgTalk = durations.length
-            ? Math.round(totalTalk / durations.length)
-            : 0;
-
-        // Interest / score signals.
-        const scored = calls.filter((c) => typeof c.interest === "number");
-        const hot = scored.filter((c) => (c.interest as number) >= 70).length;
-        const avgScore = scored.length
-            ? Math.round(
-                  scored.reduce((a, c) => a + (c.interest as number), 0) /
-                      scored.length
-              )
-            : 0;
-
-        // Calls-per-day real time series (oldest -> newest) for sparklines.
-        const byDay = new Map<string, { count: number; answered: number }>();
-        for (const c of calls) {
-            if (!c.started_at) continue;
-            const dt = new Date(c.started_at);
-            if (isNaN(dt.getTime())) continue;
-            const key = dt.toISOString().slice(0, 10);
-            const cur = byDay.get(key) || { count: 0, answered: 0 };
-            cur.count += 1;
-            if (ANSWERED.has(c.status)) cur.answered += 1;
-            byDay.set(key, cur);
-        }
-        const days = [...byDay.keys()].sort();
-        const volumeSeries = days.map((d) => byDay.get(d)!.count);
-        const answeredSeries = days.map((d) => byDay.get(d)!.answered);
-        const activeDays = days.length;
-
-        // Status distribution segments for the activity bar (real counts).
-        const segOrder: {
-            key: string;
-            label: string;
-            color: string;
-        }[] = [
-            { key: "answered", label: "Connected", color: "var(--chart-green)" },
-            { key: "no_answer", label: "No answer", color: "var(--primary-05)" },
-            { key: "voicemail", label: "Voicemail", color: "var(--primary-04)" },
-            { key: "failed", label: "Failed", color: "var(--primary-03)" },
-        ];
-        const segMap: Record<string, number> = {
-            answered:
-                (breakdown["answered"] || 0) +
-                (breakdown["done"] || 0) +
-                (breakdown["called"] || 0) +
-                (breakdown["qualified"] || 0) +
-                (breakdown["interested"] || 0),
-            no_answer: breakdown["no_answer"] || 0,
-            voicemail: breakdown["voicemail"] || 0,
-            failed: breakdown["failed"] || 0,
-        };
-        const segCovered = Object.values(segMap).reduce((a, b) => a + b, 0);
-        const other = Math.max(0, total - segCovered);
-        const segments = segOrder
-            .map((s) => ({ ...s, value: segMap[s.key] }))
-            .concat(
-                other > 0
-                    ? [
-                          {
-                              key: "other",
-                              label: "Other",
-                              color: "var(--chart-min)",
-                              value: other,
-                          },
-                      ]
-                    : []
-            )
-            .filter((s) => s.value > 0);
-
-        return {
-            total,
-            answered,
-            answerRate,
-            live,
-            totalTalk,
-            avgTalk,
-            hot,
-            avgScore,
-            scoredCount: scored.length,
-            noAnswer: breakdown["no_answer"] ?? 0,
-            volumeSeries,
-            answeredSeries,
-            activeDays,
-            segments,
-        };
-    }, [calls]);
-
-    const hasData = !loading && calls.length > 0;
+    const tableHead = (
+        <>
+            <th>Lead</th>
+            <th className="max-lg:hidden">Campaign</th>
+            <th>Status</th>
+            <th>Placed</th>
+            <th className="text-right">Duration</th>
+            <th className="text-right max-md:hidden">Score</th>
+        </>
+    );
 
     return (
-        <Layout title="Call Logs">
+        <Layout title="Call logs">
             {selectedCallId && (
                 <CallDetailModal
                     callId={selectedCallId}
@@ -510,300 +423,132 @@ export default function CallLogsPage() {
                 />
             )}
 
-            <PageHeader
-                eyebrow="Activity"
-                title="Call Logs"
-                subtitle="Every call with its outcome, interest and duration — click a row to read the AI summary and full transcript."
-            />
-
-            {/* ---- Page context strip ---- */}
-            {hasData && (
-                <div className="flex items-center justify-between gap-4 mb-3 px-1 rise-in">
-                    <div className="flex items-center gap-2 text-body-2 text-t-secondary">
-                        <span className="text-t-primary font-medium tabular-nums">
-                            {m.total}
-                        </span>
-                        call{m.total === 1 ? "" : "s"}
-                        {m.activeDays > 0 && (
-                            <>
-                                <span className="text-t-tertiary">·</span>
-                                <span>
-                                    {m.activeDays} active day
-                                    {m.activeDays === 1 ? "" : "s"}
-                                </span>
-                            </>
-                        )}
+            <div className="card">
+                <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
+                    <div className="mr-auto pl-5 text-h6 max-lg:pl-3">
+                        All calls
                     </div>
-                    {m.live > 0 && (
-                        <span className="inline-flex items-center gap-2 h-7 pl-2.5 pr-3 rounded-full bg-primary-02/10 text-primary-02 text-caption font-medium">
+                    {liveCount > 0 && (
+                        <span className="inline-flex items-center gap-2 h-7 pl-2.5 pr-3 mr-3 rounded-full bg-primary-02/10 text-primary-02 text-caption font-medium">
                             <span className="relative flex size-2">
                                 <span className="absolute inline-flex h-full w-full rounded-full bg-primary-02 opacity-60 animate-ping" />
                                 <span className="relative inline-flex size-2 rounded-full bg-primary-02" />
                             </span>
-                            {m.live} live now
+                            {liveCount} live now
                         </span>
                     )}
-                </div>
-            )}
-
-            {/* ---- Hero metric cards ---- */}
-            {hasData && (
-                <div className="grid grid-cols-4 gap-3 mb-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                    <KpiCard
-                        label="Total Calls"
-                        value={m.total.toLocaleString()}
-                        icon="chat"
-                        tone="info"
-                        spark={
-                            m.volumeSeries.length > 1
-                                ? m.volumeSeries
-                                : undefined
-                        }
-                        sub={
-                            m.activeDays > 1
-                                ? `across ${m.activeDays} days`
-                                : "all time"
-                        }
-                    />
-                    <KpiCard
-                        label="Answer Rate"
-                        value={`${m.answerRate}%`}
-                        icon="check-circle"
-                        tone="success"
-                        meter={m.answerRate / 100}
-                        spark={
-                            m.answeredSeries.length > 1
-                                ? m.answeredSeries
-                                : undefined
-                        }
-                        sub={`${m.answered.toLocaleString()} of ${m.total.toLocaleString()} connected`}
-                    />
-                    <KpiCard
-                        label="Avg Talk Time"
-                        value={fmtDuration(m.avgTalk)}
-                        icon="clock"
-                        tone="neutral"
-                        sub={`${fmtDuration(m.totalTalk)} total on calls`}
-                    />
-                    <KpiCard
-                        label="Hot Leads"
-                        value={m.hot.toLocaleString()}
-                        icon="income"
-                        tone="warning"
-                        meter={
-                            m.scoredCount > 0 ? m.hot / m.scoredCount : undefined
-                        }
-                        sub={
-                            m.scoredCount > 0
-                                ? `avg score ${m.avgScore} · ${m.scoredCount} scored`
-                                : "no scores yet"
-                        }
+                    <Search
+                        className="w-64 max-md:w-full max-md:ml-3"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Search lead, number or campaign"
+                        isGray
                     />
                 </div>
-            )}
 
-            {/* ---- Activity strip: volume sparkline + status mix ---- */}
-            {hasData && m.volumeSeries.length > 1 && (
-                <div className="grid grid-cols-3 gap-3 mb-3 max-lg:grid-cols-1">
-                    <div className="surface col-span-2 max-lg:col-span-1 p-5 rise-in">
-                        <div className="flex items-start justify-between gap-4 mb-4">
-                            <div>
-                                <div className="eyebrow mb-1">Call Volume</div>
-                                <div className="text-body-2 text-t-secondary">
-                                    Daily activity over the last{" "}
-                                    {m.activeDays} active day
-                                    {m.activeDays === 1 ? "" : "s"}
-                                </div>
-                            </div>
-                            <span className="kpi-glyph fill-primary-01">
-                                <Icon name="chart" className="fill-inherit" />
+                <div className="pt-3 overflow-x-auto">
+                    {loading ? (
+                        <Table cellsThead={tableHead}>
+                            {[...Array(6)].map((_, i) => (
+                                <TableRow key={i}>
+                                    {[...Array(6)].map((__, j) => (
+                                        <td key={j}>
+                                            <div className="skeleton h-4 w-20" />
+                                        </td>
+                                    ))}
+                                </TableRow>
+                            ))}
+                        </Table>
+                    ) : visibleCalls.length === 0 ? (
+                        <div className="state-block">
+                            <span className="state-glyph">
+                                <Icon name="chat" className="fill-inherit" />
                             </span>
+                            <div className="state-title">
+                                {query ? "No matching calls" : "No calls yet"}
+                            </div>
+                            <div className="state-sub">
+                                {query
+                                    ? `Nothing matches “${query}”.`
+                                    : "Run a campaign to see results here — each row opens the full transcript."}
+                            </div>
                         </div>
-                        <Sparkline
-                            data={m.volumeSeries}
-                            color="var(--primary-01)"
-                            width={640}
-                            height={88}
-                            strokeWidth={2}
-                            className="w-full h-auto"
-                        />
-                    </div>
-
-                    <div className="surface p-5 rise-in">
-                        <div className="eyebrow mb-1">Outcome Mix</div>
-                        <div className="text-body-2 text-t-secondary mb-4">
-                            How {m.total} call{m.total === 1 ? "" : "s"} resolved
-                        </div>
-                        {/* segmented meter — real status counts */}
-                        <div className="flex h-2.5 w-full rounded-full overflow-hidden bg-b-surface1 dark:bg-shade-04/60">
-                            {m.segments.map((s) => (
-                                <div
-                                    key={s.key}
-                                    title={`${s.label}: ${s.value}`}
-                                    style={{
-                                        width: `${(s.value / m.total) * 100}%`,
-                                        background: s.color,
-                                    }}
-                                />
-                            ))}
-                        </div>
-                        <div className="mt-4 space-y-2.5">
-                            {m.segments.map((s) => (
-                                <div
-                                    key={s.key}
-                                    className="flex items-center gap-2.5 text-body-2"
-                                >
-                                    <span
-                                        className="size-2.5 shrink-0 rounded-full"
-                                        style={{ background: s.color }}
-                                    />
-                                    <span className="text-t-secondary mr-auto">
-                                        {s.label}
-                                    </span>
-                                    <span className="text-t-primary font-medium tabular-nums">
-                                        {s.value}
-                                    </span>
-                                    <span className="text-t-tertiary tabular-nums w-10 text-right">
-                                        {Math.round((s.value / m.total) * 100)}%
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* ---- Main table ---- */}
-            <Card title="All Calls">
-                <div className="overflow-x-auto">
-                    <table className="data-table is-clickable">
-                        <thead>
-                            <tr>
-                                <th>Lead</th>
-                                <th>Campaign</th>
-                                <th>Status</th>
-                                <th>Placed</th>
-                                <th className="text-right">Duration</th>
-                                <th className="text-right">Score</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {loading ? (
-                                [...Array(6)].map((_, i) => (
-                                    <tr key={i}>
-                                        {[...Array(6)].map((__, j) => (
-                                            <td key={j}>
-                                                <div className="skeleton h-4 w-20" />
-                                            </td>
-                                        ))}
-                                    </tr>
-                                ))
-                            ) : calls.length === 0 ? (
-                                <tr>
-                                    <td colSpan={6}>
-                                        <div className="state-block">
-                                            <span className="state-glyph">
-                                                <Icon
-                                                    name="chat"
-                                                    className="fill-inherit"
-                                                />
-                                            </span>
-                                            <div className="state-title">
-                                                No calls yet
-                                            </div>
-                                            <div className="state-sub">
-                                                Run a campaign to see results
-                                                here — each row opens the full
-                                                transcript.
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ) : (
-                                calls.map((c) => {
-                                    const isLive = LIVE.has(c.status);
-                                    return (
-                                        <tr
-                                            key={c.id}
-                                            onClick={() =>
-                                                setSelectedCallId(c.id)
-                                            }
-                                            title="View transcript"
-                                        >
-                                            {/* Lead identity — name + phone stacked */}
-                                            <td>
-                                                <div className="flex items-center gap-3">
-                                                    <span
-                                                        className={`flex items-center justify-center size-9 shrink-0 rounded-xl text-caption font-semibold ${
-                                                            isLive
-                                                                ? "bg-primary-02/12 text-primary-02"
-                                                                : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
-                                                        }`}
-                                                    >
-                                                        {c.name
-                                                            ? c.name
-                                                                  .trim()
-                                                                  .charAt(0)
-                                                                  .toUpperCase()
-                                                            : "?"}
-                                                    </span>
-                                                    <div className="min-w-0">
-                                                        <div className="font-medium text-t-primary truncate">
-                                                            {c.name || "Unknown"}
-                                                        </div>
-                                                        <div className="text-caption text-t-tertiary tabular-nums">
-                                                            {c.phone}
-                                                        </div>
+                    ) : (
+                        <Table cellsThead={tableHead}>
+                            {visibleCalls.map((c) => {
+                                const isLive = LIVE.has(c.status);
+                                return (
+                                    <TableRow
+                                        key={c.id}
+                                        className="cursor-pointer"
+                                        onClick={() => setSelectedCallId(c.id)}
+                                    >
+                                        <td className="text-sub-title-1">
+                                            <div className="flex items-center gap-3">
+                                                <span
+                                                    className={`flex items-center justify-center size-9 shrink-0 rounded-xl text-caption font-semibold ${
+                                                        isLive
+                                                            ? "bg-primary-02/12 text-primary-02"
+                                                            : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
+                                                    }`}
+                                                >
+                                                    {c.name
+                                                        ? c.name
+                                                              .trim()
+                                                              .charAt(0)
+                                                              .toUpperCase()
+                                                        : "?"}
+                                                </span>
+                                                <div className="min-w-0">
+                                                    <div className="truncate">
+                                                        {c.name || "Unknown"}
+                                                    </div>
+                                                    <div className="text-caption text-t-tertiary tabular-nums">
+                                                        {c.phone}
                                                     </div>
                                                 </div>
-                                            </td>
-                                            <td className="text-t-secondary">
-                                                {c.campaign_name || "—"}
-                                            </td>
-                                            <td>
-                                                <StatusBadge
-                                                    status={c.status}
-                                                />
-                                            </td>
-                                            <td>
-                                                <div className="text-t-secondary">
-                                                    {c.started_at
-                                                        ? fmtShort(c.started_at)
-                                                        : "—"}
-                                                </div>
-                                                {c.started_at &&
-                                                    fmtRelative(
-                                                        c.started_at
-                                                    ) && (
-                                                        <div className="text-caption text-t-tertiary">
-                                                            {fmtRelative(
-                                                                c.started_at
-                                                            )}
-                                                        </div>
-                                                    )}
-                                            </td>
-                                            <td className="text-t-secondary td-num text-right">
-                                                {fmtDuration(c.duration_s)}
-                                            </td>
-                                            <td className="text-right">
-                                                {c.interest != null ? (
-                                                    <ScorePill
-                                                        score={c.interest}
-                                                    />
-                                                ) : (
-                                                    <span className="text-t-tertiary">
-                                                        —
-                                                    </span>
+                                            </div>
+                                        </td>
+                                        <td className="text-t-secondary max-lg:hidden">
+                                            {c.campaign_name || "—"}
+                                        </td>
+                                        <td>
+                                            <StatusBadge status={c.status} />
+                                        </td>
+                                        <td>
+                                            <div className="text-t-secondary">
+                                                {c.started_at
+                                                    ? fmtShort(c.started_at)
+                                                    : "—"}
+                                            </div>
+                                            {c.started_at &&
+                                                fmtRelative(c.started_at) && (
+                                                    <div className="text-caption text-t-tertiary">
+                                                        {fmtRelative(
+                                                            c.started_at
+                                                        )}
+                                                    </div>
                                                 )}
-                                            </td>
-                                        </tr>
-                                    );
-                                })
-                            )}
-                        </tbody>
-                    </table>
+                                        </td>
+                                        <td className="text-t-secondary td-num text-right">
+                                            {fmtDuration(c.duration_s)}
+                                        </td>
+                                        <td className="text-right max-md:hidden">
+                                            {c.interest != null ? (
+                                                <ScorePill score={c.interest} />
+                                            ) : (
+                                                <span className="text-t-tertiary">
+                                                    —
+                                                </span>
+                                            )}
+                                        </td>
+                                    </TableRow>
+                                );
+                            })}
+                        </Table>
+                    )}
                 </div>
-            </Card>
+            </div>
         </Layout>
     );
 }

@@ -1,0 +1,259 @@
+{
+  "group": "event-backbone",
+  "description": "Canonical event envelope + core event payload schemas + frozen artifacts. Frozen-after-merge, additive-only (P1/D7). CI diffs sha256 -> fails on drift.",
+  "generated_from": "the schema files themselves (sha256 over LF-normalized bytes)",
+  "topic_map_doc": "contracts/asyncapi/bus.yaml",
+  "count": 25,
+  "schemas": [
+    {
+      "name": "action.executed",
+      "kind": "event",
+      "event_type": "action.executed",
+      "topic": "activation.action_plan.executed",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/action.executed.schema.json",
+      "file": "contracts/schemas/action.executed.schema.json",
+      "sha256": "4a265173af7533288a2801f8fc7c1df9d9aa2b6470b7d08b3aac5a9e161b18d5"
+    },
+    {
+      "name": "action.plan.created",
+      "kind": "event",
+      "event_type": "action.plan.created",
+      "topic": "activation.action_plan.created",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/action.plan.created.schema.json",
+      "file": "contracts/schemas/action.plan.created.schema.json",
+      "sha256": "5955a516be5664f71d95bffc67bab97fc9cc907d797860ab97f772afea45cf8f"
+    },
+    {
+      "name": "action.plan.signed",
+      "kind": "event",
+      "event_type": "action.plan.signed",
+      "topic": "activation.action_plan.signed",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/action.plan.signed.schema.json",
+      "file": "contracts/schemas/action.plan.signed.schema.json",
+      "sha256": "ebef858e0451497a514c63e9c1aa267bcfb1bd97c46ff7e40a346b1bcde89d78"
+    },
+    {
+      "name": "action_plan",
+      "kind": "artifact",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/action_plan.schema.json",
+      "file": "contracts/schemas/action_plan.schema.json",
+      "sha256": "aa258e220c1fb1b92367ac8cf8d6e248f77afcc4076e42455afba6521e5be366"
+    },
+    {
+      "name": "ad.metrics.snapshot",
+      "kind": "event",
+      "event_type": "ad.metrics.snapshot",
+      "topic": "metrics.ad.snapshot",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/ad.metrics.snapshot.schema.json",
+      "file": "contracts/schemas/ad.metrics.snapshot.schema.json",
+      "sha256": "7da09de618ae34f0dd13eb4c612cb619664c4e3d23b41bf6e707639607b7ed97"
+    },
+    {
+      "name": "call.completed",
+      "kind": "event",
+      "event_type": "call.completed",
+      "topic": "engagement.call.completed",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/call.completed.schema.json",
+      "file": "contracts/schemas/call.completed.schema.json",
+      "sha256": "fb2254641a297aa6ab386b714f9404600b69a20131c4ee16015510c25216a15c"
+    },
+    {
+      "name": "call.outcome",
+      "kind": "event",
+      "event_type": "call.outcome",
+      "topic": "engagement.call.outcome",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/call.outcome.schema.json",
+      "file": "contracts/schemas/call.outcome.schema.json",
+      "sha256": "0aa60582eae293dc6ac24163104576b4b54670fb77a37502da60c60669925c74"
+    },
+    {
+      "name": "campaign.compiled",
+      "kind": "event",
+      "event_type": "campaign.compiled",
+      "topic": "campaign.lifecycle.compiled",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/campaign.compiled.schema.json",
+      "file": "contracts/schemas/campaign.compiled.schema.json",
+      "sha256": "180ec4db19b4437b864868e49a46edba679eca195bc9e9c6ff49ead79cfa0d31"
+    },
+    {
+      "name": "campaign.launched",
+      "kind": "event",
+      "event_type": "campaign.launched",
+      "topic": "campaign.lifecycle.launched",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/campaign.launched.schema.json",
+      "file": "contracts/schemas/campaign.launched.schema.json",
+      "sha256": "379bb8a3ed20e0e57586eb86bc4c8c12400f5afad2c94085eb4d0780e2852a2a"
+    },
+    {
+      "name": "campaign.requested",
+      "kind": "event",
+      "event_type": "campaign.requested",
+      "topic": "campaign.lifecycle.requested",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/campaign.requested.schema.json",
+      "file": "contracts/schemas/campaign.requested.schema.json",
+      "sha256": "0cfce8a8c6cf609e8edfd6fb6d68020c59e5e3ab02733b93afe3580e96a9b289"
+    },
+    {
+      "name": "campaign_intelligence_brief",
+      "kind": "artifact",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/campaign_intelligence_brief.schema.json",
+      "file": "contracts/schemas/campaign_intelligence_brief.schema.json",
+      "sha256": "2e9466aed2002a68c448703717ff468515b7a10b9a8ad7a073097ed6a8992956"
+    },
+    {
+      "name": "creative.generated",
+      "kind": "event",
+      "event_type": "creative.generated",
+      "topic": "creative.creative.generated",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/creative.generated.schema.json",
+      "file": "contracts/schemas/creative.generated.schema.json",
+      "sha256": "8ce809060351307a0a8f18d06b073e4d81c3063f5ee0ca6465bb45589707ae49"
+    },
+    {
+      "name": "creative.qa.evaluated",
+      "kind": "event",
+      "event_type": "creative.qa.evaluated",
+      "topic": "creative.qa.evaluated",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/creative.qa.evaluated.schema.json",
+      "file": "contracts/schemas/creative.qa.evaluated.schema.json",
+      "sha256": "a5c6cde6fcf03049a314c1f12894f5de5ebd21b43da5bded5e14bf8a719861b9"
+    },
+    {
+      "name": "creative_dna",
+      "kind": "artifact",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/creative_dna.schema.json",
+      "file": "contracts/schemas/creative_dna.schema.json",
+      "sha256": "61e1ec0a08f21679098019c681fe8cd10f06725e1883ad4dbf25a5aa8c2ccabb"
+    },
+    {
+      "name": "event-envelope",
+      "kind": "envelope",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/event-envelope.schema.json",
+      "file": "contracts/schemas/event-envelope.schema.json",
+      "sha256": "14dc3efaba70c78eeb8d5e3b36457a0a6693ef49665a48a08736a3eee547cfb3"
+    },
+    {
+      "name": "explanation",
+      "kind": "artifact",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/explanation.schema.json",
+      "file": "contracts/schemas/explanation.schema.json",
+      "sha256": "a239cbd756adb619a580aeb2ed13d50f5a7f7c798263666626ee9bbbdd51514d"
+    },
+    {
+      "name": "lead.captured",
+      "kind": "event",
+      "event_type": "lead.captured",
+      "topic": "data.lead.captured",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/lead.captured.schema.json",
+      "file": "contracts/schemas/lead.captured.schema.json",
+      "sha256": "a5f900b33f225e957a04371def453334565bfa20f80690e324985e3d5adb7054"
+    },
+    {
+      "name": "lead.scored",
+      "kind": "event",
+      "event_type": "lead.scored",
+      "topic": "data.lead.scored",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/lead.scored.schema.json",
+      "file": "contracts/schemas/lead.scored.schema.json",
+      "sha256": "ec8e6498ee80b7ab9889bed8a204191bfc90d9aec8f39cbef45012eaecc54ce3"
+    },
+    {
+      "name": "media_plan",
+      "kind": "artifact",
+      "event_type": null,
+      "topic": null,
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/media_plan.schema.json",
+      "file": "contracts/schemas/media_plan.schema.json",
+      "sha256": "501f6850ba83536f5afbd46e082dba1aa8e21a6529b4df203ffa2a033c4dad2a"
+    },
+    {
+      "name": "optimization.decision",
+      "kind": "event",
+      "event_type": "optimization.decision",
+      "topic": "metrics.optimization.decision",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/optimization.decision.schema.json",
+      "file": "contracts/schemas/optimization.decision.schema.json",
+      "sha256": "c65caf7b371559ca10f08fb818d0ccf4a5c205b1ccc65da3d6bdf4cd38aae211"
+    },
+    {
+      "name": "research.completed",
+      "kind": "event",
+      "event_type": "research.completed",
+      "topic": "campaign.research.completed",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/research.completed.schema.json",
+      "file": "contracts/schemas/research.completed.schema.json",
+      "sha256": "84145bc1cf61ea1aeeda643c54c4e5c57f14cf64e27b025cb25d7a5e5bdebac0"
+    },
+    {
+      "name": "signal.dispatched",
+      "kind": "event",
+      "event_type": "signal.dispatched",
+      "topic": "signals.signal.dispatched",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/signal.dispatched.schema.json",
+      "file": "contracts/schemas/signal.dispatched.schema.json",
+      "sha256": "5cc8cf57fc72d7a771815f370020803bde1f13c79f3d3195c8b49407e21fb5af"
+    },
+    {
+      "name": "strategy.compiled",
+      "kind": "event",
+      "event_type": "strategy.compiled",
+      "topic": "campaign.strategy.compiled",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/strategy.compiled.schema.json",
+      "file": "contracts/schemas/strategy.compiled.schema.json",
+      "sha256": "a1308fc223e4ddee34c6a9dc5a2ad4ef55bbfebd153dc218c26ba069a182be2d"
+    },
+    {
+      "name": "wa.message.received",
+      "kind": "event",
+      "event_type": "wa.message.received",
+      "topic": "engagement.wa.message.received",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/wa.message.received.schema.json",
+      "file": "contracts/schemas/wa.message.received.schema.json",
+      "sha256": "a1382503c21cf8cc37022e1a33b27c67245cae34184bbe669ac3865e8da356cc"
+    },
+    {
+      "name": "wa.message.sent",
+      "kind": "event",
+      "event_type": "wa.message.sent",
+      "topic": "engagement.wa.message.sent",
+      "version": "1.0.0",
+      "$id": "https://contracts.growth-os.dev/schemas/wa.message.sent.schema.json",
+      "file": "contracts/schemas/wa.message.sent.schema.json",
+      "sha256": "4481cdf985092f31b97055b1efa7bb0dd8ee5b8f02abc2b8fb7c234ce288f898"
+    }
+  ]
+}

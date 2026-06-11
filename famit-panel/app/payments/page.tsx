@@ -33,7 +33,6 @@ import {
     type ProviderStatus,
 } from "./_api";
 import {
-    PaymentsHeader,
     HeroCard,
     ShareRow,
     IntentBadge,
@@ -223,25 +222,24 @@ export default function PaymentsPage() {
 
     return (
         <Layout title="Payments">
-            <PaymentsHeader
-                title="Payments & Collections"
-                subtitle="Issue payment links and invoices, track what your customers owe, and recover failed payments — all in one place."
-                actions={
-                    <>
-                        <button onClick={load} className={ghostBtnCls} disabled={loading}>
-                            <Icon
-                                name="clock"
-                                className={`size-4 fill-current ${loading ? "animate-spin" : ""}`}
-                            />
-                            {loading ? "Refreshing…" : "Refresh"}
-                        </button>
-                        <Button isBlack onClick={() => setCreateOpen(true)} className="h-9 px-5">
-                            <Icon name="plus" className="size-4 fill-inherit mr-1.5" />
-                            New payment link
-                        </Button>
-                    </>
-                }
-            />
+            {/* Action row (title is the single Layout heading) */}
+            <div className="flex items-center gap-2 mb-5 max-sm:flex-col max-sm:items-stretch">
+                <button onClick={load} className={`${ghostBtnCls} max-sm:order-2`} disabled={loading}>
+                    <Icon
+                        name="clock"
+                        className={`size-4 fill-current ${loading ? "animate-spin" : ""}`}
+                    />
+                    {loading ? "Refreshing…" : "Refresh"}
+                </button>
+                <Button
+                    isBlack
+                    onClick={() => setCreateOpen(true)}
+                    className="ml-auto max-sm:ml-0 h-9 px-5"
+                >
+                    <Icon name="plus" className="size-4 fill-inherit mr-1.5" />
+                    New payment link
+                </Button>
+            </div>
 
             <ErrorBanner msg={error} />
 
@@ -687,13 +685,7 @@ function CreateLinkPanel({
         <Modal open={open} onClose={onClose} isSlidePanel>
             <div className="flex h-full flex-col">
                 <div className="px-6 pt-6 pb-4 border-b border-s-subtle">
-                    <div className="page-head-eyebrow">
-                        <span className="signal-glyph !h-3" aria-hidden>
-                            <i /><i /><i />
-                        </span>
-                        New payment link
-                    </div>
-                    <h2 className="mt-1 text-h6 text-t-primary">Bill a customer</h2>
+                    <h2 className="text-h6 text-t-primary">New payment link</h2>
                     <p className="mt-1 text-body-2 text-t-secondary">
                         {connected
                             ? "Generates a shareable payment link your customer can pay instantly."

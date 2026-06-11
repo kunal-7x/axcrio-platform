@@ -17,6 +17,9 @@ import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
+import Tabs from "@/components/Tabs";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
 import { useMe, canWrite } from "@/lib/auth";
 import {
     getForm,
@@ -47,6 +50,12 @@ import InsightsPanel from "./InsightsPanel";
 
 type TabKey = "build" | "submissions" | "insights";
 
+const TABS = [
+    { id: 1, name: "Build", key: "build" as TabKey },
+    { id: 2, name: "Submissions", key: "submissions" as TabKey },
+    { id: 3, name: "Insights", key: "insights" as TabKey },
+];
+
 export default function FormDetailPage() {
     const params = useParams();
     const id = decodeURIComponent(
@@ -61,7 +70,8 @@ export default function FormDetailPage() {
     const [notFound, setNotFound] = useState(false);
     const [error, setError] = useState("");
 
-    const [tab, setTab] = useState<TabKey>("build");
+    const [tabOpt, setTabOpt] = useState(TABS[0]);
+    const tab = tabOpt.key;
 
     // editable draft of the schema/meta (the Build tab works on this copy)
     const [draftFields, setDraftFields] = useState<FormField[]>([]);
@@ -213,18 +223,20 @@ export default function FormDetailPage() {
             <Layout title="Form">
                 <BackLink />
                 <Card title="Form">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="font" className="fill-inherit" />
+                    <div className="py-16 text-center max-md:py-12">
+                        <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                            <Icon name="font" className="fill-t-tertiary" />
                         </span>
-                        <div className="state-title">
+                        <div className="text-h6 mb-1">
                             Forms &amp; Surveys is being prepared
                         </div>
-                        <div className="state-sub max-w-md">
+                        <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                             This builder lights up the moment the module is enabled
                             for your workspace.
                         </div>
-                        <span className="nav-soon mt-1">Coming soon</span>
+                        <span className="inline-block mt-5 px-3 h-8 leading-8 rounded-full bg-b-surface1 text-button text-t-secondary">
+                            Coming soon
+                        </span>
                     </div>
                 </Card>
             </Layout>
@@ -236,16 +248,16 @@ export default function FormDetailPage() {
             <Layout title="Form">
                 <BackLink />
                 <Card title="Form">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="info" className="fill-inherit" />
+                    <div className="py-16 text-center max-md:py-12">
+                        <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                            <Icon name="info" className="fill-t-tertiary" />
                         </span>
-                        <div className="state-title">Form not found</div>
-                        <div className="state-sub max-w-md">
+                        <div className="text-h6 mb-1">Form not found</div>
+                        <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                             This form may have been deleted, or the link is no
                             longer valid.
                         </div>
-                        <Button as="link" href="/forms" isStroke className="mt-1">
+                        <Button as="link" href="/forms" isStroke className="mt-5">
                             Back to all forms
                         </Button>
                     </div>
@@ -377,23 +389,11 @@ export default function FormDetailPage() {
                         : "Insights"
                 }
                 headContent={
-                    <div className="inline-flex p-1 rounded-full bg-b-surface1 border border-s-subtle dark:bg-shade-04/40">
-                        <TabBtn active={tab === "build"} onClick={() => setTab("build")}>
-                            Build
-                        </TabBtn>
-                        <TabBtn
-                            active={tab === "submissions"}
-                            onClick={() => setTab("submissions")}
-                        >
-                            Submissions
-                        </TabBtn>
-                        <TabBtn
-                            active={tab === "insights"}
-                            onClick={() => setTab("insights")}
-                        >
-                            Insights
-                        </TabBtn>
-                    </div>
+                    <Tabs
+                        items={TABS}
+                        value={tabOpt}
+                        setValue={(v) => setTabOpt(v as (typeof TABS)[number])}
+                    />
                 }
             >
                 {loading ? (
@@ -404,7 +404,6 @@ export default function FormDetailPage() {
                     </div>
                 ) : tab === "build" ? (
                     <BuildTab
-                        form={form!}
                         writable={writable}
                         draftTitle={draftTitle}
                         setDraftTitle={setDraftTitle}
@@ -431,7 +430,6 @@ export default function FormDetailPage() {
 /* ───────────────────────────── Build tab ──────────────────────────────── */
 
 function BuildTab({
-    form,
     writable,
     draftTitle,
     setDraftTitle,
@@ -445,7 +443,6 @@ function BuildTab({
     saving,
     onSave,
 }: {
-    form: Form;
     writable: boolean;
     draftTitle: string;
     setDraftTitle: (v: string) => void;
@@ -672,12 +669,12 @@ function SubmissionsTab({ formId }: { formId: string }) {
 
     if (subs.length === 0) {
         return (
-            <div className="state-block py-16">
-                <span className="state-glyph">
-                    <Icon name="list" className="fill-inherit" />
+            <div className="py-16 text-center max-md:py-12">
+                <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                    <Icon name="list" className="fill-t-tertiary" />
                 </span>
-                <div className="state-title">No submissions yet</div>
-                <div className="state-sub max-w-md">
+                <div className="text-h6 mb-1">No submissions yet</div>
+                <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                     Share the public link from the form header — each submission
                     appears here and creates a CRM contact automatically.
                 </div>
@@ -686,60 +683,51 @@ function SubmissionsTab({ formId }: { formId: string }) {
     }
 
     return (
-        <>
-            <div className="px-5 pb-3 max-lg:px-3">
-                <span className="eyebrow">
-                    {total} submission{total === 1 ? "" : "s"}
-                </span>
+        <div className="p-1 max-lg:px-0">
+            <div className="px-4 pb-1 text-body-2 text-t-tertiary">
+                {total} submission{total === 1 ? "" : "s"}
             </div>
-            <div className="overflow-x-auto">
-                <table className="data-table">
-                    <thead>
-                        <tr>
-                            <th>When</th>
-                            {keys.map((k) => (
-                                <th key={k}>{k}</th>
-                            ))}
-                            <th className="text-right">Score</th>
-                            <th>Sentiment</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {subs.map((s, i) => (
-                            <tr
-                                key={s.id}
-                                className="rise-in"
-                                style={{
-                                    animationDelay: `${Math.min(i * 20, 240)}ms`,
-                                }}
-                            >
-                                <td className="td-num text-t-secondary whitespace-nowrap">
-                                    {fmtDateTime(s.created_at)}
-                                </td>
-                                {keys.map((k) => (
-                                    <td
-                                        key={k}
-                                        className="text-t-secondary max-w-48 truncate"
-                                    >
-                                        {fmtAnswer(s.answers?.[k])}
-                                    </td>
-                                ))}
-                                <td className="text-right td-num text-t-secondary">
-                                    {s.score == null ? "—" : s.score}
-                                </td>
-                                <td>
-                                    {s.sentiment ? (
-                                        <SentimentBadge sentiment={s.sentiment} />
-                                    ) : (
-                                        <span className="text-t-tertiary">—</span>
-                                    )}
-                                </td>
-                            </tr>
+            <Table
+                cellsThead={
+                    <>
+                        <th>When</th>
+                        {keys.map((k) => (
+                            <th key={k} className="max-lg:hidden">
+                                {k}
+                            </th>
                         ))}
-                    </tbody>
-                </table>
-            </div>
-        </>
+                        <th className="text-right">Score</th>
+                        <th>Sentiment</th>
+                    </>
+                }
+            >
+                {subs.map((s) => (
+                    <TableRow key={s.id}>
+                        <td className="text-t-secondary whitespace-nowrap">
+                            {fmtDateTime(s.created_at)}
+                        </td>
+                        {keys.map((k) => (
+                            <td
+                                key={k}
+                                className="text-t-secondary max-w-48 truncate max-lg:hidden"
+                            >
+                                {fmtAnswer(s.answers?.[k])}
+                            </td>
+                        ))}
+                        <td className="text-right text-t-secondary">
+                            {s.score == null ? "—" : s.score}
+                        </td>
+                        <td>
+                            {s.sentiment ? (
+                                <SentimentBadge sentiment={s.sentiment} />
+                            ) : (
+                                <span className="text-t-tertiary">—</span>
+                            )}
+                        </td>
+                    </TableRow>
+                ))}
+            </Table>
+        </div>
     );
 }
 
@@ -802,25 +790,3 @@ function BackLink() {
     );
 }
 
-function TabBtn({
-    active,
-    onClick,
-    children,
-}: {
-    active: boolean;
-    onClick: () => void;
-    children: React.ReactNode;
-}) {
-    return (
-        <button
-            onClick={onClick}
-            className={`px-3.5 h-8 rounded-full text-button transition-all ${
-                active
-                    ? "bg-b-surface2 text-t-primary shadow-widget"
-                    : "text-t-secondary hover:text-t-primary"
-            }`}
-        >
-            {children}
-        </button>
-    );
-}

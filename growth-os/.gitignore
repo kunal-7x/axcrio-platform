@@ -1,0 +1,46 @@
+# ---- Node / pnpm / Turborepo ----
+node_modules/
+.pnpm-store/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# ---- Python / uv ----
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# ---- Env / secrets (NEVER commit; P6 token vault) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- Tooling / OS ----
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ---- Infra runtime data ----
+infra/.data/
+infra/**/data/
+
+# ---- Generated code is COMMITTED on purpose ----
+# (drift CI compares committed generated output vs a fresh codegen run).
+# Do NOT ignore packages/*/src/generated or contracts/registry snapshots.
+
+# local agent-orchestration scratch (also caught by root .gitignore)
+.wf/

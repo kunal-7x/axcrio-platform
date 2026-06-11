@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/wa.message.received.schema.json",
+  "title": "wa.message.received",
+  "description": "PAYLOAD of the `wa.message.received` envelope. Topic: engagement.wa.message.received. ★ Crown-jewel CTWA signal (§11.2 — makes the WA-first funnel fully optimizable where competitors stop at 'conversation started'). Emitted via the Origin Connector (§3.4) on an inbound WA message from the live /whatsapp/inbound webhook. When the message carries a CTWA referral (ctwa_clid + source ad id) the signals service dispatches business-messaging CAPI keyed on ctwa_clid -> conversions attributed to the exact ad with ZERO pixels (§11.2). Inbound body -> intent hints for lead-scoring (§9.5).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "wa.message.received",
+  "x-topic": "engagement.wa.message.received",
+  "additionalProperties": false,
+  "required": [
+    "wamid",
+    "from"
+  ],
+  "properties": {
+    "wamid": {
+      "description": "Inbound WhatsApp message id.",
+      "type": "string"
+    },
+    "from": {
+      "description": "Sender E.164 / wa_id — correlation key (§8.3).",
+      "type": "string"
+    },
+    "message_type": {
+      "type": "string",
+      "enum": [ "text", "interactive", "media", "button", "reaction" ]
+    },
+    "text": {
+      "description": "Inbound text (body -> intent hints §9.5; clustered nightly by insight-miner §9.6).",
+      "type": "string"
+    },
+    "referral": {
+      "description": "★ CTWA referral (§11.2). Present when the conversation started from a Click-to-WhatsApp ad. ctwa_clid keys the business-messaging CAPI dispatch.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ctwa_clid": { "type": "string", "description": "The CTWA click id — attributes to the exact ad (§11.2)." },
+        "source_ad_id": { "type": "string", "description": "The Meta ad that drove this conversation." },
+        "source_type": { "type": "string", "description": "e.g. ad." },
+        "headline": { "type": "string", "description": "The ad headline the user tapped (context for the welcome reply)." }
+      }
+    },
+    "interactive_reply": {
+      "description": "When the user tapped a button (e.g. an approval-inbox Approve/Reject §17.2, or a journey quick-reply).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "button_id": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
+    "is_first_touch": {
+      "description": "True when this inbound is the journey root (mints correlation_id, §6.3) — e.g. a fresh CTWA conversation with no prior lead.captured.",
+      "type": "boolean"
+    }
+  }
+}

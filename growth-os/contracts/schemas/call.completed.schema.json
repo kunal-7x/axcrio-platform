@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/call.completed.schema.json",
+  "title": "call.completed",
+  "description": "PAYLOAD of the `call.completed` envelope. Topic: engagement.call.completed. Emitted via the Origin Connector (§3.4) when the live Famit caller.py dial loop finishes a call (_classify_outcome). The raw call fact (answered/duration/disposition). The richer intent extraction is a separate call.outcome event (the moat feed). voice-adapter wraps the live LiveKit/Vobiz stack (§16.2). correlation by E.164 phone (§8.3).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "call.completed",
+  "x-topic": "engagement.call.completed",
+  "additionalProperties": false,
+  "required": [
+    "call_ref",
+    "status"
+  ],
+  "properties": {
+    "call_ref": {
+      "description": "Source call id (Famit campaign_id:phone or call id). origin_ref in the connector map.",
+      "type": "string"
+    },
+    "phone": {
+      "description": "E.164 — the correlation key (India identity king §8.3).",
+      "type": "string"
+    },
+    "status": {
+      "description": "Disposition from _classify_outcome (§3.4).",
+      "type": "string",
+      "enum": [ "answered", "no_answer", "busy", "failed", "voicemail", "suppressed" ]
+    },
+    "duration_seconds": {
+      "description": "Talk duration (a lead-scoring input §9.5; >=60s answered = a conversation-outcome audience seed §10.5).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "campaign_ref": {
+      "description": "GROWTH OS / Famit campaign this call belongs to.",
+      "type": "string"
+    },
+    "transcript_ref": {
+      "description": "Pointer to the transcript (consumed by call.outcome intent extraction + insight-miner §9.6). Recording consent per Indian telecom norms (§5.4).",
+      "type": "string"
+    },
+    "direction": {
+      "type": "string",
+      "enum": [ "outbound", "inbound" ],
+      "default": "outbound"
+    }
+  }
+}

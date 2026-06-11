@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/research.completed.schema.json",
+  "title": "research.completed",
+  "description": "PAYLOAD of the `research.completed` envelope. Topic: campaign.research.completed. Emitted by the Synthesizer at the end of the ResearchWarRoom (§9.2-9.3) once the Campaign Intelligence Brief (CIB) is assembled and all agent outputs are schema-validated. Downstream (strategy-compiler §9.9) consumes this. The CIB body itself is the frozen artifact campaign_intelligence_brief.schema.json (§9.3); this event carries the reference + a thin summary so consumers can route without loading the full brief.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "research.completed",
+  "x-topic": "campaign.research.completed",
+  "additionalProperties": false,
+  "required": [
+    "cib_id",
+    "campaign_request_ref",
+    "cib_version",
+    "cib_ref"
+  ],
+  "properties": {
+    "cib_id": {
+      "description": "Id of the produced Campaign Intelligence Brief (matches cib_id in campaign_intelligence_brief.schema.json).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "campaign_request_ref": {
+      "description": "The campaign_request_id this brief answers (§9.3).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cib_version": {
+      "description": "Version of THIS CIB (CIBs are versioned & diffable §9.3; a re-run mints a new version).",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "cib_ref": {
+      "description": "Pointer to the full CIB artifact (object-store URI or knowledge-service id). The full brief validates against campaign_intelligence_brief.schema.json.",
+      "type": "string"
+    },
+    "summary": {
+      "description": "Thin routing summary so consumers/the dashboard avoid loading the whole brief.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "north_star": {
+          "description": "Always CPqL in Phase 0/1 (§8.5 north star).",
+          "type": "string",
+          "default": "CPqL"
+        },
+        "target_cpql_minor": {
+          "description": "Margin-derived target CPqL in INR paise (§13.4 target = margin x close_rate x safety).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "angle_count": { "type": "integer", "minimum": 0 },
+        "min_distinct_concepts": {
+          "description": "Diversity floor from the matrix (§9.3 default 8).",
+          "type": "integer",
+          "minimum": 1,
+          "default": 8
+        },
+        "channel_plan": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "platform": { "type": "string", "enum": [ "meta", "google", "whatsapp", "voice" ] },
+              "objective": { "type": "string" },
+              "destination": { "type": "string", "enum": [ "ctwa", "leadform", "lp" ] },
+              "split": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "requires_compliance_review": { "type": "boolean" }
+      }
+    },
+    "agents_ran": {
+      "description": "Which War Room agents produced output for this brief (provenance / cost accounting). Phase-1 mini war room = Business, Persona, Offer, Compliance (§21).",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence_count": {
+      "description": "Number of evidence claims attached to the CIB (every claim carries evidence+confidence §9.3).",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

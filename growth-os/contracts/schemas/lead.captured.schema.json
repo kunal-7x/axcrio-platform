@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/lead.captured.schema.json",
+  "title": "lead.captured",
+  "description": "PAYLOAD of the `lead.captured` envelope. Topic: data.lead.captured. The journey root for a person (§6.3): emitted by tracking/ingestion on a form submit, CTWA inbound, or via the Origin Connector lead.captured mapping (§3.4). The envelope's correlation_id is MINTED here (first touch) and propagated through every later event of this person (E.164 phone is king in India, §8.3). Carries the captured click IDs (fbclid/gclid/ctwa_clid) that make deterministic attribution + the CAPI signal loop possible (§11). Canonical field shape from Appendix A.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "lead.captured",
+  "x-topic": "data.lead.captured",
+  "additionalProperties": false,
+  "required": [
+    "lead_id",
+    "source"
+  ],
+  "properties": {
+    "lead_id": {
+      "description": "GROWTH OS lead id (Appendix A). Also the origin_ref when via the Origin Connector.",
+      "type": "string"
+    },
+    "person_hint": {
+      "description": "Raw identity hints for the Identity Graph (§8.3) to resolve/merge a person_id. PII here is hashed before any upload (§5.4); raw values never leave unhashed downstream.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "phone": { "type": "string", "description": "E.164 (the India identity king §8.3)." },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "wa_id": { "type": "string" }
+      }
+    },
+    "source": {
+      "description": "Where the lead came from + the click/ad attribution keys (Appendix A). These keys are the raw material for signal dispatch (§11.3 match keys).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "platform" ],
+      "properties": {
+        "platform": { "type": "string", "enum": [ "meta", "google", "whatsapp", "lp", "origin", "manual" ] },
+        "ad_id": { "type": "string", "description": "Source ad id (Meta ad / Google ad)." },
+        "ctwa_clid": { "type": "string", "description": "Click-to-WhatsApp click id — keys business-messaging CAPI to the exact ad (§11.2)." },
+        "fbclid": { "type": "string" },
+        "fbp": { "type": "string" },
+        "fbc": { "type": "string" },
+        "gclid": { "type": "string" },
+        "wbraid": { "type": "string" },
+        "gbraid": { "type": "string" },
+        "utm": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Canonical UTM (§8.1) e.g. utm_campaign=cmp_{id}__ag_{angle}__cr_{creative}."
+        }
+      }
+    },
+    "destination": {
+      "description": "How the lead landed (Appendix A). ctwa opens the free 72h WA window (§11.2).",
+      "type": "string",
+      "enum": [ "ctwa", "leadform", "lp" ]
+    },
+    "campaign_ref": {
+      "description": "GROWTH OS campaign this lead is attributed to (resolved from ad_id), if known.",
+      "type": "string"
+    },
+    "form_fields": {
+      "description": "Captured lead-form answers (validity is a lead-scoring input §9.5: phone format/carrier, disposable email).",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "consent": {
+      "description": "DPDP consent captured at point of lead (§5.4 per-person/per-purpose). Every later WA send + audience upload checks this.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "marketing_msgs": { "type": "boolean" },
+        "remarketing_audience": { "type": "boolean" },
+        "voice_call": { "type": "boolean" },
+        "proof": { "type": "string", "description": "Source/timestamp/proof ref for the consent ledger." }
+      }
+    }
+  }
+}

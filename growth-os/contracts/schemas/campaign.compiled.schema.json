@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/campaign.compiled.schema.json",
+  "title": "campaign.compiled",
+  "description": "PAYLOAD of the `campaign.compiled` envelope. Topic: campaign.lifecycle.compiled. Emitted by the campaign-compiler (§10.1) after it turns the MediaPlan into EXACT platform payloads (Meta MAPI v25+ shapes ⚠VERIFY-LIVE) and produces a dry-run diff. This event references the compiled payloads + the dry-run diff that gets attached to the approval card. NOTHING is live yet — launch only happens after a SIGNED ActionPlan (P4).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "campaign.compiled",
+  "x-topic": "campaign.lifecycle.compiled",
+  "additionalProperties": false,
+  "required": [
+    "compiled_campaign_id",
+    "media_plan_ref",
+    "platform"
+  ],
+  "properties": {
+    "compiled_campaign_id": {
+      "description": "Id of this compiled campaign artifact (the bundle of exact platform payloads).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "media_plan_ref": {
+      "description": "The media_plan_id this was compiled from (§10.1).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "platform": {
+      "description": "Target ad platform for this compiled bundle (one event per platform). Phase-1 = meta.",
+      "type": "string",
+      "enum": [ "meta", "google" ]
+    },
+    "dry_run_ref": {
+      "description": "Pointer to the dry-run diff (exact JSON payloads) attached to the approval card (§10.1).",
+      "type": "string"
+    },
+    "destination": {
+      "description": "Primary destination type for this bundle (§10.1). CTWA opens the free 72h WA window (§11.2).",
+      "type": "string",
+      "enum": [ "ctwa", "leadform", "lp" ]
+    },
+    "structure": {
+      "description": "Shape of the compiled tree (consolidation > fragmentation §10.1).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "campaigns": { "type": "integer", "minimum": 1 },
+        "ad_sets": { "type": "integer", "minimum": 1 },
+        "ads": { "type": "integer", "minimum": 1 },
+        "objective": { "type": "string", "description": "Resolved platform objective (e.g. Leads, Sales)." },
+        "advantage_plus_audience": { "type": "boolean", "description": "Advantage+ audience default-on unless restricted (§10.1)." }
+      }
+    },
+    "budget_floor_check": {
+      "description": "Per ad set budget floor verification (>=5x target CPqL daily for learning-exit feasibility §10.1/§23).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "min_daily_per_adset_minor": { "type": "integer", "minimum": 0, "description": "Required floor in INR paise." }
+      }
+    },
+    "creative_refs": {
+      "description": "DAM asset ids that fill the creative slots (must be QA-passed before launch §15.4).",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tracking": {
+      "description": "Tracking params baked into the payloads (mandatory for journey truth §8.1).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "utm_scheme": {
+          "description": "Canonical UTM scheme (§8.1): utm_campaign=cmp_{id}__ag_{angle}__cr_{creative}.",
+          "type": "string"
+        },
+        "click_id_capture": {
+          "description": "Whether click-ID capture (fbclid/gclid/ctwa_clid) is wired for this destination — mandatory (§8.1).",
+          "type": "boolean"
+        }
+      }
+    },
+    "requires_approval": {
+      "description": "Always true for a launch in Phase 1 (training wheels §21). Launch path = signed ActionPlan only.",
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

@@ -1,0 +1,657 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/campaign_intelligence_brief.schema.json",
+  "title": "CampaignIntelligenceBrief",
+  "description": "The CIB — the single artifact the Research War Room Synthesizer produces and every downstream plane consumes (GROWTH-OS-BUILD-SPEC §9.3 NORMATIVE, Appendix B). Canonical field names; every claim carries evidence + confidence; versioned & diffable; FROZEN-AFTER-MERGE (a new field ⇒ version bump per §6.2 extend-never-mutate). The strategy-compiler turns this into a MediaPlan (media_plan.schema.json); the vendor sees a human-readable render with 'challenge this' buttons (re-run a single agent).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cib_id",
+    "version",
+    "campaign_request_ref",
+    "business",
+    "offer",
+    "personas",
+    "angles",
+    "diversity_matrix",
+    "channel_plan",
+    "budget_plan",
+    "kpi",
+    "measurement",
+    "compliance",
+    "evidence"
+  ],
+  "properties": {
+    "cib_id": {
+      "description": "Unique id of this CIB version (UUID).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "description": "Schema version of the CIB shape (frozen-after-merge; §9.3). Distinct from the per-tenant content revision (see revision).",
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "revision": {
+      "description": "Monotonic content revision for THIS campaign request's CIB, so successive war-room runs / single-agent re-runs ('challenge this') are diffable.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "campaign_request_ref": {
+      "description": "Reference to the originating campaign.requested event/record this brief answers.",
+      "type": "string"
+    },
+    "generated_at": {
+      "description": "When the Synthesizer produced this CIB.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "industry_pack_ref": {
+      "description": "Id+version of the industry pack (§18) that seeded persona/offer/compliance/KPI defaults.",
+      "type": "string"
+    },
+    "business": {
+      "description": "BusinessUnderstanding agent output (§9.2): the vendor's offer landscape and constraints.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offer_map",
+        "constraints"
+      ],
+      "properties": {
+        "offer_map": {
+          "description": "The vendor's products/services and what each sells.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "price": {
+                "description": "Price in INR paise (integer) where known.",
+                "type": "integer",
+                "minimum": 0
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "margins": {
+          "description": "Gross margin info (optional; drives margin-aware target_CPqL §13.4). When absent, defaults come from the industry pack AND it is said so.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gross_margin_per_sale": {
+              "description": "Gross margin per sale in INR paise (integer).",
+              "type": "integer"
+            },
+            "known": {
+              "type": "boolean"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "vendor_stated",
+                "industry_pack_default",
+                "inferred"
+              ]
+            }
+          }
+        },
+        "constraints": {
+          "description": "Hard constraints (geography, capacity, exclusions, service areas, do-not-target).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "proof_assets": {
+          "description": "Available proof (reviews, ratings, case studies, certifications, awards) the creatives can use.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seasonality": {
+          "description": "Demand seasonality notes incl India festival windows (§I12 festival radar).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "offer": {
+      "description": "OfferStrategist output (§9.2): the chosen offer plus alternates (offers are first-class experiment arms §I8).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chosen"
+      ],
+      "properties": {
+        "chosen": {
+          "$ref": "#/$defs/offer"
+        },
+        "alternates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/offer"
+          }
+        }
+      }
+    },
+    "personas": {
+      "description": "PersonaBuilder output (§9.2): the audiences to address.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "pains",
+          "desires"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "desires": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "objections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "language_register": {
+            "description": "How this persona talks (formal/casual/code-mixed) — guides copy register.",
+            "type": "string"
+          },
+          "locale": {
+            "description": "Primary locale of the persona (BCP-47-ish), §I13 vernacular.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "angles": {
+      "description": "The persuasion angles (§9.3). Each carries hooks, objection counters and locales; angle ids are referenced by the diversity_matrix and by CreativeDNA.angle_ref for attribute-level learning.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "pain",
+          "promise",
+          "hooks"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pain": {
+            "description": "The pain this angle leads with.",
+            "type": "string"
+          },
+          "promise": {
+            "description": "The promise/transformation offered.",
+            "type": "string"
+          },
+          "proof": {
+            "description": "The proof that backs the promise (ties to business.proof_assets).",
+            "type": "string"
+          },
+          "hooks": {
+            "description": "Opening hooks for this angle. §9.3 calls for 5.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "objection_counters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "locales": {
+            "description": "Locales this angle is authored/transcreated for.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "diversity_matrix": {
+      "description": "CreativeIntel output (§9.2/§9.3): the matrix that forces GENUINE diversity (Moat #2) so creatives don't collapse into one Entity-ID cluster. Seeds the creative batch; min_distinct_concepts ≥ 8 (§9.3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "angles",
+        "formats",
+        "visual_treatments",
+        "min_distinct_concepts"
+      ],
+      "properties": {
+        "angles": {
+          "description": "Angle ids (from angles[].id) in play for this batch.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "formats": {
+          "description": "Creative formats to span (must align with creative_dna.format vocab).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "visual_treatments": {
+          "description": "Visual treatments to span (must align with creative_dna.visual_treatment vocab).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "hook_types": {
+          "description": "Hook types to span (align with creative_dna.hook_type vocab).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "headline_frameworks": {
+          "description": "Copy frameworks to span (align with creative_dna.copy_framework vocab).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_distinct_concepts": {
+          "description": "Minimum number of genuinely distinct concepts the batch must contain (§9.3 default 8; QA blocks launch sets below this, §15.4).",
+          "type": "integer",
+          "minimum": 8,
+          "default": 8
+        },
+        "gene_mix": {
+          "description": "Memory→behavior seeding policy (§14.2): proportion proven vs novel vs wildcard genes.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "proven_share": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "novel_share": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "wildcard_share": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "channel_plan": {
+      "description": "Where the campaign runs and to what objective/destination, with a split (§9.3).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "platform",
+          "objective",
+          "destination",
+          "split"
+        ],
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": [
+              "meta",
+              "google",
+              "whatsapp",
+              "tiktok",
+              "microsoft"
+            ]
+          },
+          "objective": {
+            "description": "Campaign objective. Meta 2026: use Sales/Leads where Advantage+ defaults (§10.1); never optimize 'conversation started' (§23).",
+            "type": "string",
+            "enum": [
+              "leads",
+              "sales",
+              "app",
+              "traffic",
+              "awareness",
+              "engagement",
+              "messages"
+            ]
+          },
+          "destination": {
+            "description": "Where the click/tap lands. CTWA opens a FREE 72h WhatsApp window (§10.1, §11.2).",
+            "type": "string",
+            "enum": [
+              "ctwa",
+              "leadform",
+              "lp",
+              "website",
+              "call"
+            ]
+          },
+          "split": {
+            "description": "Fraction of budget/effort allocated to this channel (0–1; channel_plan splits should sum to ~1).",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "budget_plan": {
+      "description": "BudgetStrategist output (§9.3): test/scale envelope in INR. Amounts in INR paise (integer) per the money model. References kill/scale rules and approval thresholds rather than inlining the rule logic.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "test_daily",
+        "max_daily",
+        "min_viable_test"
+      ],
+      "properties": {
+        "currency": {
+          "type": "string",
+          "const": "INR"
+        },
+        "test_daily": {
+          "description": "Recommended daily test budget, INR paise (integer).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_daily": {
+          "description": "Hard daily ceiling, INR paise (integer). The Budget Governor enforces it (§13).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_viable_test": {
+          "description": "War-Game minimum daily budget to produce a meaningful answer (§13.4/§14.5), INR paise (integer). If the vendor's budget < this, the compiler returns insufficient_budget rather than silently launching untestable (§10.1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "kill_rules_ref": {
+          "description": "Id/version of the kill-rule pack (guardrails G1–G6, §12.3) in policy-config.",
+          "type": "string"
+        },
+        "scale_rules_ref": {
+          "description": "Id/version of the scale-rule pack (promote, §12.4) in policy-config.",
+          "type": "string"
+        },
+        "approval_thresholds": {
+          "description": "Per-action-class approval thresholds for this campaign (§17), referenced by ActionPlans.",
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "followup_plan": {
+      "description": "The post-click engagement plan (the journey IS the signal factory, §16.3). Optional in CIB-lite (Phase 1).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wa_journey_id": {
+          "description": "Id of the follow-up WhatsApp journey (journeys DSL, §16.3) to trigger on lead.captured.",
+          "type": "string"
+        },
+        "voice_qualify": {
+          "description": "Whether to trigger an AI voice qualification call on hot leads (§16.2).",
+          "type": "boolean"
+        },
+        "sla_seconds": {
+          "description": "Speed-to-lead SLA: max seconds from capture to first contact (hot lead → call ≤60s, §16.2).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "kpi": {
+      "description": "The success definition. North star is CPqL (§8.5), with a margin-derived target (§13.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "north_star",
+        "target_CPqL"
+      ],
+      "properties": {
+        "north_star": {
+          "description": "The single metric the campaign optimizes toward (§8.5 NORTH STAR = CPqL).",
+          "type": "string",
+          "enum": [
+            "CPqL",
+            "CPL",
+            "ROAS",
+            "MER"
+          ],
+          "default": "CPqL"
+        },
+        "target_CPqL": {
+          "description": "Target cost per qualified lead, INR paise (integer). Derived margin×close_rate×safety (§13.4).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "derivation": {
+          "description": "How target_CPqL was derived (margin×close_rate per §13.4), incl whether margin was vendor-stated or pack-default.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gross_margin_per_sale": {
+              "type": "integer"
+            },
+            "close_rate_from_qualified": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "safety_factor": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "margin_derived",
+                "industry_pack_default"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "measurement": {
+      "description": "How the loop is measured: which events map to the optimization ladder, the UTM scheme, and the CAPI value source (§9.3, §11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events_map",
+        "utm_scheme",
+        "capi_value_source"
+      ],
+      "properties": {
+        "events_map": {
+          "description": "Per-tenant mapping of business outcomes → optimization-ladder events (§11.1: Lead/QualifiedLead/Schedule/Attended/Purchase).",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "utm_scheme": {
+          "description": "Canonical UTM template (§8.1: utm_campaign=cmp_{id}__ag_{angle}__cr_{creative}).",
+          "type": "string"
+        },
+        "capi_value_source": {
+          "description": "What value is sent on the Lead CAPI event — the moat (§11.1: value = lead_score as predicted-value proxy; true value on Purchase).",
+          "type": "string",
+          "enum": [
+            "lead_score",
+            "order_value",
+            "fixed",
+            "none"
+          ],
+          "default": "lead_score"
+        }
+      }
+    },
+    "compliance": {
+      "description": "ComplianceScout verdict (§9.2/§10.9): category risk + whether human review is required + required disclosures (e.g. RERA for real-estate, health/finance limits).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk",
+        "requires_review"
+      ],
+      "properties": {
+        "risk": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "special_ad_category": {
+          "description": "Meta special ad category if applicable (credit/employment/housing/social-issues), which restricts targeting.",
+          "type": "string"
+        },
+        "requires_review": {
+          "description": "Whether a human compliance review is required before launch.",
+          "type": "boolean"
+        },
+        "banned_claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_disclosures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "evidence": {
+      "description": "The grounding for the brief: EVERY material claim carries a source + confidence (§9.3 rule). This is what powers the 'challenge this' UX and keeps the war room honest.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claim",
+          "source",
+          "confidence"
+        ],
+        "properties": {
+          "claim": {
+            "description": "The asserted fact (e.g. 'competitor X runs question-hook ads 90+ days').",
+            "type": "string"
+          },
+          "source": {
+            "description": "Provenance: which agent/tool produced it (web.search, meta.ad_library, warehouse.query, memory.read, benchmarks.read, etc.) plus a URL/ref where applicable.",
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "agent": {
+            "description": "Which war-room agent surfaced this claim (§9.2 roster), for single-agent re-run.",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "memories_cited": {
+      "description": "Learning-memory entries this CIB used (§14.1: 'Every CIB cites memories used'). Enables negative-memory checks (don't re-propose what failed) and counterfactual replay.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "anchor": {
+          "description": "Price anchor / headline value.",
+          "type": "string"
+        },
+        "bundle": {
+          "type": "string"
+        },
+        "guarantee": {
+          "type": "string"
+        },
+        "plan": {
+          "description": "Payment plan / EMI framing (relevant for India high-ticket).",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

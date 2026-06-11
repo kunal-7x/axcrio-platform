@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/creative.generated.schema.json",
+  "title": "creative.generated",
+  "description": "PAYLOAD of the `creative.generated` envelope. Topic: creative.creative.generated. Emitted by creative-studio (§15.2) when one creative asset finishes the pipeline (brief -> layout -> background -> typography -> brand -> locale) and is registered in the DAM with Creative DNA tags + embedding. The gen-background step REUSES the live AI Asset Service (:8310 OpenRouter gemini-2.5-flash-image, Tenant Zero). One event per asset. creative-qa (§15.4) then evaluates it (creative.qa.evaluated).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "creative.generated",
+  "x-topic": "creative.creative.generated",
+  "additionalProperties": false,
+  "required": [
+    "asset_id",
+    "asset_type",
+    "dna"
+  ],
+  "properties": {
+    "asset_id": {
+      "description": "DAM asset id (§15.5).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cib_ref": {
+      "description": "The CIB whose diversity cell this asset fills (§15.2 brief = CIB cell).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "asset_type": {
+      "description": "Creative format produced.",
+      "type": "string",
+      "enum": [
+        "static_feed",
+        "static_story",
+        "static_banner",
+        "video_reel",
+        "video_story",
+        "carousel",
+        "copy_only"
+      ]
+    },
+    "url": {
+      "description": "Object-store URL of the rendered asset (DO Spaces, reused live store §4.2).",
+      "type": "string",
+      "format": "uri"
+    },
+    "dna": {
+      "description": "Creative DNA tags — the attribute-level learning substrate (§15.5, moat (2)). Learning happens at THIS level (§14.1 gene-level posteriors).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "angle", "hook_type", "format" ],
+      "properties": {
+        "angle": { "type": "string", "description": "Angle id/name from the diversity matrix (§9.3)." },
+        "hook_type": { "type": "string", "description": "e.g. question, discount, social_proof, urgency, problem_agitate." },
+        "format": { "type": "string", "description": "Layout family (feed/story/banner/reel)." },
+        "visual_treatment": { "type": "string", "description": "e.g. product_cutout, lifestyle, gen_background, founder_ugc." },
+        "color_family": { "type": "string" },
+        "copy_framework": { "type": "string", "description": "e.g. PAS, AIDA, before_after." },
+        "language": { "type": "string", "description": "BCP-47 locale of the copy (vernacular first-class §11/I13)." }
+      }
+    },
+    "headline": {
+      "description": "Rendered headline text (deterministic typography layer §15.2; gen models garble text so this is composited, not generated-in-image).",
+      "type": "string"
+    },
+    "gen_source": {
+      "description": "Provenance of the background (vendor photo > gen for authenticity §15.2).",
+      "type": "string",
+      "enum": [ "ai_asset_service", "vendor_photo", "stock", "product_cutout" ]
+    },
+    "rights": {
+      "description": "Usage rights (§15.5) — required before an asset is launchable.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string" },
+        "license": { "type": "string" },
+        "model_consent": { "type": "boolean" },
+        "voice_consent": { "type": "boolean" }
+      }
+    },
+    "embedding_ref": {
+      "description": "Pointer to the asset embedding (pgvector) used for Entity-ID cluster-risk scoring (§15.4) and reuse search.",
+      "type": "string"
+    },
+    "brand_kit_version": {
+      "description": "Brand-kit version this render referenced (§15.1 every render cites a version).",
+      "type": "string"
+    }
+  }
+}

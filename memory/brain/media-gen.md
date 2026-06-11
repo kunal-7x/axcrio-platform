@@ -88,3 +88,49 @@ path uses no network; "configured" cases monkeypatch `client._request_json`. py3
   kwarg AND inside the brief dict. The underlying creative/image engine may read tenant from the brief, so
   the body value could win via that channel. FIX: also `body["tenant_id"]=token` before the call (like the
   video path). Verified token A forced on BOTH kwarg and brief.
+
+## ⭐ OpenRouter IMAGE-GEN + provider research (2026-06-11) — design `design/asset-provider-research.md`
+- **OpenRouter DOES generate images** (not text-only). SAME chat endpoint
+  `POST https://openrouter.ai/api/v1/chat/completions` + top-level `"modalities":["image","text"]`.
+  Image returns as a **base64 data-URL** at `choices[0].message.images[0].image_url.url`
+  (`data:image/png;base64,…`). NO `/images/generations` route. Edit/variation = put input image in
+  `messages` content + `image_config.strength`. Image output is SYNCHRONOUS (no webhook/poll).
+- **Default model:** `google/gemini-2.5-flash-image` ("Nano Banana") ~$0.039/img, native edit+multi-turn.
+  Fallbacks: `black-forest-labs/flux.2-pro/-flex/-klein-4b` (per-MP), `openai/gpt-5-image` (text-heavy),
+  `bytedance-seed/seedream-4.5` ($0.04/img flat). Stage-1 prompt-builder LLM = `google/gemini-2.5-flash`
+  (same key). ⚠️ per-image cost vs $2.50/M output-token page price DISAGREE — read live `usage`, don't hard-code.
+- ⚠️⚠️ **ENV VAR IS MISSPELLED: `OPNEROUTER_API_KEY`** (founder typo "OPNE", value [FOUND] in `.env.local`).
+  Adapter MUST `os.getenv("OPNEROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")`.
+- **FITS the existing abstraction** — `creative/image_banner_studio/` already has the FULL Provider protocol
+  (`providers/base.py`: id/status/estimate_cost/generate/generate_async → ImageResult) + registry
+  (`providers/__init__.py`) + job_type ladder (`router.py`) + types + `_common` (http/redact/usd_to_inr).
+  Adapters exist: fake/ideogram/recraft/gpt_image/flux_hosted/flux_selfhost — **NO `openrouter` yet**.
+  The whole job = ADD `providers/openrouter.py` (model `gpt_image.py` for the b64 parse) + 1 registry line
+  + a small stage-1 `prompt_builder.py`. DO NOT design a new abstraction. Storage already abstracted:
+  box FS (`storage.py`, now) ↔ DO Spaces (`media_gen/spaces.py`, when `SPACES_*` set).
+
+## ⭐ ASSET-SERVICE ARCHITECTURE (2026-06-11) — design `design/asset-service-architecture.md`
+- The **AI Asset Service** = a DEDICATED coarse SERVICE (the generation engine behind Creative Studio), designed
+  to mirror the proven AIM dedicated-service blueprint (`design/aim-architecture.md`): standalone FastAPI at
+  `/opt/famit-aiasset/` (own venv, **port 127.0.0.1:8310**, systemd `famit-aiasset` + `famit-aiasset-worker`),
+  OWN PG schema `ai_asset_*` (8 tables, FORCE-RLS by vendor_id, admin-GUC policy copied verbatim, immutable
+  `ai_asset_audit_logs` INSERT/SELECT-only), reuses wallet.py/audit.py/db.engine RLS/Hatchet(F3) by DIRECT IMPORT
+  while co-located (flip to HTTP on extraction via `_mode=lib|http`). Panel reaches it via **frontend-box** nginx
+  `location /api/assets/ → :8310` (the /api proxy is NOT on the backend box — verified). Service→monolith auth =
+  `AIASSET_SERVICE_TOKEN` + reuses AIM's `POST /api/internal/mint-scoped-token` for a scoped tenant token (RLS
+  re-enforced on the executing side). Ships DORMANT behind `AIASSET_ENABLED=0` → live byte-identical.
+- ⭐ **REUSE-vs-BUILD reconciliation (the load-bearing finding):** on the BOX, `media_gen/video/` is the ONE
+  deployed complete engine; `media_gen/image/` is a STUB → `from creative import image_banner_studio` and
+  **`creative/` is NOT on the box** (stub degrades to `engine:absent`). BUT the real image engine EXISTS in the
+  LOCAL repo `droplet_work/creative/image_banner_studio/` (full Provider ABC `providers/base.py` + registry +
+  adapters fake/ideogram/recraft/gpt_image/flux_hosted/flux_selfhost). So the image engine is **BUILT but NOT
+  DEPLOYED** and ALREADY has the model-agnostic abstraction the master spec wants. Phase-1 work = **DEPLOY it into
+  the service + ADD `providers/openrouter.py`** (the one missing impl, model b64-parse on `gpt_image.py`) — NOT a
+  from-scratch build, NOT a new abstraction. `media_gen/spaces.py` (S3/Spaces writer) + `media_gen/video/cost.py`
+  (wallet seam, USD→INR-paise CEIL) + `JobStatus` lifecycle + `audit_hook` are directly reusable.
+- **Microservice VERDICT (founder list):** AI Asset Service=SERVICE · AI Manager=SERVICE · Workflow=Hatchet(already
+  separate) · Voice=separate runtime(already) · Integrations+Analytics+Adbot=MONOLITH-for-now · Control Layer=CORE
+  inline boundary(never a service, per control-security) · Wallet/Audit/Firewall=CORE shared libs. = a FEW coarse
+  services around a service-extractable modular monolith. Asset-Service extraction trigger = self-host GPU models OR
+  generation QPS saturates shared box. Box facts: Python 3.12.3, no OPENROUTER/SPACES/FEATURE_MEDIA in `.env`,
+  wallet `reserve(tenant_id,amount_minor,resource_type,resource_id,idem_key)->hold_id|None`/`settle(hold_id,actual)`.

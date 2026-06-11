@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
-import PageHeader from "@/components/PageHeader";
 import Icon from "@/components/Icon";
 import Badge, { type BadgeVariant } from "@/components/Badge";
 import KpiCard from "@/components/KpiCard";
@@ -337,7 +336,7 @@ function TicketModal({
                                 <div className="p-4 rounded-2xl bg-b-surface1/70 border border-s-subtle dark:bg-shade-04/30">
                                     <div className="flex items-center gap-2 mb-2">
                                         <Icon name="feather" className="size-3.5 fill-t-tertiary" />
-                                        <div className="eyebrow">AI Summary</div>
+                                        <div className="text-overline uppercase tracking-[0.06em] text-t-tertiary">AI Summary</div>
                                     </div>
                                     <p className="text-body-2 text-t-primary leading-relaxed">
                                         {ticket.ai_summary}
@@ -352,7 +351,7 @@ function TicketModal({
                                         <Icon name="bell" className="size-4 fill-primary-05" />
                                     </span>
                                     <div>
-                                        <div className="eyebrow text-primary-05 mb-1">
+                                        <div className="text-overline uppercase tracking-[0.06em] text-primary-05 mb-1">
                                             Escalated to a human
                                         </div>
                                         <p className="text-body-2 text-t-primary">
@@ -367,7 +366,7 @@ function TicketModal({
                             {/* Thread */}
                             <div>
                                 <div className="flex items-center justify-between mb-3">
-                                    <div className="eyebrow">Conversation</div>
+                                    <div className="text-overline uppercase tracking-[0.06em] text-t-tertiary">Conversation</div>
                                     <span className="text-caption text-t-tertiary tabular-nums">
                                         {messages.length} message
                                         {messages.length === 1 ? "" : "s"}
@@ -792,12 +791,6 @@ export default function SupportPage() {
                 />
             )}
 
-            <PageHeader
-                eyebrow="Engage"
-                title="Customer Support"
-                subtitle="Every customer conversation as a ticket — answered by your AI agent from the Knowledge Base, with one-tap human handover when it counts."
-            />
-
             {/* Dormant / not-configured */}
             {dormant && <ComingSoon />}
 
@@ -897,67 +890,70 @@ export default function SupportPage() {
             {/* ---- Activity strip ---- */}
             {hasData && m.volumeSeries.length > 1 && m.segments.length > 0 && (
                 <div className="grid grid-cols-3 gap-3 mb-3 max-lg:grid-cols-1">
-                    <div className="surface col-span-2 max-lg:col-span-1 p-5 rise-in">
-                        <div className="flex items-start justify-between gap-4 mb-4">
-                            <div>
-                                <div className="eyebrow mb-1">Ticket Volume</div>
-                                <div className="text-body-2 text-t-secondary">
-                                    New tickets over the last {m.activeDays} active day
-                                    {m.activeDays === 1 ? "" : "s"}
-                                </div>
-                            </div>
-                            <span className="kpi-glyph fill-primary-01">
+                    <Card
+                        className="col-span-2 max-lg:col-span-1"
+                        title="Ticket volume"
+                        headContent={
+                            <span className="ml-auto kpi-glyph fill-primary-01">
                                 <Icon name="chart" className="fill-inherit" />
                             </span>
+                        }
+                    >
+                        <div className="px-5 pb-5 max-lg:px-3">
+                            <div className="text-body-2 text-t-secondary mb-4">
+                                New tickets over the last {m.activeDays} active day
+                                {m.activeDays === 1 ? "" : "s"}
+                            </div>
+                            <Sparkline
+                                data={m.volumeSeries}
+                                color="var(--primary-01)"
+                                width={640}
+                                height={88}
+                                strokeWidth={2}
+                                className="w-full h-auto"
+                            />
                         </div>
-                        <Sparkline
-                            data={m.volumeSeries}
-                            color="var(--primary-01)"
-                            width={640}
-                            height={88}
-                            strokeWidth={2}
-                            className="w-full h-auto"
-                        />
-                    </div>
+                    </Card>
 
-                    <div className="surface p-5 rise-in">
-                        <div className="eyebrow mb-1">Channel Mix</div>
-                        <div className="text-body-2 text-t-secondary mb-4">
-                            Where {m.total} ticket{m.total === 1 ? "" : "s"} came from
-                        </div>
-                        <div className="flex h-2.5 w-full rounded-full overflow-hidden bg-b-surface1 dark:bg-shade-04/60">
-                            {m.segments.map((s) => (
-                                <div
-                                    key={s.key}
-                                    title={`${s.label}: ${s.value}`}
-                                    style={{
-                                        width: `${(s.value / m.total) * 100}%`,
-                                        background: s.color,
-                                    }}
-                                />
-                            ))}
-                        </div>
-                        <div className="mt-4 space-y-2.5">
-                            {m.segments.map((s) => (
-                                <div
-                                    key={s.key}
-                                    className="flex items-center gap-2.5 text-body-2"
-                                >
-                                    <span
-                                        className="size-2.5 shrink-0 rounded-full"
-                                        style={{ background: s.color }}
+                    <Card title="Channel mix">
+                        <div className="px-5 pb-5 max-lg:px-3">
+                            <div className="text-body-2 text-t-secondary mb-4">
+                                Where {m.total} ticket{m.total === 1 ? "" : "s"} came from
+                            </div>
+                            <div className="flex h-2.5 w-full rounded-full overflow-hidden bg-b-surface1 dark:bg-shade-04/60">
+                                {m.segments.map((s) => (
+                                    <div
+                                        key={s.key}
+                                        title={`${s.label}: ${s.value}`}
+                                        style={{
+                                            width: `${(s.value / m.total) * 100}%`,
+                                            background: s.color,
+                                        }}
                                     />
-                                    <span className="text-t-secondary mr-auto">{s.label}</span>
-                                    <span className="text-t-primary font-medium tabular-nums">
-                                        {s.value}
-                                    </span>
-                                    <span className="text-t-tertiary tabular-nums w-10 text-right">
-                                        {Math.round((s.value / m.total) * 100)}%
-                                    </span>
-                                </div>
-                            ))}
+                                ))}
+                            </div>
+                            <div className="mt-4 space-y-2.5">
+                                {m.segments.map((s) => (
+                                    <div
+                                        key={s.key}
+                                        className="flex items-center gap-2.5 text-body-2"
+                                    >
+                                        <span
+                                            className="size-2.5 shrink-0 rounded-full"
+                                            style={{ background: s.color }}
+                                        />
+                                        <span className="text-t-secondary mr-auto">{s.label}</span>
+                                        <span className="text-t-primary font-medium tabular-nums">
+                                            {s.value}
+                                        </span>
+                                        <span className="text-t-tertiary tabular-nums w-10 text-right">
+                                            {Math.round((s.value / m.total) * 100)}%
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
-                    </div>
+                    </Card>
                 </div>
             )}
 

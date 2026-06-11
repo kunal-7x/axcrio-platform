@@ -1,0 +1,646 @@
+asyncapi: 3.0.0
+
+info:
+  title: GROWTH OS — Event Backbone (the nervous system)
+  version: 1.0.0
+  description: >-
+    The canonical event bus for GROWTH OS (BUILD-SPEC §6). Every business fact is an
+    immutable event published here; services own their own write models and communicate
+    ONLY via these events (P2 — no service reads another's DB, ever). This document is the
+    single source of truth for the TOPIC MAP: it binds each canonical event type to its
+    `plane.entity.verb` topic and to the JSON-Schema payload in `../schemas/`.
+
+
+    Transport: Redpanda (Kafka API) + a JSON-Schema registry (D3). Retention: 30d hot on the
+    bus; mirrored to ClickHouse `events_raw` forever for replay + learning (§6.1).
+
+
+    Envelope: EVERY message on EVERY channel is an `event-envelope.schema.json` (§6.1). The
+    type-specific business fields live in `envelope.payload`, validated by the matching
+    `<type>.schema.json`. Topics follow `plane.entity.verb`. Frozen-after-merge, additive-only
+    (D7 / P1): a new payload field => version bump, a new event => a new channel (never mutate).
+  contact:
+    name: GROWTH OS Platform
+  license:
+    name: UNLICENSED (internal)
+
+defaultContentType: application/json
+
+servers:
+  redpanda-dev:
+    host: localhost:9092
+    protocol: kafka
+    description: >-
+      Local dev Redpanda (infra/docker-compose.dev.yml). Box-required to actually boot
+      (D8). Kafka-API compatible; JSON-Schema registry sidecar validates payloads.
+  redpanda-prod:
+    host: '{bootstrap}'
+    protocol: kafka
+    description: Production Redpanda / managed Kafka-API cluster (own box, §4.2).
+    variables:
+      bootstrap:
+        default: redpanda.growth-os.internal:9092
+
+# ---------------------------------------------------------------------------
+# TOPIC MAP — plane.entity.verb (§6.2 catalog, extend-never-mutate).
+# Phase 0/1 core backbone: 19 channels across 6 planes.
+# Each channel address IS the Kafka topic name.
+# ---------------------------------------------------------------------------
+channels:
+
+  # ----- CAMPAIGN plane (lifecycle + research + strategy) -----
+  campaign.lifecycle.requested:
+    address: campaign.lifecycle.requested
+    description: A campaign is requested — the loop root (§3.1). Journey correlation_id minted here.
+    messages:
+      campaign.requested:
+        $ref: '#/components/messages/campaign.requested'
+
+  campaign.research.completed:
+    address: campaign.research.completed
+    description: The Research War Room finished a CIB (§9.2-9.3).
+    messages:
+      research.completed:
+        $ref: '#/components/messages/research.completed'
+
+  campaign.strategy.compiled:
+    address: campaign.strategy.compiled
+    description: The strategy-compiler produced a MediaPlan from the CIB (§9.9).
+    messages:
+      strategy.compiled:
+        $ref: '#/components/messages/strategy.compiled'
+
+  campaign.lifecycle.compiled:
+    address: campaign.lifecycle.compiled
+    description: The campaign-compiler produced exact platform payloads + dry-run diff (§10.1).
+    messages:
+      campaign.compiled:
+        $ref: '#/components/messages/campaign.compiled'
+
+  campaign.lifecycle.launched:
+    address: campaign.lifecycle.launched
+    description: A signed ActionPlan launched the campaign; platform ids written (§10.2). First live-ads event.
+    messages:
+      campaign.launched:
+        $ref: '#/components/messages/campaign.launched'
+
+  # ----- CREATIVE plane -----
+  creative.creative.generated:
+    address: creative.creative.generated
+    description: One creative asset finished the studio pipeline + registered in DAM (§15.2).
+    messages:
+      creative.generated:
+        $ref: '#/components/messages/creative.generated'
+
+  creative.qa.evaluated:
+    address: creative.qa.evaluated
+    description: creative-qa evaluated an asset (verdict passed|fix_suggested|block) — the launchable gate (§15.4).
+    messages:
+      creative.qa.evaluated:
+        $ref: '#/components/messages/creative.qa.evaluated'
+
+  # ----- ACTIVATION plane (the signed-ActionPlan spine — P4) -----
+  activation.action_plan.created:
+    address: activation.action_plan.created
+    description: An ActionPlan is PROPOSED with its mandatory Explanation (P5). No mutation yet.
+    messages:
+      action.plan.created:
+        $ref: '#/components/messages/action.plan.created'
+
+  activation.action_plan.signed:
+    address: activation.action_plan.signed
+    description: An ActionPlan is SIGNED — the authorization gate connectors verify before any mutation (P4).
+    messages:
+      action.plan.signed:
+        $ref: '#/components/messages/action.plan.signed'
+
+  activation.action_plan.executed:
+    address: activation.action_plan.executed
+    description: The Action Executor performed a signed plan (executed|failed|rolled_back) (§10.2).
+    messages:
+      action.executed:
+        $ref: '#/components/messages/action.executed'
+
+  # ----- METRICS plane -----
+  metrics.ad.snapshot:
+    address: metrics.ad.snapshot
+    description: 4h platform-reported delivery + spend snapshot (§8.5, §12.2). source=platform (labelled, never truth).
+    messages:
+      ad.metrics.snapshot:
+        $ref: '#/components/messages/ad.metrics.snapshot'
+
+  metrics.optimization.decision:
+    address: metrics.optimization.decision
+    description: The Draft/Trash/Promote brain's decision + Explanation, referencing its ActionPlan (§12, P5).
+    messages:
+      optimization.decision:
+        $ref: '#/components/messages/optimization.decision'
+
+  # ----- DATA & SIGNALS plane -----
+  data.lead.captured:
+    address: data.lead.captured
+    description: A lead is captured — person-journey root; correlation_id minted; click IDs captured (§8.1, Appendix A).
+    messages:
+      lead.captured:
+        $ref: '#/components/messages/lead.captured'
+
+  data.lead.scored:
+    address: data.lead.scored
+    description: ★ Crown jewel. Lead quality score (predicted-value proxy) within <=15min; re-scored each journey event (§9.5).
+    messages:
+      lead.scored:
+        $ref: '#/components/messages/lead.scored'
+
+  signals.signal.dispatched:
+    address: signals.signal.dispatched
+    description: ★★ Flagship. A ground-truth outcome dispatched to a platform CAPI with value=lead-quality (§11).
+    messages:
+      signal.dispatched:
+        $ref: '#/components/messages/signal.dispatched'
+
+  # ----- ENGAGEMENT plane (Origin Connector — wraps the LIVE Famit stack, §3.4) -----
+  engagement.call.completed:
+    address: engagement.call.completed
+    description: A voice call finished (Famit caller.py _classify_outcome via Origin Connector) (§3.4, §16.2).
+    messages:
+      call.completed:
+        $ref: '#/components/messages/call.completed'
+
+  engagement.call.outcome:
+    address: engagement.call.outcome
+    description: ★ Crown jewel. Post-call intent extraction (budget/timeline/booking) — the moat feed (§9.5, §11).
+    messages:
+      call.outcome:
+        $ref: '#/components/messages/call.outcome'
+
+  engagement.wa.message.sent:
+    address: engagement.wa.message.sent
+    description: A WhatsApp message was sent (adapter over live whatsapp.py); template/category cost-metered (§16.1).
+    messages:
+      wa.message.sent:
+        $ref: '#/components/messages/wa.message.sent'
+
+  engagement.wa.message.received:
+    address: engagement.wa.message.received
+    description: ★ Crown jewel. Inbound WA incl CTWA referral (ctwa_clid + source ad) — makes WA funnel optimizable (§11.2).
+    messages:
+      wa.message.received:
+        $ref: '#/components/messages/wa.message.received'
+
+# ---------------------------------------------------------------------------
+# OPERATIONS — who produces each event (send). Consumers (receive) are declared
+# in each consuming service's own AsyncAPI doc (integration-hub.yaml, ledger.yaml,
+# etc.); this bus doc is the canonical PRODUCER + topic map.
+# ---------------------------------------------------------------------------
+operations:
+  sendCampaignRequested:
+    action: send
+    channel:
+      $ref: '#/channels/campaign.lifecycle.requested'
+    summary: gateway / Origin Connector publishes a campaign request.
+  sendResearchCompleted:
+    action: send
+    channel:
+      $ref: '#/channels/campaign.research.completed'
+    summary: agent-orchestrator (War Room Synthesizer) publishes the CIB-ready event.
+  sendStrategyCompiled:
+    action: send
+    channel:
+      $ref: '#/channels/campaign.strategy.compiled'
+    summary: strategy-compiler publishes the MediaPlan-ready event.
+  sendCampaignCompiled:
+    action: send
+    channel:
+      $ref: '#/channels/campaign.lifecycle.compiled'
+    summary: campaign-compiler publishes exact platform payloads + dry-run diff.
+  sendCampaignLaunched:
+    action: send
+    channel:
+      $ref: '#/channels/campaign.lifecycle.launched'
+    summary: executor publishes after a signed launch with platform ids.
+  sendCreativeGenerated:
+    action: send
+    channel:
+      $ref: '#/channels/creative.creative.generated'
+    summary: creative-studio publishes a generated+registered asset.
+  sendCreativeQaEvaluated:
+    action: send
+    channel:
+      $ref: '#/channels/creative.qa.evaluated'
+    summary: creative-qa publishes its gate verdict.
+  sendActionPlanCreated:
+    action: send
+    channel:
+      $ref: '#/channels/activation.action_plan.created'
+    summary: ledger publishes a proposed ActionPlan + Explanation.
+  sendActionPlanSigned:
+    action: send
+    channel:
+      $ref: '#/channels/activation.action_plan.signed'
+    summary: ledger publishes a signed ActionPlan (the authorization gate).
+  sendActionExecuted:
+    action: send
+    channel:
+      $ref: '#/channels/activation.action_plan.executed'
+    summary: executor publishes the terminal execution outcome.
+  sendAdMetricsSnapshot:
+    action: send
+    channel:
+      $ref: '#/channels/metrics.ad.snapshot'
+    summary: connector-meta/google publishes a 4h insights snapshot.
+  sendOptimizationDecision:
+    action: send
+    channel:
+      $ref: '#/channels/metrics.optimization.decision'
+    summary: optimizer publishes a Draft/Trash/Promote decision.
+  sendLeadCaptured:
+    action: send
+    channel:
+      $ref: '#/channels/data.lead.captured'
+    summary: tracking/ingestion (or Origin Connector) publishes a captured lead.
+  sendLeadScored:
+    action: send
+    channel:
+      $ref: '#/channels/data.lead.scored'
+    summary: lead-scoring publishes a (re)score.
+  sendSignalDispatched:
+    action: send
+    channel:
+      $ref: '#/channels/signals.signal.dispatched'
+    summary: signals publishes after a CAPI/EC dispatch.
+  sendCallCompleted:
+    action: send
+    channel:
+      $ref: '#/channels/engagement.call.completed'
+    summary: Origin Connector publishes a completed call (Famit).
+  sendCallOutcome:
+    action: send
+    channel:
+      $ref: '#/channels/engagement.call.outcome'
+    summary: Origin Connector publishes post-call intents (the moat feed).
+  sendWaMessageSent:
+    action: send
+    channel:
+      $ref: '#/channels/engagement.wa.message.sent'
+    summary: Origin Connector publishes an outbound WA message.
+  sendWaMessageReceived:
+    action: send
+    channel:
+      $ref: '#/channels/engagement.wa.message.received'
+    summary: Origin Connector publishes an inbound WA message (incl CTWA referral).
+
+# ---------------------------------------------------------------------------
+# MESSAGES — every message is the canonical envelope with the payload constrained
+# to the event's schema. `traits` applies the envelope; `payload` $refs the schema.
+# ---------------------------------------------------------------------------
+components:
+  messageTraits:
+    envelopeTrait:
+      headers:
+        type: object
+        properties:
+          idempotency_key:
+            type: string
+            description: Mirror of envelope.idempotency_key for broker-level dedup (P3).
+          tenant_id:
+            type: string
+            description: Mirror of envelope.tenant_id for partition/routing (P6).
+          traceparent:
+            type: string
+            description: W3C trace context propagated across the bus (P10).
+
+  messages:
+    campaign.requested:
+      name: campaign.requested
+      title: Campaign Requested
+      summary: Loop root — a campaign is requested (§3.1).
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-campaign.requested'
+
+    research.completed:
+      name: research.completed
+      title: Research Completed (CIB ready)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-research.completed'
+
+    strategy.compiled:
+      name: strategy.compiled
+      title: Strategy Compiled (MediaPlan ready)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-strategy.compiled'
+
+    campaign.compiled:
+      name: campaign.compiled
+      title: Campaign Compiled (platform payloads ready)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-campaign.compiled'
+
+    campaign.launched:
+      name: campaign.launched
+      title: Campaign Launched (live)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-campaign.launched'
+
+    creative.generated:
+      name: creative.generated
+      title: Creative Generated
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-creative.generated'
+
+    creative.qa.evaluated:
+      name: creative.qa.evaluated
+      title: Creative QA Evaluated
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-creative.qa.evaluated'
+
+    action.plan.created:
+      name: action.plan.created
+      title: Action Plan Created (proposed)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-action.plan.created'
+
+    action.plan.signed:
+      name: action.plan.signed
+      title: Action Plan Signed (authorized)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-action.plan.signed'
+
+    action.executed:
+      name: action.executed
+      title: Action Executed
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-action.executed'
+
+    ad.metrics.snapshot:
+      name: ad.metrics.snapshot
+      title: Ad Metrics Snapshot (4h)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-ad.metrics.snapshot'
+
+    optimization.decision:
+      name: optimization.decision
+      title: Optimization Decision (Draft/Trash/Promote)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-optimization.decision'
+
+    lead.captured:
+      name: lead.captured
+      title: Lead Captured
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-lead.captured'
+
+    lead.scored:
+      name: lead.scored
+      title: Lead Scored
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-lead.scored'
+
+    signal.dispatched:
+      name: signal.dispatched
+      title: Signal Dispatched (CAPI/EC)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-signal.dispatched'
+
+    call.completed:
+      name: call.completed
+      title: Call Completed
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-call.completed'
+
+    call.outcome:
+      name: call.outcome
+      title: Call Outcome (intents)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-call.outcome'
+
+    wa.message.sent:
+      name: wa.message.sent
+      title: WhatsApp Message Sent
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-wa.message.sent'
+
+    wa.message.received:
+      name: wa.message.received
+      title: WhatsApp Message Received (incl CTWA)
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/envelopeTrait'
+      payload:
+        $ref: '#/components/schemas/envelopeOf-wa.message.received'
+
+  # -------------------------------------------------------------------------
+  # SCHEMAS — each message payload = the canonical envelope ($ref to the external
+  # event-envelope.schema.json) with `payload` narrowed to the event's schema.
+  # This keeps ONE envelope definition (no drift) while binding the type<->payload.
+  # The JSON Schemas live in ../schemas/ and are the frozen source of truth (P1, D7).
+  # -------------------------------------------------------------------------
+  schemas:
+    envelope:
+      $ref: '../schemas/event-envelope.schema.json'
+
+    envelopeOf-campaign.requested:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: campaign.requested
+            payload:
+              $ref: '../schemas/campaign.requested.schema.json'
+    envelopeOf-research.completed:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: research.completed
+            payload:
+              $ref: '../schemas/research.completed.schema.json'
+    envelopeOf-strategy.compiled:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: strategy.compiled
+            payload:
+              $ref: '../schemas/strategy.compiled.schema.json'
+    envelopeOf-campaign.compiled:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: campaign.compiled
+            payload:
+              $ref: '../schemas/campaign.compiled.schema.json'
+    envelopeOf-campaign.launched:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: campaign.launched
+            payload:
+              $ref: '../schemas/campaign.launched.schema.json'
+    envelopeOf-creative.generated:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: creative.generated
+            payload:
+              $ref: '../schemas/creative.generated.schema.json'
+    envelopeOf-creative.qa.evaluated:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: creative.qa.evaluated
+            payload:
+              $ref: '../schemas/creative.qa.evaluated.schema.json'
+    envelopeOf-action.plan.created:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: action.plan.created
+            payload:
+              $ref: '../schemas/action.plan.created.schema.json'
+    envelopeOf-action.plan.signed:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: action.plan.signed
+            payload:
+              $ref: '../schemas/action.plan.signed.schema.json'
+    envelopeOf-action.executed:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: action.executed
+            payload:
+              $ref: '../schemas/action.executed.schema.json'
+    envelopeOf-ad.metrics.snapshot:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: ad.metrics.snapshot
+            payload:
+              $ref: '../schemas/ad.metrics.snapshot.schema.json'
+    envelopeOf-optimization.decision:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: optimization.decision
+            payload:
+              $ref: '../schemas/optimization.decision.schema.json'
+    envelopeOf-lead.captured:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: lead.captured
+            payload:
+              $ref: '../schemas/lead.captured.schema.json'
+    envelopeOf-lead.scored:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: lead.scored
+            payload:
+              $ref: '../schemas/lead.scored.schema.json'
+    envelopeOf-signal.dispatched:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: signal.dispatched
+            payload:
+              $ref: '../schemas/signal.dispatched.schema.json'
+    envelopeOf-call.completed:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: call.completed
+            payload:
+              $ref: '../schemas/call.completed.schema.json'
+    envelopeOf-call.outcome:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: call.outcome
+            payload:
+              $ref: '../schemas/call.outcome.schema.json'
+    envelopeOf-wa.message.sent:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: wa.message.sent
+            payload:
+              $ref: '../schemas/wa.message.sent.schema.json'
+    envelopeOf-wa.message.received:
+      allOf:
+        - $ref: '../schemas/event-envelope.schema.json'
+        - properties:
+            type:
+              const: wa.message.received
+            payload:
+              $ref: '../schemas/wa.message.received.schema.json'

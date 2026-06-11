@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/lead.scored.schema.json",
+  "title": "lead.scored",
+  "description": "PAYLOAD of the `lead.scored` envelope. Topic: data.lead.scored. ★ Crown-jewel signal (moat (1)). Emitted by lead-scoring (§9.5) within <=15min of any signal, and RE-EMITTED on every later journey event (re-score). The score is the predicted-value proxy that becomes the CAPI `value` on the Lead event (§11.1 value optimization) so Meta/Google optimize for OUR definition of a good customer. v1 = transparent weighted heuristic; features are ALWAYS stored with the score (training data §9.5). Canonical field shape from Appendix A.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "lead.scored",
+  "x-topic": "data.lead.scored",
+  "additionalProperties": false,
+  "required": [
+    "lead_id",
+    "score",
+    "tier",
+    "model"
+  ],
+  "properties": {
+    "lead_id": {
+      "description": "The lead.captured lead_id this score is for (Appendix A).",
+      "type": "string"
+    },
+    "person_ref": {
+      "description": "Resolved person_id from the Identity Graph (§8.3) once merged.",
+      "type": "string"
+    },
+    "score": {
+      "description": "Lead quality 0-100 (Appendix A example: 78). Used as the predicted-value proxy (INR) for value optimization on the CAPI Lead event (§11.1).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "tier": {
+      "description": "Bucketed quality (Appendix A). hot triggers the SLA voice call <=60s + QualifiedLead signal (§11.1).",
+      "type": "string",
+      "enum": [ "hot", "warm", "cold", "junk" ]
+    },
+    "reasons": {
+      "description": "Human-readable drivers (Appendix A: [call_answered_142s, budget_mentioned, asked_location]). Explainability — every score is defensible.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "model": {
+      "description": "Scoring model id+version (Appendix A: heuristic_v1).",
+      "type": "string"
+    },
+    "features_ref": {
+      "description": "Pointer to the stored feature vector that produced this score (Appendix A features_ref) — ALWAYS stored as training data (§9.5).",
+      "type": "string"
+    },
+    "qualified": {
+      "description": "Whether this crosses the QualifiedLead threshold (score>=T_hot OR call_outcome=qualified, §11.1). Drives the QualifiedLead CAPI dispatch + experiment reward (§12.1 reward = qualified leads).",
+      "type": "boolean"
+    },
+    "rescore_trigger": {
+      "description": "What journey event caused this (re)score (lead.captured | call.outcome | wa.message.received | booking.created ...).",
+      "type": "string"
+    },
+    "value_minor": {
+      "description": "Predicted lead value in INR paise sent as the CAPI value (§11.1 value=lead_score as INR proxy).",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

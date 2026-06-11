@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/event-envelope.schema.json",
+  "title": "EventEnvelope",
+  "description": "GROWTH OS canonical event envelope (BUILD-SPEC §6.1). EVERY business fact on the bus is an envelope. Services own write models; cross-service communication is ONLY via these events (P2). Frozen-after-merge: a new envelope field => version bump. Topic naming = plane.entity.verb (§6.2). The concrete event payload is carried in `payload` and is validated by the matching `<type>.schema.json` keyed off `type`.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "type",
+    "version",
+    "occurred_at",
+    "tenant_id",
+    "workspace_id",
+    "correlation_id",
+    "actor",
+    "idempotency_key",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "description": "Globally unique id for THIS envelope. UUIDv7 (time-ordered): the v7 timestamp gives natural ordering on the bus and in ClickHouse events_raw without a separate sort key (§6.1).",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "type": {
+      "description": "Canonical event type, dotted (e.g. campaign.requested, lead.scored). Determines which payload schema validates `payload`. Member of the §6.2 catalog (extend-never-mutate).",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*)+$",
+      "minLength": 3,
+      "maxLength": 128
+    },
+    "version": {
+      "description": "Semantic version of the PAYLOAD schema for this `type`. Additive-only within a major; a breaking change bumps major and is a NEW type-version on the bus (P1, §6.2 'version on change').",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "default": "1.0.0"
+    },
+    "occurred_at": {
+      "description": "RFC3339 / ISO-8601 UTC timestamp of when the business fact occurred (NOT when it was published). Source of truth for latency SLAs (§11.3 source->dispatched <=15min p95).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "tenant_id": {
+      "description": "Owning tenant (org). MANDATORY on every event (P6 absolute isolation). Derived from the auth context / connection token, NEVER from caller-supplied body downstream (§3.1 rule). Cache keys, queue messages and ClickHouse sort keys all include it.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "workspace_id": {
+      "description": "Owning workspace (vendor/brand) inside the tenant org (§5.1 org->workspace->members). MANDATORY (P6).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlation_id": {
+      "description": "Journey id (§6.3). Minted ONCE at first touch (ad click / form / inbound msg / lead.captured) and propagated through EVERY event of that person's journey. Identity Graph (§8.3) re-keys this on merge. This single rule makes deterministic ROI reporting possible.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "causation_id": {
+      "description": "The `event_id` of the event (or external source id) that directly caused this one — the edge of the causal DAG. Null/absent only for true journey roots (a first-touch campaign.requested or lead.captured).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "actor": {
+      "description": "Who/what produced this event (provenance for the Action Ledger + audit, P5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "description": "agent = an LLM/typed agent activity; user = a human; system = an internal scheduler/service; webhook = an inbound external source (incl the Origin Connector, §3).",
+          "type": "string",
+          "enum": [
+            "agent",
+            "user",
+            "system",
+            "webhook"
+          ]
+        },
+        "id": {
+          "description": "Stable identifier of the actor within its kind (user uuid, agent/service name, webhook provider id e.g. 'origin', 'meta').",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "idempotency_key": {
+      "description": "Exactly-once key (P3). For externally-sourced events this is the source system's own event id (e.g. Famit source id via the Origin Connector Idempotency-Key, §3.1). Consumers + the bus dedup on (tenant_id, type, idempotency_key). Replay-safe.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "payload": {
+      "description": "The type-specific business payload. Validated by the `<type>.schema.json` in this directory keyed off `type`. Kept as an open object here so the envelope schema is decoupled from payload evolution (payload schemas version independently).",
+      "type": "object"
+    },
+    "trace": {
+      "description": "Optional OpenTelemetry propagation (P10 observability across HTTP+bus). W3C traceparent/tracestate so a single trace spans publish->consume.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "traceparent": {
+          "type": "string"
+        },
+        "tracestate": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$comment": "FROZEN-AFTER-MERGE (D7). Additive-only. To carry a payload, validate `payload` against the schema whose $id matches `type` at version `version`. The registry/index.json maps type@version -> schema $id."
+}

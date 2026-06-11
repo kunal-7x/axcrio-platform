@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/action.plan.signed.schema.json",
+  "title": "action.plan.signed",
+  "description": "PAYLOAD of the `action.plan.signed` envelope. Topic: activation.action_plan.signed. Emitted by the Ledger (§7.4) when a proposed ActionPlan is SIGNED (by a human approver, an autopilot policy within its level §17.1, or a firewall step-up for money/destructive actions). THIS is the authorization gate: connectors verify status=signed + a valid signature before ANY mutation (P4 — the structural money-safety rule). Caused by an approval.granted (human) or an autopilot policy decision. The Action Executor (§10.2) consumes ONLY signed plans.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "action.plan.signed",
+  "x-topic": "activation.action_plan.signed",
+  "additionalProperties": false,
+  "required": [
+    "action_plan_id",
+    "status",
+    "signatures"
+  ],
+  "properties": {
+    "action_plan_id": {
+      "description": "The ActionPlan now signed (the action.plan.created id).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "status": {
+      "description": "Lifecycle status = signed (§7.4 enum proposed|signed|executed|failed|rolled_back).",
+      "type": "string",
+      "const": "signed"
+    },
+    "signatures": {
+      "description": "One or more signatures authorizing execution (§7.4 signatures[]). For money/destructive actions a firewall step-up signature (HS256, sub-bound, scope spend|bulk|destructive) is required (reuse of live firewall.py model).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "signer_kind", "signer_id", "signature", "signed_at" ],
+        "properties": {
+          "signer_kind": {
+            "description": "human = approver via inbox/WA; autopilot = policy at the granted autopilot level (§17.1); firewall_stepup = PIN/OTP step-up token for sensitive money actions (§17.3).",
+            "type": "string",
+            "enum": [ "human", "autopilot", "firewall_stepup" ]
+          },
+          "signer_id": { "type": "string", "description": "user id / policy id / step-up token sub." },
+          "signature": { "type": "string", "description": "Detached signature / step-up token / policy attestation hash." },
+          "scope": {
+            "description": "Step-up scope when signer_kind=firewall_stepup (reuse live vocab).",
+            "type": "string",
+            "enum": [ "spend", "bulk", "destructive" ]
+          },
+          "autopilot_level": {
+            "description": "The autopilot level that authorized an autopilot signature (L0-L4, §17.1).",
+            "type": "string",
+            "enum": [ "L0", "L1", "L2", "L3", "L4" ]
+          },
+          "signed_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "approval_ref": {
+      "description": "The approval.granted / approval-inbox decision that produced a human signature (§17.2), if any.",
+      "type": "string"
+    },
+    "prev_hash": {
+      "description": "Hash-chain link to the previous Ledger entry (§5.5).",
+      "type": "string"
+    },
+    "hash": {
+      "description": "Hash of this signed Ledger entry.",
+      "type": "string"
+    }
+  }
+}

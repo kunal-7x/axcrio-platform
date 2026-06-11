@@ -3,8 +3,8 @@
 // Booking — Appointments / Site-Visit scheduling.
 //
 // Premium console for the Postgres-native Booking engine (droplet_work/booking).
-// Composes the panel's shared premium primitives (Layout, PageHeader, Card,
-// KpiCard, data-table, surface modal, pills, state-block) — NOT generic.
+// Composes the reference Core_2 kit primitives (Layout, Card, Tabs, Table,
+// TableRow, Modal, Badge, Button) — single Layout title, no PageHeader.
 //
 // DORMANT-SAFE BY DESIGN: the backend module is built but not yet mounted/
 // deployed. Every call routes through ./api which resolves unmounted/unreachable
@@ -18,11 +18,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
-import PageHeader from "@/components/PageHeader";
 import Card from "@/components/Card";
-import KpiCard from "@/components/KpiCard";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
+import Tabs from "@/components/Tabs";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
+import Modal from "@/components/Modal";
 import { useMe, canWrite } from "@/lib/auth";
 import {
     getBookingStatus,
@@ -95,6 +97,16 @@ function StatusPill({ status }: { status: string }) {
 
 type Toast = { msg: string; type: "success" | "error" };
 
+const STATUS_TABS = [
+    { id: 1, name: "All", key: "" },
+    { id: 2, name: "Booked", key: "booked" },
+    { id: 3, name: "Completed", key: "completed" },
+    { id: 4, name: "No-show", key: "no_show" },
+    { id: 5, name: "Cancelled", key: "cancelled" },
+];
+
+const bookingHead = ["Contact", "When", "Title", "Status", "Actions"];
+
 // ===========================================================================
 // Page
 // ===========================================================================
@@ -110,7 +122,8 @@ export default function BookingPage() {
     // bookings
     const [bookings, setBookings] = useState<BookingRow[]>([]);
     const [bookingsLoading, setBookingsLoading] = useState(true);
-    const [statusFilter, setStatusFilter] = useState("");
+    const [statusTab, setStatusTab] = useState(STATUS_TABS[0]);
+    const statusFilter = statusTab.key;
 
     // reminder/no-show preview (tick dry-run)
     const [preview, setPreview] = useState<TickResult | null>(null);
@@ -230,20 +243,6 @@ export default function BookingPage() {
     // ===================================================================
     return (
         <Layout title="Booking">
-            <PageHeader
-                eyebrow="Engage"
-                title="Booking"
-                subtitle="Appointments, site visits and demos — atomic slot booking on the CRM contact spine, with reminders and no-show follow-up."
-                actions={
-                    writable && !dormant ? (
-                        <Button isBlack onClick={() => setBookOpen(true)}>
-                            <Icon name="plus" className="fill-inherit" />
-                            New appointment
-                        </Button>
-                    ) : undefined
-                }
-            />
-
             {toast && (
                 <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
                     <span className="flex items-center gap-2">
@@ -259,186 +258,233 @@ export default function BookingPage() {
                 </div>
             )}
 
-            {/* KPI strip */}
-            <div className="grid grid-cols-4 gap-6 max-2xl:grid-cols-2 max-md:grid-cols-1 mb-6">
-                <KpiCard
-                    label="Upcoming"
-                    value={dormant ? "—" : kpis.upcoming}
-                    icon="calendar"
-                    tone="info"
-                    sub={`${kpis.active} active`}
-                />
-                <KpiCard
-                    label="Completed"
-                    value={dormant ? "—" : kpis.completed}
-                    icon="check"
-                    tone="success"
-                    sub={kpis.showRate != null ? `${kpis.showRate}% show rate` : "no outcomes yet"}
-                    meter={kpis.showRate != null ? kpis.showRate / 100 : null}
-                />
-                <KpiCard
-                    label="No-shows"
-                    value={dormant ? "—" : kpis.noShow}
-                    icon="warning"
-                    tone="danger"
-                    sub="missed appointments"
-                />
-                <KpiCard
-                    label="Due reminders"
-                    value={dormant ? "—" : preview ? preview.fired.length : previewLoading ? "…" : 0}
-                    icon="bell"
-                    tone="warning"
-                    sub={
-                        preview && preview.no_shows.length > 0
-                            ? `${preview.no_shows.length} no-show to sweep`
-                            : "scheduled nudges"
-                    }
-                />
-            </div>
+            {/* Overview metric strip (Core_2 Overview archetype) */}
+            <Card
+                className="mb-3"
+                title="Overview"
+                headContent={
+                    writable && !dormant ? (
+                        <Button
+                            className="ml-auto mr-3"
+                            isBlack
+                            icon="plus"
+                            onClick={() => setBookOpen(true)}
+                        >
+                            New appointment
+                        </Button>
+                    ) : undefined
+                }
+            >
+                <div className="flex gap-8 px-5 pb-5 pt-1 max-lg:gap-6 max-lg:px-3 max-lg:overflow-auto max-lg:scrollbar-none">
+                    <MetricItem
+                        icon="calendar"
+                        title="Upcoming"
+                        value={dormant ? "—" : kpis.upcoming}
+                        sub={`${kpis.active} active`}
+                        accent
+                    />
+                    <MetricItem
+                        icon="check"
+                        title="Completed"
+                        value={dormant ? "—" : kpis.completed}
+                        sub={
+                            kpis.showRate != null
+                                ? `${kpis.showRate}% show rate`
+                                : "no outcomes yet"
+                        }
+                    />
+                    <MetricItem
+                        icon="warning"
+                        title="No-shows"
+                        value={dormant ? "—" : kpis.noShow}
+                        sub="missed appointments"
+                    />
+                    <MetricItem
+                        icon="bell"
+                        title="Due reminders"
+                        value={
+                            dormant
+                                ? "—"
+                                : preview
+                                ? preview.fired.length
+                                : previewLoading
+                                ? "…"
+                                : 0
+                        }
+                        sub={
+                            preview && preview.no_shows.length > 0
+                                ? `${preview.no_shows.length} no-show to sweep`
+                                : "scheduled nudges"
+                        }
+                    />
+                </div>
+            </Card>
 
             {dormant ? (
                 <DormantPanel cfg={cfg} loaded={statusLoaded} />
             ) : (
-                <div className="flex gap-6 max-xl:flex-col">
+                <div className="flex gap-3 max-xl:flex-col">
                     {/* Left: bookings table */}
                     <div className="flex-1 min-w-0">
                         <Card
                             title="Appointments"
                             headContent={
-                                <div className="flex items-center gap-1 mr-3">
-                                    {["", "booked", "completed", "no_show", "cancelled"].map((s) => (
-                                        <button
-                                            key={s || "all"}
-                                            onClick={() => setStatusFilter(s)}
-                                            className={`px-3 h-8 rounded-full text-button transition-colors ${
-                                                statusFilter === s
-                                                    ? "bg-b-surface1 text-t-primary"
-                                                    : "text-t-secondary hover:text-t-primary"
-                                            }`}
-                                        >
-                                            {s ? s.replace(/_/g, " ") : "All"}
-                                        </button>
-                                    ))}
-                                </div>
+                                <Tabs
+                                    className="ml-auto overflow-x-auto scrollbar-none"
+                                    items={STATUS_TABS}
+                                    value={statusTab}
+                                    setValue={(v) =>
+                                        setStatusTab(
+                                            v as (typeof STATUS_TABS)[number]
+                                        )
+                                    }
+                                />
                             }
                         >
-                            <div className="overflow-x-auto">
-                                <table className="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Contact</th>
-                                            <th>When</th>
-                                            <th>Title</th>
-                                            <th>Status</th>
-                                            <th className="text-right">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {bookingsLoading ? (
-                                            [...Array(5)].map((_, i) => (
-                                                <tr key={i}>
-                                                    {[...Array(5)].map((__, j) => (
-                                                        <td key={j}>
-                                                            <div className="skeleton h-4 w-24" />
-                                                        </td>
-                                                    ))}
-                                                </tr>
-                                            ))
-                                        ) : bookings.length === 0 ? (
-                                            <tr>
-                                                <td colSpan={5}>
-                                                    <div className="state-block">
-                                                        <span className="state-glyph">
-                                                            <Icon name="calendar" className="fill-inherit" />
-                                                        </span>
-                                                        <div className="state-title">No appointments yet</div>
-                                                        <div className="state-sub">
-                                                            {writable
-                                                                ? "Book your first appointment — pick a free slot and a contact."
-                                                                : "Appointments booked by your team will appear here."}
-                                                        </div>
-                                                        {writable && (
-                                                            <Button
-                                                                className="mt-4"
-                                                                isStroke
-                                                                onClick={() => setBookOpen(true)}
-                                                            >
-                                                                <Icon name="plus" className="fill-inherit" />
-                                                                New appointment
-                                                            </Button>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        ) : (
-                                            bookings.map((b) => {
-                                                const active =
-                                                    b.status === "booked" || b.status === "rescheduled";
-                                                return (
-                                                    <tr key={b.id}>
-                                                        <td>
-                                                            <div className="font-medium text-t-primary">
-                                                                {b.name || "—"}
-                                                            </div>
-                                                            <div className="text-caption text-t-secondary">
-                                                                {b.phone_display || b.contact_id}
-                                                            </div>
-                                                        </td>
-                                                        <td className="text-t-secondary whitespace-nowrap">
-                                                            {fmtDateTime(b.slot_start)}
-                                                        </td>
-                                                        <td className="text-t-secondary">
-                                                            {b.title || "Appointment"}
-                                                        </td>
-                                                        <td>
-                                                            <StatusPill status={b.status} />
-                                                        </td>
-                                                        <td>
-                                                            <div className="flex items-center gap-2 justify-end">
-                                                                {writable && active && (
-                                                                    <>
-                                                                        <button
-                                                                            onClick={() => handleComplete(b)}
-                                                                            className="action"
-                                                                            title="Mark completed"
-                                                                        >
-                                                                            Complete
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => setReschedTarget(b)}
-                                                                            className="action"
-                                                                            title="Reschedule"
-                                                                        >
-                                                                            Reschedule
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => handleCancel(b)}
-                                                                            className="action hover:!text-primary-03 hover:!border-primary-03/30"
-                                                                            title="Cancel"
-                                                                        >
-                                                                            Cancel
-                                                                        </button>
-                                                                    </>
-                                                                )}
-                                                                {!active && (
-                                                                    <span className="text-caption text-t-tertiary">
-                                                                        —
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })
+                            <div className="p-1 pt-3 max-lg:px-0">
+                                {bookingsLoading ? (
+                                    <Table
+                                        cellsThead={bookingHead.map((h) => (
+                                            <th key={h}>{h}</th>
+                                        ))}
+                                    >
+                                        {[...Array(5)].map((_, i) => (
+                                            <TableRow key={i}>
+                                                {[...Array(5)].map((__, j) => (
+                                                    <td key={j}>
+                                                        <div className="skeleton h-4 w-24 rounded-lg" />
+                                                    </td>
+                                                ))}
+                                            </TableRow>
+                                        ))}
+                                    </Table>
+                                ) : bookings.length === 0 ? (
+                                    <div className="py-16 text-center max-md:py-12">
+                                        <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                                            <Icon
+                                                name="calendar"
+                                                className="fill-t-tertiary"
+                                            />
+                                        </span>
+                                        <div className="text-h6 mb-1">
+                                            No appointments yet
+                                        </div>
+                                        <div className="max-w-md mx-auto text-body-2 text-t-secondary">
+                                            {writable
+                                                ? "Book your first appointment — pick a free slot and a contact."
+                                                : "Appointments booked by your team will appear here."}
+                                        </div>
+                                        {writable && (
+                                            <Button
+                                                className="mt-5"
+                                                isStroke
+                                                icon="plus"
+                                                onClick={() => setBookOpen(true)}
+                                            >
+                                                New appointment
+                                            </Button>
                                         )}
-                                    </tbody>
-                                </table>
+                                    </div>
+                                ) : (
+                                    <Table
+                                        cellsThead={bookingHead.map((h) => (
+                                            <th
+                                                key={h}
+                                                className={
+                                                    h === "Actions"
+                                                        ? "text-right"
+                                                        : h === "Title"
+                                                        ? "max-lg:hidden"
+                                                        : ""
+                                                }
+                                            >
+                                                {h}
+                                            </th>
+                                        ))}
+                                    >
+                                        {bookings.map((b) => {
+                                            const active =
+                                                b.status === "booked" ||
+                                                b.status === "rescheduled";
+                                            return (
+                                                <TableRow key={b.id}>
+                                                    <td>
+                                                        <div className="text-sub-title-1 text-t-primary">
+                                                            {b.name || "—"}
+                                                        </div>
+                                                        <div className="text-body-2 text-t-tertiary">
+                                                            {b.phone_display ||
+                                                                b.contact_id}
+                                                        </div>
+                                                    </td>
+                                                    <td className="text-t-secondary whitespace-nowrap">
+                                                        {fmtDateTime(b.slot_start)}
+                                                    </td>
+                                                    <td className="text-t-secondary max-lg:hidden">
+                                                        {b.title || "Appointment"}
+                                                    </td>
+                                                    <td>
+                                                        <StatusPill
+                                                            status={b.status}
+                                                        />
+                                                    </td>
+                                                    <td>
+                                                        <div className="flex items-center gap-2 justify-end">
+                                                            {writable && active && (
+                                                                <>
+                                                                    <button
+                                                                        onClick={() =>
+                                                                            handleComplete(
+                                                                                b
+                                                                            )
+                                                                        }
+                                                                        className="action"
+                                                                        title="Mark completed"
+                                                                    >
+                                                                        Complete
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() =>
+                                                                            setReschedTarget(
+                                                                                b
+                                                                            )
+                                                                        }
+                                                                        className="action"
+                                                                        title="Reschedule"
+                                                                    >
+                                                                        Reschedule
+                                                                    </button>
+                                                                    <button
+                                                                        onClick={() =>
+                                                                            handleCancel(
+                                                                                b
+                                                                            )
+                                                                        }
+                                                                        className="action hover:!text-primary-03 hover:!border-primary-03/30"
+                                                                        title="Cancel"
+                                                                    >
+                                                                        Cancel
+                                                                    </button>
+                                                                </>
+                                                            )}
+                                                            {!active && (
+                                                                <span className="text-t-tertiary">
+                                                                    —
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </td>
+                                                </TableRow>
+                                            );
+                                        })}
+                                    </Table>
+                                )}
                             </div>
                         </Card>
                     </div>
 
                     {/* Right: operations rail */}
-                    <div className="w-96 max-xl:w-full shrink-0 space-y-6">
+                    <div className="w-96 max-xl:w-full shrink-0 space-y-3">
                         <OperationsCard
                             preview={preview}
                             loading={previewLoading}
@@ -476,6 +522,43 @@ export default function BookingPage() {
                 />
             )}
         </Layout>
+    );
+}
+
+// ===========================================================================
+// Core_2 Overview metric tile (ported inline; same as crm/forms/funnels pages)
+// ===========================================================================
+function MetricItem({
+    icon,
+    title,
+    value,
+    sub,
+    accent,
+}: {
+    icon: string;
+    title: string;
+    value: React.ReactNode;
+    sub?: React.ReactNode;
+    accent?: boolean;
+}) {
+    return (
+        <div className="flex-1 min-w-44 pr-8 border-r border-s-subtle last:border-r-0 last:pr-0 max-lg:shrink-0">
+            <div
+                className={`flex items-center justify-center size-12 mb-6 rounded-full ${
+                    accent ? "bg-primary-02/12" : "bg-b-surface1"
+                }`}
+            >
+                <Icon
+                    className={accent ? "fill-primary-02" : "fill-t-primary"}
+                    name={icon}
+                />
+            </div>
+            <div className="text-sub-title-1 text-t-secondary mb-2">{title}</div>
+            <div className="text-h3">{value}</div>
+            {sub && (
+                <div className="mt-2 text-body-2 text-t-tertiary">{sub}</div>
+            )}
+        </div>
     );
 }
 
@@ -977,34 +1060,13 @@ function ModalShell({
     onClose: () => void;
     children: React.ReactNode;
 }) {
-    function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
-        if (e.target === e.currentTarget) onClose();
-    }
     return (
-        <div
-            className="fixed inset-0 z-50 bg-shade-01/60 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={handleBackdrop}
-        >
-            <div className="surface w-full max-w-2xl max-h-[90vh] flex flex-col rise-in">
-                <div className="flex items-center justify-between p-5 border-b border-s-subtle shrink-0">
-                    <div className="flex items-center gap-2.5">
-                        <span className="signal-glyph !h-3.5" aria-hidden>
-                            <i />
-                            <i />
-                            <i />
-                        </span>
-                        <h2 className="text-h6 text-t-primary">{title}</h2>
-                    </div>
-                    <button
-                        onClick={onClose}
-                        className="flex items-center justify-center size-8 rounded-full text-t-secondary transition-colors hover:bg-b-surface1 hover:text-t-primary dark:hover:bg-shade-04"
-                    >
-                        ×
-                    </button>
-                </div>
-                <div className="overflow-y-auto p-5">{children}</div>
+        <Modal open onClose={onClose} classWrapper="!max-w-2xl !p-0">
+            <div className="flex items-center p-5 border-b border-s-subtle">
+                <h2 className="text-h6 text-t-primary">{title}</h2>
             </div>
-        </div>
+            <div className="p-5">{children}</div>
+        </Modal>
     );
 }
 

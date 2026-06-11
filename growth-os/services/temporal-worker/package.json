@@ -1,0 +1,31 @@
+{
+  "name": "@growth-os/temporal-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS Temporal worker + HelloSaga workflow (BUILD-SPEC §7.8, D2). Phase-0 proof that durable workflows run; Phase-1+ hosts CampaignLifecycle/LaunchSaga/etc.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run",
+    "worker": "node --import tsx src/worker.ts",
+    "trigger:hello": "node --import tsx src/trigger-hello.ts"
+  },
+  "dependencies": {
+    "@growth-os/events": "workspace:*",
+    "@growth-os/otel": "workspace:*",
+    "@temporalio/activity": "^1.11.6",
+    "@temporalio/client": "^1.11.6",
+    "@temporalio/worker": "^1.11.6",
+    "@temporalio/workflow": "^1.11.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

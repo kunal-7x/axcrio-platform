@@ -3,6 +3,8 @@
 import { ThemeProvider } from "next-themes";
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { EntitlementProvider } from "@/lib/entitlements";
+import RouteEntitlementGate from "@/components/RouteEntitlementGate";
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
@@ -19,10 +21,28 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
 }
 
+// CL-F0: mount the entitlement poller ONCE for the authenticated app. On the
+// login route there's no token, so we skip the provider (its fetch would just
+// 401/404-degrade harmlessly, but skipping avoids a needless request loop on
+// the unauthenticated screen).
 const Providers = ({ children }: { children: React.ReactNode }) => {
+    const pathname = usePathname();
+    const authed = pathname !== "/login";
     return (
         <ThemeProvider disableTransitionOnChange>
-            <AuthGuard>{children}</AuthGuard>
+            <AuthGuard>
+                {authed ? (
+                    <EntitlementProvider>
+                        {/* CL-F0: one app-wide route guard. HIDE-redirects / LOCK-
+                            overlays a directly-typed URL to a gated page, using the
+                            same /me/entitlements store the sidebar reads. Cosmetic —
+                            the backend 404/402 is the real boundary. */}
+                        <RouteEntitlementGate>{children}</RouteEntitlementGate>
+                    </EntitlementProvider>
+                ) : (
+                    children
+                )}
+            </AuthGuard>
         </ThemeProvider>
     );
 };

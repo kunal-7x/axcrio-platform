@@ -203,32 +203,34 @@
     --border-width-1: 1px;
     --font-inter: var(--font-inter-display);
     --text-0: 0;
-    /* Type scale — harmonized ~1.25 modular scale.
-       Headings: tight line-heights + negative tracking that eases off as size drops.
-       Weights: h1/h2 bold-to-semibold display, h3-h6 semibold, body regular. */
-    --text-h1: 4rem;
-    --text-h1--line-height: 1.08;
-    --text-h1--letter-spacing: -0.025em;
-    --text-h1--font-weight: 600;
-    --text-h2: 3.25rem;
-    --text-h2--line-height: 1.1;
-    --text-h2--letter-spacing: -0.022em;
-    --text-h2--font-weight: 600;
-    --text-h3: 2.5rem;
-    --text-h3--line-height: 1.14;
-    --text-h3--letter-spacing: -0.02em;
-    --text-h3--font-weight: 600;
+    /* Type scale — aligned to the reference kit (core-2-dashboard-builder-react,
+       design/ui-font-heading-plan.md §3). Inter Display reads premium via light
+       display headings: h1 300, h2/h3/h5 500, h4/h6 600. Loosened line-heights
+       and near-zero tracking match the kit pixel-for-pixel so headings finally
+       "feel" like the design the founder approved. */
+    --text-h1: 6rem;
+    --text-h1--line-height: 1.15;
+    --text-h1--letter-spacing: -0.015em;
+    --text-h1--font-weight: 300;
+    --text-h2: 3.75rem;
+    --text-h2--line-height: 1.25;
+    --text-h2--letter-spacing: -0.015em;
+    --text-h2--font-weight: 500;
+    --text-h3: 3rem;
+    --text-h3--line-height: 1.25;
+    --text-h3--letter-spacing: -0.015em;
+    --text-h3--font-weight: 500;
     --text-h4: 2rem;
-    --text-h4--line-height: 1.18;
-    --text-h4--letter-spacing: -0.018em;
+    --text-h4--line-height: 1.45;
+    --text-h4--letter-spacing: 0.003em;
     --text-h4--font-weight: 600;
     --text-h5: 1.5rem;
-    --text-h5--line-height: 1.25;
-    --text-h5--letter-spacing: -0.015em;
-    --text-h5--font-weight: 600;
+    --text-h5--line-height: 1.45;
+    --text-h5--letter-spacing: -0.01em;
+    --text-h5--font-weight: 500;
     --text-h6: 1.25rem;
-    --text-h6--line-height: 1.3;
-    --text-h6--letter-spacing: -0.013em;
+    --text-h6--line-height: 1.45;
+    --text-h6--letter-spacing: -0.01em;
     --text-h6--font-weight: 600;
     --text-sub-title-1: 1rem;
     --text-sub-title-1--line-height: 1.5;
@@ -725,6 +727,15 @@
             border border-primary-01/25 bg-primary-01/8 text-primary-01;
     }
 
+    /* "Locked" pill on an entitlement-LOCK nav child (CL-F0) — a calm amber
+       upsell cue, distinct from the brand-blue roadmap "Soon". Same compact
+       shape so the rail reads consistently. The backend 402 is the real lock;
+       this is the cosmetic mirror. */
+    .nav-locked {
+        @apply inline-flex items-center h-4 px-1.5 rounded-full text-[0.5625rem] font-semibold uppercase tracking-[0.08em]
+            border border-[#EF9D0E]/25 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E];
+    }
+
     /* Refined active nav item: the template pill + a left signal bar in
        brand blue. The bar is the through-line that ties shell -> page. */
     .nav-active-bar {
@@ -778,5 +789,167 @@
             color-mix(in srgb, var(--primary-01) 14%, transparent),
             transparent 70%
         );
+    }
+
+    /* ============================================================
+       "GenerationLoader" (gl-*) — the premium AI-generation hero.
+       A deep charcoal card on black with a breathing dot-matrix
+       neural-energy field (canvas), shown the instant a user clicks
+       Generate. Intentionally charcoal-on-black in BOTH themes (a
+       focused "engine" moment, like a media viewer). Token-pure:
+       the canvas reads --gl-dot/--gl-dot-soft via getComputedStyle;
+       chrome uses b-dark*/t-*/primary-01. No raw hex.
+       Spec: design/cs-loading-component.md.
+       ============================================================ */
+
+    /* Dot colour aliases — white core, grey halo. Token-driven so the
+       field swaps cleanly if a light variant is ever wanted; the canvas
+       resolves these on mount (and on theme change). */
+    .gl-card {
+        --gl-dot: var(--shade-10); /* near-white core */
+        --gl-dot-soft: var(--shade-07); /* grey halo */
+
+        @apply relative mx-auto p-8 max-md:p-6 rounded-4xl bg-b-dark2
+            shadow-depth ring-1 ring-white/[0.04] text-center
+            min-h-[22rem] max-md:min-h-[18rem]
+            flex flex-col items-center;
+    }
+
+    /* The inner field zone — a darker inset so the dots read as lit. */
+    .gl-field-zone {
+        @apply relative flex-1 w-full min-h-[12rem] my-4
+            rounded-3xl bg-b-dark1 overflow-hidden
+            flex items-center justify-center;
+    }
+    .gl-canvas {
+        @apply absolute inset-0 w-full h-full;
+    }
+
+    /* Pulsing "Thinking" dot — the lone brand accent up top. */
+    .gl-think-dot {
+        @apply block w-[5px] h-[5px] rounded-full bg-primary-01;
+        animation: gl-think 1.6s ease-in-out infinite;
+    }
+    .gl-think-dot--static {
+        animation: none;
+        opacity: 0.8;
+    }
+    @keyframes gl-think {
+        0%,
+        100% {
+            opacity: 0.4;
+        }
+        50% {
+            opacity: 1;
+        }
+    }
+
+    /* Status line crossfade — opacity + a 4px settle, re-keyed per swap. */
+    .gl-status {
+        @apply mt-1;
+    }
+    .gl-status-swap {
+        animation: gl-status-swap 0.4s ease-out both;
+    }
+    @keyframes gl-status-swap {
+        0% {
+            opacity: 0;
+            transform: translateY(4px);
+        }
+        100% {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    /* Animated trailing ellipsis so the line feels live between phases. */
+    .gl-ellipsis {
+        @apply inline-block ml-0.5 w-3 text-left;
+        animation: gl-ellipsis 1.4s steps(4, end) infinite;
+        clip-path: inset(0 100% 0 0);
+    }
+    @keyframes gl-ellipsis {
+        to {
+            clip-path: inset(0 0 0 0);
+        }
+    }
+
+    /* Calm muted glyph that replaces the centre in the failed state. */
+    .gl-fail-glyph {
+        @apply relative z-1 flex items-center justify-center
+            w-12 h-12 rounded-full bg-b-dark2/80 fill-t-tertiary;
+    }
+    .gl-fail-glyph svg {
+        @apply size-6;
+    }
+
+    /* Completed/cancelled card exit — gentle opacity + scale settle.
+       (The dots collapse inward on the canvas; this fades the chrome.) */
+    .gl-card-out {
+        animation: gl-card-out 0.36s ease-in both;
+    }
+    @keyframes gl-card-out {
+        to {
+            opacity: 0;
+            transform: scale(0.98);
+        }
+    }
+
+    /* ---- CSS-fallback field (reduced-motion / no-canvas / lowPower) ----
+       A token-only static-to-gentle field: a dot grid masked to a
+       bright centre / faded edge, with one slow breathe. Same visual
+       language as the canvas so swapping is seamless. */
+    .gl-field--css {
+        @apply absolute inset-0;
+        background: radial-gradient(
+                circle,
+                var(--gl-dot) 0 1px,
+                transparent 1.5px
+            )
+            0 0 / 14px 14px;
+        -webkit-mask-image: radial-gradient(
+            circle at 50% 50%,
+            black 0%,
+            black 38%,
+            transparent 72%
+        );
+        mask-image: radial-gradient(
+            circle at 50% 50%,
+            black 0%,
+            black 38%,
+            transparent 72%
+        );
+        opacity: 0.55;
+        animation: gl-breathe 3.6s ease-in-out infinite;
+    }
+    @keyframes gl-breathe {
+        0%,
+        100% {
+            opacity: 0.45;
+        }
+        50% {
+            opacity: 0.7;
+        }
+    }
+
+    /* Reduced-motion: no field/chrome animation — a calm static state.
+       The status line still crossfades gently (handled by re-key) but the
+       ellipsis/breathe/think-dot/card-exit motions are stopped. */
+    @media (prefers-reduced-motion: reduce) {
+        .gl-field--css {
+            animation: none;
+            opacity: 0.5;
+        }
+        .gl-think-dot,
+        .gl-ellipsis,
+        .gl-card-out {
+            animation: none;
+        }
+        .gl-card-out {
+            opacity: 0;
+        }
+        .gl-ellipsis {
+            clip-path: inset(0 0 0 0);
+        }
     }
 }

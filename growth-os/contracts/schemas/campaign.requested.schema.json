@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/campaign.requested.schema.json",
+  "title": "campaign.requested",
+  "description": "PAYLOAD of the `campaign.requested` envelope. Topic: campaign.lifecycle.requested. The journey root that kicks off the core loop (§3.1): a vendor (or Famit Tenant Zero via the Origin Connector campaign.requested mapping, §3.4) asks GROWTH OS to run a campaign. Triggers the ResearchWarRoom -> CIB. correlation_id on the envelope is minted here for the campaign-level journey.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "campaign.requested",
+  "x-topic": "campaign.lifecycle.requested",
+  "additionalProperties": false,
+  "required": [
+    "campaign_request_id",
+    "objective"
+  ],
+  "properties": {
+    "campaign_request_id": {
+      "description": "GROWTH OS id for this request (referenced as campaign_request_ref by the CIB §9.3).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "origin_ref": {
+      "description": "Source-system id when raised via the Origin Connector (Famit campaign_id, §3.4). Absent for native requests.",
+      "type": "string"
+    },
+    "objective": {
+      "description": "Campaign objective. Phase-1 default = leads (§21). Maps to platform objective in the campaign-compiler (§10.1).",
+      "type": "string",
+      "enum": [
+        "leads",
+        "sales",
+        "calls",
+        "messages",
+        "traffic",
+        "awareness",
+        "app"
+      ]
+    },
+    "business": {
+      "description": "Minimal business hint to seed BusinessUnderstanding (§9.2). The War Room enriches this; full truth lives in the Vendor Brain (§9.4).",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "website": { "type": "string", "format": "uri" },
+        "industry_pack": {
+          "description": "Industry pack id (§18) selected at onboarding; drives persona/offer/compliance/KPI defaults.",
+          "type": "string"
+        },
+        "locale": { "type": "string", "description": "BCP-47 (e.g. en-IN, hi-IN, gu-IN)." },
+        "geo": { "type": "string", "description": "Target geo (city/state/pincode-aware, India-first §8.6)." }
+      }
+    },
+    "offer_hint": {
+      "description": "Optional offer the vendor wants to lead with; OfferStrategist (§9.2) may improve it.",
+      "type": "string"
+    },
+    "audience_size": {
+      "description": "Hint of addressable audience / lead list size when known (e.g. Famit leads CSV row count, §3.4).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "budget_hint": {
+      "description": "Vendor-stated budget intent in INR paise. The BudgetStrategist + War-Game (§14.5) derive min_viable_test; the compiler refuses to launch untestable budgets (§10.1, §13.4).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "currency": { "type": "string", "const": "INR" },
+        "daily_minor": { "type": "integer", "minimum": 0, "description": "Intended daily budget in paise." },
+        "lifetime_minor": { "type": "integer", "minimum": 0, "description": "Intended total budget in paise." }
+      }
+    },
+    "channels_hint": {
+      "description": "Channels the vendor wants (the channel_plan is decided by the CIB). Phase-1 = meta + whatsapp (CTWA).",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [ "meta", "google", "whatsapp", "voice" ]
+      },
+      "uniqueItems": true
+    },
+    "requested_by": {
+      "description": "Echo of the human/system that requested (also on envelope.actor); kept for the report narrative.",
+      "type": "string"
+    }
+  }
+}

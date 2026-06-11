@@ -1,43 +1,36 @@
-// Unified page masthead (premium-ui wave 2 — "Signal").
+// Unified page masthead — NEUTRALIZED to the reference kit (W1, design/
+// ui-font-heading-plan.md §4 + ui-design-principles.md).
 //
-// ONE header rhythm for every page: a brand-blue accent rule, an overline
-// eyebrow, the title, an optional subtitle, and a right-aligned action slot.
-// Presentational only — pages keep passing their own title via <Layout> for
-// the sticky header; this renders the in-page masthead so all pages share a
-// precise, premium top section instead of bare template chrome.
+// The founder's explicit fix: a page title is a SINGLE clean line — no eyebrow,
+// no animated signal glyph, no brand-blue accent rule, NO subtitle/description.
+// That over-decorated masthead was the "too complex / jargon" clutter he rejects.
+//
+// This component now renders ONLY the reference header: the title at
+// `text-h4 max-lg:text-h5` (matching components/Header's sticky title) plus an
+// optional right-aligned actions slot. The `eyebrow` and `subtitle` props are
+// kept in the type (so existing callers still compile) but are intentionally
+// IGNORED — page agents can drop those props at their own pace without breaking
+// the build. The canonical page title is the reference <Layout title="…">.
 
 type PageHeaderProps = {
     title: string;
+    /** @deprecated ignored — reference headers have no eyebrow. */
     eyebrow?: string;
+    /** @deprecated ignored — reference headers have no subtitle. */
     subtitle?: React.ReactNode;
     actions?: React.ReactNode;
     className?: string;
 };
 
-const PageHeader = ({
-    title,
-    eyebrow,
-    subtitle,
-    actions,
-    className,
-}: PageHeaderProps) => (
-    <div className={`page-head rise-in ${className || ""}`}>
-        <div className="min-w-0 flex-1">
-            {eyebrow && (
-                <div className="page-head-eyebrow">
-                    <span className="signal-glyph !h-3" aria-hidden>
-                        <i />
-                        <i />
-                        <i />
-                    </span>
-                    {eyebrow}
-                </div>
-            )}
-            <h1 className="page-head-title">{title}</h1>
-            {subtitle && <p className="page-head-sub">{subtitle}</p>}
-        </div>
+const PageHeader = ({ title, actions, className }: PageHeaderProps) => (
+    <div
+        className={`flex items-start justify-between gap-4 mb-6 max-md:mb-4 ${
+            className || ""
+        }`}
+    >
+        <h1 className="text-h4 max-lg:text-h5 text-t-primary">{title}</h1>
         {actions && (
-            <div className="flex items-center gap-3 shrink-0 pt-1 max-md:hidden">
+            <div className="flex items-center gap-3 shrink-0 max-md:hidden">
                 {actions}
             </div>
         )}

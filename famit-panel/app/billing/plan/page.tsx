@@ -6,6 +6,9 @@ import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
+import NoFound from "@/components/NoFound";
 import {
     getBilling,
     getBillingLedger,
@@ -16,7 +19,7 @@ import {
     type Tenant,
 } from "@/lib/api";
 import { useMe, isAdmin } from "@/lib/auth";
-import { HeroCard, outcomeVariant, BillingHeader } from "../_shared";
+import { outcomeVariant, ErrorBanner, BillingTabs } from "../_shared";
 
 type Toast = { msg: string; type: "success" | "error" };
 
@@ -33,6 +36,8 @@ function fmt(d: string) {
         return d;
     }
 }
+
+const ledgerHead = ["When", "Phone", "Outcome", "Duration", "Cost"];
 
 export default function BillingPlanPage() {
     const { me } = useMe();
@@ -69,17 +74,15 @@ export default function BillingPlanPage() {
     const lowBalance = billing?.plan === "prepaid" && (billing?.balance ?? 0) <= 0;
 
     return (
-        <Layout title="Billing · Plan & Ledger">
-            <BillingHeader
-                title="Plan & Ledger"
-                subtitle="Your plan, rates and balance, plus a line-by-line ledger of every charged call."
-            />
+        <Layout title="Plan">
+            <BillingTabs />
+
             {toast && (
                 <div
-                    className={`mb-3 p-3.5 rounded-2xl text-body-2 flex items-center justify-between gap-3 ring-1 ring-inset ${
+                    className={`mb-4 p-3.5 rounded-3xl text-body-2 flex items-center justify-between gap-3 border ${
                         toast.type === "success"
-                            ? "bg-primary-02/8 text-primary-02 ring-primary-02/20"
-                            : "bg-primary-03/8 text-primary-03 ring-primary-03/20"
+                            ? "bg-primary-02/8 text-primary-02 border-primary-02/20"
+                            : "bg-primary-03/8 text-primary-03 border-primary-03/20"
                     }`}
                 >
                     <span className="flex items-center gap-2">
@@ -89,158 +92,156 @@ export default function BillingPlanPage() {
                         />
                         {toast.msg}
                     </span>
-                    <button onClick={() => setToast(null)} className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none">×</button>
+                    <button
+                        onClick={() => setToast(null)}
+                        className="shrink-0 opacity-60 hover:opacity-100 text-lg leading-none"
+                    >
+                        ×
+                    </button>
                 </div>
             )}
 
-            {loadError && (
-                <div className="mb-3 p-3.5 rounded-2xl bg-primary-03/8 text-primary-03 text-body-2 ring-1 ring-inset ring-primary-03/20 flex items-center gap-2">
-                    <Icon name="info" className="size-4 fill-current shrink-0" />
-                    {loadError}
-                </div>
-            )}
+            <ErrorBanner msg={loadError} />
 
             {lowBalance && (
-                <div className="mb-3 p-3.5 rounded-2xl bg-primary-05/8 text-primary-05 text-body-2 ring-1 ring-inset ring-primary-05/20 flex items-center gap-2">
+                <div className="mb-4 p-3.5 rounded-3xl bg-primary-05/8 text-primary-05 text-body-2 border border-primary-05/20 flex items-center gap-2">
                     <Icon name="info" className="size-4 fill-current shrink-0" />
-                    Insufficient balance — top up to continue placing calls. Calls are blocked while your prepaid balance is at or below zero.
+                    Insufficient balance — top up to continue placing calls. Calls are blocked while
+                    your prepaid balance is at or below zero.
                 </div>
             )}
 
-            {/* Summary heroes */}
-            <div className="grid grid-cols-4 gap-3 mb-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                <HeroCard
-                    label="Plan"
-                    glyph="cube"
-                    glyphClass="fill-primary-01"
-                    accent="var(--primary-01)"
-                    loading={loading}
-                    value={
-                        <span className="capitalize flex items-center gap-2">
-                            {billing?.plan ?? "—"}
-                            {billing?.plan && (
-                                <Badge variant={billing.plan === "prepaid" ? "info" : "neutral"}>
-                                    {billing.plan === "prepaid" ? "Prepaid" : "Postpaid"}
-                                </Badge>
-                            )}
-                        </span>
-                    }
-                    foot={`${money(billing?.rate_per_min, currency)}/min · ${money(billing?.rate_per_call, currency)}/call`}
-                />
-                <HeroCard
-                    label="Balance"
-                    glyph="wallet"
-                    glyphClass={lowBalance ? "fill-primary-03" : "fill-primary-02"}
-                    accent={lowBalance ? "var(--primary-03)" : "var(--primary-02)"}
-                    delay={70}
-                    loading={loading}
-                    value={
-                        <span className={lowBalance ? "text-primary-03" : undefined}>
-                            {money(billing?.balance, currency)}
-                        </span>
-                    }
-                    foot={billing?.plan === "prepaid" ? "Prepaid balance" : "Postpaid — billed in arrears"}
-                />
-                <HeroCard
-                    label="MTD Minutes / Calls"
-                    glyph="clock"
-                    glyphClass="fill-primary-04"
-                    accent="var(--primary-04)"
-                    delay={140}
-                    loading={loading}
-                    value={`${billing?.month_to_date?.minutes ?? 0} / ${billing?.month_to_date?.calls ?? 0}`}
-                    foot={`${billing?.included_minutes ?? 0} included min`}
-                />
-                <HeroCard
-                    label="MTD Cost"
-                    glyph="income"
-                    glyphClass="fill-primary-02"
-                    accent="var(--primary-02)"
-                    delay={210}
-                    loading={loading}
-                    value={money(billing?.month_to_date?.cost, currency)}
-                    foot="Current billing period"
-                />
-            </div>
+            <div className="flex max-lg:block">
+                <div className="col-left">
+                    {/* Plan summary — ported from UpgradeToProPage Pricing card */}
+                    <Card title="Your plan">
+                        <div className="p-5 pt-3 max-lg:p-3">
+                            <div className="border border-s-stroke2 rounded-3xl shadow-depth p-6 max-lg:p-4">
+                                <div className="flex items-center justify-between gap-3 mb-5">
+                                    <div className="flex items-center gap-3">
+                                        <div className="text-h4 capitalize">
+                                            {billing?.plan ?? "—"}
+                                        </div>
+                                        {billing?.plan && (
+                                            <Badge
+                                                variant={
+                                                    billing.plan === "prepaid" ? "info" : "neutral"
+                                                }
+                                            >
+                                                {billing.plan === "prepaid"
+                                                    ? "Prepaid"
+                                                    : "Postpaid"}
+                                            </Badge>
+                                        )}
+                                    </div>
+                                    <div className="text-right">
+                                        <div
+                                            className={`text-h4 tabular-nums ${
+                                                lowBalance ? "text-primary-03" : ""
+                                            }`}
+                                        >
+                                            {money(billing?.balance, currency)}
+                                        </div>
+                                        <div className="text-caption text-t-tertiary">
+                                            {billing?.plan === "prepaid"
+                                                ? "Prepaid balance"
+                                                : "Billed in arrears"}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
+                                    <Fact
+                                        label="Rate / min"
+                                        value={money(billing?.rate_per_min, currency)}
+                                    />
+                                    <Fact
+                                        label="Rate / call"
+                                        value={money(billing?.rate_per_call, currency)}
+                                    />
+                                    <Fact
+                                        label="Included min"
+                                        value={`${billing?.included_minutes ?? 0}`}
+                                    />
+                                    <Fact
+                                        label="This month"
+                                        value={`${billing?.month_to_date?.minutes ?? 0} min · ${
+                                            billing?.month_to_date?.calls ?? 0
+                                        } calls`}
+                                    />
+                                    <Fact
+                                        label="This month cost"
+                                        value={money(billing?.month_to_date?.cost, currency)}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
 
-            <div className="flex gap-3 max-lg:flex-col">
-                {/* Ledger */}
-                <div className="flex-1 min-w-0">
+                    {/* Ledger — ported from EarningPage Transactions */}
                     <Card
-                        title="Recent Charges"
+                        title="Recent charges"
                         headContent={
-                            <span className="ml-3 text-caption text-t-tertiary">
-                                {money(billing?.rate_per_min, currency)}/min + {money(billing?.rate_per_call, currency)}/call
+                            <span className="ml-3 text-caption text-t-tertiary max-md:hidden">
+                                {money(billing?.rate_per_min, currency)}/min +{" "}
+                                {money(billing?.rate_per_call, currency)}/call
                             </span>
                         }
                     >
-                        <div className="overflow-x-auto px-3 pb-2">
-                            <table className="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>When</th>
-                                        <th>Phone</th>
-                                        <th>Outcome</th>
-                                        <th className="text-right">Duration</th>
-                                        <th className="text-right">Cost</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {loading ? (
-                                        [...Array(6)].map((_, i) => (
-                                            <tr key={i}>
-                                                {[...Array(5)].map((_, j) => (
-                                                    <td key={j}><div className="skeleton h-4 w-20" /></td>
-                                                ))}
-                                            </tr>
-                                        ))
-                                    ) : ledger.length === 0 ? (
-                                        <tr>
-                                            <td colSpan={5}>
-                                                <div className="state-block">
-                                                    <span className="state-glyph">
-                                                        <Icon name="income" className="fill-inherit" />
-                                                    </span>
-                                                    <div className="state-title">No charges yet</div>
-                                                    <div className="state-sub">
-                                                        Per-call charges appear here as calls are metered.
-                                                    </div>
-                                                </div>
+                        {!loading && ledger.length === 0 ? (
+                            <NoFound title="No charges yet" />
+                        ) : (
+                            <div className="p-1 pt-3 max-lg:px-0 max-md:pt-0">
+                                <Table
+                                    cellsThead={ledgerHead.map((head) => (
+                                        <th
+                                            className="!h-12.5 last:text-right nth-4:text-right max-md:nth-2:hidden"
+                                            key={head}
+                                        >
+                                            {head}
+                                        </th>
+                                    ))}
+                                    isMobileVisibleTHead
+                                >
+                                    {(loading ? PLACEHOLDER : ledger).map((e, idx) => (
+                                        <TableRow key={e.id || idx}>
+                                            <td className="text-t-secondary whitespace-nowrap">
+                                                {e.at ? fmt(e.at) : "—"}
                                             </td>
-                                        </tr>
-                                    ) : (
-                                        ledger.map((e) => (
-                                            <tr key={e.id}>
-                                                <td className="text-t-secondary whitespace-nowrap">{fmt(e.at)}</td>
-                                                <td className="text-t-secondary tabular-nums">{e.phone}</td>
-                                                <td>
-                                                    {e.outcome ? (
-                                                        <Badge variant={outcomeVariant(e.outcome)}>
-                                                            {e.outcome.replace(/_/g, " ")}
-                                                        </Badge>
-                                                    ) : (
-                                                        <span className="text-t-tertiary">—</span>
-                                                    )}
-                                                </td>
-                                                <td className="td-num text-right text-t-secondary">
-                                                    {e.duration_s != null ? `${e.duration_s}s` : "—"}
-                                                </td>
-                                                <td className="td-num text-right font-medium text-t-primary">
-                                                    {money(e.cost, e.currency || currency)}
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
+                                            <td className="text-t-secondary tabular-nums max-md:hidden">
+                                                {e.phone || "—"}
+                                            </td>
+                                            <td>
+                                                {e.outcome ? (
+                                                    <Badge variant={outcomeVariant(e.outcome)}>
+                                                        {e.outcome.replace(/_/g, " ")}
+                                                    </Badge>
+                                                ) : (
+                                                    <span className="text-t-tertiary">—</span>
+                                                )}
+                                            </td>
+                                            <td className="text-right text-t-secondary tabular-nums">
+                                                {e.duration_s != null && e.id ? `${e.duration_s}s` : "—"}
+                                            </td>
+                                            <td className="text-right text-sub-title-2 tabular-nums">
+                                                {e.id ? money(e.cost, e.currency || currency) : "—"}
+                                            </td>
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            </div>
+                        )}
                     </Card>
                 </div>
 
-                {/* Admin config */}
                 {admin && (
-                    <div className="w-96 max-lg:w-full shrink-0">
-                        <AdminBillingPanel onSaved={(b) => { setBillingState(b); showToast("Billing updated", "success"); }} onError={(m) => showToast(m, "error")} />
+                    <div className="col-right">
+                        <AdminBillingPanel
+                            onSaved={(b) => {
+                                setBillingState(b);
+                                showToast("Billing updated", "success");
+                            }}
+                            onError={(m) => showToast(m, "error")}
+                        />
                     </div>
                 )}
             </div>
@@ -248,7 +249,22 @@ export default function BillingPlanPage() {
     );
 }
 
-function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void; onError: (m: string) => void }) {
+function Fact({ label, value }: { label: string; value: React.ReactNode }) {
+    return (
+        <div>
+            <div className="text-caption text-t-tertiary mb-1">{label}</div>
+            <div className="text-sub-title-2 tabular-nums">{value}</div>
+        </div>
+    );
+}
+
+function AdminBillingPanel({
+    onSaved,
+    onError,
+}: {
+    onSaved: (b: Billing) => void;
+    onError: (m: string) => void;
+}) {
     const [tenants, setTenants] = useState<Tenant[]>([]);
     const [tenantId, setTenantId] = useState("");
     const [plan, setPlan] = useState<"prepaid" | "postpaid">("postpaid");
@@ -292,24 +308,34 @@ function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void
         }
     }
 
-    const labelCls = "block text-overline text-t-tertiary mb-1.5";
+    const labelCls = "block text-button text-t-secondary mb-2";
     const inputCls =
-        "w-full h-10 px-3 input-base rounded-2xl text-body-2";
+        "w-full h-12 px-4 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none bg-transparent transition-colors hover:border-s-highlight focus:border-s-focus";
 
     return (
-        <Card title="Admin · Set Plan & Rates">
-            <form onSubmit={handleSave} className="px-5 pb-5 space-y-4">
+        <Card title="Set plan & rates">
+            <form onSubmit={handleSave} className="px-5 pb-5 pt-2 space-y-4 max-lg:px-3">
                 <div>
                     <label className={labelCls}>Tenant</label>
-                    <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className={inputCls}>
+                    <select
+                        value={tenantId}
+                        onChange={(e) => setTenantId(e.target.value)}
+                        className={inputCls}
+                    >
                         {tenants.map((t) => (
-                            <option key={t.tenant_id} value={t.tenant_id}>{t.name} ({t.tenant_id})</option>
+                            <option key={t.tenant_id} value={t.tenant_id}>
+                                {t.name} ({t.tenant_id})
+                            </option>
                         ))}
                     </select>
                 </div>
                 <div>
                     <label className={labelCls}>Plan</label>
-                    <select value={plan} onChange={(e) => setPlan(e.target.value as "prepaid" | "postpaid")} className={inputCls}>
+                    <select
+                        value={plan}
+                        onChange={(e) => setPlan(e.target.value as "prepaid" | "postpaid")}
+                        className={inputCls}
+                    >
                         <option value="postpaid">postpaid</option>
                         <option value="prepaid">prepaid</option>
                     </select>
@@ -317,37 +343,89 @@ function AdminBillingPanel({ onSaved, onError }: { onSaved: (b: Billing) => void
                 <div className="grid grid-cols-2 gap-3">
                     <div>
                         <label className={labelCls}>Rate / min</label>
-                        <input type="number" step="0.01" value={ratePerMin} onChange={(e) => setRatePerMin(e.target.value)} placeholder="0.00" className={inputCls} />
+                        <input
+                            type="number"
+                            step="0.01"
+                            value={ratePerMin}
+                            onChange={(e) => setRatePerMin(e.target.value)}
+                            placeholder="0.00"
+                            className={inputCls}
+                        />
                     </div>
                     <div>
                         <label className={labelCls}>Rate / call</label>
-                        <input type="number" step="0.01" value={ratePerCall} onChange={(e) => setRatePerCall(e.target.value)} placeholder="0.00" className={inputCls} />
+                        <input
+                            type="number"
+                            step="0.01"
+                            value={ratePerCall}
+                            onChange={(e) => setRatePerCall(e.target.value)}
+                            placeholder="0.00"
+                            className={inputCls}
+                        />
                     </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
                         <label className={labelCls}>Currency</label>
-                        <input type="text" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="INR" className={inputCls} />
+                        <input
+                            type="text"
+                            value={currency}
+                            onChange={(e) => setCurrency(e.target.value)}
+                            placeholder="INR"
+                            className={inputCls}
+                        />
                     </div>
                     <div>
                         <label className={labelCls}>Included mins</label>
-                        <input type="number" value={includedMinutes} onChange={(e) => setIncludedMinutes(e.target.value)} placeholder="0" className={inputCls} />
+                        <input
+                            type="number"
+                            value={includedMinutes}
+                            onChange={(e) => setIncludedMinutes(e.target.value)}
+                            placeholder="0"
+                            className={inputCls}
+                        />
                     </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>
                         <label className={labelCls}>Set balance</label>
-                        <input type="number" step="0.01" value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="absolute" className={inputCls} />
+                        <input
+                            type="number"
+                            step="0.01"
+                            value={balance}
+                            onChange={(e) => setBalance(e.target.value)}
+                            placeholder="absolute"
+                            className={inputCls}
+                        />
                     </div>
                     <div>
                         <label className={labelCls}>Top up (+)</label>
-                        <input type="number" step="0.01" value={topup} onChange={(e) => setTopup(e.target.value)} placeholder="adds" className={inputCls} />
+                        <input
+                            type="number"
+                            step="0.01"
+                            value={topup}
+                            onChange={(e) => setTopup(e.target.value)}
+                            placeholder="adds"
+                            className={inputCls}
+                        />
                     </div>
                 </div>
                 <Button isBlack className="w-full justify-center" disabled={saving}>
-                    {saving ? "Saving…" : "Save Billing"}
+                    {saving ? "Saving…" : "Save billing"}
                 </Button>
             </form>
         </Card>
     );
 }
+
+const PLACEHOLDER: LedgerEntry[] = [...Array(6)].map(() => ({
+    id: "",
+    call_id: "",
+    phone: "",
+    campaign_id: "",
+    duration_s: 0,
+    cost: 0,
+    currency: "",
+    outcome: "",
+    at: "",
+}));

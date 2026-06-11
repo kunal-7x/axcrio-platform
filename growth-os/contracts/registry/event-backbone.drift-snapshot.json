@@ -1,0 +1,108 @@
+{
+  "group": "event-backbone",
+  "algo": "sha256",
+  "note": "CI fails when any sha256 changes without a version bump (Phase-0 acceptance §6). sha256 is over LF-normalized bytes (cross-OS stable).",
+  "count": 25,
+  "schemas": {
+    "action_plan": {
+      "version": "1.0.0",
+      "sha256": "aa258e220c1fb1b92367ac8cf8d6e248f77afcc4076e42455afba6521e5be366"
+    },
+    "action.executed": {
+      "version": "1.0.0",
+      "sha256": "4a265173af7533288a2801f8fc7c1df9d9aa2b6470b7d08b3aac5a9e161b18d5"
+    },
+    "action.plan.created": {
+      "version": "1.0.0",
+      "sha256": "5955a516be5664f71d95bffc67bab97fc9cc907d797860ab97f772afea45cf8f"
+    },
+    "action.plan.signed": {
+      "version": "1.0.0",
+      "sha256": "ebef858e0451497a514c63e9c1aa267bcfb1bd97c46ff7e40a346b1bcde89d78"
+    },
+    "ad.metrics.snapshot": {
+      "version": "1.0.0",
+      "sha256": "7da09de618ae34f0dd13eb4c612cb619664c4e3d23b41bf6e707639607b7ed97"
+    },
+    "call.completed": {
+      "version": "1.0.0",
+      "sha256": "fb2254641a297aa6ab386b714f9404600b69a20131c4ee16015510c25216a15c"
+    },
+    "call.outcome": {
+      "version": "1.0.0",
+      "sha256": "0aa60582eae293dc6ac24163104576b4b54670fb77a37502da60c60669925c74"
+    },
+    "campaign_intelligence_brief": {
+      "version": "1.0.0",
+      "sha256": "2e9466aed2002a68c448703717ff468515b7a10b9a8ad7a073097ed6a8992956"
+    },
+    "campaign.compiled": {
+      "version": "1.0.0",
+      "sha256": "180ec4db19b4437b864868e49a46edba679eca195bc9e9c6ff49ead79cfa0d31"
+    },
+    "campaign.launched": {
+      "version": "1.0.0",
+      "sha256": "379bb8a3ed20e0e57586eb86bc4c8c12400f5afad2c94085eb4d0780e2852a2a"
+    },
+    "campaign.requested": {
+      "version": "1.0.0",
+      "sha256": "0cfce8a8c6cf609e8edfd6fb6d68020c59e5e3ab02733b93afe3580e96a9b289"
+    },
+    "creative_dna": {
+      "version": "1.0.0",
+      "sha256": "61e1ec0a08f21679098019c681fe8cd10f06725e1883ad4dbf25a5aa8c2ccabb"
+    },
+    "creative.generated": {
+      "version": "1.0.0",
+      "sha256": "8ce809060351307a0a8f18d06b073e4d81c3063f5ee0ca6465bb45589707ae49"
+    },
+    "creative.qa.evaluated": {
+      "version": "1.0.0",
+      "sha256": "a5c6cde6fcf03049a314c1f12894f5de5ebd21b43da5bded5e14bf8a719861b9"
+    },
+    "event-envelope": {
+      "version": "1.0.0",
+      "sha256": "14dc3efaba70c78eeb8d5e3b36457a0a6693ef49665a48a08736a3eee547cfb3"
+    },
+    "explanation": {
+      "version": "1.0.0",
+      "sha256": "a239cbd756adb619a580aeb2ed13d50f5a7f7c798263666626ee9bbbdd51514d"
+    },
+    "lead.captured": {
+      "version": "1.0.0",
+      "sha256": "a5f900b33f225e957a04371def453334565bfa20f80690e324985e3d5adb7054"
+    },
+    "lead.scored": {
+      "version": "1.0.0",
+      "sha256": "ec8e6498ee80b7ab9889bed8a204191bfc90d9aec8f39cbef45012eaecc54ce3"
+    },
+    "media_plan": {
+      "version": "1.0.0",
+      "sha256": "501f6850ba83536f5afbd46e082dba1aa8e21a6529b4df203ffa2a033c4dad2a"
+    },
+    "optimization.decision": {
+      "version": "1.0.0",
+      "sha256": "c65caf7b371559ca10f08fb818d0ccf4a5c205b1ccc65da3d6bdf4cd38aae211"
+    },
+    "research.completed": {
+      "version": "1.0.0",
+      "sha256": "84145bc1cf61ea1aeeda643c54c4e5c57f14cf64e27b025cb25d7a5e5bdebac0"
+    },
+    "signal.dispatched": {
+      "version": "1.0.0",
+      "sha256": "5cc8cf57fc72d7a771815f370020803bde1f13c79f3d3195c8b49407e21fb5af"
+    },
+    "strategy.compiled": {
+      "version": "1.0.0",
+      "sha256": "a1308fc223e4ddee34c6a9dc5a2ad4ef55bbfebd153dc218c26ba069a182be2d"
+    },
+    "wa.message.received": {
+      "version": "1.0.0",
+      "sha256": "a1382503c21cf8cc37022e1a33b27c67245cae34184bbe669ac3865e8da356cc"
+    },
+    "wa.message.sent": {
+      "version": "1.0.0",
+      "sha256": "4481cdf985092f31b97055b1efa7bb0dd8ee5b8f02abc2b8fb7c234ce288f898"
+    }
+  }
+}

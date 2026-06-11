@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/campaign.launched.schema.json",
+  "title": "campaign.launched",
+  "description": "PAYLOAD of the `campaign.launched` envelope. Topic: campaign.lifecycle.launched. Emitted by the Action Executor (§10.2) AFTER a SIGNED ActionPlan executed the launch via the LaunchSaga and platform ids were written. This is the first event where real ads exist live. It carries the platform entity ids so every later metric/lead can be tied back to the exact campaign/adset/ad. Caused by an action.plan.signed -> action.executed (causation chain on the envelope).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "campaign.launched",
+  "x-topic": "campaign.lifecycle.launched",
+  "additionalProperties": false,
+  "required": [
+    "compiled_campaign_ref",
+    "action_plan_id",
+    "platform",
+    "platform_refs"
+  ],
+  "properties": {
+    "compiled_campaign_ref": {
+      "description": "The compiled_campaign_id that was launched (§10.1).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "action_plan_id": {
+      "description": "The SIGNED ActionPlan that authorized this launch (P4 — connectors mutate ONLY on a signed plan). References the Ledger entry.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "platform": {
+      "type": "string",
+      "enum": [ "meta", "google" ]
+    },
+    "platform_refs": {
+      "description": "Live platform entity ids written by the executor (§10.2). Form `platform:entity:id` e.g. meta:campaign:120..., meta:adset:..., meta:ad:....",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "campaign_ids", "adset_ids", "ad_ids" ],
+      "properties": {
+        "ad_account_id": { "type": "string", "description": "The ad account these entities live in." },
+        "campaign_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "adset_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "ad_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "mode": {
+      "description": "sandbox = Meta sandbox / Google test account (CI + Shadow first §10.4); live = real spend. Phase-1 launches sandbox-first then >=Rs500 live (§21 acceptance).",
+      "type": "string",
+      "enum": [ "sandbox", "live" ],
+      "default": "sandbox"
+    },
+    "destination": {
+      "type": "string",
+      "enum": [ "ctwa", "leadform", "lp" ]
+    },
+    "daily_budget_minor": {
+      "description": "Total live daily budget across the launched ad sets, INR paise. Must reconcile <= Budget Governor daily_cap (§13.2 hard guarantee).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "learning_phase": {
+      "description": "Initial learning-phase state of the launched ad sets (§9 respect learning phases; §12.2). Newly launched = learning.",
+      "type": "string",
+      "enum": [ "learning", "learning_limited", "active" ],
+      "default": "learning"
+    },
+    "launched_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

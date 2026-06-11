@@ -30,6 +30,13 @@ const interDisplay = localFont({
     variable: "--font-inter-display",
 });
 
+// FONT (W1 decision, design/ui-font-heading-plan.md §3): Inter Display is the
+// single app-wide family — it ships all five weights (300–700) the type scale
+// requests, so every weight resolves to a real face. Gilroy was removed from the
+// cascade: its free release ships only 300/800, so 400/500/600/700 silently fell
+// through to Inter — "the font never changed." If a Gilroy brand wordmark is ever
+// wanted, load it as a display-only face for the logo lockup, never as body.
+
 export const metadata: Metadata = {
     title: "Famit",
     description: "Famit AI Tele-Calling Panel",

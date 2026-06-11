@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/creative.qa.evaluated.schema.json",
+  "title": "creative.qa.evaluated",
+  "description": "PAYLOAD of the `creative.qa.evaluated` envelope. Topic: creative.qa.evaluated. Emitted by creative-qa (§15.4) — the gate before an asset is launchable. Scores spec compliance, brand, compliance verdict, pre-flight performance band, and Entity-ID cluster risk on the 5-axis diversity rubric (concept/format/visual/hook/headline). verdict=passed is the spec's `creative.qa.passed` (§21/§5.1) expressed as a verdict so the single event carries pass|fix|block without a second event type (extend-never-mutate §6.2). A passed asset becomes eligible for campaign.compiled creative slots.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "creative.qa.evaluated",
+  "x-topic": "creative.qa.evaluated",
+  "additionalProperties": false,
+  "required": [
+    "asset_ref",
+    "verdict"
+  ],
+  "properties": {
+    "asset_ref": {
+      "description": "DAM asset id evaluated (the creative.generated asset_id).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "verdict": {
+      "description": "Gate outcome. passed = launchable (the spec's creative.qa.passed); fix_suggested = Studio auto-applies the fix-list and re-evaluates; block = not launchable (policy/diversity fail).",
+      "type": "string",
+      "enum": [ "passed", "fix_suggested", "block" ]
+    },
+    "spec_compliance": {
+      "description": "Hard spec checks (§15.4): dims/duration/size/legibility (2-second-glance contrast+size §15.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "brand_score": {
+      "description": "Brand adherence score 0-100 (§15.4).",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "compliance": {
+      "description": "Policy verdict from the compliance-engine (§10.9) with cited rule ids (e.g. RERA for real-estate, health-claim limits).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verdict": { "type": "string", "enum": [ "pass", "fix_suggested", "block" ] },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "rule_id": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "preflight_performance": {
+      "description": "Predicted performance band from the DNA-perf model (§15.4 pre-flight score).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "predicted_ctr_band": { "type": "string", "enum": [ "low", "mid", "high" ] },
+        "predicted_cpql_band": { "type": "string", "enum": [ "low", "mid", "high" ] },
+        "confidence": { "type": "string", "enum": [ "low", "medium", "high" ] }
+      }
+    },
+    "diversity": {
+      "description": "Entity-ID cluster-risk scoring on the 5-axis rubric (§15.4). A set scoring <8/10 is blocked from launch (anti near-duplicate; Andromeda retrieval suppresses near-dupes, moat (2)).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rubric_score": { "type": "number", "minimum": 0, "maximum": 10, "description": "5-axis: concept/format/visual/hook/headline." },
+        "cluster_risk": { "type": "string", "enum": [ "low", "medium", "high" ] },
+        "near_duplicate_of": {
+          "description": "asset_ids this is too similar to (same first-4-token headline / same hero/backdrop / same 0-3s hook).",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "fix_list": {
+      "description": "Machine-readable fixes Studio auto-applies when verdict=fix_suggested (§15.4).",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

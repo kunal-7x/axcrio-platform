@@ -1,0 +1,223 @@
+# GROWTH OS — shared OpenAPI 3.1 components (errors, security, params, headers).
+# Source of truth for cross-surface primitives. Every Phase-0 core surface ($ref)s here.
+# Spec refs: §2 P1/P3/P6, §5 multi-tenancy, architecture-phase0 §3.1 auth, §5.x contracts.
+# Frozen-after-merge (a new field => version bump). JSON Schema 2020-12 dialect.
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Shared Components
+  version: 0.1.0
+  description: >
+    Reusable components only — this file defines no paths. Referenced by every
+    Phase-0 core OpenAPI surface (gateway, tenants, integration-hub, ledger,
+    flags, notify) so error envelopes, security schemes, pagination, and the
+    correlation/idempotency headers are defined exactly once.
+paths: {}
+components:
+  securitySchemes:
+    # D5: Phase-0 auth = dev JWT stub behind packages/auth; OIDC swaps in Phase 3.
+    # Used by the user/agent-facing surfaces (gateway, tenants, ledger, flags, notify).
+    bearerUserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Phase-0 dev-stub JWT (packages/auth). Carries sub, tenant_id, workspace_id,
+        role. Tenant is resolved from the TOKEN, never the request body (P6).
+        Phase 3 swaps the issuer to Logto OIDC behind the same interface.
+    # §3.1: Origin Connector + service-to-service callers use an opaque per-connection
+    # service token (mirrors live AIASSET_SERVICE_TOKEN / AIM_SERVICE_TOKEN).
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: >
+        Opaque per-connection service token (ORIGIN_SERVICE_TOKEN). Resolves a single
+        connection => pins tenant_id + workspace_id GROWTH-OS-side. Tenant from the
+        token, never the body (the load-bearing isolation rule; P6).
+
+  parameters:
+    JourneyQuery:
+      name: journey
+      in: query
+      required: false
+      description: correlation_id (journey uuid, §6.3) to scope results to one person's journey.
+      schema:
+        type: string
+        format: uuid
+    WorkspaceQuery:
+      name: workspace_id
+      in: query
+      required: false
+      description: Optional workspace scope within the token's tenant (defaults to token workspace).
+      schema:
+        type: string
+        format: uuid
+    CursorQuery:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque pagination cursor returned by the previous page (Page.next_cursor).
+      schema:
+        type: string
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      description: Max items to return (1..200, default 50).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+  headers:
+    IdempotencyKey:
+      description: >
+        Client-supplied idempotency key (P3). Exactly-once in effect: a repeated key
+        with the same body returns the original result; a different body => 409.
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+    XRequestId:
+      description: Per-request trace id echoed for OTel correlation (P10).
+      schema:
+        type: string
+    XCorrelationId:
+      description: Journey correlation_id propagated through the request (§6.3).
+      schema:
+        type: string
+        format: uuid
+    RateLimitRemaining:
+      description: Remaining requests in the current per-app/per-tenant token-bucket window (§5.3).
+      schema:
+        type: integer
+    RetryAfter:
+      description: Seconds to wait before retrying (set on 429 / 503).
+      schema:
+        type: integer
+
+  schemas:
+    # ---- Canonical error envelope (one shape across all surfaces) ----
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code (snake_case).
+              examples: [unauthorized, forbidden, not_found, validation_failed, conflict, rate_limited, internal]
+            message:
+              type: string
+              description: Human-readable, non-PII summary.
+            details:
+              type: array
+              description: Field-level validation problems, when applicable.
+              items:
+                type: object
+                additionalProperties: false
+                required: [path, issue]
+                properties:
+                  path:
+                    type: string
+                    description: JSON pointer / dotted path to the offending field.
+                  issue:
+                    type: string
+            request_id:
+              type: string
+              description: Echoes X-Request-Id for support correlation.
+            retriable:
+              type: boolean
+              description: True if the caller may safely retry (e.g. 429/503).
+
+    # ---- Cursor pagination wrapper ----
+    Page:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {}
+        next_cursor:
+          type: [string, "null"]
+          description: Cursor for the next page; null when no more results.
+        total_estimate:
+          type: [integer, "null"]
+          description: Best-effort total (may be null for large/streaming sets).
+
+    # ---- Common id/value types ----
+    Uuid:
+      type: string
+      format: uuid
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC3339 / ISO-8601 UTC instant.
+    TenantId:
+      type: string
+      format: uuid
+      description: Tenant (org) id. Set from the token, NEVER accepted from the body (P6).
+    WorkspaceId:
+      type: string
+      format: uuid
+
+  responses:
+    BadRequest:
+      description: Malformed request / schema validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid credentials.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated but not permitted (RBAC / tenant scope).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found within the token's tenant scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: State/idempotency conflict (e.g. reused Idempotency-Key with a different body).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Semantically invalid (e.g. signing an already-executed action).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Per-app / per-tenant rate limit exceeded (§5.3).
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/RateLimitRemaining'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Internal:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

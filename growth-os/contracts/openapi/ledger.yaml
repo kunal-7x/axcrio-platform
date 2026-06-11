@@ -1,0 +1,240 @@
+# GROWTH OS — ledger (Action Ledger: append-only, signed, hash-chained) — OpenAPI 3.1
+# Spec ref §7.4 + P4 + P5 (+ Appendix A). The audit + control spine: NO money/spend/
+# launch/broadcast happens except via a SIGNED ActionPlan recorded here; connectors
+# verify status=signed + signature before any mutation. Append-only + hash-chained
+# (prev_hash) = tamper-evident, doubles as the training log (§5.5, §14.3).
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Action Ledger
+  version: 0.1.0
+  description: >
+    The append-only, hash-chained, signed Action Ledger (§7.4). Every autonomous action
+    emits an Explanation to the ledger BEFORE execution (P5). Entries are immutable;
+    each carries prev_hash + hash for tamper-evidence (§5.5). POST /actions proposes a
+    plan; POST /actions/{id}/sign signs it (the gate connectors check, P4);
+    GET /actions?journey= replays a journey's decision trail. In Phase 0 the ledger
+    exists and is hash-chained, but NO execution/mutation path exists yet (D6) — only
+    proposed/signed states are reachable.
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev.
+tags:
+  - name: actions
+security:
+  - bearerUserJwt: []
+paths:
+  /actions:
+    get:
+      operationId: listActions
+      summary: List/replay ledger entries; filter by journey, status, or target (§7.4).
+      description: >
+        GET /actions?journey={correlation_id} returns the ordered, hash-chained decision
+        trail for one person's journey (the replay asset, §14.3). Also filterable by
+        status and target_ref.
+      tags: [actions]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/JourneyQuery'
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/ActionStatus' }
+        - name: target_ref
+          in: query
+          required: false
+          description: Platform target ref, e.g. "meta:ad:123".
+          schema: { type: string }
+        - name: action_type
+          in: query
+          required: false
+          schema: { type: string }
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Ordered page of ledger entries (hash-chain order preserved).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '../schemas/action_plan.schema.json' }
+                      chain_head_hash:
+                        type: string
+                        description: The hash of the most recent entry in this tenant's chain (integrity anchor).
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+    post:
+      operationId: proposeAction
+      summary: Propose an action — append a `proposed` ledger entry with its Explanation (P5).
+      description: >
+        Records the intended action + its Explanation (§7.4 / Appendix A) BEFORE any
+        execution (P5 — no silent actions). The entry is appended with prev_hash/hash;
+        it is NOT executable until signed. Idempotent on Idempotency-Key.
+      tags: [actions]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Exactly-once proposal key (P3).
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProposeActionRequest' }
+      responses:
+        '201':
+          description: Proposed. Emits action.plan.created.
+          content:
+            application/json:
+              schema: { $ref: '../schemas/action_plan.schema.json' }
+          headers:
+            X-Request-Id: { $ref: './_shared/common.yaml#/components/headers/XRequestId' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './_shared/common.yaml#/components/responses/UnprocessableEntity' }
+
+  /actions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+    get:
+      operationId: getAction
+      summary: Fetch one ledger entry (with full plan + Explanation + signatures).
+      tags: [actions]
+      responses:
+        '200':
+          description: The ledger entry.
+          content:
+            application/json:
+              schema: { $ref: '../schemas/action_plan.schema.json' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /actions/{id}/sign:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+    post:
+      operationId: signAction
+      summary: Sign a proposed action — the gate connectors verify before any mutation (P4).
+      description: >
+        Transitions proposed -> signed and appends a signature over the entry hash. ONLY
+        a signed entry authorizes the Action Executor to call a connector mutation (P4).
+        Requires sign permission (RBAC) and, for spend/destructive plans, a firewall
+        step-up token (mirrors the live firewall.py PIN + HS256 step-up; §17.3). Money
+        plans require a read-back confirmation flag. Signing an already-signed/executed
+        entry => 422 (append-only invariant).
+      tags: [actions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SignActionRequest' }
+      responses:
+        '200':
+          description: Signed. Emits action.plan.signed.
+          content:
+            application/json:
+              schema: { $ref: '../schemas/action_plan.schema.json' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403':
+          description: >
+            Missing sign permission OR missing/invalid step-up token for a
+            spend/destructive plan.
+          content:
+            application/json:
+              schema: { $ref: './_shared/common.yaml#/components/schemas/Error' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+        '422':
+          description: Entry not in a signable state (already signed/executed/failed).
+          content:
+            application/json:
+              schema: { $ref: './_shared/common.yaml#/components/schemas/Error' }
+
+  /actions/verify:
+    get:
+      operationId: verifyChain
+      summary: Verify the tenant's hash-chain integrity (tamper-evidence check, §5.5).
+      description: >
+        Walks the append-only chain recomputing hashes; returns ok=false + the first
+        broken link if any entry was tampered with. Cheap integrity audit for the panel.
+      tags: [actions]
+      responses:
+        '200':
+          description: Integrity result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, entries_checked]
+                properties:
+                  ok: { type: boolean }
+                  entries_checked: { type: integer }
+                  chain_head_hash: { type: string }
+                  first_broken_id:
+                    type: [string, "null"]
+                    format: uuid
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'
+  schemas:
+    # NOTE: the ledger ENTRY shape is NOT modelled here — it IS the frozen canonical
+    # artifact schemas/action_plan.schema.json (which owns status, signatures[],
+    # approval, step_up, budget_impact+governor_stamp, and ledger.prev_hash/hash/sequence).
+    # Responses $ref it directly so there is one source of truth (P1) and zero drift.
+    # Only the API-layer request DTOs (not part of the artifact) live below.
+
+    ActionStatus:
+      # Mirrors action_plan.schema.json#/properties/status (filter param only).
+      type: string
+      enum: [proposed, signed, executing, executed, failed, rolled_back, rejected, expired]
+      description: §7.4 lifecycle. Phase 0 reaches only proposed/signed (D6 — no executor yet).
+
+    ProposeActionRequest:
+      type: object
+      additionalProperties: false
+      required: [plan]
+      description: >
+        Propose body. `plan` is a draft ActionPlan (the frozen artifact); the ledger
+        assigns/overrides server-managed fields (action_plan_id, status=proposed,
+        signatures, ledger hash-chain, created_at) — clients SHOULD omit them.
+      properties:
+        plan:
+          $ref: '../schemas/action_plan.schema.json'
+
+    SignActionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_hash]
+      properties:
+        expected_hash:
+          type: string
+          description: >
+            The ledger.hash the signer reviewed (optimistic concurrency / "sign exactly
+            what I saw"). Mismatch => 422.
+        step_up_token:
+          type: [string, "null"]
+          description: >
+            Firewall HS256 step-up token (sub-bound, TTL 300s) — REQUIRED for
+            spend/bulk/destructive plans (mirrors live firewall.py; populates
+            action_plan.step_up). Ignored for benign plans.
+        confirm_money:
+          type: boolean
+          default: false
+          description: Read-back confirmation flag; must be true to sign a spend-increasing plan (§17.3).
+        note:
+          type: [string, "null"]
+          description: Optional approver note recorded with the signature.

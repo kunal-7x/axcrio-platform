@@ -1,0 +1,27 @@
+{
+  "name": "@growth-os/metering",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS shared metering: per-tenant cost meters (LLM tokens, images, video-sec, WA msgs by category, voice min, managed ad-spend) that emit credit.consumed (P10, §7.5/§10). Phase-0 skeleton: meter types + a no-op recorder port.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

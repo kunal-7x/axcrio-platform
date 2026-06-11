@@ -53,6 +53,41 @@ shell + login + a SIGNATURE, then make every page speak ONE language.
   Box 127.0.0.1:3001 + public https://panel.famit.in/login = 200 w/ new look; authed /api = 200.
 - [DONE] U7 Appended build_log/wave-build-premium-ui.md (WAVE 2 section) + brain/mistakes+patterns.
 
+## SHELL POLISH PASS (this session — template-residue removal, NOT redesign)
+The shell was already elevated + LIVE; this pass strips template residue left in the
+active-state logic so the shell is fully bespoke (no dead "Products"/Shop/Refunds refs):
+- [DONE] NavLink: removed dead useMemo switch (Customer list/Shop/Refunds — routes deleted);
+  active = segment-boundary match (href==="/" exact; else === or startsWith(href+"/")), so
+  /billing/vendors never lights the /vendors leaf and /calls never lights /callbacks.
+  Counter pill recolored secondary-01/secondary-04 (Scheduled gone) -> brand primary-01/12.
+- [DONE] Sidebar/Dropdown: removed /products/new special-casing (mobile plus-btn +
+  isActiveNewProduct pill) for a deleted route; dropped unused `Link` import. Added a quiet
+  brand-blue active dot when a group is collapsed-but-active; chevron rotate-300ms; isOpen flag.
+- [DONE] Sidebar footer: removed commented-out chat button; theme toggle now in a hairline
+  border-t-s-subtle footer row (cleaner console footer, not a floating control).
+- Token-only verified (raw-color grep ZERO on all changed shell files). Build re-verified.
+
+## FOUNDATION WAVE (assets: Gilroy font + real logo) — 2026-06-10
+Design-system foundation: install the founder's brand font + real logo into the shell.
+- [DONE] FONT — Gilroy installed. `public/fonts/Gilroy-Light.otf`(300)+`Gilroy-ExtraBold.otf`(800)
+  extracted from D:\Downloads\gilroy-font.zip (FREE release = ONLY these 2 weights). Registered
+  `gilroy = localFont({var:--font-gilroy})` in app/layout.tsx; body className adds `${gilroy.variable}`.
+  globals.css: `--font-inter` and html `font-family` now lead with `var(--font-gilroy)` then
+  `var(--font-inter-display)` FALLBACK — so missing mid-weights (400/500/600/700) render as Inter,
+  not snapped to Gilroy ExtraBold. Build emits both .otf to .next/static/media (font genuinely loaded).
+  ⚠ OPEN ITEM: full Gilroy ramp (Regular/Medium/SemiBold/Bold) needs the founder to supply paid weights.
+- [DONE] LOGO — real brand mark applied (NOT wordmark-fallback; founder asset found + transparent).
+  Transparent white-ink PNGs copied to public/images/famit-mark-white-trim.png (+ dark-trim for light
+  surfaces/favicon). Replaced the eq-bar `signal-glyph` with `<Image>` of the mark in:
+  components/Logo/index.tsx (sidebar+header, 22px on size-9 dark tile) AND the THREE inline login
+  instances (left brand panel 26px, mobile wordmark 24px, eyebrow accent → brand dot). grep signal-glyph
+  in Logo+login = 0. (Page-level signal-glyph motifs in PageHeader/campaigns/booking/payments LEFT as-is
+  — page restyle is the next wave; .signal-glyph CSS stays, harmless.)
+- [DONE] SHELL LOOK — confirmed already Core_2-derived per reuse-map §0 (Layout/Sidebar/Header/Logo/
+  Button[isBlack/isWhite/isGray/isStroke/isCircle]/Card/Table/Tabs/Search/NoFound all ported, token-clean,
+  dark-safe). Foundation shell changes this wave = font + logo. Raw-color audit on all shell files = 0.
+- [DONE] BUILD EXIT 0 (33 routes), zero errors, Gilroy .otf bundled. NOT deployed (deploy agent owns ship).
+
 ## ✅ STATUS: LIVE on https://panel.famit.in. Rollback = restore /opt/famit-panel.bak.1781028098 + restart.
 
 ## ROLLBACK

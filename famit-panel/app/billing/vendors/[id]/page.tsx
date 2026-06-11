@@ -7,15 +7,17 @@ import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import { getBillingVendor, type BillingVendorDetail } from "@/lib/api";
+import Button from "@/components/Button";
 import {
     money,
     moneyShort,
     fmt,
     StatusBadge,
     ErrorBanner,
-    ghostBtnCls,
-    HeroCard,
+    StatStrip,
+    StatItem,
     Sparkline,
+    BillingTabs,
 } from "../../_shared";
 import {
     ResponsiveContainer,
@@ -56,7 +58,8 @@ export default function VendorDetailPage() {
     const avg = series.length ? series.reduce((s, r) => s + r.cost, 0) / series.length : 0;
 
     return (
-        <Layout title={`Billing · ${data?.display_name || "Vendor"}`}>
+        <Layout title={data?.display_name ? `${data.display_name} spend` : "Vendor spend"}>
+            <BillingTabs />
             <ErrorBanner msg={error} />
 
             <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
@@ -67,53 +70,48 @@ export default function VendorDetailPage() {
                     <Icon name="arrow" className="size-4 fill-current rotate-180" />
                     All vendors
                 </Link>
-                <button onClick={load} className={ghostBtnCls} disabled={loading}>
-                    <Icon name="clock" className={`size-4 fill-current ${loading ? "animate-spin" : ""}`} />
+                <Button isStroke onClick={load} disabled={loading} icon="clock">
                     {loading ? "Refreshing…" : "Refresh"}
-                </button>
+                </Button>
             </div>
 
-            <div className="grid grid-cols-3 gap-3 mb-3 max-sm:grid-cols-1">
-                <HeroCard
-                    label="Total Cost"
-                    glyph="wallet"
-                    glyphClass="fill-primary-04"
-                    accent="var(--primary-04)"
+            <StatStrip>
+                <StatItem
+                    title="Total cost"
+                    icon="wallet"
                     loading={loading && !data}
                     value={money(data?.total_cost, currency)}
-                    aside={
-                        series.length >= 2 ? (
-                            <Sparkline data={series} color="var(--primary-04)" />
-                        ) : undefined
+                    foot={
+                        <span className="flex items-center gap-2">
+                            {`${data?.rows ?? 0} metered row${(data?.rows ?? 0) === 1 ? "" : "s"}`}
+                            {series.length >= 2 && (
+                                <Sparkline data={series} color="var(--primary-04)" />
+                            )}
+                        </span>
                     }
-                    foot={`${data?.rows ?? 0} metered row${(data?.rows ?? 0) === 1 ? "" : "s"}`}
                 />
-                <HeroCard
-                    label="Peak Day"
-                    glyph="chart"
-                    glyphClass="fill-primary-01"
-                    accent="var(--primary-01)"
-                    delay={70}
+                <StatItem
+                    title="Peak day"
+                    icon="chart"
                     loading={loading && !data}
                     value={series.length ? money(peak.cost, currency) : "—"}
                     foot={series.length ? peak.date : "No timeseries yet"}
                 />
-                <HeroCard
-                    label="Daily Average"
-                    glyph="income"
-                    glyphClass="fill-primary-02"
-                    accent="var(--primary-02)"
-                    delay={140}
+                <StatItem
+                    title="Daily average"
+                    icon="income"
                     loading={loading && !data}
                     value={series.length ? money(avg, currency) : "—"}
-                    aside={data ? <StatusBadge status={data.status} stale={data.stale} /> : undefined}
                     foot={
-                        series.length
-                            ? `Span ${moneyShort(Math.min(...series.map((s) => s.cost)), currency)}–${moneyShort(peak.cost, currency)}/day`
-                            : `Last sync ${fmt(data?.synced_at)}`
+                        <span className="flex items-center gap-2">
+                            {data && <StatusBadge status={data.status} stale={data.stale} />}
+                            {series.length
+                                ? `${moneyShort(Math.min(...series.map((s) => s.cost)), currency)}–${moneyShort(peak.cost, currency)}/day`
+                                : `Last sync ${fmt(data?.synced_at)}`}
+                        </span>
                     }
                 />
-            </div>
+            </StatStrip>
 
             {data?.status === "not_configured" && (
                 <div className="mb-3 p-3.5 rounded-2xl bg-primary-05/8 text-primary-05 text-body-2 ring-1 ring-inset ring-primary-05/20 flex items-center gap-2">
@@ -166,7 +164,7 @@ export default function VendorDetailPage() {
                                             background: "var(--backgrounds-surface2)",
                                             border: "1px solid var(--stroke-stroke2)",
                                             borderRadius: "12px",
-                                            boxShadow: "0 8px 24px -8px rgba(8,8,8,0.25)",
+                                            boxShadow: "var(--box-shadow-depth)",
                                             fontSize: "12px",
                                         }}
                                         labelStyle={{ color: "var(--text-tertiary)" }}

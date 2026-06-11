@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/signal.dispatched.schema.json",
+  "title": "signal.dispatched",
+  "description": "PAYLOAD of the `signal.dispatched` envelope. Topic: signals.signal.dispatched. ★★ THE FLAGSHIP event (§11 revenue-truth loop, moat (1)). Emitted by the signals service after it dispatches a ground-truth outcome to a platform conversions API (Meta CAPI web/CRM/business-messaging incl CTWA; Google Enhanced Conversions for Leads + offline adjustments). value carries the lead-quality score (or true Purchase value) so the platform optimizes for revenue truth, not junk 'lead submitted' events. event_id = hash(journey_id + ladder_step) for idempotent dedup >=90% (§11.3). Canonical field shape from Appendix A.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "signal.dispatched",
+  "x-topic": "signals.signal.dispatched",
+  "additionalProperties": false,
+  "required": [
+    "platform",
+    "endpoint",
+    "event_name",
+    "dispatch_event_id",
+    "match_keys"
+  ],
+  "properties": {
+    "platform": {
+      "description": "Destination platform (Appendix A: meta).",
+      "type": "string",
+      "enum": [ "meta", "google" ]
+    },
+    "endpoint": {
+      "description": "Which conversions surface (Appendix A: capi). business_messaging keys on ctwa_clid (§11.2); ec_leads + offline_adjustment = Google quality loop (§11.3).",
+      "type": "string",
+      "enum": [ "capi", "capi_business_messaging", "capi_crm", "ec_leads", "offline_conversion_adjustment" ]
+    },
+    "event_name": {
+      "description": "The event-ladder step (§11.1): Lead | QualifiedLead | Schedule | Attended | Purchase (Appendix A: QualifiedLead). QualifiedLead/Attended are custom events.",
+      "type": "string",
+      "enum": [ "Lead", "QualifiedLead", "Schedule", "Attended", "Purchase" ]
+    },
+    "dispatch_event_id": {
+      "description": "The dedup event_id = hash(journey_id + ladder_step) (Appendix A event_id: 'sha256(j_+step2)'). Makes re-sends idempotent => dedup >=90% (§11.3 invariant).",
+      "type": "string"
+    },
+    "match_keys": {
+      "description": "Which hashed match keys were attached (Appendix A: [ph,fbc,ctwa_clid]). Max keys => higher EMQ (§11.3 target EMQ>=8). PII is SHA-256 normalized; raw PII never leaves (§5.4).",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [ "em", "ph", "fn", "ln", "ct", "st", "zp", "external_id", "fbp", "fbc", "fbclid", "ctwa_clid", "gclid", "wbraid", "gbraid" ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "value": {
+      "description": "Conversion value (Appendix A: 78). On Lead = lead_score (predicted-value proxy); on Purchase = true order value. INR.",
+      "type": "number",
+      "minimum": 0
+    },
+    "currency": {
+      "description": "Appendix A: INR.",
+      "type": "string",
+      "const": "INR"
+    },
+    "journey_ref": {
+      "description": "The correlation_id (journey) this signal belongs to — ties the dispatch back to the person's funnel.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "source_ad_ref": {
+      "description": "The ad the conversion is attributed to (from ctwa_clid / fbclid / gclid), form platform:ad:id.",
+      "type": "string"
+    },
+    "latency_ms": {
+      "description": "source(occurred_at) -> dispatched latency in ms; SLA p95 <=15min (§11.3). For AI calls, India edge target <60s.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "dedup_key": {
+      "description": "The dedup key used against the platform (mirrors dispatch_event_id; surfaced for the Signal Health card §11.3).",
+      "type": "string"
+    }
+  }
+}

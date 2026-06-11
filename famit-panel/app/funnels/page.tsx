@@ -16,17 +16,19 @@
 // are rendered from STATIC, cred-free knowledge so the dormant state is rich and
 // educational, with live funnels overlaid when the backend lights up.
 //
-// Built entirely on the in-app "Signal" component language (Layout / PageHeader
-// / Card / Badge / Button / Icon) + verified globals.css utilities. Edits only
-// this route's own files.
+// Built entirely on the reference Core_2 kit primitives (Layout / Card / Tabs /
+// Table / TableRow / Badge / Button / Icon) — single Layout title, no PageHeader.
+// Edits only this route's own files.
 
 import { useCallback, useEffect, useState } from "react";
 import Layout from "@/components/Layout";
-import PageHeader from "@/components/PageHeader";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge, { type BadgeVariant } from "@/components/Badge";
 import Button from "@/components/Button";
+import Tabs from "@/components/Tabs";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
 import { useMe, canWrite } from "@/lib/auth";
 import {
     getFunnelStatus,
@@ -50,6 +52,12 @@ import {
 
 type Toast = { msg: string; type: "success" | "error" };
 type TabKey = "overview" | "templates" | "funnels";
+
+const FUNNEL_TABS = [
+    { id: 1, name: "Overview", key: "overview" as TabKey },
+    { id: 2, name: "Starter Templates", key: "templates" as TabKey },
+    { id: 3, name: "My Funnels", key: "funnels" as TabKey },
+];
 
 function statusVariant(s: string): BadgeVariant {
     if (s === "published") return "success";
@@ -81,12 +89,14 @@ function DormantPanel({
     children?: React.ReactNode;
 }) {
     return (
-        <div className="state-block">
-            <span className="state-glyph">
-                <Icon name={icon} className="fill-inherit" />
+        <div className="py-16 text-center max-md:py-12">
+            <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                <Icon name={icon} className="fill-t-tertiary" />
             </span>
-            <div className="state-title">{title}</div>
-            <div className="state-sub max-w-md mx-auto">{sub}</div>
+            <div className="text-h6 mb-1">{title}</div>
+            <div className="max-w-md mx-auto text-body-2 text-t-secondary">
+                {sub}
+            </div>
             {children}
         </div>
     );
@@ -98,7 +108,10 @@ export default function FunnelsPage() {
     const { me } = useMe();
     const writable = canWrite(me);
 
-    const [tab, setTab] = useState<TabKey>("overview");
+    const [tabOpt, setTabOpt] = useState(FUNNEL_TABS[0]);
+    const tab = tabOpt.key;
+    const setTab = (key: TabKey) =>
+        setTabOpt(FUNNEL_TABS.find((t) => t.key === key) ?? FUNNEL_TABS[0]);
     const [toast, setToast] = useState<Toast | null>(null);
 
     const showToast = (msg: string, type: "success" | "error" = "success") => {
@@ -142,38 +155,8 @@ export default function FunnelsPage() {
     const engineLive = !!st?.config?.workflow_engine_present;
     const published = rows.filter((r) => r.status === "published").length;
 
-    const TABS: { key: TabKey; label: string; icon: string; badge?: number }[] = [
-        { key: "overview", label: "Overview", icon: "dashboard" },
-        { key: "templates", label: "Starter Templates", icon: "grid" },
-        { key: "funnels", label: "My Funnels", icon: "list", badge: rows.length || undefined },
-    ];
-
     return (
         <Layout title="Funnels">
-            <PageHeader
-                eyebrow="Conversion Funnels"
-                title="Funnels"
-                subtitle="Connect ad → landing → lead → call → WhatsApp → booking → payment → review as one funnel, running on the durable workflow engine. Every money or bulk step is auto-gated by a budget cap and human approval — and each stage reports its own conversion."
-                actions={
-                    <button
-                        onClick={() => {
-                            loadStatus();
-                            loadFunnels();
-                        }}
-                        className="inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50"
-                        disabled={statusLoading || funnelsLoading}
-                    >
-                        <Icon
-                            name="clock"
-                            className={`size-4 fill-current ${
-                                statusLoading || funnelsLoading ? "animate-spin" : ""
-                            }`}
-                        />
-                        Refresh
-                    </button>
-                }
-            />
-
             {toast && (
                 <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
                     <span className="flex items-center gap-2">
@@ -189,33 +172,26 @@ export default function FunnelsPage() {
                 </div>
             )}
 
-            {/* Tab strip — pill rail matching the billing / ai-manager premium tabs */}
-            <div className="flex items-center gap-1 mb-5 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
-                {TABS.map((t) => {
-                    const active = tab === t.key;
-                    return (
-                        <button
-                            key={t.key}
-                            onClick={() => setTab(t.key)}
-                            className={`shrink-0 inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-button transition-colors ${
-                                active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
-                            }`}
-                        >
-                            <Icon
-                                name={t.icon}
-                                className={`size-4 ${active ? "fill-t-primary" : "fill-t-secondary"}`}
-                            />
-                            {t.label}
-                            {t.badge != null && (
-                                <span className="pill pill-neutral !px-1.5 !py-0 text-caption">
-                                    {t.badge}
-                                </span>
-                            )}
-                        </button>
-                    );
-                })}
+            {/* Tab strip + refresh — Core_2 Tabs */}
+            <div className="flex items-center gap-3 mb-5 max-md:flex-wrap">
+                <Tabs
+                    className="overflow-x-auto scrollbar-none"
+                    items={FUNNEL_TABS}
+                    value={tabOpt}
+                    setValue={(v) => setTabOpt(v as (typeof FUNNEL_TABS)[number])}
+                />
+                <Button
+                    className="ml-auto !h-10 max-md:ml-0"
+                    isStroke
+                    icon="clock"
+                    onClick={() => {
+                        loadStatus();
+                        loadFunnels();
+                    }}
+                    disabled={statusLoading || funnelsLoading}
+                >
+                    Refresh
+                </Button>
             </div>
 
             {tab === "overview" && (
@@ -276,48 +252,46 @@ function OverviewTab({
 
     return (
         <div className="space-y-3">
-            {/* Hero KPI strip */}
-            <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                <HeroStat
-                    label="Engine"
-                    glyph="cube"
-                    glyphClass="fill-primary-01"
-                    accent="var(--primary-01)"
-                    loading={loading && !st}
-                    value={engineLive ? "Ready" : "Coming soon"}
-                    foot={engineLive ? "Durable workflow interpreter" : "Awaiting engine provisioning"}
-                />
-                <HeroStat
-                    label="Funnels"
-                    glyph="filters"
-                    glyphClass="fill-primary-02"
-                    accent="var(--primary-02)"
-                    delay={60}
-                    loading={loading}
-                    value={String(funnelCount)}
-                    foot={funnelCount === 0 ? "None built yet" : `${published} published`}
-                />
-                <HeroStat
-                    label="Stages"
-                    glyph="layers"
-                    glyphClass="fill-primary-04"
-                    accent="var(--primary-04)"
-                    delay={120}
-                    loading={false}
-                    value={String(STAGES.length)}
-                    foot="ad → … → review"
-                />
-                <HeroStat
-                    label="Safety"
-                    glyph="lock"
-                    glyphClass="fill-primary-05"
-                    accent="var(--primary-05)"
-                    delay={180}
-                    loading={false}
-                    value="Auto-gated"
-                    foot="Budget cap + approval on spend"
-                />
-            </div>
+            {/* Overview metric strip (Core_2 Overview archetype) */}
+            <Card title="Overview">
+                <div className="flex gap-8 px-5 pb-5 pt-1 max-lg:gap-6 max-lg:px-3 max-lg:overflow-auto max-lg:scrollbar-none">
+                    <MetricItem
+                        icon="cube"
+                        title="Engine"
+                        loading={loading && !st}
+                        value={engineLive ? "Ready" : "Coming soon"}
+                        sub={
+                            engineLive
+                                ? "Durable workflow interpreter"
+                                : "Awaiting engine provisioning"
+                        }
+                        accent
+                    />
+                    <MetricItem
+                        icon="filters"
+                        title="Funnels"
+                        loading={loading}
+                        value={String(funnelCount)}
+                        sub={
+                            funnelCount === 0
+                                ? "None built yet"
+                                : `${published} published`
+                        }
+                    />
+                    <MetricItem
+                        icon="layers"
+                        title="Stages"
+                        value={String(STAGES.length)}
+                        sub="ad → … → review"
+                    />
+                    <MetricItem
+                        icon="lock"
+                        title="Safety"
+                        value="Auto-gated"
+                        sub="Budget cap + approval on spend"
+                    />
+                </div>
+            </Card>
 
             {/* The signature stage-pipeline visualization */}
             <Card
@@ -415,12 +389,16 @@ function OverviewTab({
                             ))}
                         </div>
                     ) : status?.kind === "error" ? (
-                        <div className="state-block">
-                            <span className="state-glyph">
-                                <Icon name="info" className="fill-inherit" />
+                        <div className="py-10 text-center">
+                            <span className="inline-grid place-items-center size-12 mb-3 rounded-full bg-b-surface1">
+                                <Icon name="info" className="fill-t-tertiary" />
                             </span>
-                            <div className="state-title">Couldn&apos;t load configuration</div>
-                            <div className="state-sub">{status.message}</div>
+                            <div className="text-sub-title-1 mb-1">
+                                Couldn&apos;t load configuration
+                            </div>
+                            <div className="text-body-2 text-t-secondary">
+                                {status.message}
+                            </div>
                         </div>
                     ) : (
                         <div className="divide-y divide-s-subtle">
@@ -536,48 +514,43 @@ function StagePipeline({ landingOn, reviewOn }: { landingOn: boolean; reviewOn: 
     );
 }
 
-function HeroStat({
-    label,
-    glyph,
-    glyphClass,
+// Core_2 Overview metric tile (ported inline; same as crm/forms pages).
+function MetricItem({
+    icon,
+    title,
     value,
-    foot,
+    sub,
     accent,
-    delay = 0,
     loading,
 }: {
-    label: string;
-    glyph: string;
-    glyphClass?: string;
+    icon: string;
+    title: string;
     value: React.ReactNode;
-    foot?: React.ReactNode;
-    accent?: string;
-    delay?: number;
+    sub?: React.ReactNode;
+    accent?: boolean;
     loading?: boolean;
 }) {
     return (
-        <div className="kpi rise-in group" style={delay ? { animationDelay: `${delay}ms` } : undefined}>
-            {accent && (
-                <span
-                    aria-hidden
-                    className="pointer-events-none absolute -top-16 -right-16 size-40 rounded-full opacity-[0.13] blur-2xl transition-opacity duration-500 group-hover:opacity-20"
-                    style={{ background: accent }}
+        <div className="flex-1 min-w-44 pr-8 border-r border-s-subtle last:border-r-0 last:pr-0 max-lg:shrink-0">
+            <div
+                className={`flex items-center justify-center size-12 mb-6 rounded-full ${
+                    accent ? "bg-primary-02/12" : "bg-b-surface1"
+                }`}
+            >
+                <Icon
+                    className={accent ? "fill-primary-02" : "fill-t-primary"}
+                    name={icon}
                 />
-            )}
-            <div className="flex items-start justify-between gap-3">
-                <div className="kpi-label">
-                    <span className={`kpi-glyph ${glyphClass || ""}`}>
-                        <Icon name={glyph} className="fill-inherit" />
-                    </span>
-                    {label}
-                </div>
             </div>
+            <div className="text-sub-title-1 text-t-secondary mb-2">{title}</div>
             {loading ? (
-                <div className="skeleton h-9 w-28 mt-1" />
+                <div className="skeleton h-8 w-28 rounded-lg" />
             ) : (
-                <div className="kpi-value relative z-1 !text-h4">{value}</div>
+                <div className="text-h3">{value}</div>
             )}
-            {foot && <div className="kpi-foot relative z-1">{foot}</div>}
+            {sub && (
+                <div className="mt-2 text-body-2 text-t-tertiary">{sub}</div>
+            )}
         </div>
     );
 }
@@ -741,14 +714,15 @@ function TemplateCard({
                     )}
                 </span>
                 {canUse ? (
-                    <button
+                    <Button
+                        className="!h-9 !px-3.5 !text-button"
+                        isStroke
+                        icon="plus"
                         onClick={onUse}
                         disabled={busy}
-                        className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary disabled:opacity-50"
                     >
-                        <Icon name="plus" className="size-3.5 fill-current" />
                         {busy ? "Creating…" : "Use"}
-                    </button>
+                    </Button>
                 ) : (
                     <span className="text-caption text-t-tertiary inline-flex items-center gap-1">
                         <Icon name="lock" className="size-3.5 fill-t-tertiary" />
@@ -830,158 +804,151 @@ function FunnelsTab({
             }
         >
             {error && (
-                <div className="mx-5 mb-3 toast toast-error">
-                    <span className="flex items-center gap-2">
-                        <span className="size-1.5 rounded-full bg-current" />
-                        {error}
-                    </span>
+                <div className="mx-5 mb-3 mt-3 flex items-center gap-2 p-3.5 rounded-2xl text-body-2 bg-primary-03/8 border border-primary-03/20 text-primary-03 max-lg:mx-3">
+                    <Icon name="info" className="size-4 shrink-0 fill-primary-03" />
+                    {error}
                 </div>
             )}
-            <div className="overflow-x-auto">
-                <table className="data-table">
-                    <thead>
-                        <tr>
-                            <th>Funnel</th>
-                            <th>Pipeline</th>
-                            <th>Status</th>
-                            <th>Version</th>
-                            {writable && <th className="text-right pr-5">Actions</th>}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {loading ? (
-                            [...Array(3)].map((_, i) => (
-                                <tr key={i}>
-                                    {[...Array(writable ? 5 : 4)].map((__, j) => (
-                                        <td key={j}>
-                                            <div className="skeleton h-4 w-24" />
-                                        </td>
-                                    ))}
-                                </tr>
-                            ))
-                        ) : dormant ? (
-                            <tr>
-                                <td colSpan={writable ? 5 : 4}>
-                                    <DormantPanel
-                                        icon="filters"
-                                        title="The funnel builder is coming soon"
-                                        sub="Once the Funnels service is provisioned on the server, the funnels you build from a template or from scratch appear here — each one compiling down to the durable workflow engine, with per-stage conversion analytics."
-                                    >
-                                        <button
-                                            onClick={onUseTemplate}
-                                            className="mt-4 inline-flex items-center gap-1.5 h-9 px-4 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
+
+            <div className="p-1 pt-3 max-lg:px-0">
+                {loading ? (
+                    <Table cellsThead={funnelHead(writable)}>
+                        {[...Array(3)].map((_, i) => (
+                            <TableRow key={i}>
+                                {[...Array(writable ? 5 : 4)].map((__, j) => (
+                                    <td key={j}>
+                                        <div className="skeleton h-4 w-24 rounded-lg" />
+                                    </td>
+                                ))}
+                            </TableRow>
+                        ))}
+                    </Table>
+                ) : dormant ? (
+                    <DormantPanel
+                        icon="filters"
+                        title="The funnel builder is coming soon"
+                        sub="Once the Funnels service is provisioned on the server, the funnels you build from a template or from scratch appear here — each one compiling down to the durable workflow engine, with per-stage conversion analytics."
+                    >
+                        <Button className="mt-5" isStroke icon="grid" onClick={onUseTemplate}>
+                            Browse starter templates
+                        </Button>
+                    </DormantPanel>
+                ) : rows.length === 0 ? (
+                    <DormantPanel
+                        icon="plus"
+                        title="No funnels yet"
+                        sub="Start from a proven industry template, then tweak the per-stage knobs. The builder injects the budget and approval gates for you."
+                    >
+                        <Button className="mt-5" isStroke icon="grid" onClick={onUseTemplate}>
+                            Browse starter templates
+                        </Button>
+                    </DormantPanel>
+                ) : (
+                    <Table cellsThead={funnelHead(writable)}>
+                        {rows.map((f) => {
+                            const stages = rowStages(f);
+                            return (
+                                <TableRow key={f.funnel_id}>
+                                    <td>
+                                        <div className="text-sub-title-1 text-t-primary">
+                                            {f.name}
+                                        </div>
+                                        <div className="text-body-2 text-t-tertiary mt-0.5">
+                                            {f.industry_pack
+                                                ? f.industry_pack.replace(/_/g, " ")
+                                                : "custom"}
+                                            {f.updated_at ? ` · ${fmtDate(f.updated_at)}` : ""}
+                                        </div>
+                                    </td>
+                                    <td className="max-lg:hidden">
+                                        {stages.length === 0 ? (
+                                            <span className="text-t-tertiary">—</span>
+                                        ) : (
+                                            <div className="flex items-center gap-1">
+                                                {stages.slice(0, 6).map((k) => {
+                                                    const m = stageMeta(k);
+                                                    if (!m) return null;
+                                                    return (
+                                                        <span
+                                                            key={k}
+                                                            title={m.display}
+                                                            className="grid place-items-center size-6 rounded-md bg-b-surface1 ring-1 ring-s-subtle ring-inset"
+                                                            style={{ fill: m.accent }}
+                                                        >
+                                                            <Icon
+                                                                name={m.icon}
+                                                                className="size-3 fill-inherit"
+                                                            />
+                                                        </span>
+                                                    );
+                                                })}
+                                                {stages.length > 6 && (
+                                                    <span className="text-body-2 text-t-tertiary">
+                                                        +{stages.length - 6}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td>
+                                        <Badge
+                                            variant={statusVariant(f.status)}
+                                            dot={f.status === "published"}
                                         >
-                                            <Icon name="grid" className="size-4 fill-current" />
-                                            Browse starter templates
-                                        </button>
-                                    </DormantPanel>
-                                </td>
-                            </tr>
-                        ) : rows.length === 0 ? (
-                            <tr>
-                                <td colSpan={writable ? 5 : 4}>
-                                    <DormantPanel
-                                        icon="plus"
-                                        title="No funnels yet"
-                                        sub="Start from a proven industry template, then tweak the per-stage knobs. The builder injects the budget and approval gates for you."
-                                    >
-                                        <button
-                                            onClick={onUseTemplate}
-                                            className="mt-4 inline-flex items-center gap-1.5 h-9 px-4 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
-                                        >
-                                            <Icon name="grid" className="size-4 fill-current" />
-                                            Browse starter templates
-                                        </button>
-                                    </DormantPanel>
-                                </td>
-                            </tr>
-                        ) : (
-                            rows.map((f) => {
-                                const stages = rowStages(f);
-                                return (
-                                    <tr key={f.funnel_id}>
-                                        <td>
-                                            <div className="text-body-2 text-t-primary">{f.name}</div>
-                                            <div className="text-caption text-t-tertiary mt-0.5">
-                                                {f.industry_pack
-                                                    ? f.industry_pack.replace(/_/g, " ")
-                                                    : "custom"}
-                                                {f.updated_at ? ` · ${fmtDate(f.updated_at)}` : ""}
+                                            {f.status}
+                                        </Badge>
+                                    </td>
+                                    <td className="text-t-secondary max-md:hidden">
+                                        {f.current_version ? `v${f.current_version}` : "—"}
+                                    </td>
+                                    {writable && (
+                                        <td className="text-right">
+                                            <div className="inline-flex items-center gap-2">
+                                                <Button
+                                                    className="!h-9 !px-3.5 !text-button"
+                                                    isStroke
+                                                    icon="check"
+                                                    onClick={() => doPublish(f)}
+                                                    disabled={!!busyId}
+                                                    title="Compile + validate + freeze a version on the workflow engine"
+                                                >
+                                                    {busyId === f.funnel_id + ":pub" ? "…" : "Publish"}
+                                                </Button>
+                                                <Button
+                                                    className="!h-9 !px-3.5 !text-button"
+                                                    isStroke
+                                                    icon="send"
+                                                    onClick={() => doRun(f)}
+                                                    disabled={!!busyId || f.status !== "published"}
+                                                    title={
+                                                        f.status === "published"
+                                                            ? "Trigger a run on the durable engine"
+                                                            : "Publish the funnel before running it"
+                                                    }
+                                                >
+                                                    {busyId === f.funnel_id + ":run" ? "…" : "Run"}
+                                                </Button>
                                             </div>
                                         </td>
-                                        <td>
-                                            {stages.length === 0 ? (
-                                                <span className="text-caption text-t-tertiary">—</span>
-                                            ) : (
-                                                <div className="flex items-center gap-1">
-                                                    {stages.slice(0, 6).map((k) => {
-                                                        const m = stageMeta(k);
-                                                        if (!m) return null;
-                                                        return (
-                                                            <span
-                                                                key={k}
-                                                                title={m.display}
-                                                                className="grid place-items-center size-6 rounded-md bg-b-surface2 ring-1 ring-s-subtle ring-inset"
-                                                                style={{ fill: m.accent }}
-                                                            >
-                                                                <Icon
-                                                                    name={m.icon}
-                                                                    className="size-3 fill-inherit"
-                                                                />
-                                                            </span>
-                                                        );
-                                                    })}
-                                                    {stages.length > 6 && (
-                                                        <span className="text-caption text-t-tertiary">
-                                                            +{stages.length - 6}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td>
-                                            <Badge variant={statusVariant(f.status)} dot={f.status === "published"}>
-                                                {f.status}
-                                            </Badge>
-                                        </td>
-                                        <td className="text-t-secondary tabular-nums">
-                                            {f.current_version ? `v${f.current_version}` : "—"}
-                                        </td>
-                                        {writable && (
-                                            <td className="text-right pr-5">
-                                                <div className="inline-flex items-center gap-2">
-                                                    <button
-                                                        onClick={() => doPublish(f)}
-                                                        disabled={!!busyId}
-                                                        className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary disabled:opacity-50"
-                                                        title="Compile + validate + freeze a version on the workflow engine"
-                                                    >
-                                                        <Icon name="check" className="size-3.5 fill-current" />
-                                                        {busyId === f.funnel_id + ":pub" ? "…" : "Publish"}
-                                                    </button>
-                                                    <button
-                                                        onClick={() => doRun(f)}
-                                                        disabled={!!busyId || f.status !== "published"}
-                                                        className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-s-subtle text-button text-primary-02 fill-primary-02 transition-colors hover:bg-primary-02/8 disabled:opacity-40"
-                                                        title={
-                                                            f.status === "published"
-                                                                ? "Trigger a run on the durable engine"
-                                                                : "Publish the funnel before running it"
-                                                        }
-                                                    >
-                                                        <Icon name="send" className="size-3.5 fill-current" />
-                                                        {busyId === f.funnel_id + ":run" ? "…" : "Run"}
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        )}
-                                    </tr>
-                                );
-                            })
-                        )}
-                    </tbody>
-                </table>
+                                    )}
+                                </TableRow>
+                            );
+                        })}
+                    </Table>
+                )}
             </div>
         </Card>
+    );
+}
+
+function funnelHead(writable: boolean) {
+    return (
+        <>
+            <th>Funnel</th>
+            <th className="max-lg:hidden">Pipeline</th>
+            <th>Status</th>
+            <th className="max-md:hidden">Version</th>
+            {writable && <th className="text-right">Actions</th>}
+        </>
     );
 }

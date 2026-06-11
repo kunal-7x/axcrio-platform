@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/creative_dna.schema.json",
+  "title": "CreativeDNA",
+  "description": "Gene-level creative attribute vector (GROWTH-OS-BUILD-SPEC §15.5, §14.1). The unit of attribute-level creative learning (Moat #2): every asset is tagged with its DNA so the optimizer learns CPqL posteriors per gene (hook_type/angle/format/visual_treatment/color_family/copy_framework/language), and so QA can detect Entity-ID cluster risk (§15.4). Frozen-after-merge; new genes ⇒ version bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "angle",
+    "hook_type",
+    "format",
+    "visual_treatment",
+    "color_family",
+    "copy_framework",
+    "language"
+  ],
+  "properties": {
+    "version": {
+      "description": "Schema version of this CreativeDNA shape. Bump on any field change (frozen-after-merge, §6.2 extend-never-mutate).",
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "angle": {
+      "description": "The persuasion angle / message strategy this creative expresses. Ties back to the CIB angle id (campaign_intelligence_brief.angles[].id) when sourced from a brief.",
+      "type": "string",
+      "examples": [
+        "problem_agitate_solve",
+        "social_proof",
+        "fear_of_missing_out",
+        "authority",
+        "transformation_before_after",
+        "price_anchor",
+        "guarantee",
+        "curiosity_gap",
+        "founder_story",
+        "question_hook"
+      ]
+    },
+    "angle_ref": {
+      "description": "Optional id of the CIB angle (campaign_intelligence_brief.angles[].id) this DNA was generated from, for attribute-level credit attribution.",
+      "type": "string"
+    },
+    "hook_type": {
+      "description": "The opening device of the creative (first 0–3s for video, first-glance for static). A primary learning gene (§12.4 mitosis preserves angle+hook_type genes).",
+      "type": "string",
+      "enum": [
+        "question",
+        "discount_offer",
+        "statistic",
+        "bold_claim",
+        "story",
+        "pattern_interrupt",
+        "testimonial",
+        "demonstration",
+        "problem_callout",
+        "curiosity",
+        "negative_hook",
+        "urgency_scarcity"
+      ]
+    },
+    "format": {
+      "description": "The creative format / placement archetype.",
+      "type": "string",
+      "enum": [
+        "single_image",
+        "carousel",
+        "collection",
+        "short_video",
+        "long_video",
+        "ugc_video",
+        "founder_video",
+        "demo_video",
+        "before_after",
+        "testimonial_video",
+        "offer_countdown",
+        "story",
+        "reel",
+        "catalog_dpa"
+      ]
+    },
+    "visual_treatment": {
+      "description": "The dominant visual style of the asset (drives Entity-ID cluster risk §15.4: same hero/backdrop clusters).",
+      "type": "string",
+      "enum": [
+        "product_cutout",
+        "lifestyle_photo",
+        "studio_photo",
+        "generated_background",
+        "illustration",
+        "infographic",
+        "text_dominant",
+        "screenshot_ui",
+        "split_compare",
+        "meme",
+        "raw_ugc",
+        "branded_template"
+      ]
+    },
+    "color_family": {
+      "description": "The dominant color palette family of the rendered asset (brand-kit aware).",
+      "type": "string",
+      "enum": [
+        "warm",
+        "cool",
+        "neutral",
+        "high_contrast",
+        "pastel",
+        "monochrome",
+        "vibrant",
+        "dark",
+        "brand_primary"
+      ]
+    },
+    "copy_framework": {
+      "description": "The copywriting structure of the headline/body text.",
+      "type": "string",
+      "enum": [
+        "AIDA",
+        "PAS",
+        "BAB",
+        "FAB",
+        "4Ps",
+        "star_story_solution",
+        "listicle",
+        "direct_offer",
+        "question_answer",
+        "open_loop"
+      ]
+    },
+    "language": {
+      "description": "Primary language/locale of the copy (BCP-47-ish). India vernacular is first-class (§I13: per-language CPqL posteriors).",
+      "type": "string",
+      "enum": [
+        "en",
+        "en-IN",
+        "hi",
+        "gu",
+        "mr",
+        "ta",
+        "te",
+        "bn",
+        "kn",
+        "ml",
+        "pa"
+      ]
+    },
+    "secondary_language": {
+      "description": "Optional secondary language for code-mixed (e.g. Hinglish) creatives.",
+      "type": "string",
+      "enum": [
+        "en",
+        "en-IN",
+        "hi",
+        "gu",
+        "mr",
+        "ta",
+        "te",
+        "bn",
+        "kn",
+        "ml",
+        "pa"
+      ]
+    }
+  }
+}

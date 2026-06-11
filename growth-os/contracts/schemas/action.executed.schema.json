@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/action.executed.schema.json",
+  "title": "action.executed",
+  "description": "PAYLOAD of the `action.executed` envelope. Topic: activation.action_plan.executed. Emitted by the Action Executor (§10.2) after it actually performed a SIGNED ActionPlan's connector mutation(s) via the Temporal LaunchSaga (with compensation — a half-failed launch is paused+tagged, never left half-live spending). Carries the platform ids written + the outcome. The executor is the ONLY component allowed to call connector mutations (P4). result=failed|rolled_back here doubles for the spec's action.plan.failed/rolled_back so the single executed event carries terminal outcome (extend-never-mutate §6.2).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "action.executed",
+  "x-topic": "activation.action_plan.executed",
+  "additionalProperties": false,
+  "required": [
+    "action_plan_id",
+    "result"
+  ],
+  "properties": {
+    "action_plan_id": {
+      "description": "The signed ActionPlan that was executed.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "result": {
+      "description": "Terminal outcome of execution. executed = mutation applied; failed = mutation failed (no live state change); rolled_back = compensation ran (e.g. orphan ad set paused) (§10.2).",
+      "type": "string",
+      "enum": [ "executed", "failed", "rolled_back" ]
+    },
+    "action_type": {
+      "description": "Echo of what was done (from the plan) for downstream routing without loading the plan.",
+      "type": "string"
+    },
+    "platform": {
+      "type": "string",
+      "enum": [ "meta", "google" ]
+    },
+    "platform_refs_written": {
+      "description": "Platform entity ids created/changed by this execution (§10.2 writes platform ids). For a launch this matches campaign.launched.platform_refs.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "idempotency_key": {
+      "description": "The exactly-once key the executor used against the connector (P3 — every external mutation carries one; replay-safe).",
+      "type": "string"
+    },
+    "compensation": {
+      "description": "Present when result=rolled_back: what the saga compensated (§10.2 'adset fails -> pause+tag orphan, never half-live spend').",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "type": "string" },
+        "actions_taken": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "error": {
+      "description": "Present when result=failed: machine-readable failure (e.g. Meta error code 17/4/613, §5.3 backoff).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "executed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

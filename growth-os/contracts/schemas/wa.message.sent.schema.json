@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/wa.message.sent.schema.json",
+  "title": "wa.message.sent",
+  "description": "PAYLOAD of the `wa.message.sent` envelope. Topic: engagement.wa.message.sent. Emitted via the Origin Connector (§3.4) when the live whatsapp.py sends a message (template or free-form). The whatsapp service is an ADAPTER over the live stack (§16.1). Carries the template + category for the WA cost meter (per-template-message billing since Jan2026 ⚠VERIFY-LIVE; India marketing ~Rs0.86, utility/auth ~Rs0.115 pre-BSP+GST §23). Honors the 24h / free-72h-CTWA windows + per-user marketing caps (§16.1).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "wa.message.sent",
+  "x-topic": "engagement.wa.message.sent",
+  "additionalProperties": false,
+  "required": [
+    "wamid",
+    "to"
+  ],
+  "properties": {
+    "wamid": {
+      "description": "WhatsApp message id (origin_ref §3.4).",
+      "type": "string"
+    },
+    "to": {
+      "description": "Recipient E.164 / wa_id — the correlation key (§8.3).",
+      "type": "string"
+    },
+    "message_type": {
+      "type": "string",
+      "enum": [ "template", "text", "interactive", "media" ]
+    },
+    "template": {
+      "description": "Template name when message_type=template (lifecycle/quality tracked §16.1).",
+      "type": "string"
+    },
+    "category": {
+      "description": "WABA pricing category — drives the cost meter (§16.1).",
+      "type": "string",
+      "enum": [ "marketing", "utility", "authentication", "service" ]
+    },
+    "journey_step": {
+      "description": "Which follow-up journey step sent this (§16.3 journeys DSL) — the journey IS the signal factory.",
+      "type": "string"
+    },
+    "window": {
+      "description": "Messaging window context (§16.1). free_ctwa_72h = inside the CTWA-opened free window (§11.2).",
+      "type": "string",
+      "enum": [ "session_24h", "free_ctwa_72h", "template_paid" ]
+    },
+    "cost_minor": {
+      "description": "Metered send cost in INR paise (pre/post BSP+GST per config).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "campaign_ref": {
+      "type": "string"
+    }
+  }
+}

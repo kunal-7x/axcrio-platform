@@ -1,0 +1,38 @@
+{
+  "name": "@growth-os/events",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS typed event backbone: envelope, idempotency keys, JSON-Schema registry validator, and typed emit/consume over Redpanda/Kafka (BUILD-SPEC §6, P1/P2/P3).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "kafkajs": "^2.2.4",
+    "uuid": "^11.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

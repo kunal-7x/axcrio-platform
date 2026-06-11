@@ -1,0 +1,9 @@
+# GROWTH OS pnpm workspace (BUILD-SPEC §20 / architecture-phase0.md §1).
+# Phase 0 builds packages/* + tools/*. services/agents/apps dirs hold contracts
+# now and get code in later phases (one phase per session, §21).
+packages:
+  - "packages/*"
+  - "services/*"
+  - "agents/*"
+  - "apps/*"
+  - "tools/*"

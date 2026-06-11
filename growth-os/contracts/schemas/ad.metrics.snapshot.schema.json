@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/ad.metrics.snapshot.schema.json",
+  "title": "ad.metrics.snapshot",
+  "description": "PAYLOAD of the `ad.metrics.snapshot` envelope. Topic: metrics.ad.snapshot. Emitted every 4h (§6.2, §12.2 evaluate every 4h) by connector-meta/google after an async insights report job (§5.3 insights via async reports, not polling). Carries platform-reported delivery + spend for one entity at one grain. Feeds the warehouse (ClickHouse ad_metrics_4h §8.5), the optimizer (§12), and the Budget Governor reconcile (§13.2 sum platform budgets <= cap). Stores both as_reported_at and is later finalized (§8.5 as_reported AND final). Platform numbers are labelled source=platform — NEVER presented as truth (§8.6).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "ad.metrics.snapshot",
+  "x-topic": "metrics.ad.snapshot",
+  "additionalProperties": false,
+  "required": [
+    "platform",
+    "level",
+    "platform_ref",
+    "window",
+    "metrics"
+  ],
+  "properties": {
+    "platform": {
+      "type": "string",
+      "enum": [ "meta", "google" ]
+    },
+    "level": {
+      "description": "Grain of this snapshot.",
+      "type": "string",
+      "enum": [ "account", "campaign", "adset", "ad" ]
+    },
+    "platform_ref": {
+      "description": "The entity this snapshot is for, form platform:entity:id (e.g. meta:ad:123).",
+      "type": "string"
+    },
+    "campaign_ref": {
+      "description": "Owning campaign ref (for rollups in the metrics layer).",
+      "type": "string"
+    },
+    "window": {
+      "description": "The 4h reporting window this snapshot covers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "start", "end" ],
+      "properties": {
+        "start": { "type": "string", "format": "date-time" },
+        "end": { "type": "string", "format": "date-time" },
+        "as_reported_at": { "type": "string", "format": "date-time", "description": "When the platform reported these numbers (§8.5)." },
+        "is_final": { "type": "boolean", "description": "false = subject to platform restatement; true = finalized in the daily pass (§8.5).", "default": false }
+      }
+    },
+    "metrics": {
+      "description": "Platform-reported metrics (source=platform). Money is INR paise. The SEMANTIC METRICS LAYER (§8.5) derives CPL/CPqL/ROAS from these + journey truth — never ad hoc.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spend_minor": { "type": "integer", "minimum": 0, "description": "Spend in INR paise." },
+        "impressions": { "type": "integer", "minimum": 0 },
+        "clicks": { "type": "integer", "minimum": 0 },
+        "ctr": { "type": "number", "minimum": 0 },
+        "cpm_minor": { "type": "integer", "minimum": 0, "description": "Cost per mille in paise." },
+        "frequency": { "type": "number", "minimum": 0, "description": "Avg impressions per person (fatigue input §12.3 G5)." },
+        "reach": { "type": "integer", "minimum": 0 },
+        "results": { "type": "integer", "minimum": 0, "description": "Platform-attributed results for the optimization event (e.g. leads)." },
+        "conversions": { "type": "integer", "minimum": 0 },
+        "conversion_value_minor": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "delivery": {
+      "description": "Delivery diagnostics / learning state (§10.3, §12.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "learning_phase": { "type": "string", "enum": [ "learning", "learning_limited", "active" ] },
+        "delivery_status": { "type": "string", "description": "e.g. active, no_delivery, rejected." },
+        "emq": { "type": "number", "minimum": 0, "maximum": 10, "description": "Event Match Quality on the optimization event (§11.3 target >=8); alert <6." }
+      }
+    },
+    "source": {
+      "description": "Always platform here — labels the number's origin so the product never presents platform ROAS as truth (§8.6).",
+      "type": "string",
+      "const": "platform"
+    }
+  }
+}

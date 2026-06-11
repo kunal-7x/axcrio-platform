@@ -19,10 +19,20 @@ id_rsa.*
 **/cred.md
 **/credentials*
 **/secret
+# AI Manager telephony creds — contain Vobiz auth + our chosen SIP username/password. NEVER COMMIT.
+ai_manager_cred.md
+**/ai_manager_cred.md
+ai_manager_INBOUND_SETUP.md
+**/ai_manager_INBOUND_SETUP.md
 **/secrets.json
 **/*secret*.toml
 cloudflare.ini
 .npmrc
+# final_env.md — working copy holds the LIVE VOBIZ_AUTH_TOKEN. NEVER COMMIT.
+final_env.md
+**/final_env.md
+.env.local
+**/.env.local
 
 # ----- fortress: secret-bearing playbook dir — IGNORE WHOLESALE (task mandate) -----
 fortress/
@@ -81,8 +91,12 @@ tfplan
 node_modules/
 .next/
 out/
+dist/
+build/
 .pnpm-store/
 .turbo/
+*.tsbuildinfo
+**/*.tsbuildinfo
 *.log
 npm-debug.log*
 pnpm-debug.log*
@@ -104,6 +118,10 @@ venv/
 #  + EDITOR / OS
 # ============================================================================
 .claude/
+# .wf/ = local agent-orchestration scratch (build/design prompt scripts). Machine-
+# local tooling, not product code; also trips generic-api-key false positives.
+.wf/
+**/.wf/
 .DS_Store
 Thumbs.db
 .idea/

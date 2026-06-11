@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/optimization.decision.schema.json",
+  "title": "optimization.decision",
+  "description": "PAYLOAD of the `optimization.decision` envelope. Topic: metrics.optimization.decision. Emitted by the optimizer (§12 Draft/Trash/Promote brain) every tick (4h) when it decides to act on an arm/cell. Carries the decision + a mandatory plain-language + vernacular Explanation with evidence (P5 — no silent actions). A decision to mutate MUST flow through the ActionPlan path: this event references the action_plan_id it created (P4 — the optimizer never mutates directly; it proposes a plan that must be signed). Decisions are labelled confidence high|medium|low and the optimizer REFUSES 'winner' below the War-Game min-detectable threshold (§12.6 honesty). Canonical field shape from Appendix A.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "optimization.decision",
+  "x-topic": "metrics.optimization.decision",
+  "additionalProperties": false,
+  "required": [
+    "scope",
+    "platform_ref",
+    "decision",
+    "explanation"
+  ],
+  "properties": {
+    "scope": {
+      "description": "Grain the decision acts on (Appendix A: ad). arm = creative x audience-cell x destination; cell = ad set (§12.1).",
+      "type": "string",
+      "enum": [ "ad", "adset", "campaign", "arm", "creative" ]
+    },
+    "platform_ref": {
+      "description": "The targeted entity (Appendix A: 'meta:ad:123'), form platform:entity:id.",
+      "type": "string"
+    },
+    "decision": {
+      "description": "The Draft/Trash/Promote verdict (§12). trash = pause/retire; promote = scale/graduate/mitosis; draft = queue a new creative brief; hold = no action this tick.",
+      "type": "string",
+      "enum": [ "trash", "promote", "draft", "hold", "rotate" ]
+    },
+    "rule": {
+      "description": "Which guardrail/rule fired (Appendix A: G2). Trash guardrails G1-G6, promote criteria, fatigue G5 (§12.3-12.5).",
+      "type": "string"
+    },
+    "explanation": {
+      "description": "Mandatory Explanation (P5, Appendix A). Plain-EN + vernacular HI + evidence + expected effect + confidence + reversibility + undo plan. Mirrors the ActionPlan Explanation shape.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "summary_en", "confidence", "reversible" ],
+      "properties": {
+        "summary_en": { "type": "string" },
+        "summary_hi": { "type": "string", "description": "Vernacular rendering (India-first §11)." },
+        "evidence": {
+          "description": "Appendix A: [{metric:spend,value:1840},{metric:q_leads,value:0}].",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [ "metric", "value" ],
+            "properties": {
+              "metric": { "type": "string" },
+              "value": {}
+            }
+          }
+        },
+        "expected_effect": { "type": "string", "description": "Appendix A: 'reallocate Rs620/day'." },
+        "confidence": { "type": "string", "enum": [ "low", "medium", "high" ] },
+        "reversible": { "type": "boolean" },
+        "undo_plan": { "type": "string", "description": "Appendix A: 'unpause ad 123'." }
+      }
+    },
+    "action_plan_id": {
+      "description": "The ActionPlan this decision created (Appendix A action_plan_id). The mutation happens ONLY when that plan is signed+executed (P4). Absent for decision=hold/draft (no mutation).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "posterior": {
+      "description": "The Gamma-Poisson posterior summary on qualified-lead rate per Rs that drove the call (§12.1) — supports the confidence label + counterfactual replay (§14.3).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "n_qualified": { "type": "integer", "minimum": 0 },
+        "cpql_minor": { "type": "integer", "minimum": 0, "description": "Observed CPqL in INR paise." },
+        "target_cpql_minor": { "type": "integer", "minimum": 0 },
+        "p_cpql_gt_target": { "type": "number", "minimum": 0, "maximum": 1, "description": "Posterior tail prob used by G3 (§12.3)." }
+      }
+    },
+    "signal_health": {
+      "description": "Optimizer REFUSES to grade lead-quality claims when signal health is red (§11.3 honesty). green|amber|red gates autonomy.",
+      "type": "string",
+      "enum": [ "green", "amber", "red" ]
+    }
+  }
+}

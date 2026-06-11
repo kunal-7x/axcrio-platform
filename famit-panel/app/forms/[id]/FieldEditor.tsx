@@ -28,7 +28,7 @@ type Props = {
 
 function emptyField(type: FieldType, existing: FormField[]): FormField {
     // derive a unique default key so the allow-list never trips on first add
-    let base = type === "nps" || type === "csat" ? "score" : type;
+    const base = type === "nps" || type === "csat" ? "score" : type;
     let key = base;
     let n = 1;
     const taken = new Set(existing.map((f) => f.key));
@@ -66,12 +66,12 @@ export default function FieldEditor({ fields, onChange, disabled }: Props) {
     return (
         <div className="px-5 pb-5 max-lg:px-3">
             {fields.length === 0 ? (
-                <div className="state-block py-12">
-                    <span className="state-glyph">
+                <div className="py-12 text-center">
+                    <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1 fill-t-tertiary">
                         <Icon name="list" className="fill-inherit" />
                     </span>
-                    <div className="state-title">No fields yet</div>
-                    <div className="state-sub max-w-sm">
+                    <div className="text-h6 mb-1">No fields yet</div>
+                    <div className="max-w-sm mx-auto text-body-2 text-t-secondary">
                         Add the questions people will answer. A phone or email
                         field lets each submission link to a CRM contact.
                     </div>
@@ -98,7 +98,9 @@ export default function FieldEditor({ fields, onChange, disabled }: Props) {
                 {adding ? (
                     <div className="p-3 rounded-3xl border border-s-subtle bg-b-surface1 dark:bg-shade-04/30">
                         <div className="flex items-center justify-between mb-2.5 px-1">
-                            <span className="eyebrow">Choose a field type</span>
+                            <span className="text-button text-t-secondary">
+                                Choose a field type
+                            </span>
                             <button
                                 onClick={() => setAdding(false)}
                                 className="text-t-tertiary hover:text-t-primary"

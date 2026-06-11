@@ -1,0 +1,375 @@
+# GROWTH OS — tenants (orgs / workspaces / members / roles) — OpenAPI 3.1
+# Spec ref §7.2: orgs/workspaces/members/roles(Owner,Admin,Marketer,Analyst,Approver),
+# invites, plan entitlements. CRUD + GET /me/permissions. Emits tenant.* (see asyncapi).
+# §5.1 tenancy: org -> workspace(vendor/brand) -> members(role). Tenant from token (P6).
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Tenants
+  version: 0.1.0
+  description: >
+    Identity-of-the-business plane: organizations, the workspaces (vendor/brand) inside
+    them, members + roles, invites, and plan entitlements. All writes emit tenant.*
+    events. Tenant scope is always derived from the caller's token (P6); the body never
+    carries a tenant_id used for authorization.
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev.
+tags:
+  - name: me
+  - name: workspaces
+  - name: members
+  - name: invites
+  - name: entitlements
+security:
+  - bearerUserJwt: []
+paths:
+  /me/permissions:
+    get:
+      operationId: getMyPermissions
+      summary: The caller's effective permissions in the active tenant/workspace (§7.2).
+      description: >
+        Resolves role -> permission set so the dashboard/BFF can gate UI and the policy
+        layer can pre-check. The single source of truth for "what can this user do".
+      tags: [me]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+      responses:
+        '200':
+          description: Effective permission set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Permissions'
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      summary: List workspaces in the caller's tenant.
+      tags: [workspaces]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Page of workspaces.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Workspace' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+    post:
+      operationId: createWorkspace
+      summary: Create a workspace (vendor/brand) within the tenant.
+      tags: [workspaces]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkspaceCreate'
+      responses:
+        '201':
+          description: Workspace created. Emits tenant.workspace.created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+
+  /workspaces/{workspace_id}:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+    get:
+      operationId: getWorkspace
+      summary: Fetch one workspace.
+      tags: [workspaces]
+      responses:
+        '200':
+          description: The workspace.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+    patch:
+      operationId: updateWorkspace
+      summary: Update a workspace.
+      tags: [workspaces]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name: { type: string }
+                industry_pack_id:
+                  type: string
+                  description: §18 industry pack id (config selected at onboarding).
+                locale: { type: string, examples: [en-IN, hi-IN, gu-IN] }
+      responses:
+        '200':
+          description: Updated. Emits tenant.workspace.updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /workspaces/{workspace_id}/members:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+    get:
+      operationId: listMembers
+      summary: List members of a workspace.
+      tags: [members]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Page of members.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Member' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /workspaces/{workspace_id}/members/{member_id}:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+      - name: member_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+    patch:
+      operationId: updateMemberRole
+      summary: Change a member's role.
+      tags: [members]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: Role updated. Emits tenant.member.role_changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Member' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+    delete:
+      operationId: removeMember
+      summary: Remove a member from the workspace.
+      tags: [members]
+      responses:
+        '204': { description: Removed. Emits tenant.member.removed. }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /workspaces/{workspace_id}/invites:
+    parameters:
+      - name: workspace_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+    post:
+      operationId: createInvite
+      summary: Invite a user to a workspace with a role.
+      tags: [invites]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '201':
+          description: Invite created. Emits tenant.invite.created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invite' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+
+  /invites/{token}/accept:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: Opaque invite token from the invite email/link.
+        schema: { type: string }
+    post:
+      operationId: acceptInvite
+      summary: Accept an invite (becomes a member).
+      tags: [invites]
+      responses:
+        '200':
+          description: Invite accepted. Emits tenant.member.added.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Member' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+
+  /entitlements:
+    get:
+      operationId: getEntitlements
+      summary: Plan + entitlements for the caller's tenant (§7.2 plan entitlements).
+      description: >
+        What the tenant's plan permits — autopilot ceiling, caps, feature flags gated by
+        plan. The flags/policy-config surface holds per-tenant overrides; this is the
+        plan envelope they sit inside.
+      tags: [entitlements]
+      responses:
+        '200':
+          description: Plan + entitlement set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Entitlements' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'
+  schemas:
+    Role:
+      type: string
+      enum: [Owner, Admin, Marketer, Analyst, Approver]
+      description: §7.2 role set.
+
+    Permissions:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, workspace_id, role, permissions]
+      properties:
+        tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+        workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+        role: { $ref: '#/components/schemas/Role' }
+        permissions:
+          type: array
+          description: Flat permission strings (resource:action), e.g. campaign:create, action:sign.
+          items: { type: string }
+        autopilot_ceiling:
+          type: string
+          enum: [L0, L1, L2, L3, L4]
+          description: Max autopilot level this user/plan may operate at (§17.1).
+
+    Workspace:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, tenant_id, name, created_at]
+      properties:
+        workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+        tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+        name: { type: string }
+        industry_pack_id: { type: [string, "null"] }
+        locale: { type: string, default: en-IN }
+        data_residency:
+          type: string
+          default: ap-south-1
+          description: §5.1 per-tenant data-residency tag (v1 Mumbai).
+        created_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+
+    WorkspaceCreate:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        industry_pack_id: { type: string }
+        locale: { type: string, default: en-IN }
+
+    Member:
+      type: object
+      additionalProperties: false
+      required: [member_id, user_id, email, role, status]
+      properties:
+        member_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        user_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [active, invited, suspended] }
+
+    Invite:
+      type: object
+      additionalProperties: false
+      required: [invite_id, email, role, status, created_at]
+      properties:
+        invite_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { type: string, enum: [pending, accepted, revoked, expired] }
+        expires_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+        created_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+
+    Entitlements:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, plan]
+      properties:
+        tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+        plan:
+          type: string
+          examples: [trial, starter, growth, scale]
+        autopilot_ceiling: { type: string, enum: [L0, L1, L2, L3, L4] }
+        limits:
+          type: object
+          additionalProperties: false
+          properties:
+            max_workspaces: { type: integer }
+            max_members: { type: integer }
+            monthly_managed_spend_cap_minor:
+              type: [integer, "null"]
+              description: INR paise; null = unlimited within plan.
+        features:
+          type: object
+          additionalProperties: { type: boolean }
+          description: Plan-gated feature flags (per-tenant overrides live in flags surface).

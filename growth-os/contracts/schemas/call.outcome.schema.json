@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/call.outcome.schema.json",
+  "title": "call.outcome",
+  "description": "PAYLOAD of the `call.outcome` envelope. Topic: engagement.call.outcome. ★ Crown-jewel signal feed (moat (1) — 'your ads learn from your phone calls'). Emitted via the Origin Connector (§3.4) after the live AIM/agent extracts intents from a completed call. This is the ground-truth call quality that feeds lead-scoring (§9.5) and the CAPI QualifiedLead signal (§11). Intents from a cheap-LLM transcript pass: budget_mentioned/timeline/decision_authority/booking (§9.5).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "call.outcome",
+  "x-topic": "engagement.call.outcome",
+  "additionalProperties": false,
+  "required": [
+    "call_ref",
+    "answered"
+  ],
+  "properties": {
+    "call_ref": {
+      "description": "The call.completed call_ref this outcome enriches.",
+      "type": "string"
+    },
+    "phone": {
+      "description": "E.164 correlation key (§8.3).",
+      "type": "string"
+    },
+    "answered": {
+      "type": "boolean"
+    },
+    "duration_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "intents": {
+      "description": "Extracted conversation intents (§9.5 transcript-intent signals). The lead-scoring features.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "budget_mentioned",
+          "timeline_mentioned",
+          "decision_authority",
+          "booking_intent",
+          "price_objection",
+          "location_ask",
+          "not_interested",
+          "callback_requested",
+          "competitor_mentioned"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "qualification": {
+      "description": "Whether the lead qualified on the call (call_outcome=qualified => QualifiedLead signal §11.1).",
+      "type": "string",
+      "enum": [ "qualified", "unqualified", "undetermined" ]
+    },
+    "booking": {
+      "description": "Booking captured on the call (drives booking.created + the Schedule ladder step §11.1).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "created": { "type": "boolean" },
+        "slot": { "type": "string", "format": "date-time" }
+      }
+    },
+    "sentiment": {
+      "type": "string",
+      "enum": [ "positive", "neutral", "negative" ]
+    }
+  }
+}

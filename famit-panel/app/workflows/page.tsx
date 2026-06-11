@@ -17,23 +17,25 @@
 // language (Layout / PageHeader / Card / Badge / Icon / Button) + the verified
 // globals.css utilities. Edits only this route's own files.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Layout from "@/components/Layout";
-import PageHeader from "@/components/PageHeader";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import { useMe, canWrite } from "@/lib/auth";
-import WorkflowCanvas from "./_canvas";
+import WorkflowEditor from "./_editor";
+import WorkflowMiniMap from "./_preview";
 import {
     getWfStatus,
     getWorkflows,
     getWfRuns,
     getWfTemplates,
     instantiateTemplate,
-    NODE_GROUPS,
-    nodeMeta,
+    loadServerWorkflow,
+    blankDefinition,
+    loadDraftLocal,
+    isEngineLive,
     SAMPLE_WORKFLOW,
     TEMPLATES,
     fmtDate,
@@ -75,52 +77,6 @@ function DormantPanel({
     );
 }
 
-function HeroStat({
-    label,
-    glyph,
-    glyphClass,
-    value,
-    foot,
-    accent,
-    delay = 0,
-    loading,
-}: {
-    label: string;
-    glyph: string;
-    glyphClass?: string;
-    value: React.ReactNode;
-    foot?: React.ReactNode;
-    accent?: string;
-    delay?: number;
-    loading?: boolean;
-}) {
-    return (
-        <div className="kpi rise-in group" style={delay ? { animationDelay: `${delay}ms` } : undefined}>
-            {accent && (
-                <span
-                    aria-hidden
-                    className="pointer-events-none absolute -top-16 -right-16 size-40 rounded-full opacity-[0.13] blur-2xl transition-opacity duration-500 group-hover:opacity-20"
-                    style={{ background: accent }}
-                />
-            )}
-            <div className="flex items-start justify-between gap-3">
-                <div className="kpi-label">
-                    <span className={`kpi-glyph ${glyphClass || ""}`}>
-                        <Icon name={glyph} className="fill-inherit" />
-                    </span>
-                    {label}
-                </div>
-            </div>
-            {loading ? (
-                <div className="skeleton h-9 w-28 mt-1" />
-            ) : (
-                <div className="kpi-value relative z-1 !text-h4">{value}</div>
-            )}
-            {foot && <div className="kpi-foot relative z-1">{foot}</div>}
-        </div>
-    );
-}
-
 /* ============================================================== the page */
 
 export default function WorkflowStudioPage() {
@@ -129,6 +85,29 @@ export default function WorkflowStudioPage() {
 
     const [tab, setTab] = useState<TabKey>("studio");
     const [toast, setToast] = useState<Toast | null>(null);
+
+    // The definition currently loaded in the Canvas Studio editor. Defaults to a
+    // blank from-scratch workflow; Templates "Edit" loads a template's graph here +
+    // switches tab. "Load sample" loads the showcase SAMPLE_WORKFLOW.
+    const [editDef, setEditDef] = useState<WfDefinition>(() => blankDefinition());
+    const openInEditor = useCallback((def: WfDefinition) => {
+        setEditDef(def);
+        setTab("studio");
+    }, []);
+
+    // Hydrate a locally-saved draft for the initial blank workflow (spec §F), so a
+    // from-scratch graph survives a reload before the engine is mounted.
+    useEffect(() => {
+        const draft = loadDraftLocal(editDef.workflow_id);
+        if (draft) setEditDef(draft);
+        // run once on mount for the initial blank id
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Rename the loaded workflow from the editor's inline title field (spec §C).
+    const renameEditDef = useCallback((name: string) => {
+        setEditDef((d) => (d.name === name ? d : { ...d, name }));
+    }, []);
 
     const showToast = (msg: string, type: "success" | "error" = "success") => {
         setToast({ msg, type });
@@ -188,7 +167,10 @@ export default function WorkflowStudioPage() {
     const moduleDormant =
         status?.kind === "dormant" && workflows?.kind === "dormant" && runs?.kind === "dormant";
 
-    const engineLive = !!st && st.enabled && st.engine === "configured" && st.store === "configured";
+    // Live status shape: engine is an OBJECT (in_process interpreter), store is a
+    // mode string — there is no top-level `enabled`. isEngineLive reads the real
+    // contract so Run is enabled the moment the engine responds (it runs in-process).
+    const engineLive = isEngineLive(st);
 
     const awaiting = runRows.filter((r) => r.status === "awaiting_approval").length;
 
@@ -202,29 +184,6 @@ export default function WorkflowStudioPage() {
 
     return (
         <Layout title="Workflow Studio">
-            <PageHeader
-                eyebrow="Automation"
-                title="Workflow Studio"
-                subtitle="Compose your AI workforce into governed, money-safe automations on a visual canvas — Triggers, Conditions, AI-Agent and Action steps, gated by hard Budget and Approval nodes with an immutable audit on every step."
-                actions={
-                    <button
-                        onClick={() => {
-                            loadStatus();
-                            loadWorkflows();
-                            loadRuns();
-                        }}
-                        className="inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50"
-                        disabled={refreshing}
-                    >
-                        <Icon
-                            name="clock"
-                            className={`size-4 fill-current ${refreshing ? "animate-spin" : ""}`}
-                        />
-                        Refresh
-                    </button>
-                }
-            />
-
             {toast && (
                 <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
                     <span className="flex items-center gap-2">
@@ -240,31 +199,48 @@ export default function WorkflowStudioPage() {
                 </div>
             )}
 
-            {/* Tab strip — pill rail matching the AI-Manager / billing premium tabs */}
-            <div className="flex items-center gap-1 mb-5 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
-                {TABS.map((t) => {
-                    const active = tab === t.key;
-                    return (
-                        <button
-                            key={t.key}
-                            onClick={() => setTab(t.key)}
-                            className={`shrink-0 inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-button transition-colors ${
-                                active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
-                            }`}
-                        >
-                            <Icon
-                                name={t.icon}
-                                className={`size-4 ${active ? "fill-t-primary" : "fill-t-secondary"}`}
-                            />
-                            {t.label}
-                            {!!t.badge && t.badge > 0 && (
-                                <span className="pill pill-warning !px-1.5 !py-0 text-caption">{t.badge}</span>
-                            )}
-                        </button>
-                    );
-                })}
+            {/* Section tabs + refresh (title is the single Layout heading) */}
+            <div className="flex items-center gap-3 mb-5 max-sm:flex-col max-sm:items-stretch">
+                <div className="flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
+                    {TABS.map((t) => {
+                        const active = tab === t.key;
+                        return (
+                            <button
+                                key={t.key}
+                                onClick={() => setTab(t.key)}
+                                className={`shrink-0 inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-button transition-colors ${
+                                    active
+                                        ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
+                                        : "text-t-secondary hover:text-t-primary"
+                                }`}
+                            >
+                                <Icon
+                                    name={t.icon}
+                                    className={`size-4 ${active ? "fill-t-primary" : "fill-t-secondary"}`}
+                                />
+                                {t.label}
+                                {!!t.badge && t.badge > 0 && (
+                                    <span className="pill pill-warning !px-1.5 !py-0 text-caption">{t.badge}</span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+                <button
+                    onClick={() => {
+                        loadStatus();
+                        loadWorkflows();
+                        loadRuns();
+                    }}
+                    className="ml-auto max-sm:ml-0 inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50"
+                    disabled={refreshing}
+                >
+                    <Icon
+                        name="clock"
+                        className={`size-4 fill-current ${refreshing ? "animate-spin" : ""}`}
+                    />
+                    Refresh
+                </button>
             </div>
 
             {tab === "studio" && (
@@ -277,6 +253,12 @@ export default function WorkflowStudioPage() {
                     workflowCount={wfRows.length}
                     publishedCount={wfRows.filter((w) => w.status === "published").length}
                     runCount={runRows.length}
+                    editDef={editDef}
+                    onNewWorkflow={() => openInEditor(blankDefinition())}
+                    onLoadSample={() => openInEditor(SAMPLE_WORKFLOW)}
+                    onRename={renameEditDef}
+                    writable={writable}
+                    toast={showToast}
                 />
             )}
 
@@ -290,6 +272,7 @@ export default function WorkflowStudioPage() {
                     writable={writable}
                     engineLive={engineLive}
                     toast={showToast}
+                    onEdit={openInEditor}
                 />
             )}
         </Layout>
@@ -307,6 +290,12 @@ function StudioTab({
     workflowCount,
     publishedCount,
     runCount,
+    editDef,
+    onNewWorkflow,
+    onLoadSample,
+    onRename,
+    writable,
+    toast,
 }: {
     status: ReadResult<WfStatus> | null;
     st: WfStatus | null;
@@ -316,175 +305,145 @@ function StudioTab({
     workflowCount: number;
     publishedCount: number;
     runCount: number;
+    editDef: WfDefinition;
+    onNewWorkflow: () => void;
+    onLoadSample: () => void;
+    onRename: (name: string) => void;
+    writable: boolean;
+    toast: (msg: string, type?: "success" | "error") => void;
 }) {
+    // The explainer is dismissible (spec §E) — shown only while dormant + not hidden.
+    const [explainerOpen, setExplainerOpen] = useState(true);
+    void status;
+    void workflowCount;
+    void publishedCount;
+
+    // Real status-shape readouts for the dependency board (engine is an OBJECT live).
+    const engineObj = st && typeof st.engine === "object" ? st.engine : null;
+    const storeMode = engineObj?.store_mode || (typeof st?.store === "string" ? st.store : undefined);
+    const registryReady = !!st?.registry_tools && st.registry_tools.length > 0;
+
     return (
         <div className="space-y-3">
-            {/* Hero KPI strip — real config signals + honest counts only */}
-            <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                <HeroStat
-                    label="Engine"
-                    glyph="cube"
-                    glyphClass="fill-primary-01"
-                    accent="var(--primary-01)"
-                    loading={loading && !st}
-                    value={engineLive ? "Live" : "Coming soon"}
-                    foot={engineLive ? "Durable on the Hatchet spine" : "Awaiting durable-engine provisioning"}
-                />
-                <HeroStat
-                    label="Workflows"
-                    glyph="dashboard"
-                    glyphClass="fill-primary-02"
-                    accent="var(--primary-02)"
-                    delay={60}
-                    loading={loading && !status}
-                    value={String(workflowCount)}
-                    foot={
-                        publishedCount > 0
-                            ? `${publishedCount} published`
-                            : workflowCount === 0
-                            ? "None built yet"
-                            : "All drafts"
-                    }
-                />
-                <HeroStat
-                    label="Safety Rails"
-                    glyph="lock"
-                    glyphClass="fill-primary-04"
-                    accent="var(--primary-04)"
-                    delay={120}
-                    loading={loading && !st}
-                    value="Budget + Approval"
-                    foot="No spend without a cap + PIN step-up"
-                />
-                <HeroStat
-                    label="Runs"
-                    glyph="clock"
-                    glyphClass="fill-primary-05"
-                    accent="var(--primary-05)"
-                    delay={180}
-                    loading={loading && !status}
-                    value={String(runCount)}
-                    foot={runCount === 0 ? "No runs recorded yet" : "Durable, replayable executions"}
-                />
+            {/* Slim status bar — engine pill + honest counts, not a 4-up KPI strip */}
+            <div className="card !mb-0">
+                <div className="flex items-center gap-3 flex-wrap p-3 max-lg:p-2.5">
+                    <span
+                        className={`inline-flex items-center gap-2 h-8 px-3 rounded-full text-button ring-1 ring-inset ${
+                            engineLive
+                                ? "bg-primary-02/12 text-primary-02 fill-primary-02 ring-primary-02/30"
+                                : "bg-b-surface2 text-t-secondary fill-t-secondary ring-s-subtle"
+                        }`}
+                    >
+                        <span className={`size-1.5 rounded-full ${engineLive ? "bg-primary-02" : "bg-t-tertiary"}`} />
+                        {loading && !st ? "Checking engine…" : engineLive ? "Engine live" : "Engine coming soon"}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-caption text-t-tertiary">
+                        <Icon name="lock" className="size-3.5 fill-t-tertiary" />
+                        Budget + Approval rails
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-caption text-t-tertiary">
+                        <Icon name="clock" className="size-3.5 fill-t-tertiary" />
+                        {runCount === 0 ? "No runs yet" : `${runCount} runs`}
+                    </span>
+                    <div className="ml-auto inline-flex items-center gap-2">
+                        {writable && (
+                            <>
+                                <button
+                                    onClick={onLoadSample}
+                                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-s-subtle text-button text-t-secondary fill-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary hover:fill-t-primary"
+                                    title="Load the showcase sample workflow"
+                                >
+                                    <Icon name="layers" className="size-3.5 fill-current" />
+                                    Load sample
+                                </button>
+                                <button
+                                    onClick={onNewWorkflow}
+                                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-primary-01/12 text-primary-01 fill-primary-01 text-button transition-colors hover:bg-primary-01/20"
+                                    title="Start a blank workflow from scratch"
+                                >
+                                    <Icon name="plus" className="size-3.5 fill-current" />
+                                    New workflow
+                                </button>
+                            </>
+                        )}
+                    </div>
+                </div>
             </div>
 
-            {/* The honest "what this is / coming soon" explainer */}
-            {(moduleDormant || !engineLive) && (
-                <div className="card overflow-hidden">
-                    <div className="relative p-6 max-lg:p-4">
+            {/* The honest "what this is / coming soon" note — dismissible, dormant-only */}
+            {(moduleDormant || !engineLive) && explainerOpen && (
+                <div className="card overflow-hidden !mb-0">
+                    <div className="relative p-4 max-lg:p-3">
                         <span
                             aria-hidden
                             className="pointer-events-none absolute -top-20 -right-16 size-56 rounded-full opacity-[0.10] blur-3xl"
                             style={{ background: "var(--primary-01)" }}
                         />
-                        <div className="relative flex items-start gap-4 max-sm:flex-col">
-                            <span className="grid place-items-center size-12 shrink-0 rounded-2xl bg-b-surface2 ring-1 ring-s-subtle fill-primary-01">
-                                <Icon name="dashboard" className="size-6 fill-inherit" />
+                        <div className="relative flex items-start gap-3">
+                            <span className="grid place-items-center size-9 shrink-0 rounded-xl bg-b-surface2 ring-1 ring-s-subtle fill-primary-01">
+                                <Icon name="dashboard" className="size-5 fill-inherit" />
                             </span>
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                    <h3 className="text-h6 text-t-primary">The canvas is in preview</h3>
+                                    <h3 className="text-sub-title-1 text-t-primary">Build now — runs go live once the engine is provisioned</h3>
                                     <Badge variant="info" dot>
                                         In setup
                                     </Badge>
                                 </div>
-                                <p className="text-body-2 text-t-secondary mt-2 max-w-2xl">
-                                    The studio is a native engine — not n8n — so it can run the safety nodes
-                                    no off-the-shelf tool can: a Budget node holds a real wallet reservation,
-                                    an Approval node demands a PIN-verified human step-up, and every node writes
-                                    an immutable audit row. The canvas below previews a real workflow; building,
-                                    publishing and running light up once the durable engine, the workflow tables
-                                    and the tool registry are provisioned on the server.
+                                <p className="text-caption text-t-secondary mt-1.5 max-w-2xl">
+                                    This is a native engine — not n8n — so a Budget node holds a real wallet reservation,
+                                    an Approval node demands a PIN-verified step-up, and every node writes an immutable audit row.
+                                    Compose and save your graph today; publishing and running light up the moment the durable
+                                    engine and tables are live on the server.
                                 </p>
-                                <div className="mt-4 grid grid-cols-3 gap-3 max-md:grid-cols-1">
-                                    <FlowStep n={1} icon="feather" title="Compose" text="Drag Triggers, AI-Agent and Action nodes onto the canvas and wire the path." />
-                                    <FlowStep n={2} icon="lock" title="Govern" text="Publish is refused unless every money node is dominated by a Budget — and an Approval over cap." />
-                                    <FlowStep n={3} icon="cube" title="Run" text="A single durable interpreter on Hatchet executes the graph, crash-safe and replayable." />
-                                </div>
                             </div>
+                            <button
+                                onClick={() => setExplainerOpen(false)}
+                                title="Dismiss"
+                                className="shrink-0 grid place-items-center size-8 rounded-full text-t-tertiary hover:text-t-primary hover:bg-b-surface2"
+                            >
+                                <Icon name="close" className="size-4 fill-current" />
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* The canvas + node palette — the premium centerpiece */}
-            <div className="flex gap-3 max-xl:flex-col">
-                <div className="flex-1 min-w-0">
-                    <Card
-                        title="Hot-lead 5-touch nurture"
-                        headContent={
-                            <span className="ml-3 inline-flex items-center gap-2 max-md:hidden">
-                                <Badge variant="info">{SAMPLE_WORKFLOW.industry_pack}</Badge>
-                                <span className="text-caption text-t-tertiary">
-                                    v{SAMPLE_WORKFLOW.version} · preview
-                                </span>
-                            </span>
-                        }
-                    >
-                        <div className="px-3 pb-3 max-lg:px-2">
-                            <WorkflowCanvas def={SAMPLE_WORKFLOW} className="h-[460px] max-sm:h-[360px]" />
-                            {/* Guard ribbon — the workflow-level hard safety defaults */}
-                            <div className="mt-3 flex flex-wrap items-center gap-2">
-                                <GuardChip icon="filters" label={`Max ${SAMPLE_WORKFLOW.guards.max_actions} actions`} />
-                                <GuardChip icon="clock" label={SAMPLE_WORKFLOW.guards.calling_window} />
-                                {SAMPLE_WORKFLOW.guards.respect_dnd && <GuardChip icon="block" label="Respects DND" />}
-                                {SAMPLE_WORKFLOW.guards.respect_consent && (
-                                    <GuardChip icon="check-circle" label="Consent-gated" />
-                                )}
-                                <GuardChip icon="lock" label="Audited per step" />
-                            </div>
-                        </div>
-                    </Card>
+            {/* The live node editor — the premium centerpiece, given the screen */}
+            <Card
+                title={editDef.name || "Untitled workflow"}
+                headContent={
+                    <span className="ml-3 inline-flex items-center gap-2 max-md:hidden">
+                        {editDef.industry_pack && <Badge variant="info">{editDef.industry_pack}</Badge>}
+                        <span className="text-caption text-t-tertiary">
+                            v{editDef.version} · {editDef.status}
+                        </span>
+                    </span>
+                }
+            >
+                <div className="px-3 pb-3 max-lg:px-2">
+                    <WorkflowEditor
+                        key={editDef.workflow_id}
+                        initialDef={editDef}
+                        workflowId={editDef.workflow_id}
+                        writable={writable}
+                        engineLive={engineLive}
+                        onToast={toast}
+                        onRename={onRename}
+                    />
+                    {/* Guard ribbon — the workflow-level hard safety defaults */}
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <GuardChip icon="filters" label={`Max ${editDef.guards.max_actions} actions`} />
+                        <GuardChip icon="clock" label={editDef.guards.calling_window} />
+                        {editDef.guards.respect_dnd && <GuardChip icon="block" label="Respects DND" />}
+                        {editDef.guards.respect_consent && (
+                            <GuardChip icon="check-circle" label="Consent-gated" />
+                        )}
+                        <GuardChip icon="lock" label="Audited per step" />
+                    </div>
                 </div>
-
-                {/* Node palette rail */}
-                <div className="w-72 max-xl:w-full shrink-0">
-                    <Card
-                        title="Node Palette"
-                        headContent={
-                            <span className="ml-3 inline-flex items-center gap-1.5 text-caption text-t-tertiary max-md:hidden">
-                                <Icon name="cube" className="size-3.5 fill-t-tertiary" />
-                                10 types
-                            </span>
-                        }
-                    >
-                        <div className="px-3 pb-4 max-lg:px-2 space-y-4">
-                            {NODE_GROUPS.map((grp) => (
-                                <div key={grp.group}>
-                                    <div className="text-overline text-t-tertiary px-1 mb-2">{grp.group}</div>
-                                    <div className="space-y-1.5">
-                                        {grp.types.map((t) => {
-                                            const m = nodeMeta(t);
-                                            return (
-                                                <div
-                                                    key={t}
-                                                    className="lift group flex items-center gap-2.5 p-2.5 rounded-xl bg-b-surface2 ring-1 ring-s-subtle ring-inset cursor-grab dark:bg-shade-04/30"
-                                                    title={m.blurb}
-                                                >
-                                                    <span
-                                                        className="grid place-items-center size-8 shrink-0 rounded-lg bg-b-surface1 ring-1 ring-s-subtle dark:bg-shade-04"
-                                                        style={{ fill: m.accent }}
-                                                    >
-                                                        <Icon name={m.icon} className="size-4 fill-inherit" />
-                                                    </span>
-                                                    <div className="min-w-0 flex-1">
-                                                        <div className="text-body-2 text-t-primary truncate">
-                                                            {m.label}
-                                                        </div>
-                                                        <div className="text-caption text-t-tertiary truncate">
-                                                            {m.gate}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </Card>
-                </div>
-            </div>
+            </Card>
 
             {/* Configuration board — every dormant dependency surfaced honestly */}
             <Card
@@ -516,11 +475,14 @@ function StudioTab({
                         </div>
                     ) : (
                         <div className="divide-y divide-s-subtle">
-                            <ConfigRow icon="cube" label="Durable engine" hint="Hatchet worker-spine runs the interpreter">
-                                <ConfigPill on={st?.engine === "configured"} />
+                            <ConfigRow icon="cube" label="Execution engine" hint="In-process interpreter runs published workflows now">
+                                <ConfigPill on={engineLive} label={engineObj?.engine === "in_process" ? "In-process" : undefined} />
                             </ConfigRow>
-                            <ConfigRow icon="layers" label="Workflow store" hint="Postgres + RLS — defs, versions, runs">
-                                <ConfigPill on={st?.store === "configured"} />
+                            <ConfigRow icon="layers" label="Workflow store" hint="Durable Postgres store — defs, versions, runs (memory until provisioned)">
+                                <ConfigPill on={storeMode === "pg"} label={storeMode === "memory" ? "In-memory" : undefined} />
+                            </ConfigRow>
+                            <ConfigRow icon="cube" label="Durable spine" hint="Hatchet worker-spine for cross-restart durability (optional)">
+                                <ConfigPill on={engineObj?.available === true} />
                             </ConfigRow>
                             <ConfigRow icon="wallet" label="Wallet ledger" hint="Backs the Budget node's run-scoped hold">
                                 <ConfigPill on={st?.wallet === "configured"} />
@@ -528,31 +490,13 @@ function StudioTab({
                             <ConfigRow icon="lock" label="Action firewall" hint="PIN step-up for the Approval node">
                                 <ConfigPill on={st?.firewall === "configured"} />
                             </ConfigRow>
-                            <ConfigRow icon="list" label="Audit log" hint="Immutable row on every node + gate">
-                                <ConfigPill on={st?.audit === "configured"} />
-                            </ConfigRow>
                             <ConfigRow icon="feather" label="Tool registry" hint="AI-Manager tools for Action / AI-Agent nodes">
-                                <ConfigPill on={st?.registry === "configured"} />
+                                <ConfigPill on={registryReady} label={registryReady ? `${st!.registry_tools!.length} tools` : undefined} />
                             </ConfigRow>
                         </div>
                     )}
                 </div>
             </Card>
-        </div>
-    );
-}
-
-function FlowStep({ n, icon, title, text }: { n: number; icon: string; title: string; text: string }) {
-    return (
-        <div className="relative p-4 rounded-2xl bg-b-surface2 ring-1 ring-s-subtle ring-inset dark:bg-shade-04/30">
-            <div className="flex items-center gap-2 mb-1.5">
-                <span className="grid place-items-center size-7 rounded-full bg-b-surface1 ring-1 ring-s-subtle fill-primary-01 dark:bg-shade-04">
-                    <Icon name={icon} className="size-4 fill-inherit" />
-                </span>
-                <span className="text-caption text-t-tertiary tabular-nums">Step {n}</span>
-            </div>
-            <div className="text-sub-title-2 text-t-primary">{title}</div>
-            <div className="text-caption text-t-secondary mt-1">{text}</div>
         </div>
     );
 }
@@ -566,13 +510,13 @@ function GuardChip({ icon, label }: { icon: string; label: string }) {
     );
 }
 
-function ConfigPill({ on }: { on?: boolean }) {
+function ConfigPill({ on, label }: { on?: boolean; label?: string }) {
     return on ? (
         <Badge variant="success" dot>
-            Configured
+            {label || "Configured"}
         </Badge>
     ) : (
-        <Badge variant="neutral">Not configured</Badge>
+        <Badge variant="neutral">{label || "Not configured"}</Badge>
     );
 }
 
@@ -716,20 +660,28 @@ function TemplatesTab({
     writable,
     engineLive,
     toast,
+    onEdit,
 }: {
     rows: WfTemplate[];
     writable: boolean;
     engineLive: boolean;
     toast: (msg: string, type?: "success" | "error") => void;
+    onEdit: (def: WfDefinition) => void;
 }) {
     const [busyId, setBusyId] = useState<string>("");
     const [preview, setPreview] = useState<WfTemplate | null>(null);
 
-    async function useTemplate(t: WfTemplate) {
+    async function applyTemplate(t: WfTemplate) {
         setBusyId(t.template_id);
         try {
-            await instantiateTemplate(t.template_id);
-            toast(`"${t.name}" added to your workflows as a draft`);
+            // Server creates a real, budget-gated draft and returns its id.
+            const res = await instantiateTemplate(t.template_id);
+            // Open the SERVER draft (by its id) on the canvas so the founder can
+            // publish + run it directly; fall back to the static definition if the
+            // fetch misses (still editable, saves create a fresh server row).
+            const serverDef = res?.workflow_id ? await loadServerWorkflow(res.workflow_id) : null;
+            onEdit(serverDef || t.definition);
+            toast(`"${t.name}" added — opened on the canvas, ready to publish & run`);
         } catch (e) {
             toast(e instanceof Error ? e.message : "Couldn't use this template", "error");
         } finally {
@@ -794,7 +746,7 @@ function TemplatesTab({
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        useTemplate(t);
+                                        applyTemplate(t);
                                     }}
                                     disabled={busyId === t.template_id}
                                     className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-transparent bg-primary-01/12 text-primary-01 fill-primary-01 text-button transition-colors hover:bg-primary-01/20 disabled:opacity-50"
@@ -830,10 +782,22 @@ function TemplatesTab({
                                 </div>
                             </div>
                             {writable && (
+                                <button
+                                    onClick={() => {
+                                        onEdit(preview.definition);
+                                        setPreview(null);
+                                    }}
+                                    className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary fill-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary hover:fill-t-primary"
+                                >
+                                    <Icon name="edit" className="size-4 fill-current" />
+                                    Edit on canvas
+                                </button>
+                            )}
+                            {writable && (
                                 <Button
                                     isBlack
                                     onClick={() => {
-                                        useTemplate(preview);
+                                        applyTemplate(preview);
                                         setPreview(null);
                                     }}
                                 >
@@ -848,7 +812,7 @@ function TemplatesTab({
                             </button>
                         </div>
                         <div className="p-4 overflow-auto">
-                            <WorkflowCanvas def={preview.definition} className="h-[440px] max-sm:h-[320px]" />
+                            <WorkflowMiniMap def={preview.definition} className="h-[440px] max-sm:h-[320px]" />
                         </div>
                     </div>
                 </div>

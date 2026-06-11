@@ -1,68 +1,59 @@
 "use client";
 
-// Shared helpers for the Billing sub-pages. Kept tiny + presentational so each
-// page stays focused on its own endpoint. Billing-owned premium primitives
-// (hero cards, sparkline, cost-share bars, donut) live here so the whole
-// Billing area speaks ONE world-class visual language without touching any
-// app-wide component or globals.css.
+// Shared helpers for the Billing sub-pages — ported to the reference
+// Income/* visual language. Each page sets its single title via
+// <Layout title="..."> (NO PageHeader, NO eyebrow, NO subtitle). Cross-route
+// navigation is a plain token-based pill row (BillingTabs), rendered in the
+// page body the way the reference puts its in-card controls — never as a
+// masthead. Presentational primitives below mirror the reference Balance
+// "Statistics" strip and the Countries cost-share bar so the whole Billing
+// area looks identical to the reference money pages.
 
 import type { VendorStatus } from "@/lib/api";
 import Badge, { type BadgeVariant } from "@/components/Badge";
 import Icon from "@/components/Icon";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import PageHeader from "@/components/PageHeader";
 import {
     ResponsiveContainer,
     AreaChart,
     Area,
-    PieChart,
-    Pie,
-    Cell,
 } from "recharts";
 
-// Shared Billing masthead — the unified PageHeader + a tab strip so every
-// billing sub-page shares one premium header and is navigable between tabs.
+// ---- cross-route tab strip (replaces the old PageHeader masthead) ----------
+// Plain pill row matching the reference Tabs aesthetic. No title/eyebrow/
+// subtitle here — the page title lives in <Layout title>.
 const BILLING_TABS = [
     { label: "Overview", href: "/billing/overview" },
     { label: "Vendors", href: "/billing/vendors" },
-    { label: "Cost Explorer", href: "/billing/explorer" },
+    { label: "Spending", href: "/billing/explorer" },
+    { label: "Plan", href: "/billing/plan" },
     { label: "Audit", href: "/billing/audit" },
-    { label: "Plan & Ledger", href: "/billing/plan" },
 ];
 
-export function BillingHeader({
-    title,
-    subtitle,
-    actions,
-}: {
-    title: string;
-    subtitle?: React.ReactNode;
-    actions?: React.ReactNode;
-}) {
+export function BillingTabs() {
     const pathname = usePathname();
     return (
-        <>
-            <PageHeader eyebrow="Billing" title={title} subtitle={subtitle} actions={actions} />
-            <div className="flex items-center gap-1 mb-5 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
-                {BILLING_TABS.map((t) => {
-                    const active = pathname === t.href || (t.href.includes("/vendors") && pathname.startsWith("/billing/vendors"));
-                    return (
-                        <Link
-                            key={t.href}
-                            href={t.href}
-                            className={`shrink-0 inline-flex items-center h-8 px-3.5 rounded-full text-button transition-colors ${
-                                active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
-                            }`}
-                        >
-                            {t.label}
-                        </Link>
-                    );
-                })}
-            </div>
-        </>
+        <div className="flex flex-wrap gap-1 mb-5 max-md:mb-4">
+            {BILLING_TABS.map((t) => {
+                const active =
+                    pathname === t.href ||
+                    (t.href.includes("/vendors") && pathname.startsWith("/billing/vendors"));
+                return (
+                    <Link
+                        key={t.href}
+                        href={t.href}
+                        className={`flex justify-center items-center h-12 px-5.5 rounded-full border text-button transition-colors hover:text-t-primary ${
+                            active
+                                ? "border-s-stroke2 text-t-primary"
+                                : "border-transparent text-t-secondary"
+                        }`}
+                    >
+                        {t.label}
+                    </Link>
+                );
+            })}
+        </div>
     );
 }
 
@@ -92,8 +83,8 @@ export function fmt(d: string | undefined): string {
     }
 }
 
-// Vendor-config status, now on the shared token-based Badge so it matches the
-// pills used across Dashboard / Calls / Leads. Same props as before.
+// Vendor-config status on the shared token-based Badge — matches the pills
+// used across Dashboard / Calls / Leads. Same props as before.
 export function StatusBadge({ status, stale }: { status: VendorStatus; stale?: boolean }) {
     const map: Record<VendorStatus, { label: string; variant: BadgeVariant; dot?: boolean }> = {
         configured: stale
@@ -110,31 +101,18 @@ export function StatusBadge({ status, stale }: { status: VendorStatus; stale?: b
     );
 }
 
+// One inline error banner, token-based (no raw red hex).
 export function ErrorBanner({ msg }: { msg: string }) {
     if (!msg) return null;
     return (
-        <div className="mb-4 flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2">
+        <div className="mb-4 flex items-center gap-2 p-3.5 rounded-3xl bg-primary-03/8 border border-primary-03/20 text-primary-03 text-body-2">
             <Icon name="info" className="size-4 fill-primary-03 shrink-0" />
             {msg}
         </div>
     );
 }
 
-export const selectCls =
-    "h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent transition-colors hover:border-s-highlight focus:border-s-focus";
-
-export const btnCls =
-    "inline-flex items-center justify-center gap-2 h-10 px-4 border border-s-stroke2 rounded-2xl text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary disabled:opacity-50";
-
-// A pill-shaped primary refresh button used in the sub-page toolbars. Same
-// behaviour as btnCls (a plain styled <button>), just the premium variant.
-export const ghostBtnCls =
-    "inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50";
-
-// ---- premium presentational primitives (billing-owned) --------------------
-
-// Compact money for chart axes / dense chips. Keeps the symbol, trims to a
-// readable magnitude (12.3k / 1.2M) so big numbers never overflow a chip.
+// Compact money for chart axes / dense chips (12.3k / 1.2M). Kept for [id].
 export function moneyShort(n: number | null | undefined, currency: string): string {
     if (n == null) return "—";
     const sym = currency ? `${currency} ` : "";
@@ -144,73 +122,104 @@ export function moneyShort(n: number | null | undefined, currency: string): stri
     return `${sym}${n.toFixed(n % 1 === 0 ? 0 : 2)}`;
 }
 
-// Vendor brand accents (chart series + share bars). Cycles if more vendors
-// than colors. Pulled from the existing chart token palette.
+// Vendor brand accents for the cost-share bars. Cycles if more vendors than
+// colors. Token-only (no raw hex).
 export const VENDOR_COLORS = [
-    "var(--primary-01)", // blue
-    "var(--primary-02)", // green
-    "var(--primary-04)", // purple
-    "var(--primary-05)", // amber
+    "var(--primary-01)",
+    "var(--primary-02)",
+    "var(--primary-04)",
+    "var(--primary-05)",
     "var(--chart-green)",
-    "var(--primary-03)", // red-orange
+    "var(--primary-03)",
 ];
 
-// Hero metric card. Big tabular number, eyebrow label with glyph chip, a
-// footer slot (real signal — share, count, sparkline), and an optional accent
-// spotlight. Built on the .kpi utility so it matches the app KPI language.
-export function HeroCard({
-    label,
-    glyph,
-    glyphClass,
-    value,
-    loading,
-    foot,
-    accent,
-    delay = 0,
-    aside,
-}: {
-    label: string;
-    glyph: string;
-    glyphClass?: string;
-    value: React.ReactNode;
-    loading?: boolean;
-    foot?: React.ReactNode;
-    accent?: string; // css color for the corner spotlight
-    delay?: number;
-    aside?: React.ReactNode; // right-aligned content (e.g. sparkline)
-}) {
+// ---- reference "Balance" statistics strip --------------------------------
+// Ported from templates/Income/StatementsPage/Statistics: an icon circle, a
+// sub-title-1 label, and a big number. Horizontal flex of these inside a Card,
+// divided by hairlines. No fabricated % deltas (real signals only).
+export function StatStrip({ children }: { children: React.ReactNode }) {
     return (
-        <div
-            className="kpi rise-in group"
-            style={delay ? { animationDelay: `${delay}ms` } : undefined}
-        >
-            {accent && (
-                <span
-                    aria-hidden
-                    className="pointer-events-none absolute -top-16 -right-16 size-40 rounded-full opacity-[0.13] blur-2xl transition-opacity duration-500 group-hover:opacity-20"
-                    style={{ background: accent }}
-                />
-            )}
-            <div className="flex items-start justify-between gap-3">
-                <div className="kpi-label">
-                    <span className={`kpi-glyph ${glyphClass || ""}`}>
-                        <Icon name={glyph} className="fill-inherit" />
-                    </span>
-                    {label}
+        <div className="card max-md:overflow-hidden mb-3">
+            <div className="relative">
+                <div className="flex gap-8 p-5 max-lg:gap-6 max-lg:p-3 max-md:overflow-auto max-md:scrollbar-none max-md:-mx-3 max-md:px-6">
+                    {children}
                 </div>
-                {aside}
             </div>
-            {loading ? (
-                <div className="skeleton h-10 w-44" />
-            ) : (
-                <div className="kpi-value relative z-1">{value}</div>
-            )}
-            {foot && <div className="kpi-foot relative z-1">{foot}</div>}
         </div>
     );
 }
 
-// Tiny inline area sparkline for a hero card (real timeseries only).
+export function StatItem({
+    title,
+    icon,
+    value,
+    foot,
+    loading,
+}: {
+    title: string;
+    icon: string;
+    value: React.ReactNode;
+    foot?: React.ReactNode;
+    loading?: boolean;
+}) {
+    return (
+        <div className="flex-1 pr-6 border-r border-s-subtle last:border-r-0 max-lg:last:border-r-0 max-md:w-60 max-md:shrink-0 max-md:flex-auto">
+            <div className="flex items-center justify-center size-16 mb-8 rounded-full bg-b-surface1 max-lg:mb-5">
+                <Icon className="fill-t-primary" name={icon} />
+            </div>
+            <div className="text-sub-title-1 mb-2">{title}</div>
+            {loading ? (
+                <div className="h-9 w-32 rounded-lg bg-b-surface1 animate-pulse" />
+            ) : (
+                <div className="text-h3 tabular-nums max-lg:text-h4">{value}</div>
+            )}
+            {foot && (
+                <div className="mt-2 text-body-2 text-t-tertiary">{foot}</div>
+            )}
+        </div>
+    );
+}
+
+// ---- reference "Countries" cost-share bar --------------------------------
+// Ported from components/CountryItem: a colour swatch, label, value, and a
+// track+fill share meter. Real share (vendor cost / grand total) only.
+export function BarRow({
+    label,
+    value,
+    pct,
+    color,
+    badge,
+}: {
+    label: string;
+    value: string;
+    pct: number; // 0..100
+    color: string;
+    badge?: React.ReactNode;
+}) {
+    return (
+        <div className="flex items-center">
+            <span className="size-3 rounded-sm shrink-0" style={{ background: color }} />
+            <div className="grow pl-4 min-w-0">
+                <div className="flex justify-between gap-3 mb-2 text-sub-title-2">
+                    <span className="flex items-center gap-2 min-w-0">
+                        <span className="truncate">{label}</span>
+                        {badge}
+                    </span>
+                    <span className="shrink-0 tabular-nums">{value}</span>
+                </div>
+                <div className="relative h-3 rounded-[2px] bg-shade-09 dark:bg-shade-04">
+                    <div
+                        className="absolute top-0 left-0 bottom-0 rounded-[2px]"
+                        style={{ width: `${Math.max(pct, 2)}%`, background: color, opacity: 0.85 }}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Tiny inline area sparkline (real timeseries only). Used by the vendor [id]
+// detail page.
 export function Sparkline({
     data,
     color = "var(--primary-01)",
@@ -245,90 +254,6 @@ export function Sparkline({
                     />
                 </AreaChart>
             </ResponsiveContainer>
-        </div>
-    );
-}
-
-// Donut composition of real per-vendor cost. Center shows total + label.
-export function CostDonut({
-    slices,
-    centerValue,
-    centerLabel,
-    size = 168,
-}: {
-    slices: { name: string; value: number; color: string }[];
-    centerValue: string;
-    centerLabel: string;
-    size?: number;
-}) {
-    const positive = slices.filter((s) => s.value > 0);
-    return (
-        <div className="relative shrink-0" style={{ width: size, height: size }}>
-            <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                    <Pie
-                        data={positive.length ? positive : [{ name: "—", value: 1, color: "var(--stroke-stroke2)" }]}
-                        dataKey="value"
-                        innerRadius={size * 0.34}
-                        outerRadius={size * 0.48}
-                        startAngle={90}
-                        endAngle={-270}
-                        paddingAngle={positive.length > 1 ? 2 : 0}
-                        stroke="none"
-                        isAnimationActive={false}
-                    >
-                        {(positive.length ? positive : [{ color: "var(--stroke-stroke2)" }]).map((s, i) => (
-                            <Cell key={i} fill={s.color} />
-                        ))}
-                    </Pie>
-                </PieChart>
-            </ResponsiveContainer>
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                <div className="text-h6 text-t-primary tabular-nums leading-tight">{centerValue}</div>
-                <div className="text-caption text-t-tertiary mt-0.5">{centerLabel}</div>
-            </div>
-        </div>
-    );
-}
-
-// One row of the cost-share breakdown: label, value, and a real share meter
-// (vendor cost / grand total). No fabricated period deltas — pure composition.
-export function ShareRow({
-    label,
-    value,
-    pct,
-    color,
-    badge,
-    delay = 0,
-}: {
-    label: string;
-    value: string;
-    pct: number; // 0..100
-    color: string;
-    badge?: React.ReactNode;
-    delay?: number;
-}) {
-    return (
-        <div className="rise-in" style={delay ? { animationDelay: `${delay}ms` } : undefined}>
-            <div className="flex items-center justify-between gap-3 mb-1.5">
-                <div className="flex items-center gap-2 min-w-0">
-                    <span className="size-2.5 rounded-sm shrink-0" style={{ background: color }} />
-                    <span className="text-body-2 text-t-primary truncate">{label}</span>
-                    {badge}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-body-2 font-medium text-t-primary tabular-nums">{value}</span>
-                    <span className="text-caption text-t-tertiary tabular-nums w-10 text-right">
-                        {pct.toFixed(0)}%
-                    </span>
-                </div>
-            </div>
-            <div className="meter">
-                <div
-                    className="meter-fill"
-                    style={{ width: `${Math.max(pct, 2)}%`, background: color }}
-                />
-            </div>
         </div>
     );
 }

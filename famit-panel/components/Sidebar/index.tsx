@@ -9,6 +9,8 @@ import Dropdown from "./Dropdown";
 
 import { navigation } from "@/contstants/navigation";
 import { useMe, isAdmin, canWrite } from "@/lib/auth";
+import { useEntitlements, modeOfIn, type EntMode } from "@/lib/entitlements";
+import type { EntitlementsPayload } from "@/lib/api";
 
 type SidebarProps = {
     visibleSidebar?: boolean;
@@ -27,28 +29,57 @@ function navVisible(item: { roles?: string }, me: ReturnType<typeof useMe>["me"]
     return true;
 }
 
-type NavChild = { title: string; href?: string; comingSoon?: boolean; roles?: string };
+type NavChild = {
+    title: string;
+    href?: string;
+    comingSoon?: boolean;
+    roles?: string;
+    // CL-F0: the registry feature_key gating this child. HIDE drops it; LOCK
+    // marks it `locked` so the Dropdown renders the dimmed "Locked" pill.
+    feature_key?: string;
+    // Injected by resolveNav when feature_key resolves to LOCK (not authored).
+    locked?: boolean;
+};
 type NavItem = {
     title: string;
     icon: string;
     href?: string;
     roles?: string;
+    feature_key?: string;
     list?: NavChild[];
     section?: string;
 };
 
-// Filter a nav entry for the current role:
-//  - top-level gated entries hidden as before;
-//  - a COLLAPSIBLE GROUP has its CHILDREN filtered by their own `roles`, and the
-//    whole group is dropped if no visible children remain (so a vendor never sees
-//    an admin-only group and an agent never sees a manager-only one). Coming-soon
-//    children carry no role and always survive.
-function resolveNav(items: NavItem[], me: ReturnType<typeof useMe>["me"]): NavItem[] {
+// Entitlement resolver passed into the (otherwise pure) resolveNav. Maps a
+// feature_key -> "ON" | "LOCK" | "HIDE" off the current entitlement payload.
+type EntResolver = (key?: string) => EntMode;
+
+// Filter a nav entry for the current role AND entitlement:
+//  - top-level gated entries hidden as before (role);
+//  - a COLLAPSIBLE GROUP has its CHILDREN filtered by their own `roles` AND
+//    entitlement: a child whose feature_key resolves to HIDE is dropped exactly
+//    like an out-of-role child; a child resolving to LOCK survives but is
+//    flagged `locked` (the Dropdown renders the dimmed "Locked" pill). The whole
+//    group is dropped if no visible children remain, OR if the group's own
+//    feature_key resolves to HIDE. Coming-soon children carry no key and always
+//    survive. ENT FILTER IS COSMETIC — the backend 404/402 is the real boundary.
+function resolveNav(
+    items: NavItem[],
+    me: ReturnType<typeof useMe>["me"],
+    entOf: EntResolver
+): NavItem[] {
     const out: NavItem[] = [];
     for (const item of items) {
         if (!navVisible(item, me)) continue;
+        if (entOf(item.feature_key) === "HIDE") continue; // whole group hidden
         if (item.list) {
-            const list = item.list.filter((c) => navVisible(c, me));
+            const list: NavChild[] = [];
+            for (const c of item.list) {
+                if (!navVisible(c, me)) continue;
+                const m = entOf(c.feature_key);
+                if (m === "HIDE") continue; // dropped like an out-of-role child
+                list.push(m === "LOCK" ? { ...c, locked: true } : c);
+            }
             if (list.length === 0) continue;
             out.push({ ...item, list });
         } else {
@@ -64,11 +95,15 @@ const Sidebar = ({
     onCloseSidebar,
 }: SidebarProps) => {
     const { me } = useMe();
+    const { payload } = useEntitlements();
     // While role is unknown (no cache yet), show only the always-visible items
     // to avoid flashing admin-only links to a vendor. Cache makes this instant
-    // on subsequent loads. resolveNav also filters group CHILDREN by role and
-    // drops a group left with no visible children.
-    const items = resolveNav(navigation as NavItem[], me);
+    // on subsequent loads. resolveNav also filters group CHILDREN by role +
+    // entitlement (HIDE drops, LOCK dims), and drops a group left with no
+    // visible children. The entitlement map defaults permissive (all-ON) until
+    // it loads, so nav never flickers items away before we KNOW they're hidden.
+    const entOf = (key?: string) => modeOfIn(payload as EntitlementsPayload, key);
+    const items = resolveNav(navigation as NavItem[], me, entOf);
     return (
     <div
         className={`fixed top-0 left-0 bottom-0 flex flex-col w-85 p-5 bg-b-surface1 transition-transform duration-300 max-4xl:w-70 max-3xl:w-60 max-xl:w-74 max-md:p-3 ${
@@ -115,10 +150,9 @@ const Sidebar = ({
                 </div>
             ))}
         </RemoveScroll>
-        <div className="mt-auto pt-6 max-md:pt-4">
-            {/* <Button className="mb-3" icon="chat-think" isWhite isCircle /> */}
+        <div className="mt-auto pt-6 max-md:pt-4 border-t border-s-subtle">
             <ThemeButton
-                className={`${hideSidebar ? "hidden max-lg:block" : ""}`}
+                className={`mt-4 ${hideSidebar ? "hidden max-lg:block" : ""}`}
             />
         </div>
     </div>

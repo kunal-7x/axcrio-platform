@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/action_plan.schema.json",
+  "title": "ActionPlan",
+  "description": "The SIGNED plan executed by the Action Executor (GROWTH-OS-BUILD-SPEC §7.4, §10.2, P4/P5). The ONLY object a connector will mutate from — connectors verify status=signed + a valid signature before ANY platform mutation (P4: money is sacred; no side door). Carries the §P5 Explanation (no silent actions), lives in the hash-chained Action Ledger, and is executed via the Temporal LaunchSaga with compensation (§10.2). Frozen-after-merge; new fields ⇒ version bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action_plan_id",
+    "version",
+    "tenant_id",
+    "actor",
+    "action_type",
+    "status",
+    "operations",
+    "explanation"
+  ],
+  "properties": {
+    "action_plan_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "description": "Schema version of the ActionPlan shape (frozen-after-merge).",
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "tenant_id": {
+      "description": "Owning tenant. Set from the actor's token context, never from a request body (the isolation rule, P6).",
+      "type": "string"
+    },
+    "workspace_id": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "description": "Journey id this plan belongs to (§6.3), so the ledger is queryable by journey (GET /actions?journey=).",
+      "type": "string"
+    },
+    "causation_id": {
+      "description": "The event/decision that caused this plan (e.g. an optimization.decision event_id).",
+      "type": "string"
+    },
+    "actor": {
+      "description": "Who proposed the plan (P5: agent | user | system | webhook).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "agent",
+            "user",
+            "system",
+            "webhook"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "action_type": {
+      "description": "The class of action (drives policy gate + approval thresholds). Aligns with explanation.action.type and optimization.decision vocab.",
+      "type": "string",
+      "enum": [
+        "launch_campaign",
+        "pause_ad",
+        "pause_ad_set",
+        "pause_campaign",
+        "resume",
+        "trash_ad",
+        "promote_ad",
+        "scale_budget",
+        "throttle_budget",
+        "reallocate_budget",
+        "rotate_creative",
+        "draft_creative",
+        "expand_audience",
+        "dispatch_signal",
+        "send_broadcast",
+        "submit_template",
+        "edit_targeting",
+        "quarantine_creative"
+      ]
+    },
+    "target_ref": {
+      "description": "The primary platform entity this plan acts on (e.g. 'meta:ad:123', 'meta:adset:456', or a media_plan_id for a launch). §7.4 target_ref.",
+      "type": "string"
+    },
+    "operations": {
+      "description": "The ordered, typed connector operations the Executor performs (LaunchSaga steps, §10.2). Each is idempotent (P3) and reversible-or-compensated. Connectors accept these ONLY inside a signed plan (P4).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op_id",
+          "connector",
+          "op",
+          "idempotency_key"
+        ],
+        "properties": {
+          "op_id": {
+            "description": "Plan-local stable id for ordering + compensation pairing.",
+            "type": "string"
+          },
+          "connector": {
+            "description": "Which connector executes this op.",
+            "type": "string",
+            "enum": [
+              "meta",
+              "google",
+              "whatsapp",
+              "signals",
+              "audiences",
+              "catalog"
+            ]
+          },
+          "op": {
+            "description": "The connector verb (e.g. create_campaign, update_budget, pause_entity, create_ad, dispatch_capi).",
+            "type": "string"
+          },
+          "params": {
+            "description": "Op parameters (validated by the connector's own contract). Spend-changing amounts in INR paise (integer).",
+            "type": "object",
+            "additionalProperties": true
+          },
+          "idempotency_key": {
+            "description": "Exactly-once key for this external mutation (P3). Stable across retries.",
+            "type": "string"
+          },
+          "compensation": {
+            "description": "The inverse op to run if a later step fails (LaunchSaga rollback, §10.2: never leave half-live spend).",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "op": {
+                "type": "string"
+              },
+              "params": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "budget_impact": {
+      "description": "The money delta this plan introduces. P4: any spend-changing plan needs a Budget Governor stamp to be signed (§13.1). All amounts INR paise (integer).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spend_changing"
+      ],
+      "properties": {
+        "spend_changing": {
+          "type": "boolean"
+        },
+        "daily_delta_minor": {
+          "description": "Net change to daily spend, INR paise (integer; may be negative).",
+          "type": "integer"
+        },
+        "currency": {
+          "type": "string",
+          "const": "INR"
+        },
+        "governor_stamp": {
+          "description": "The Budget Governor stamp proving sum(daily budgets) ≤ daily_cap holds (§13.1/§13.2). REQUIRED before a spend-changing plan can be signed.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stamp_id",
+            "stamped_at"
+          ],
+          "properties": {
+            "stamp_id": {
+              "type": "string"
+            },
+            "stamped_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "daily_cap_minor": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "explanation": {
+      "description": "The mandatory §P5 Explanation emitted BEFORE execution (no silent actions).",
+      "$ref": "explanation.schema.json"
+    },
+    "status": {
+      "description": "Ledger lifecycle (§7.4). Connectors mutate ONLY when status=signed (P4).",
+      "type": "string",
+      "enum": [
+        "proposed",
+        "signed",
+        "executing",
+        "executed",
+        "failed",
+        "rolled_back",
+        "rejected",
+        "expired"
+      ]
+    },
+    "approval": {
+      "description": "Approval state when the policy gate (§17) requires a human. Temporal signal on response; auto-escalate on timeout (§17.2).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "pending",
+            "granted",
+            "denied",
+            "auto_escalated",
+            "timed_out"
+          ]
+        },
+        "approver_id": {
+          "type": "string"
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "description": "When the approval window expires (auto-escalation deadline).",
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "step_up": {
+      "description": "Firewall step-up proof for sensitive intents (PIN/OTP + HS256 token, sub-bound, TTL, §17.3). Required for money/destructive actions initiated via AI Manager.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "spend",
+            "bulk",
+            "destructive"
+          ]
+        },
+        "token_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "signatures": {
+      "description": "Detached signatures over the plan's canonical bytes (§7.4 signatures[]). Connectors verify at least one valid signature whose signer is authorized to sign this action_type before mutating (P4).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "signer",
+          "alg",
+          "signature",
+          "signed_at"
+        ],
+        "properties": {
+          "signer": {
+            "description": "Key id / signer identity (e.g. ledger service key id).",
+            "type": "string"
+          },
+          "alg": {
+            "type": "string",
+            "examples": [
+              "ed25519",
+              "HS256"
+            ]
+          },
+          "signature": {
+            "description": "Base64/hex signature over the canonical plan payload (everything except signatures + ledger hash fields).",
+            "type": "string"
+          },
+          "signed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "ledger": {
+      "description": "Hash-chain linkage written by the Action Ledger (§7.4, §5.5 tamper-evident).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prev_hash": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "description": "When an unsigned/unapproved plan goes stale and must not execute.",
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

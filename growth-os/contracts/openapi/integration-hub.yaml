@@ -1,0 +1,517 @@
+# GROWTH OS — integration-hub (connections + oauth + ORIGIN provider) — OpenAPI 3.1
+# Spec ref §7.3 + architecture-phase0 §3. Owns connector lifecycle (Meta,Google,WABA,
+# origin,CRMs,Shopify/Woo,GA4), connections/scopes/token-vault/health/webhook-registry.
+# Two parts here:
+#   (A) the user/admin connection-management API (bearerUserJwt) — oauth-start, list,
+#       test, health, disconnect.
+#   (B) the ORIGIN PLATFORM CONNECTOR (D4) — provider:origin's PUSH/PULL surface used by
+#       the LIVE Famit platform as Tenant Zero (serviceToken; tenant from token, P6).
+# Phase 0 ships the CONTRACT only; live wiring is a later flag-gated dormant-safe unit.
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Integration Hub (Connections + Origin Connector)
+  version: 0.1.0
+  description: >
+    Connector lifecycle + token vault + the Origin Platform Connector. The origin
+    provider is the single bridge that lets standalone GROWTH OS reuse the live Famit
+    platform as Tenant Zero (PUSH business facts in, PULL reports out). Decrypted tokens
+    never leave connector pods, are never logged or returned (§5.2). Origin tenant is
+    resolved from the service token, never from the request body (the load-bearing
+    isolation rule, P6).
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev.
+tags:
+  - name: connections
+    description: Connection management (user/admin) — bearerUserJwt.
+  - name: oauth
+  - name: origin-push
+    description: Origin Connector inbound (Famit -> GROWTH OS) — serviceToken.
+  - name: origin-pull
+    description: Origin Connector read projections (Famit <- GROWTH OS) — serviceToken.
+paths:
+  # ============================ (A) CONNECTION MANAGEMENT ============================
+  /connections:
+    get:
+      operationId: listConnections
+      summary: List the tenant's connected providers + health (§7.3).
+      tags: [connections]
+      security: [{ bearerUserJwt: [] }]
+      parameters:
+        - name: provider
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/Provider' }
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Page of connections (NO secrets — vault refs only).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Connection' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /connections/{connection_id}:
+    parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+    get:
+      operationId: getConnection
+      summary: Fetch one connection (health, scopes, status — no secrets).
+      tags: [connections]
+      security: [{ bearerUserJwt: [] }]
+      responses:
+        '200':
+          description: The connection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+    delete:
+      operationId: disconnect
+      summary: Disconnect a provider (revokes + purges vault entry).
+      tags: [connections]
+      security: [{ bearerUserJwt: [] }]
+      responses:
+        '204': { description: Disconnected. Emits integration.disconnected. }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /connections/{connection_id}/test:
+    parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+    post:
+      operationId: testConnection
+      summary: Test a connection's credentials + scopes (§7.3 test).
+      tags: [connections]
+      security: [{ bearerUserJwt: [] }]
+      responses:
+        '200':
+          description: Test result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, checked_at]
+                properties:
+                  ok: { type: boolean }
+                  checked_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+                  scopes_present: { type: array, items: { type: string } }
+                  scopes_missing: { type: array, items: { type: string } }
+                  message: { type: string }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /oauth/start:
+    post:
+      operationId: oauthStart
+      summary: Begin an OAuth connect flow for a provider (§7.3 oauth-start).
+      description: >
+        Returns the provider authorize URL + a signed state. For provider=origin there is
+        NO OAuth — a service token is issued out-of-band via tools/seed (Tenant-Zero), so
+        origin is rejected here.
+      tags: [oauth]
+      security: [{ bearerUserJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider]
+              properties:
+                provider: { $ref: '#/components/schemas/Provider' }
+                workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+                redirect_uri: { type: string, format: uri }
+                scopes:
+                  type: array
+                  items: { type: string }
+                  description: Requested scopes; defaults to the provider's minimal set (§5.2).
+      responses:
+        '200':
+          description: Authorize URL + state to redirect the user to.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [authorize_url, state]
+                properties:
+                  authorize_url: { type: string, format: uri }
+                  state: { type: string }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /oauth/callback:
+    get:
+      operationId: oauthCallback
+      summary: OAuth redirect target — exchanges code, vaults the token (§5.2).
+      tags: [oauth]
+      security: []
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        '302': { description: Redirect back to the dashboard with connect result. }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+
+  # ============================ (B) ORIGIN CONNECTOR — PUSH ============================
+  /v1/origin/events:
+    post:
+      operationId: originPushEvents
+      summary: The ONE inbound door — Famit pushes canonical business facts (§3.2).
+      description: >
+        Batch-capable. The connector verifies the service token -> resolves the single
+        connection -> pins tenant_id + workspace_id (P6) -> dedups on
+        (connection_id, Idempotency-Key) for exactly-once (P3) -> normalizes each
+        OriginEvent to the §6.1 envelope -> publishes to the bus (never inline, P2).
+        All events in one request MUST belong to the token's connection/tenant.
+      tags: [origin-push]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Famit's source event id; exactly-once per (connection, key).
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    $ref: '#/components/schemas/OriginEvent'
+      responses:
+        '202':
+          description: Accepted + queued to the bus (or replayed from idempotency cache).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginAck' }
+          headers:
+            X-Request-Id: { $ref: './_shared/common.yaml#/components/headers/XRequestId' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '409':
+          description: >
+            Idempotency-Key reused with a DIFFERENT body (the negative-control failure).
+          content:
+            application/json:
+              schema: { $ref: './_shared/common.yaml#/components/schemas/Error' }
+        '422': { $ref: './_shared/common.yaml#/components/responses/UnprocessableEntity' }
+        '429': { $ref: './_shared/common.yaml#/components/responses/RateLimited' }
+
+  /v1/origin/webhook/{kind}:
+    post:
+      operationId: originPushWebhook
+      summary: Provider-style webhook variant — Famit pushes raw, we normalize (§3.2).
+      description: >
+        For origins that prefer a webhook shape over the batch door. The connector maps
+        the raw kind payload to one or more OriginEvents internally, then to envelopes.
+      tags: [origin-push]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [call, wa, lead, campaign] }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw origin-native payload for the given kind (normalized server-side).
+              additionalProperties: true
+      responses:
+        '202':
+          description: Accepted + normalized + queued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginAck' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+        '429': { $ref: './_shared/common.yaml#/components/responses/RateLimited' }
+
+  # ============================ (B) ORIGIN CONNECTOR — PULL ============================
+  /v1/origin/campaigns/{ref}:
+    parameters:
+      - name: ref
+        in: path
+        required: true
+        description: Famit's campaign ref (origin_ref) OR the GROWTH OS campaign id.
+        schema: { type: string }
+    get:
+      operationId: originGetCampaign
+      summary: GROWTH OS campaign + media-plan + live status, RLS-scoped to the token (§3.3).
+      tags: [origin-pull]
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: Campaign read projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginCampaignView' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /v1/origin/reports/daily:
+    get:
+      operationId: originGetDailyReport
+      summary: Metrics-layer daily brief (CPL/CPqL/spend) for the panel (§3.3, §8.5).
+      tags: [origin-pull]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - name: date
+          in: query
+          required: true
+          description: Report date (YYYY-MM-DD), tenant-local.
+          schema: { type: string, format: date }
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+      responses:
+        '200':
+          description: Daily metrics report (numbers only from the metrics layer, P10).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginDailyReport' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /v1/origin/leads/{ref}/score:
+    parameters:
+      - name: ref
+        in: path
+        required: true
+        description: Famit lead_id (origin_ref) for the lead.
+        schema: { type: string }
+    get:
+      operationId: originGetLeadScore
+      summary: lead.scored result so the panel can show lead quality (§3.3, §9.5).
+      tags: [origin-pull]
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: Lead score + tier + reasons.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginLeadScore' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+
+  /v1/origin/signals/health:
+    get:
+      operationId: originGetSignalHealth
+      summary: The Signal Health card (EMQ/dedup/latency) for the panel (§3.3, §11).
+      tags: [origin-pull]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+      responses:
+        '200':
+          description: Signal health snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OriginSignalHealth' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'
+    serviceToken:
+      $ref: './_shared/common.yaml#/components/securitySchemes/serviceToken'
+  schemas:
+    Provider:
+      type: string
+      enum: [meta, google, waba, origin, hubspot, zoho, shopify, woocommerce, ga4]
+      description: §7.3 provider catalog. `origin` = the Origin Platform Connector (Tenant Zero).
+
+    # The deliberately-small wire shape Famit (Tenant Zero) sends on PUSH (§3.2). The
+    # connector maps this to the full §6.1 envelope server-side, so the origin never has
+    # to know GROWTH OS internals. tenant_id/workspace_id are NEVER in this body — they
+    # come from the service token (P6). origin_type values come from the §3.4 event map.
+    # (When the schemas role lands schemas/origin_event.schema.json this MUST stay in sync;
+    #  this inline copy is the connector's authoritative request contract.)
+    OriginEvent:
+      type: object
+      additionalProperties: false
+      required: [origin_type, origin_ref, occurred_at]
+      properties:
+        origin_type:
+          type: string
+          description: The Famit-source fact type; mapped to a canonical event (§3.4).
+          enum:
+            - campaign.requested
+            - call.completed
+            - call.outcome
+            - wa.message.sent
+            - wa.message.received
+            - wa.message.status
+            - lead.captured
+            - booking.created
+            - booking.attended
+            - sale.recorded
+            - payment.received
+            - creative.generated
+        origin_ref:
+          type: string
+          description: Famit's own id (campaign_id:phone / wamid / lead_id / asset_id).
+        occurred_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+        correlation_hint:
+          type: object
+          additionalProperties: false
+          description: >
+            Hints the connector uses to mint/resolve correlation_id (§6.3 — E.164 phone is
+            king in India, then ctwa_clid/fbclid). NOT authoritative tenant data.
+          properties:
+            phone: { type: string, description: E.164. }
+            wamid: { type: string }
+            lead_id: { type: string }
+            ctwa_clid: { type: string, description: CTWA click id — the §11.2 loop. }
+            fbclid: { type: string }
+            gclid: { type: string }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Origin-native fields, normalized per the §3.4 map (e.g. duration, intents[], order_value paise).
+
+    Connection:
+      type: object
+      additionalProperties: false
+      required: [connection_id, provider, status, health, created_at]
+      properties:
+        connection_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        provider: { $ref: '#/components/schemas/Provider' }
+        workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+        status: { type: string, enum: [active, degraded, disconnected, pending] }
+        health:
+          type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state: { type: string, enum: [healthy, degraded, expired, scope_drift] }
+            last_checked_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+            token_expires_at: { type: [string, "null"], format: date-time }
+        scopes:
+          type: array
+          items: { type: string }
+        vault_ref:
+          type: string
+          description: Opaque pointer into the token vault. The token itself is NEVER returned (§5.2).
+        created_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+
+    OriginAck:
+      type: object
+      additionalProperties: false
+      required: [accepted, idempotency_key]
+      properties:
+        accepted:
+          type: integer
+          description: Count of events accepted/queued to the bus.
+        deduped:
+          type: integer
+          description: Count short-circuited by the idempotency cache (replayed, P3).
+        idempotency_key: { type: string }
+        correlation_ids:
+          type: array
+          description: Journey correlation_ids minted/resolved for the batch (§6.3).
+          items: { type: string, format: uuid }
+
+    OriginCampaignView:
+      type: object
+      additionalProperties: false
+      required: [campaign_id, status]
+      properties:
+        campaign_id: { type: string }
+        origin_ref: { type: string }
+        status: { type: string, enum: [requested, researching, compiled, awaiting_approval, launched, paused, completed] }
+        media_plan_ref:
+          type: [string, "null"]
+          description: Pointer to the MediaPlan (schemas/media_plan.schema.json).
+        cib_ref:
+          type: [string, "null"]
+          description: Pointer to the CIB version (schemas/campaign_intelligence_brief.schema.json).
+        live_status:
+          type: object
+          additionalProperties: true
+          description: Platform-reported live state (delivery, learning phase) when launched.
+
+    OriginDailyReport:
+      type: object
+      additionalProperties: false
+      required: [date, spend_minor, currency]
+      properties:
+        date: { type: string, format: date }
+        currency: { type: string, const: INR }
+        spend_minor: { type: integer, description: INR paise. }
+        leads: { type: integer }
+        qualified_leads: { type: integer }
+        cpl_minor: { type: [integer, "null"], description: "CPL = spend/leads (paise)." }
+        cpql_minor: { type: [integer, "null"], description: "CPqL = spend/qualified_leads (NORTH STAR, §8.5)." }
+        source:
+          type: string
+          const: metrics_layer
+          description: Provenance label — numbers only from the metrics layer (P10, §8.6).
+
+    OriginLeadScore:
+      type: object
+      additionalProperties: false
+      required: [lead_ref, score, tier]
+      properties:
+        lead_ref: { type: string }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        tier: { type: string, enum: [hot, warm, cold, junk] }
+        reasons:
+          type: array
+          items: { type: string }
+        model: { type: string, examples: [heuristic_v1] }
+        scored_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+
+    OriginSignalHealth:
+      type: object
+      additionalProperties: false
+      required: [emq, dedup_rate, latency_p95_seconds, status]
+      properties:
+        emq:
+          type: [number, "null"]
+          description: Meta Event Match Quality on the optimization event (target >=8, §11.3).
+        dedup_rate:
+          type: number
+          description: Fraction of duplicate sends suppressed (target >=0.90, §8.4).
+        latency_p95_seconds:
+          type: integer
+          description: p95 source->dispatched latency (target <=900s / 15min, §11.3).
+        click_id_coverage:
+          type: number
+          description: Fraction of journeys carrying a click-ID.
+        status:
+          type: string
+          enum: [green, amber, red]
+          description: Red downgrades optimizer autonomy (honesty gate, §11.3/§24).

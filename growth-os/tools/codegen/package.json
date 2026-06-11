@@ -1,0 +1,19 @@
+{
+  "name": "@growth-os/codegen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Contracts codegen + the contract-drift mechanism (BUILD-SPEC P1): registry build/check, schema validation, TS type + SDK generation, schema bundle.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "registry:write": "node build-registry.mjs --write",
+    "registry:check": "node build-registry.mjs --check",
+    "validate": "node validate-schemas.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "json-schema-to-typescript": "^15.0.4",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,54 +1,62 @@
-# CRM workspace page — build STATE (crash-safe)
+# ENGAGE MODULES OVERHAUL A — CRM / Forms / Funnels / Booking (Core_2 port)
 
-Task: FRONTEND PAGE "CRM workspace (app/crm + contact profile)" in famit-panel.
-Reuse premium components (Layout/Card/KpiCard/Badge/.data-table/.state-block).
-Wire to crm-core §7 endpoints; graceful "not configured" when dormant (router is
-DEFINED-NOT-MOUNTED on live API -> /contacts* returns 404).
+Task: MODULE-PAGES OVERHAUL A. OWN ONLY app/crm, app/crm/[id], app/forms,
+app/forms/[id], app/funnels, app/booking. Founder says these "look bad / don't
+match". Fix per design/spec-core2-reuse-map.md: REPLACE bespoke chrome
+(PageHeader/KpiCard hero grids/`<table data-table>`/`.state-block`/hand-rolled
+SegBtn) with the REAL Core_2 kit already in FP/components/:
+  - Card (head row = title + headContent[Search/Tabs/Button] + optional Select)
+  - Search (isGray)  → replaces ad-hoc <input>
+  - Tabs (items/value/setValue)  → replaces SegBtn segmented control
+  - Table + TableRow  → replaces <table className="data-table">
+  - Overview metric-strip pattern (Card title=Overview + flex row of metric
+    Items: icon circle, title, big counter, Percentage)  → replaces KpiCard grid.
+    NOTE: no shared Overview component in FP + I MUST NOT add to components/, so
+    the strip JSX is ported INLINE into each page (still real Core_2 structure).
+  - NoFound only for "no search results"; dormant/empty = clean Card body.
 
-Constraint: edit ONLY this page's own files under app/crm. Do NOT touch
-globals.css, navigation.tsx, lib/api.ts, or other pages. No deploy (ship step
-does nav+build+deploy).
+CONSTRAINTS: edit ONLY my page dirs. Do NOT touch components/, globals.css,
+layout.tsx, navigation.tsx, lib/*. No npm build/deploy (ship step owns that).
+Keep all existing lib/api data wiring + dormant-safe behavior intact.
 
-Backend contract (design/platform-crm-core.md §7), all X-Auth, tenant-scoped:
-- GET /contacts?stage=&hot=&segment=&q=&sort=&limit= -> {contacts:[{id,phone_display,name,stage,score,hot,last_outcome,last_activity_at}], total}
-- GET /contacts/{id} -> {contact:{...full...}, lead:{...}, nba:{action,reason,requires_pin}}
-- GET /contacts/{id}/timeline?kinds=&limit= -> {timeline:[{kind,direction,title,body,outcome,amount,at}], contact_id}
-- GET /contacts/{id}/nba -> {action,reason,confidence,params,requires_pin}
-- GET /segments -> {segments:[...]}  (for the segment filter dropdown)
-Dormant: 404/501/network -> render premium "CRM not configured / coming soon".
-ONLY 401 redirects to /login.
+BACKEND TRUTH (from memory/brain/*):
+- crm: routes MOUNTED in caller.py; returns 200 + `note` when dormant.
+- forms: MOUNTED, FEATURE_FORMS default OFF → dormant.
+- funnels: NOT mounted → dormant.
+- booking: MOUNTED, FEATURE_BOOKING default OFF + schema not applied → dormant.
+All four render dormant-safe today; data flows automatically once flags flip.
 
-Units:
-- U1 client.ts (colocated API client + types)            -> DONE
-- U2 page.tsx (workspace list + KPIs + filters + search) -> DONE
-- U3 [id]/page.tsx (contact profile)                     -> DONE
-- U4 npx tsc --noEmit + npm run build green              -> DONE
+UNITS (one verified unit at a time, commit per unit):
+- U1 crm/page.tsx (list)            -> DONE (Card+Search+Tabs+Select+Table/TableRow+inline Overview strip; tsc clean)
+- U2 crm/[id]/page.tsx (profile)    -> DONE (Tabs for kind filter; FullState replaces state-block; tsc clean)
+- U3 forms/page.tsx + CreateFormModal-> DONE (same archetype; Modal already compliant; tsc clean)
+- U4 forms/[id]/page.tsx            -> DONE (Tabs for build/subs/insights; Table for submissions; tsc clean)
+- U5 funnels/page.tsx               -> DONE (Tabs rail; Overview strip; Table/TableRow My Funnels; Button on cards; tsc clean)
+- U6 booking/page.tsx               -> DONE (Overview strip; Tabs status filter; Table/TableRow; real Modal replaces hand-rolled overlay; tsc clean)
+- U7 tsc --noEmit clean (whole)     -> DONE (TSC_EXIT=0 whole project)
 
-Files created (all under app/crm/):
-- app/crm/client.ts
-- app/crm/_ui.tsx
-- app/crm/page.tsx
-- app/crm/[id]/page.tsx
-- app/crm/STATE.md (this file)
+ALL UNITS DONE. tsc --noEmit EXIT 0 project-wide. ESLint clean on all 6 edited
+files (pre-existing FieldEditor.tsx prefer-const is NOT mine, untouched).
+Not deployed (ship step owns nav+build+deploy). No shared files touched.
 
-RECONCILED against as-built API (droplet_work/caller.py @1971-2065 + crm/core.py),
-NOT just design §7 — the routes ARE mounted in caller.py (NOT defined-not-mounted):
-- path param is {phone} but accepts a ct_ contact id (my list passes c.id=ct_... OK)
-- detail returns {contact, timeline, nba} — NO top-level `lead`; lead truth is
-  PROJECTED INTO contact (stage/score/hot/last_outcome). Profile now reads lead-ish
-  fields off `contact`; seeds timeline from the embedded detail.timeline for "all".
-- list/timeline/nba answer 200 with a `note` ("crm module unavailable"/"pg_unavailable")
-  when dormant, NOT a 404 -> isDormantResponse() note-check + null-contact -> dormant.
-- 404 = genuine "contact not found" (CrmNotFoundError, distinct state), NOT dormant.
-- nba shape {action,reason,confidence,params,requires_pin} matches exactly; all 6
-  action verbs covered by nbaMeta; sort fixed to "last_activity_at".
+VERIFY each: npx tsc --noEmit clean. Keep _ui.tsx / client.ts data layer.
 
-VERIFY: `npx tsc --noEmit` clean; clean `npm run build` -> Compiled successfully,
-55/55 pages, both /crm (6.43kB) and /crm/[id] (5.79kB) routes present.
-(A mid-run .next cache race caused a transient "Unexpected end of JSON input" —
-fixed by killing stray node + rm -rf .next; the clean rebuild is fully green.)
-No globals.css / navigation.tsx / lib/api.ts / other-page edits. Not deployed.
-
-NOTE for ship step: add a nav entry for /crm (the page intentionally does NOT
-touch navigation.tsx). Suggested: Intelligence or Outreach group, icon "profile",
-label "CRM" / "Contacts", roles manager+ (read is fine for agents too).
+---
+W2 RE-VERIFY PASS (2026-06-11) — closed the last bespoke-chrome leaks in the two
+forms sub-components that the U1-U7 pass had skipped (the page.tsx parents were
+already clean):
+- forms/[id]/FieldEditor.tsx: `.state-block`/`.state-glyph`/`.state-title`/
+  `.state-sub` empty state → reference NoFound-style block (icon circle + text-h6
+  + body-2, token-only). `.eyebrow` class → `text-button text-t-secondary`.
+  prefer-const fix (`let base`→`const base`).
+- forms/[id]/InsightsPanel.tsx: DROPPED `import KpiCard` + the 4-up KpiCard hero
+  grid → local `Metric` tile (reference Overview pattern: icon circle + label +
+  text-h4 number + sub + thin token meter). `.state-block` empty → NoFound block.
+  `.meter`/`.meter-fill` option bars → token h-1.5 rounded bars.
+- funnels/page.tsx + booking/page.tsx: fixed STALE comment headers that named
+  PageHeader/KpiCard/data-table/state-block (markup was already ported; only the
+  comments lied).
+RESULT: zero PageHeader/eyebrow/subtitle/KpiCard/state-block/data-table/raw-hex
+in any of the 6 owned routes. tsc EXIT 0 for owned files (only pre-existing
+billing/_shared + super-admin/_shared errors remain — NOT mine). ESLint EXIT 0 on
+all 8 owned files. No shared files (components/, globals.css, layout, nav) touched.

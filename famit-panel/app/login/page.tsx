@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { login } from "@/lib/api";
 import { seedMeFromLogin } from "@/lib/auth";
@@ -52,12 +53,14 @@ export default function LoginPage() {
                 {/* wordmark */}
                 <div className="relative flex items-center gap-3">
                     <span className="relative flex items-center justify-center size-11 rounded-2xl bg-white/5 ring-1 ring-white/10 overflow-hidden">
-                        <span className="signal-glyph relative" aria-hidden>
-                            <i />
-                            <i />
-                            <i />
-                            <i />
-                        </span>
+                        <Image
+                            src="/images/famit-mark-white-trim.png"
+                            alt=""
+                            width={26}
+                            height={26}
+                            className="relative object-contain"
+                            priority
+                        />
                     </span>
                     <span className="inline-flex items-center gap-1.5 text-h5 font-semibold tracking-[-0.02em] text-white">
                         Famit
@@ -104,12 +107,14 @@ export default function LoginPage() {
                     <div className="mb-8 flex items-center gap-2.5 lg:hidden">
                         <span className="relative flex items-center justify-center size-10 rounded-2xl bg-shade-01 overflow-hidden ring-1 ring-s-subtle">
                             <span className="absolute inset-0 brand-glow opacity-60" aria-hidden />
-                            <span className="signal-glyph relative" aria-hidden>
-                                <i />
-                                <i />
-                                <i />
-                                <i />
-                            </span>
+                            <Image
+                                src="/images/famit-mark-white-trim.png"
+                                alt=""
+                                width={24}
+                                height={24}
+                                className="relative object-contain"
+                                priority
+                            />
                         </span>
                         <span className="wordmark text-h6">
                             Famit
@@ -118,11 +123,10 @@ export default function LoginPage() {
                     </div>
 
                     <div className="page-head-eyebrow mb-2">
-                        <span className="signal-glyph !h-3" aria-hidden>
-                            <i />
-                            <i />
-                            <i />
-                        </span>
+                        <span
+                            className="size-1.5 rounded-full bg-primary-01 shadow-[0_0_8px_0_var(--primary-01)]"
+                            aria-hidden
+                        />
                         Welcome back
                     </div>
                     <h1 className="text-h4 text-t-primary">Sign in to Famit</h1>

@@ -21,7 +21,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Layout from "@/components/Layout";
-import PageHeader from "@/components/PageHeader";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge, { type BadgeVariant } from "@/components/Badge";
@@ -306,25 +305,6 @@ export default function AdsPage() {
 
     return (
         <Layout title="Ads">
-            <PageHeader
-                eyebrow="Paid-Ads Command Center"
-                title="Ads"
-                subtitle="Brief the AI once and it drafts a full Meta or Google campaign — copy, audience and objective — under a hard spend cap. Nothing goes live without your approval; a breaker auto-pauses any campaign that blows its budget or cost-per-lead; every decision is logged."
-                actions={
-                    <button
-                        onClick={refreshAll}
-                        className="inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50"
-                        disabled={healthLoading || campsLoading}
-                    >
-                        <Icon
-                            name="clock"
-                            className={`size-4 fill-current ${healthLoading || campsLoading ? "animate-spin" : ""}`}
-                        />
-                        Refresh
-                    </button>
-                }
-            />
-
             {toast && (
                 <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
                     <span className="flex items-center gap-2">
@@ -340,31 +320,44 @@ export default function AdsPage() {
                 </div>
             )}
 
-            {/* Tab strip — pill rail matching the AI Manager / billing premium tabs */}
-            <div className="flex items-center gap-1 mb-5 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
-                {TABS.map((t) => {
-                    const active = tab === t.key;
-                    return (
-                        <button
-                            key={t.key}
-                            onClick={() => setTab(t.key)}
-                            className={`shrink-0 inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-button transition-colors ${
-                                active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
-                            }`}
-                        >
-                            <Icon
-                                name={t.icon}
-                                className={`size-4 ${active ? "fill-t-primary" : "fill-t-secondary"}`}
-                            />
-                            {t.label}
-                            {t.key === "campaigns" && (t.badge || 0) > 0 && (
-                                <span className="pill pill-info !px-1.5 !py-0 text-caption">{t.badge}</span>
-                            )}
-                        </button>
-                    );
-                })}
+            {/* Section tabs + refresh (title is the single Layout heading) */}
+            <div className="flex items-center gap-3 mb-5 max-sm:flex-col max-sm:items-stretch">
+                <div className="flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
+                    {TABS.map((t) => {
+                        const active = tab === t.key;
+                        return (
+                            <button
+                                key={t.key}
+                                onClick={() => setTab(t.key)}
+                                className={`shrink-0 inline-flex items-center gap-2 h-9 px-3.5 rounded-full text-button transition-colors ${
+                                    active
+                                        ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
+                                        : "text-t-secondary hover:text-t-primary"
+                                }`}
+                            >
+                                <Icon
+                                    name={t.icon}
+                                    className={`size-4 ${active ? "fill-t-primary" : "fill-t-secondary"}`}
+                                />
+                                {t.label}
+                                {t.key === "campaigns" && (t.badge || 0) > 0 && (
+                                    <span className="pill pill-info !px-1.5 !py-0 text-caption">{t.badge}</span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+                <button
+                    onClick={refreshAll}
+                    className="ml-auto max-sm:ml-0 inline-flex items-center justify-center gap-2 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary hover:shadow-widget active:scale-[0.98] disabled:opacity-50"
+                    disabled={healthLoading || campsLoading}
+                >
+                    <Icon
+                        name="clock"
+                        className={`size-4 fill-current ${healthLoading || campsLoading ? "animate-spin" : ""}`}
+                    />
+                    Refresh
+                </button>
             </div>
 
             {tab === "overview" && (

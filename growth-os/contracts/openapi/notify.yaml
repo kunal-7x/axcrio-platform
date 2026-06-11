@@ -1,0 +1,334 @@
+# GROWTH OS — notify (channels + templates) — OpenAPI 3.1
+# Spec ref §7.6: in-app, email, WhatsApp utility templates (approvals/alerts/briefs) +
+# quiet hours + locale. Phase 0 = console sink (D1 notify module); email/WA channels are
+# wired later (WA via the live whatsapp.py adapter, §16.1). The Approval Inbox (§17.2) and
+# AI CMO daily brief (§17.4) both deliver through this surface.
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Notify
+  version: 0.1.0
+  description: >
+    Outbound notification plane: channels (in-app, email, WhatsApp), reusable templates
+    (locale-aware), quiet-hours config, and a send endpoint other modules call to deliver
+    approvals/alerts/briefs. Phase 0 ships a console sink; the contract is stable so the
+    email/WA channel implementations slot in without contract change. WhatsApp sends go
+    through the live WABA adapter (§16.1) and honor messaging windows + per-user caps.
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev.
+tags:
+  - name: channels
+  - name: templates
+  - name: notifications
+  - name: preferences
+security:
+  - bearerUserJwt: []
+paths:
+  /notify/channels:
+    get:
+      operationId: listChannels
+      summary: List configured delivery channels for the tenant (§7.6).
+      tags: [channels]
+      responses:
+        '200':
+          description: Channels + their status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [channels]
+                properties:
+                  channels:
+                    type: array
+                    items: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /notify/channels/{channel}:
+    parameters:
+      - name: channel
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/ChannelKind' }
+    put:
+      operationId: configureChannel
+      summary: Configure a channel (e.g. email sender, WA template namespace).
+      tags: [channels]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                config:
+                  type: object
+                  additionalProperties: true
+                  description: Channel-specific config (no secrets returned on read).
+      responses:
+        '200':
+          description: Channel configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+
+  /notify/templates:
+    get:
+      operationId: listTemplates
+      summary: List notification templates (locale-aware) for the tenant.
+      tags: [templates]
+      parameters:
+        - name: channel
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/ChannelKind' }
+        - name: locale
+          in: query
+          required: false
+          schema: { type: string, examples: [en-IN, hi-IN] }
+      responses:
+        '200':
+          description: Page of templates.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Template' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+    post:
+      operationId: createTemplate
+      summary: Create a notification template.
+      tags: [templates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TemplateInput' }
+      responses:
+        '201':
+          description: Template created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Template' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+
+  /notify/send:
+    post:
+      operationId: sendNotification
+      summary: Send a notification through a channel (approvals/alerts/briefs §7.6).
+      description: >
+        Other modules call this to deliver. Honors quiet hours + locale + (for WA) the
+        messaging window + per-user caps (§16.1). Idempotent on Idempotency-Key (P3).
+        Phase 0 sink = console; the contract is unchanged when real channels arrive.
+      tags: [notifications]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendRequest' }
+      responses:
+        '202':
+          description: Accepted for delivery (or replayed if Idempotency-Key seen, P3).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+        '422':
+          description: Send blocked (e.g. WA window closed, quiet hours, consent missing §5.4).
+          content:
+            application/json:
+              schema: { $ref: './_shared/common.yaml#/components/schemas/Error' }
+
+  /notify/notifications:
+    get:
+      operationId: listNotifications
+      summary: List sent/in-app notifications (the in-app inbox feed).
+      tags: [notifications]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [queued, sent, delivered, failed, read] }
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Page of notifications.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /notify/preferences:
+    get:
+      operationId: getPreferences
+      summary: Get quiet-hours + per-channel preferences (§7.6 quiet hours + locale).
+      tags: [preferences]
+      responses:
+        '200':
+          description: Preferences.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+    put:
+      operationId: updatePreferences
+      summary: Update quiet hours + channel preferences.
+      tags: [preferences]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Preferences' }
+      responses:
+        '200':
+          description: Preferences updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'
+  schemas:
+    ChannelKind:
+      type: string
+      enum: [in_app, email, whatsapp]
+      description: §7.6 channels. WhatsApp uses the live WABA adapter (§16.1).
+
+    Channel:
+      type: object
+      additionalProperties: false
+      required: [channel, enabled]
+      properties:
+        channel: { $ref: '#/components/schemas/ChannelKind' }
+        enabled: { type: boolean }
+        status: { type: string, enum: [ready, degraded, unconfigured] }
+        config_summary:
+          type: object
+          additionalProperties: true
+          description: Non-secret summary (e.g. WA quality rating, sender address).
+
+    Template:
+      type: object
+      additionalProperties: false
+      required: [template_id, key, channel, locale, body]
+      properties:
+        template_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        key:
+          type: string
+          description: Stable logical name, e.g. approval_request, anomaly_alert, daily_brief.
+        channel: { $ref: '#/components/schemas/ChannelKind' }
+        locale: { type: string, default: en-IN }
+        category:
+          type: string
+          enum: [utility, marketing, authentication]
+          description: WA category (cost meter §16.1). Approvals/alerts/briefs = utility.
+        body:
+          type: string
+          description: Template body with {{variables}}.
+        variables:
+          type: array
+          items: { type: string }
+        wa_status:
+          type: [string, "null"]
+          enum: [draft, submitted, approved, rejected, null]
+          description: WA template approval status when channel=whatsapp.
+
+    TemplateInput:
+      type: object
+      additionalProperties: false
+      required: [key, channel, body]
+      properties:
+        key: { type: string }
+        channel: { $ref: '#/components/schemas/ChannelKind' }
+        locale: { type: string, default: en-IN }
+        category: { type: string, enum: [utility, marketing, authentication], default: utility }
+        body: { type: string }
+        variables:
+          type: array
+          items: { type: string }
+
+    SendRequest:
+      type: object
+      additionalProperties: false
+      required: [channel, to, template_key]
+      properties:
+        channel: { $ref: '#/components/schemas/ChannelKind' }
+        to:
+          type: string
+          description: Recipient — user_id (in_app), email, or E.164 phone (whatsapp).
+        template_key: { type: string }
+        locale: { type: string }
+        variables:
+          type: object
+          additionalProperties: { type: string }
+        priority:
+          type: string
+          enum: [low, normal, high, critical]
+          default: normal
+          description: critical (e.g. budget anomaly §13.2) may bypass quiet hours.
+        action_ref:
+          type: [string, "null"]
+          description: Optional ledger action id for approval cards (§17.2) — links the WA buttons.
+
+    Notification:
+      type: object
+      additionalProperties: false
+      required: [notification_id, channel, status, created_at]
+      properties:
+        notification_id: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+        channel: { $ref: '#/components/schemas/ChannelKind' }
+        to: { type: string }
+        template_key: { type: string }
+        status: { type: string, enum: [queued, sent, delivered, failed, read] }
+        action_ref: { type: [string, "null"] }
+        created_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+
+    Preferences:
+      type: object
+      additionalProperties: false
+      required: [quiet_hours, channel_prefs]
+      properties:
+        quiet_hours:
+          type: object
+          additionalProperties: false
+          required: [enabled]
+          properties:
+            enabled: { type: boolean }
+            start: { type: string, examples: ["21:00"], description: tenant-local HH:mm. }
+            end: { type: string, examples: ["08:00"] }
+            timezone: { type: string, default: Asia/Kolkata }
+        channel_prefs:
+          type: object
+          additionalProperties: { type: boolean }
+          description: Per-channel opt-in map.
+        locale: { type: string, default: en-IN }

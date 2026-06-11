@@ -1,0 +1,47 @@
+{
+  "name": "growth-os",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS — autonomous ads & marketing automation. Phase 0 monorepo (rails + contracts).",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22.11.0",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint . && turbo run lint",
+    "lint:root": "eslint .",
+    "test": "turbo run test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "codegen": "node tools/codegen/generate.mjs",
+    "codegen:types": "node tools/codegen/generate-types.mjs",
+    "codegen:sdk": "node tools/codegen/generate-sdk.mjs",
+    "contracts:validate": "node tools/codegen/validate-schemas.mjs",
+    "contracts:snapshot": "node tools/codegen/build-registry.mjs --write",
+    "contracts:drift": "node tools/codegen/build-registry.mjs --check",
+    "demo:phase0": "node --import tsx tools/demo-phase0/run.ts",
+    "infra:up": "docker compose -f infra/docker-compose.dev.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.dev.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.dev.yml logs -f"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^1.34.5",
+    "@types/node": "^22.10.2",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^9.17.0",
+    "js-yaml": "^4.1.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "openapi-typescript": "^7.6.1",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0",
+    "vitest": "^2.1.8"
+  }
+}

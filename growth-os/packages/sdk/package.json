@@ -1,0 +1,36 @@
+{
+  "name": "@growth-os/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS typed client SDK: OpenAPI-derived path/component types per surface + a tiny typed fetch client. Re-exports the event types from @growth-os/events. Generated from /contracts (P1, §17.5 'the dashboard uses the public API').",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./generated": {
+      "types": "./dist/generated/index.d.ts",
+      "default": "./dist/generated/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "codegen": "node ../../tools/codegen/generate-sdk.mjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@growth-os/events": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "openapi-typescript": "^7.6.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

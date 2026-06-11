@@ -8,7 +8,6 @@
 
 import Badge, { type BadgeVariant } from "@/components/Badge";
 import Icon from "@/components/Icon";
-import PageHeader from "@/components/PageHeader";
 import type { IntentStatus, ProviderStatus } from "./_api";
 
 // ---- formatting ------------------------------------------------------------
@@ -113,20 +112,6 @@ export function ProviderPill({
             </Badge>
         </div>
     );
-}
-
-// ---- masthead --------------------------------------------------------------
-
-export function PaymentsHeader({
-    title,
-    subtitle,
-    actions,
-}: {
-    title: string;
-    subtitle?: React.ReactNode;
-    actions?: React.ReactNode;
-}) {
-    return <PageHeader eyebrow="Money" title={title} subtitle={subtitle} actions={actions} />;
 }
 
 // ---- premium hero KPI card (billing-language, payments-owned) ---------------

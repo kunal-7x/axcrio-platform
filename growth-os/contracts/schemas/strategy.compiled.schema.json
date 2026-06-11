@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/strategy.compiled.schema.json",
+  "title": "strategy.compiled",
+  "description": "PAYLOAD of the `strategy.compiled` envelope. Topic: campaign.strategy.compiled. Emitted by the strategy-compiler (§9.9) after it turns the CIB into a MediaPlan: a concrete campaign/adset/ad tree per platform with budgets, audiences, destination types, creative slots, tracking params and experiment design. Deterministic given CIB+config. The MediaPlan body is the frozen artifact media_plan.schema.json (§9.9); this event references it.",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "strategy.compiled",
+  "x-topic": "campaign.strategy.compiled",
+  "additionalProperties": false,
+  "required": [
+    "media_plan_id",
+    "cib_ref",
+    "media_plan_ref"
+  ],
+  "properties": {
+    "media_plan_id": {
+      "description": "Id of the produced MediaPlan (matches media_plan_id in media_plan.schema.json).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cib_ref": {
+      "description": "The cib_id this MediaPlan was compiled from (§9.9 pure function of CIB+config).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "media_plan_ref": {
+      "description": "Pointer to the full MediaPlan artifact; validates against media_plan.schema.json.",
+      "type": "string"
+    },
+    "summary": {
+      "description": "Thin routing summary of the plan tree.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platforms": {
+          "type": "array",
+          "items": { "type": "string", "enum": [ "meta", "google" ] }
+        },
+        "campaign_count": { "type": "integer", "minimum": 0 },
+        "adset_count": { "type": "integer", "minimum": 0 },
+        "ad_count": { "type": "integer", "minimum": 0 },
+        "creative_slot_count": {
+          "description": "How many creative slots the plan needs filled from DAM (drives the creative batch §15).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "experiment_arms": {
+          "description": "Number of experiment arms = creative x audience-cell x destination (§12.1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "test_daily_minor": {
+          "description": "Planned test daily budget in INR paise.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_viable_test_minor": {
+          "description": "War-Game minimum testable daily budget in paise (§13.4); if vendor budget < this the compiler returns insufficient_budget instead of launching (§10.1).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "feasibility": {
+      "description": "Whether the plan is launchable at the vendor's budget. `insufficient_budget` means the campaign-compiler must NOT silently launch (§10.1, §13.4) — it surfaces options.",
+      "type": "string",
+      "enum": [ "ok", "insufficient_budget", "blocked_compliance" ],
+      "default": "ok"
+    }
+  }
+}

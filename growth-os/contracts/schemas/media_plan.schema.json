@@ -1,0 +1,520 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/media_plan.schema.json",
+  "title": "MediaPlan",
+  "description": "The concrete campaign→adset→ad tree the strategy-compiler produces from a CIB (GROWTH-OS-BUILD-SPEC §9.9). Pure function + LLM-assisted naming; DETERMINISTIC given CIB + config. Per platform with budgets, audiences, destination types, creative slots (→ DAM asset ids tagged with CreativeDNA), tracking params, and experiment design (arms, success_metric, min_runtime). The campaign-compiler (§10.1) turns this into exact platform payloads. Frozen-after-merge; new fields ⇒ version bump.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "media_plan_id",
+    "version",
+    "cib_ref",
+    "currency",
+    "campaigns",
+    "experiment_design"
+  ],
+  "properties": {
+    "media_plan_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "description": "Schema version of the MediaPlan shape (frozen-after-merge).",
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "cib_ref": {
+      "description": "The cib_id this MediaPlan was compiled from (provenance for diff/replay).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cib_revision": {
+      "description": "The CIB content revision compiled from.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "config_ref": {
+      "description": "Id/version of the policy-config (caps/autopilot/industry-pack) used, so the deterministic compile is reproducible.",
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "currency": {
+      "type": "string",
+      "const": "INR"
+    },
+    "insufficient_budget": {
+      "description": "Set true when the vendor budget cannot meet min_viable_test / the ≥5×CPqL ad-set floor (§10.1). The compiler returns this rather than silently launching an untestable plan; War-Game minimums in the note.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "min_viable_daily"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "min_viable_daily": {
+          "description": "Minimum viable daily budget per War-Game, INR paise (integer).",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "campaigns": {
+      "description": "1–3 campaigns (consolidation > fragmentation, §10.1).",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/campaign"
+      }
+    },
+    "experiment_design": {
+      "description": "The test design that turns this plan into a learning experiment (§9.9, §12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arms",
+        "success_metric",
+        "min_runtime_days"
+      ],
+      "properties": {
+        "arms": {
+          "description": "The experiment arms. Arm = creative × audience-cell × destination (§12.1).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "arm_id",
+              "ad_ref"
+            ],
+            "properties": {
+              "arm_id": {
+                "type": "string"
+              },
+              "ad_ref": {
+                "description": "The ad.ref within this plan that realizes the arm.",
+                "type": "string"
+              },
+              "creative_slot_ref": {
+                "type": "string"
+              },
+              "audience_ref": {
+                "type": "string"
+              },
+              "destination": {
+                "type": "string",
+                "enum": [
+                  "ctwa",
+                  "leadform",
+                  "lp",
+                  "website",
+                  "call"
+                ]
+              },
+              "prior": {
+                "description": "Hierarchical Gamma–Poisson prior seed for this arm (arm←creative-DNA←memory←benchmark, §12.1 shrinkage). Optional at plan time; filled from memory.",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "alpha": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "beta": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "memory",
+                      "benchmark",
+                      "flat"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "success_metric": {
+          "description": "The reward metric the experiment grades on (§12.1: qualified leads, value-weighted by lead_score).",
+          "type": "string",
+          "enum": [
+            "CPqL",
+            "qualified_leads",
+            "purchases",
+            "ROAS"
+          ],
+          "default": "CPqL"
+        },
+        "min_runtime_days": {
+          "description": "Minimum days before a winner can be declared (learning-phase respect, §12.2/§12.6).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_explore_share": {
+          "description": "Thompson-sampling exploration floor (§12.4 default 0.10).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.1
+        },
+        "max_arm_share": {
+          "description": "Max budget share any single arm may take per tick (§12.4 default 0.40).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.4
+        }
+      }
+    }
+  },
+  "$defs": {
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "platform",
+        "objective",
+        "budget",
+        "ad_sets"
+      ],
+      "properties": {
+        "ref": {
+          "description": "Plan-local stable id (campaign-compiler maps it to the platform id post-launch).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human/UTM-friendly name (LLM-assisted, §9.9).",
+          "type": "string"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "meta",
+            "google",
+            "whatsapp",
+            "tiktok",
+            "microsoft"
+          ]
+        },
+        "objective": {
+          "description": "Meta 2026: Sales/Leads/App where Advantage+ defaults (§10.1, §23).",
+          "type": "string",
+          "enum": [
+            "leads",
+            "sales",
+            "app",
+            "traffic",
+            "awareness",
+            "engagement",
+            "messages"
+          ]
+        },
+        "buying_strategy": {
+          "description": "Budget strategy at campaign level. ABO test → consolidate winners under CBO/Advantage+ (§10.1).",
+          "type": "string",
+          "enum": [
+            "ABO",
+            "CBO",
+            "advantage_plus"
+          ]
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "ad_sets": {
+          "description": "Few CONSOLIDATED ad sets (§10.1 consolidation > fragmentation).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ad_set"
+          }
+        }
+      }
+    },
+    "ad_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "audience",
+        "destination",
+        "budget",
+        "ads"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "audience": {
+          "$ref": "#/$defs/audience"
+        },
+        "destination": {
+          "description": "Where this ad set sends people (§10.1). CTWA opens the free 72h WA window (§11.2).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "ctwa",
+                "leadform",
+                "lp",
+                "website",
+                "call"
+              ]
+            },
+            "ctwa_prefilled_message": {
+              "description": "Per-ad prefilled WhatsApp message for CTWA (§10.1).",
+              "type": "string"
+            },
+            "leadform_ref": {
+              "type": "string"
+            },
+            "lp_url": {
+              "type": "string"
+            },
+            "ad_ref_token": {
+              "description": "Token threaded into the destination so inbound CTWA/leadgen can attribute back to the exact ad (ctwa_clid path, §11.2).",
+              "type": "string"
+            }
+          }
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "ads": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ad"
+          }
+        },
+        "optimization_event": {
+          "description": "The ladder event this ad set optimizes toward (§11.1: deepest event with ≥~30–50 conv/week).",
+          "type": "string",
+          "enum": [
+            "Lead",
+            "QualifiedLead",
+            "Schedule",
+            "Attended",
+            "Purchase"
+          ]
+        }
+      }
+    },
+    "ad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "creative_slot",
+        "tracking"
+      ],
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "creative_slot": {
+          "$ref": "#/$defs/creative_slot"
+        },
+        "tracking": {
+          "$ref": "#/$defs/tracking"
+        }
+      }
+    },
+    "creative_slot": {
+      "description": "A slot the creative-studio/DAM fills. Holds the DAM asset id (resolved) or remains a brief (to-be-generated), plus the CreativeDNA target for diversity/QA.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot_id",
+        "dna"
+      ],
+      "properties": {
+        "slot_id": {
+          "type": "string"
+        },
+        "asset_id": {
+          "description": "DAM asset id once a creative is bound to this slot; absent ⇒ studio must generate to the dna spec.",
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "brief",
+            "generating",
+            "ready",
+            "qa_passed",
+            "approved"
+          ],
+          "default": "brief"
+        },
+        "dna": {
+          "description": "Target CreativeDNA for this slot — the genes the asset must express (drives generation + diversity + attribute learning).",
+          "$ref": "creative_dna.schema.json"
+        },
+        "copy": {
+          "description": "Resolved copy fields for the slot (headline/primary_text/cta/description).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "headline": {
+              "type": "string"
+            },
+            "primary_text": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "cta": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "audience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "persona_ref": {
+          "description": "CIB persona id this audience realizes.",
+          "type": "string"
+        },
+        "mode": {
+          "description": "Targeting mode. Meta 2026: Advantage+ audience ON by default; manual stacks only for restricted/special categories (§10.1).",
+          "type": "string",
+          "enum": [
+            "advantage_plus",
+            "manual",
+            "custom_audience",
+            "lookalike",
+            "retargeting",
+            "exclusion"
+          ]
+        },
+        "geo": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "age_min": {
+          "type": "integer",
+          "minimum": 13
+        },
+        "age_max": {
+          "type": "integer",
+          "maximum": 120
+        },
+        "custom_audience_refs": {
+          "description": "Conversation-outcome / customer-list audience ids (§10.5) used as seeds or exclusions.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "description": "Audiences to exclude (hygiene: purchasers out of prospecting, §10.5).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lookalike_source_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "utm"
+      ],
+      "properties": {
+        "utm": {
+          "description": "Canonical UTM per §8.1: utm_campaign=cmp_{id}__ag_{angle}__cr_{creative}.",
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "utm_source": {
+              "type": "string"
+            },
+            "utm_medium": {
+              "type": "string"
+            },
+            "utm_campaign": {
+              "type": "string"
+            },
+            "utm_content": {
+              "type": "string"
+            },
+            "utm_term": {
+              "type": "string"
+            }
+          }
+        },
+        "click_id_capture": {
+          "description": "Click IDs this destination must capture (fbclid/gclid/wbraid/gbraid, §8.1).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "budget": {
+      "description": "Budget at any tree level (workspace_monthly→campaign_lifetime→daily_cap→adset share, §13.1). All amounts INR paise (integer).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "amount_minor"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "daily",
+            "lifetime"
+          ]
+        },
+        "amount_minor": {
+          "description": "Budget amount in INR paise (integer).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "floor_multiple_of_cpa": {
+          "description": "The ≥5× target CPqL/CPA learning-exit feasibility floor this budget satisfies (§10.1, §23).",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

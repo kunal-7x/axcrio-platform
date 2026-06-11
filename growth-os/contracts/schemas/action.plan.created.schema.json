@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.growth-os.dev/schemas/action.plan.created.schema.json",
+  "title": "action.plan.created",
+  "description": "PAYLOAD of the `action.plan.created` envelope. Topic: activation.action_plan.created. Emitted by the Ledger (§7.4) when a new ActionPlan is PROPOSED (status=proposed) — before any signature or execution. Carries the full Explanation (P5: no silent actions — every autonomous action emits an Explanation BEFORE execution). The plan body is the frozen artifact action_plan.schema.json (§7.4, P5). This event references it + its hash-chain position. NOTHING mutates a platform on this event — that needs action.plan.signed -> action.executed (P4).",
+  "type": "object",
+  "x-contract-version": "1.0.0",
+  "x-event-type": "action.plan.created",
+  "x-topic": "activation.action_plan.created",
+  "additionalProperties": false,
+  "required": [
+    "action_plan_id",
+    "action_type",
+    "status",
+    "explanation"
+  ],
+  "properties": {
+    "action_plan_id": {
+      "description": "Ledger id of the ActionPlan (matches action_plan.schema.json id).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "action_type": {
+      "description": "What the plan will do once signed+executed. The connector mutation it authorizes (P4 — executor-only).",
+      "type": "string",
+      "enum": [
+        "launch_campaign",
+        "pause_ad",
+        "pause_adset",
+        "pause_campaign",
+        "resume",
+        "budget_increase",
+        "budget_decrease",
+        "reallocate_budget",
+        "rotate_creative",
+        "clone_arm",
+        "create_audience",
+        "dispatch_signal",
+        "send_message",
+        "broadcast"
+      ]
+    },
+    "target_ref": {
+      "description": "The entity the action targets, form platform:entity:id (e.g. meta:ad:123) or an internal ref. Matches Appendix-A optimization.decision.platform_ref shape.",
+      "type": "string"
+    },
+    "status": {
+      "description": "Lifecycle status at creation = proposed (§7.4 status enum). Signing flips it via action.plan.signed.",
+      "type": "string",
+      "const": "proposed"
+    },
+    "explanation": {
+      "description": "The mandatory Explanation (P5, §7.4). Plain-language + vernacular why, with evidence. NO action without this. Mirrors Appendix-A optimization.decision.explanation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "summary_en", "confidence", "reversible" ],
+      "properties": {
+        "summary_en": { "type": "string", "description": "Plain-English one-liner of what + why." },
+        "summary_hi": { "type": "string", "description": "Hindi (vernacular) rendering — India-first §11." },
+        "evidence": {
+          "description": "The facts justifying the action (every action cites evidence §7.4/P5).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [ "metric", "value" ],
+            "properties": {
+              "metric": { "type": "string" },
+              "value": {}
+            }
+          }
+        },
+        "expected_effect": { "type": "string", "description": "e.g. 'reallocate Rs620/day'." },
+        "confidence": { "type": "string", "enum": [ "low", "medium", "high" ] },
+        "reversible": { "type": "boolean" },
+        "approval_required": { "type": "boolean", "description": "Driven by Approval Policy + autopilot level (§17.1)." },
+        "undo_plan": { "type": "string", "description": "Exact reversal (e.g. 'unpause ad 123')." }
+      }
+    },
+    "budget_governor_stamp": {
+      "description": "Required for any spend-changing plan to be signable (§13.1 — every spend-changing ActionPlan needs a Governor stamp). Absent for non-spend actions.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stamp_id": { "type": "string" },
+        "within_caps": { "type": "boolean" }
+      }
+    },
+    "prev_hash": {
+      "description": "Hash-chain link to the previous Ledger entry (§5.5 tamper-evident append-only).",
+      "type": "string"
+    },
+    "hash": {
+      "description": "Hash of this Ledger entry (over content + prev_hash).",
+      "type": "string"
+    }
+  }
+}

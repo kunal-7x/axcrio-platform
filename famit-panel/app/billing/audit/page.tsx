@@ -4,7 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
-import Icon from "@/components/Icon";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
+import NoFound from "@/components/NoFound";
 import Badge from "@/components/Badge";
 import {
     getBillingAudit,
@@ -12,7 +14,17 @@ import {
     type BillingAuditVendor,
 } from "@/lib/api";
 import { useMe, isAdmin } from "@/lib/auth";
-import { money, fmt, StatusBadge, ErrorBanner, ghostBtnCls, BillingHeader } from "../_shared";
+import { money, fmt, StatusBadge, ErrorBanner, BillingTabs } from "../_shared";
+
+const tableHead = [
+    "Vendor",
+    "Status",
+    "Last sync",
+    "Internal",
+    "Vendor-reported",
+    "Difference",
+    "Notes",
+];
 
 export default function BillingAuditPage() {
     const { me } = useMe();
@@ -30,12 +42,18 @@ export default function BillingAuditPage() {
         setLoading(true);
         setError("");
         getBillingAudit()
-            .then((r) => { setVendors(r.vendors); setCurrency(r.currency); setNote(r.note); })
+            .then((r) => {
+                setVendors(r.vendors);
+                setCurrency(r.currency);
+                setNote(r.note);
+            })
             .catch((e) => setError(e instanceof Error ? e.message : "Failed to load audit"))
             .finally(() => setLoading(false));
     }, []);
 
-    useEffect(() => { load(); }, [load]);
+    useEffect(() => {
+        load();
+    }, [load]);
 
     async function handleSync() {
         setSyncing(true);
@@ -52,114 +70,126 @@ export default function BillingAuditPage() {
     }
 
     return (
-        <Layout title="Billing · Audit">
-            <BillingHeader
-                title="Billing Audit"
-                subtitle="Reconcile the internal metered ledger against each vendor's reported spend, and flag stale syncs."
-            />
+        <Layout title="Audit">
+            <BillingTabs />
             <ErrorBanner msg={error} />
 
-            <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-                <div className="flex items-center gap-2 text-caption text-t-tertiary max-w-2xl">
-                    <Icon name="info" className="size-3.5 fill-t-tertiary shrink-0" />
-                    {note || "Reconciles the internal metered ledger against each vendor's reported spend."}
-                </div>
-                <div className="flex items-center gap-3">
-                    {syncMsg && <span className="text-caption text-t-secondary">{syncMsg}</span>}
-                    <button onClick={load} className={ghostBtnCls} disabled={loading}>
-                        <Icon name="clock" className={`size-4 fill-current ${loading ? "animate-spin" : ""}`} />
-                        {loading ? "Refreshing…" : "Refresh"}
-                    </button>
-                    {admin && (
-                        <Button isBlack onClick={handleSync} disabled={syncing}>
-                            {syncing ? "Syncing…" : "Sync now"}
+            <Card
+                title="Vendor reconciliation"
+                headContent={
+                    <div className="flex items-center gap-3 ml-auto">
+                        {syncMsg && (
+                            <span className="text-caption text-t-secondary max-md:hidden">
+                                {syncMsg}
+                            </span>
+                        )}
+                        <Button isStroke icon="clock" onClick={load} disabled={loading}>
+                            {loading ? "Refreshing…" : "Refresh"}
                         </Button>
-                    )}
-                </div>
-            </div>
-
-            <Card title="Vendor Sync Status">
-                <div className="overflow-x-auto px-3 pb-2">
-                    <table className="data-table">
-                        <thead>
-                            <tr>
-                                <th>Vendor</th>
-                                <th>Status</th>
-                                <th>Last Sync</th>
-                                <th className="text-right">Internal (ledger)</th>
-                                <th className="text-right">Vendor-reported</th>
-                                <th className="text-right">Δ</th>
-                                <th>Notes</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {loading && vendors.length === 0 ? (
-                                [...Array(4)].map((_, i) => (
-                                    <tr key={i}>
-                                        {[...Array(7)].map((_, j) => (
-                                            <td key={j}><div className="skeleton h-4 w-20" /></td>
-                                        ))}
-                                    </tr>
-                                ))
-                            ) : vendors.length === 0 ? (
-                                <tr>
-                                    <td colSpan={7}>
-                                        <div className="state-block">
-                                            <span className="state-glyph">
-                                                <Icon name="check-circle" className="fill-inherit" />
-                                            </span>
-                                            <div className="state-title">Nothing to reconcile</div>
-                                            <div className="state-sub">
-                                                Vendor sync status appears here once a sync runs.
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                            ) : (
-                                vendors.map((v) => {
+                        {admin && (
+                            <Button isBlack onClick={handleSync} disabled={syncing}>
+                                {syncing ? "Syncing…" : "Sync now"}
+                            </Button>
+                        )}
+                    </div>
+                }
+            >
+                {!loading && vendors.length === 0 ? (
+                    <NoFound title="Nothing to reconcile" />
+                ) : (
+                    <>
+                        <div className="px-5 pt-1 text-body-2 text-t-secondary max-lg:px-3">
+                            {note ||
+                                "Reconciles the internal metered ledger against each vendor's reported spend."}
+                        </div>
+                        <div className="p-1 pt-3 max-lg:px-0 max-md:pt-0">
+                            <Table
+                                cellsThead={tableHead.map((head) => (
+                                    <th
+                                        className="!h-12.5 nth-4:text-right nth-5:text-right nth-6:text-right max-lg:nth-3:hidden max-md:nth-5:hidden"
+                                        key={head}
+                                    >
+                                        {head}
+                                    </th>
+                                ))}
+                                isMobileVisibleTHead
+                            >
+                                {(loading ? PLACEHOLDER : vendors).map((v, idx) => {
                                     const delta =
                                         v.vendor_reported == null
                                             ? null
                                             : v.vendor_reported - v.internal_ledger_cost;
                                     return (
-                                        <tr key={v.vendor}>
-                                            <td className="font-medium text-t-primary">{v.display_name}</td>
-                                            <td><StatusBadge status={v.status} stale={v.stale} /></td>
-                                            <td className="text-t-secondary whitespace-nowrap">{fmt(v.synced_at)}</td>
-                                            <td className="td-num text-right font-medium text-t-primary">
-                                                {money(v.internal_ledger_cost, currency)}
+                                        <TableRow key={v.vendor || idx}>
+                                            <td className="text-sub-title-2">
+                                                {v.display_name || "—"}
                                             </td>
-                                            <td className="td-num text-right text-t-secondary">
-                                                {v.vendor_reported == null ? "—" : money(v.vendor_reported, currency)}
+                                            <td>
+                                                {v.vendor && (
+                                                    <StatusBadge status={v.status} stale={v.stale} />
+                                                )}
                                             </td>
-                                            <td className="td-num text-right">
+                                            <td className="text-t-secondary whitespace-nowrap max-lg:hidden">
+                                                {v.vendor ? fmt(v.synced_at) : "—"}
+                                            </td>
+                                            <td className="text-right text-sub-title-2 tabular-nums">
+                                                {v.vendor ? money(v.internal_ledger_cost, currency) : "—"}
+                                            </td>
+                                            <td className="text-right text-t-secondary tabular-nums max-md:hidden">
+                                                {v.vendor_reported == null
+                                                    ? "—"
+                                                    : money(v.vendor_reported, currency)}
+                                            </td>
+                                            <td className="text-right tabular-nums">
                                                 {delta == null ? (
                                                     <span className="text-t-tertiary">—</span>
                                                 ) : Math.abs(delta) < 0.005 ? (
                                                     <span className="text-primary-02">matched</span>
                                                 ) : (
-                                                    <span className={delta > 0 ? "text-primary-05" : "text-primary-01"}>
-                                                        {delta > 0 ? "+" : ""}{money(delta, currency)}
+                                                    <span
+                                                        className={
+                                                            delta > 0
+                                                                ? "text-primary-05"
+                                                                : "text-primary-01"
+                                                        }
+                                                    >
+                                                        {delta > 0 ? "+" : ""}
+                                                        {money(delta, currency)}
                                                     </span>
                                                 )}
                                             </td>
                                             <td>
-                                                {v.error ? (
+                                                {!v.vendor ? (
+                                                    <span className="text-t-tertiary">—</span>
+                                                ) : v.error ? (
                                                     <Badge variant="danger">{v.error}</Badge>
                                                 ) : v.stale ? (
                                                     <Badge variant="warning">Stale snapshot</Badge>
                                                 ) : (
-                                                    <Badge variant="success" dot>OK</Badge>
+                                                    <Badge variant="success" dot>
+                                                        OK
+                                                    </Badge>
                                                 )}
                                             </td>
-                                        </tr>
+                                        </TableRow>
                                     );
-                                })
-                            )}
-                        </tbody>
-                    </table>
-                </div>
+                                })}
+                            </Table>
+                        </div>
+                    </>
+                )}
             </Card>
         </Layout>
     );
 }
+
+const PLACEHOLDER: BillingAuditVendor[] = [...Array(4)].map(() => ({
+    vendor: "",
+    display_name: "",
+    status: "not_configured" as const,
+    synced_at: "",
+    stale: false,
+    error: "",
+    internal_ledger_cost: 0,
+    vendor_reported: null,
+}));

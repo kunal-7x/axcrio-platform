@@ -1,0 +1,292 @@
+# GROWTH OS — flags / policy-config (per-tenant config) — OpenAPI 3.1
+# Spec ref §7.7: per-tenant autopilot level, approval thresholds, budget caps, kill-rule
+# multipliers, industry pack id, locales. VERSIONED; every change emits an event (P2).
+# This is the per-tenant override layer that sits inside the plan Entitlements (tenants
+# surface). Drives the Approval Policy (§17) + Budget Governor stamps (§13) downstream.
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Flags / Policy Config
+  version: 0.1.0
+  description: >
+    Per-tenant, per-workspace configuration: autopilot level (per action-class),
+    approval thresholds, budget caps, kill-rule multipliers, industry pack selection,
+    locales, and boolean feature flags. Every write is versioned and emits a
+    config.changed event (P2). Reads are point-in-time; an explicit version can be
+    fetched for audit/replay (§14.3).
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev.
+tags:
+  - name: policy
+  - name: flags
+security:
+  - bearerUserJwt: []
+paths:
+  /policy-config:
+    get:
+      operationId: getPolicyConfig
+      summary: Current effective policy config for the tenant/workspace (§7.7).
+      tags: [policy]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+        - name: version
+          in: query
+          required: false
+          description: Fetch a specific historical version (audit/replay); omit for current.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Effective policy config.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyConfig' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '404': { $ref: './_shared/common.yaml#/components/responses/NotFound' }
+    put:
+      operationId: updatePolicyConfig
+      summary: Replace policy config (creates a new version; emits config.changed §7.7).
+      description: >
+        Full replace of the editable config block. Bumps the version monotonically and
+        emits config.changed with a diff. Values are bounded server-side by the tenant's
+        plan Entitlements (e.g. autopilot cannot exceed the plan ceiling).
+      tags: [policy]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+        - name: If-Match
+          in: header
+          required: false
+          description: Expected current version for optimistic concurrency; mismatch => 409.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyConfigInput' }
+      responses:
+        '200':
+          description: New version written. Emits config.changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PolicyConfig' }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+        '409': { $ref: './_shared/common.yaml#/components/responses/Conflict' }
+        '422': { $ref: './_shared/common.yaml#/components/responses/UnprocessableEntity' }
+
+  /policy-config/history:
+    get:
+      operationId: listPolicyConfigVersions
+      summary: List config versions (who/when/diff) for audit (§14.3).
+      tags: [policy]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/CursorQuery'
+        - $ref: './_shared/common.yaml#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Page of version records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: './_shared/common.yaml#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PolicyConfigVersion' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /flags:
+    get:
+      operationId: listFlags
+      summary: List boolean/string feature flags for the tenant/workspace.
+      tags: [flags]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+      responses:
+        '200':
+          description: Resolved flag map (defaults <- plan <- tenant override).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [flags]
+                properties:
+                  flags:
+                    type: object
+                    additionalProperties:
+                      oneOf:
+                        - { type: boolean }
+                        - { type: string }
+                        - { type: number }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /flags/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      operationId: setFlag
+      summary: Set/override a single feature flag (emits config.changed).
+      tags: [flags]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/WorkspaceQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [value]
+              properties:
+                value:
+                  oneOf:
+                    - { type: boolean }
+                    - { type: string }
+                    - { type: number }
+      responses:
+        '200':
+          description: Flag set. Emits config.changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [key, value]
+                properties:
+                  key: { type: string }
+                  value:
+                    oneOf:
+                      - { type: boolean }
+                      - { type: string }
+                      - { type: number }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: './_shared/common.yaml#/components/responses/Forbidden' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'
+  schemas:
+    AutopilotLevel:
+      type: string
+      enum: [L0, L1, L2, L3, L4]
+      description: §17.1 autopilot ladder (L0 Observe .. L4 Autonomous).
+
+    ActionClass:
+      type: string
+      enum: [research, creative, launch, budget_change, optimization, audience, messaging]
+      description: Action classes that carry independent autopilot levels (§17.1 per action-class).
+
+    PolicyConfig:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, version, updated_at, autopilot, thresholds, budget, kill_rules, locale]
+      properties:
+        tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+        workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+        version: { type: integer, minimum: 1 }
+        updated_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+        autopilot:
+          type: object
+          description: Per action-class autopilot level (§17.1).
+          additionalProperties: false
+          properties:
+            research: { $ref: '#/components/schemas/AutopilotLevel' }
+            creative: { $ref: '#/components/schemas/AutopilotLevel' }
+            launch: { $ref: '#/components/schemas/AutopilotLevel' }
+            budget_change: { $ref: '#/components/schemas/AutopilotLevel' }
+            optimization: { $ref: '#/components/schemas/AutopilotLevel' }
+            audience: { $ref: '#/components/schemas/AutopilotLevel' }
+            messaging: { $ref: '#/components/schemas/AutopilotLevel' }
+        thresholds:
+          type: object
+          additionalProperties: false
+          description: Approval thresholds (§17.2) — actions above these need human approval.
+          properties:
+            auto_test_daily_cap_minor:
+              type: integer
+              description: Max daily test spend auto-approvable at L2 (INR paise).
+            require_approval_above_minor:
+              type: integer
+              description: Any spend-changing action above this needs approval (paise).
+        budget:
+          type: object
+          additionalProperties: false
+          description: Budget caps the Governor enforces (§13.1 tree).
+          properties:
+            workspace_monthly_cap_minor: { type: integer }
+            campaign_lifetime_cap_minor: { type: [integer, "null"] }
+            daily_cap_minor: { type: integer }
+        kill_rules:
+          type: object
+          additionalProperties: false
+          description: Kill-rule multipliers applied to the §12.3 guardrails (G1..G6).
+          properties:
+            runaway_multiplier: { type: number, default: 3.0, description: G1 spend_today > N x daily cap share. }
+            zero_q_multiplier: { type: number, default: 2.5, description: G2 spend >= N x target CPqL with 0 q-leads. }
+            set_fail_multiplier: { type: number, default: 4.0, description: G3 ad-set fail threshold. }
+            junk_rate_threshold: { type: number, default: 0.60, description: G4 junk-lead rate. }
+            fatigue_frequency_7d: { type: number, default: 2.5, description: G5 frequency cap (cold). }
+        industry_pack_id:
+          type: [string, "null"]
+          description: §18 selected pack (persona/offer/compliance/journey/KPI defaults).
+        locale:
+          type: string
+          default: en-IN
+          description: Tenant locale (§11 India-first; vernacular hi/gu/mr/ta/te/bn supported).
+        locales_enabled:
+          type: array
+          items: { type: string }
+          description: Additional languages enabled for transcreation (§I13).
+
+    PolicyConfigInput:
+      type: object
+      additionalProperties: false
+      description: Editable subset of PolicyConfig (version/updated_at/tenant_id are server-managed).
+      properties:
+        autopilot:
+          type: object
+          description: Per action-class autopilot overrides; keys constrained to ActionClass.
+          propertyNames:
+            $ref: '#/components/schemas/ActionClass'
+          additionalProperties:
+            $ref: '#/components/schemas/AutopilotLevel'
+        thresholds:
+          type: object
+          additionalProperties: { type: integer }
+        budget:
+          type: object
+          additionalProperties: { type: [integer, "null"] }
+        kill_rules:
+          type: object
+          additionalProperties: { type: number }
+        industry_pack_id: { type: [string, "null"] }
+        locale: { type: string }
+        locales_enabled:
+          type: array
+          items: { type: string }
+
+    PolicyConfigVersion:
+      type: object
+      additionalProperties: false
+      required: [version, actor, changed_at]
+      properties:
+        version: { type: integer }
+        actor:
+          type: object
+          additionalProperties: false
+          required: [kind, id]
+          properties:
+            kind: { type: string, enum: [user, agent, system] }
+            id: { type: string }
+        changed_at: { $ref: './_shared/common.yaml#/components/schemas/Timestamp' }
+        diff:
+          type: object
+          additionalProperties: true
+          description: JSON-merge-patch style diff from the prior version.

@@ -2,12 +2,11 @@
 
 // Survey Insights tab — renders the DETERMINISTIC rollups from core.survey_insights
 // (NPS, CSAT avg, response count, promoter/passive/detractor split, per-question
-// counts / numeric averages). NO metered call on this path. Built on KpiCard
-// meters + the shared pill language; the LLM summary slot stays dormant until
-// FORMS_INSIGHTS_LLM is enabled server-side (insights.llm_enabled).
+// counts / numeric averages). NO metered call on this path. Built on the
+// reference Overview metric tiles + Card surfaces; the LLM summary slot stays
+// dormant until FORMS_INSIGHTS_LLM is enabled server-side (insights.llm_enabled).
 
 import Icon from "@/components/Icon";
-import KpiCard from "@/components/KpiCard";
 import type { Insights, QuestionInsight } from "../client";
 import { fieldTypeMeta } from "../_ui";
 
@@ -25,12 +24,12 @@ export default function InsightsPanel({
 
     if (responses === 0) {
         return (
-            <div className="state-block py-16">
-                <span className="state-glyph">
+            <div className="py-16 text-center max-md:py-12">
+                <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1 fill-t-tertiary">
                     <Icon name="chart" className="fill-inherit" />
                 </span>
-                <div className="state-title">No responses yet</div>
-                <div className="state-sub max-w-md">
+                <div className="text-h6 mb-1">No responses yet</div>
+                <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                     {isSurvey
                         ? "Once people respond, this tab shows your NPS, CSAT and a per-question breakdown — all computed deterministically, no AI cost."
                         : "Insights light up as submissions arrive — a live per-question breakdown of every answer."}
@@ -45,15 +44,14 @@ export default function InsightsPanel({
         <div className="px-5 pb-5 max-lg:px-3">
             {/* Headline meters */}
             <div className="grid grid-cols-4 gap-3 mb-4 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                <KpiCard
+                <Metric
                     label="Responses"
                     value={responses}
                     icon="list"
                     tone="info"
-                    style={{ animationDelay: "0ms" }}
                 />
                 {isSurvey && (
-                    <KpiCard
+                    <Metric
                         label="NPS"
                         value={insights.nps == null ? "—" : insights.nps}
                         icon="promote"
@@ -75,11 +73,10 @@ export default function InsightsPanel({
                                 ? null
                                 : (insights.nps + 100) / 200
                         }
-                        style={{ animationDelay: "60ms" }}
                     />
                 )}
                 {isSurvey && (
-                    <KpiCard
+                    <Metric
                         label="CSAT avg"
                         value={
                             insights.csat_avg == null
@@ -93,10 +90,9 @@ export default function InsightsPanel({
                                 ? "Add a CSAT field"
                                 : "Average score"
                         }
-                        style={{ animationDelay: "120ms" }}
                     />
                 )}
-                <KpiCard
+                <Metric
                     label="Promoters"
                     value={sentTotal ? s.promoter : "—"}
                     icon="check-circle"
@@ -109,7 +105,6 @@ export default function InsightsPanel({
                             : "No scored responses"
                     }
                     meter={sentTotal ? s.promoter / sentTotal : null}
-                    style={{ animationDelay: "180ms" }}
                 />
             </div>
 
@@ -174,6 +169,69 @@ export default function InsightsPanel({
                             </p>
                         )}
                     </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Headline metric tile — reference Overview pattern (icon circle + label + big
+// number + sub + optional thin meter), token-only. Replaces the bespoke KpiCard.
+type Tone = "neutral" | "success" | "danger" | "warning" | "info";
+
+const TONE_FILL: Record<Tone, string> = {
+    neutral: "fill-t-secondary bg-b-surface1",
+    success: "fill-primary-02 bg-primary-02/12",
+    danger: "fill-primary-03 bg-primary-03/12",
+    warning: "fill-primary-05 bg-primary-05/12",
+    info: "fill-primary-01 bg-primary-01/12",
+};
+
+const TONE_BAR: Record<Tone, string> = {
+    neutral: "bg-t-secondary",
+    success: "bg-primary-02",
+    danger: "bg-primary-03",
+    warning: "bg-primary-05",
+    info: "bg-primary-01",
+};
+
+function Metric({
+    label,
+    value,
+    icon,
+    tone = "neutral",
+    sub,
+    meter,
+}: {
+    label: string;
+    value: React.ReactNode;
+    icon: string;
+    tone?: Tone;
+    sub?: React.ReactNode;
+    meter?: number | null;
+}) {
+    const pct =
+        meter == null ? null : Math.max(0, Math.min(100, meter * 100));
+    return (
+        <div className="p-4 rounded-3xl border border-s-subtle bg-b-surface2 shadow-widget">
+            <div className="flex items-center gap-2.5 mb-3">
+                <span
+                    className={`grid place-items-center size-8 shrink-0 rounded-full ${TONE_FILL[tone]}`}
+                >
+                    <Icon name={icon} className="size-4 fill-inherit" />
+                </span>
+                <span className="text-button text-t-secondary">{label}</span>
+            </div>
+            <div className="text-h4 td-num text-t-primary">{value}</div>
+            {sub && (
+                <div className="mt-1 text-caption text-t-tertiary">{sub}</div>
+            )}
+            {pct != null && (
+                <div className="mt-2.5 h-1.5 rounded-full overflow-hidden bg-b-surface1 dark:bg-shade-04/60">
+                    <div
+                        className={`h-full rounded-full ${TONE_BAR[tone]}`}
+                        style={{ width: `${pct}%` }}
+                    />
                 </div>
             )}
         </div>
@@ -264,9 +322,9 @@ function QuestionCard({ fieldKey, q }: { fieldKey: string; q: QuestionInsight })
                                         {n}
                                     </span>
                                 </div>
-                                <div className="meter">
+                                <div className="h-1.5 rounded-full overflow-hidden bg-b-surface1 dark:bg-shade-04/60">
                                     <div
-                                        className="meter-fill bg-primary-01"
+                                        className="h-full rounded-full bg-primary-01"
                                         style={{
                                             width: `${
                                                 maxCount

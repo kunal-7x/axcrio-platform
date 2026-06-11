@@ -16,20 +16,16 @@ type NavLinkProps = {
 const NavLink = ({ value, onClick }: NavLinkProps) => {
     const pathname = usePathname();
 
+    // Active when the path equals the href OR is nested under it
+    // (segment-boundary match so "/billing" never lights "/" and
+    // "/calls" never lights "/callbacks").
     const isActive = useMemo(() => {
-        if (pathname === value.href) return true;
-
-        switch (value.title) {
-            case "Customer list":
-                return pathname.includes("/customers/customer-list/");
-            case "Shop":
-                return pathname.includes("/shop/");
-            case "Refunds":
-                return pathname.includes("/income/refunds/");
-            default:
-                return false;
-        }
-    }, [pathname, value.href, value.title]);
+        if (value.href === "/") return pathname === "/";
+        return (
+            pathname === value.href ||
+            pathname.startsWith(value.href + "/")
+        );
+    }, [pathname, value.href]);
 
     return (
         <Link
@@ -59,11 +55,7 @@ const NavLink = ({ value, onClick }: NavLinkProps) => {
             )}
             <div className="relative z-2 mr-3">{value.title}</div>
             {value.counter && (
-                <div
-                    className={`relative z-2 flex justify-center items-center w-6 h-6 ml-auto rounded-lg bg-secondary-01 text-button text-shade-01 ${
-                        value.title === "Scheduled" ? "bg-secondary-04" : ""
-                    }`}
-                >
+                <div className="relative z-2 flex justify-center items-center min-w-6 h-6 px-1.5 ml-auto rounded-lg bg-primary-01/12 text-button text-primary-01 tabular-nums">
                     {value.counter}
                 </div>
             )}

@@ -7,6 +7,7 @@ import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
+import Tabs from "@/components/Tabs";
 import {
     getContact,
     getContactTimeline,
@@ -25,13 +26,13 @@ import {
     nbaMeta,
 } from "../_ui";
 
-// Timeline kind filter chips (each maps to the ?kinds= query param).
-const KIND_FILTERS: { id: string; label: string }[] = [
-    { id: "all", label: "All" },
-    { id: "call", label: "Calls" },
-    { id: "whatsapp", label: "WhatsApp" },
-    { id: "purchase", label: "Purchases" },
-    { id: "note", label: "Notes" },
+// Timeline kind filter tabs (each maps to the ?kinds= query param).
+const KIND_FILTERS = [
+    { id: 1, name: "All", key: "all" },
+    { id: 2, name: "Calls", key: "call" },
+    { id: 3, name: "WhatsApp", key: "whatsapp" },
+    { id: 4, name: "Purchases", key: "purchase" },
+    { id: 5, name: "Notes", key: "note" },
 ];
 
 export default function ContactProfilePage() {
@@ -45,7 +46,8 @@ export default function ContactProfilePage() {
     const [dormant, setDormant] = useState(false);
     const [notFound, setNotFound] = useState(false);
     const [error, setError] = useState("");
-    const [kind, setKind] = useState("all");
+    const [kindTab, setKindTab] = useState(KIND_FILTERS[0]);
+    const kind = kindTab.key;
 
     // Load the contact (+ embedded timeline + nba). Dormant (module/PG down) ->
     // "coming soon"; not-found (bad id) -> "not found"; else error.
@@ -134,49 +136,27 @@ export default function ContactProfilePage() {
 
             {dormant ? (
                 <Card title="Contact">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="profile" className="fill-inherit" />
-                        </span>
-                        <div className="state-title">Contact profiles are coming soon</div>
-                        <div className="state-sub max-w-md">
-                            The Customer&nbsp;360 contact spine isn&apos;t enabled for your
-                            workspace yet. Once it is, each person gets a unified profile —
-                            timeline, lead stage, and next-best action — right here.
-                        </div>
-                        <Button as="link" href="/crm" isStroke className="mt-1">
-                            Back to CRM
-                        </Button>
-                    </div>
+                    <FullState
+                        icon="profile"
+                        title="Contact profiles are coming soon"
+                        sub="The Customer 360 contact spine isn’t enabled for your workspace yet. Once it is, each person gets a unified profile — timeline, lead stage, and next-best action — right here."
+                    />
                 </Card>
             ) : notFound ? (
                 <Card title="Contact">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="search" className="fill-inherit" />
-                        </span>
-                        <div className="state-title">Contact not found</div>
-                        <div className="state-sub max-w-md">
-                            This contact doesn&apos;t exist or is outside your workspace. It
-                            may have been merged or removed.
-                        </div>
-                        <Button as="link" href="/crm" isStroke className="mt-1">
-                            Back to CRM
-                        </Button>
-                    </div>
+                    <FullState
+                        icon="search"
+                        title="Contact not found"
+                        sub="This contact doesn’t exist or is outside your workspace. It may have been merged or removed."
+                    />
                 </Card>
             ) : error ? (
                 <Card title="Contact">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="info" className="fill-inherit" />
-                        </span>
-                        <div className="state-title">Couldn&apos;t load this contact</div>
-                        <div className="state-sub">{error}</div>
-                        <Button as="link" href="/crm" isStroke className="mt-1">
-                            Back to CRM
-                        </Button>
-                    </div>
+                    <FullState
+                        icon="info"
+                        title="Couldn’t load this contact"
+                        sub={error}
+                    />
                 </Card>
             ) : (
                 <div className="flex gap-3 max-lg:flex-col">
@@ -333,21 +313,16 @@ export default function ContactProfilePage() {
                         <Card
                             title="Timeline"
                             headContent={
-                                <div className="flex items-center gap-1.5 overflow-x-auto">
-                                    {KIND_FILTERS.map((k) => (
-                                        <button
-                                            key={k.id}
-                                            onClick={() => setKind(k.id)}
-                                            className={`shrink-0 px-3 h-8 rounded-full text-button transition-all ${
-                                                kind === k.id
-                                                    ? "bg-b-surface2 text-t-primary shadow-widget ring-1 ring-s-subtle"
-                                                    : "text-t-secondary hover:text-t-primary hover:bg-b-surface1 dark:hover:bg-shade-04/40"
-                                            }`}
-                                        >
-                                            {k.label}
-                                        </button>
-                                    ))}
-                                </div>
+                                <Tabs
+                                    className="overflow-x-auto scrollbar-none"
+                                    items={KIND_FILTERS}
+                                    value={kindTab}
+                                    setValue={(v) =>
+                                        setKindTab(
+                                            v as (typeof KIND_FILTERS)[number]
+                                        )
+                                    }
+                                />
                             }
                         >
                             <div className="px-5 pb-5 max-lg:px-3">
@@ -364,19 +339,16 @@ export default function ContactProfilePage() {
                                         ))}
                                     </div>
                                 ) : timeline.length === 0 ? (
-                                    <div className="state-block">
-                                        <span className="state-glyph">
-                                            <Icon name="clock" className="fill-inherit" />
+                                    <div className="py-12 text-center">
+                                        <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                                            <Icon name="clock" className="fill-t-tertiary" />
                                         </span>
-                                        <div className="state-title">
+                                        <div className="text-h6 mb-1">
                                             {kind === "all"
                                                 ? "No activity yet"
-                                                : `No ${
-                                                      KIND_FILTERS.find((k) => k.id === kind)
-                                                          ?.label.toLowerCase() ?? kind
-                                                  } yet`}
+                                                : `No ${kindTab.name.toLowerCase()} yet`}
                                         </div>
-                                        <div className="state-sub">
+                                        <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                                             Every call, message, and event for this person will
                                             appear here, newest first.
                                         </div>
@@ -543,6 +515,31 @@ function Row({ label, value, cap }: { label: string; value: string; cap?: boolea
             >
                 {value}
             </span>
+        </div>
+    );
+}
+
+function FullState({
+    icon,
+    title,
+    sub,
+}: {
+    icon: string;
+    title: string;
+    sub: string;
+}) {
+    return (
+        <div className="py-16 text-center max-md:py-12">
+            <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                <Icon name={icon} className="fill-t-tertiary" />
+            </span>
+            <div className="text-h6 mb-1">{title}</div>
+            <div className="max-w-md mx-auto text-body-2 text-t-secondary">
+                {sub}
+            </div>
+            <Button as="link" href="/crm" isStroke className="mt-5">
+                Back to CRM
+            </Button>
         </div>
     );
 }

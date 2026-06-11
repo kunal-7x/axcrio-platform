@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { usePathname } from "next/navigation";
-import Link from "next/link";
 import AnimateHeight from "react-animate-height";
 import Icon from "@/components/Icon";
 import NavLink from "@/components/NavLink";
@@ -11,6 +10,10 @@ type DropdownChild = {
     counter?: number;
     comingSoon?: boolean;
     roles?: string;
+    // CL-F0: set by Sidebar/resolveNav when this child's feature_key resolves to
+    // LOCK. Renders the dimmed non-link row with a "Locked" pill (mirrors the
+    // comingSoon precedent). Cosmetic — the backend 402 is the real lock.
+    locked?: boolean;
 };
 
 type DropdownProps = {
@@ -33,46 +36,40 @@ const Dropdown = ({ value }: DropdownProps) => {
             (pathname === item.href ||
                 pathname.startsWith(item.href + "/"))
     );
-    const isActiveNewProduct =
-        pathname === "/products/new" && value.title === "Products";
     const [height, setHeight] = useState<number | "auto">(
         isActive ? "auto" : 0
     );
+    const isOpen = height !== 0;
 
     return (
         <div className="relative">
-            {pathname !== "/products/new" && value.title === "Products" && (
-                <Link
-                    className="hidden absolute top-2.75 right-12 z-2 w-6 h-6 border border-t-secondary justify-center items-center rounded-full max-md:flex"
-                    href="/products/new"
-                >
-                    <Icon className="fill-t-primary !size-4" name="plus" />
-                </Link>
-            )}
             <button
                 className={`group relative flex items-center gap-3 w-full h-12 px-3 text-button transition-colors hover:text-t-primary ${
-                    height === 0 ? "text-t-secondary" : "text-t-primary"
-                } ${isActiveNewProduct ? "!text-t-primary" : ""}`}
-                onClick={() => setHeight(height === 0 ? "auto" : 0)}
+                    isOpen || isActive ? "text-t-primary" : "text-t-secondary"
+                }`}
+                onClick={() => setHeight(isOpen ? 0 : "auto")}
+                aria-expanded={isOpen}
             >
-                {isActiveNewProduct && (
-                    <div className="absolute inset-0 gradient-menu rounded-xl shadow-depth-menu">
-                        <div className="absolute inset-0.25 bg-b-pop rounded-[0.6875rem]"></div>
-                    </div>
+                {/* A collapsed group whose route is active shows a quiet signal
+                    dot so the operator can see which section they're in even
+                    when it's folded shut. */}
+                {isActive && !isOpen && (
+                    <span
+                        className="absolute left-0 top-1/2 -translate-y-1/2 size-1.5 rounded-full bg-primary-01 shadow-[0_0_8px_-1px_var(--primary-01)]"
+                        aria-hidden
+                    />
                 )}
                 <Icon
                     className={`relative z-2 transition-colors group-hover:fill-t-primary ${
-                        height === 0 ? "fill-t-secondary" : "fill-t-primary"
-                    } ${isActiveNewProduct ? "!fill-t-primary" : ""}`}
+                        isOpen || isActive ? "fill-t-primary" : "fill-t-secondary"
+                    }`}
                     name={value.icon}
                 />
                 <div className="relative z-2">{value.title}</div>
                 <Icon
-                    className={`relative z-2 ml-auto transition-all group-hover:fill-t-primary ${
-                        height === 0
-                            ? "fill-t-secondary"
-                            : "fill-t-primary rotate-180"
-                    } ${isActiveNewProduct ? "!text-t-primary" : ""}`}
+                    className={`relative z-2 ml-auto transition-transform duration-300 group-hover:fill-t-primary ${
+                        isOpen ? "fill-t-primary rotate-180" : "fill-t-secondary"
+                    }`}
                     name="chevron"
                 />
             </button>
@@ -81,16 +78,26 @@ const Dropdown = ({ value }: DropdownProps) => {
                     {value.list?.map((item) => (
                         <div className="relative" key={item.title}>
                             <div className="absolute top-0 -left-[0.8125rem] bottom-[calc(50%-0.75px)] w-[0.8125rem] border-l border-b border-s-stroke2 rounded-bl-[10px]"></div>
-                            {item.comingSoon || !item.href ? (
-                                // Future feature — a dimmed, non-clickable row
-                                // with a "Soon" pill. Deliberately NOT a <Link>
-                                // so it can never navigate to an unbuilt route.
+                            {item.comingSoon || item.locked || !item.href ? (
+                                // Dimmed, non-clickable row. Two cases share this
+                                // branch (deliberately NOT a <Link> so it can
+                                // never navigate to a route the user can't use):
+                                //   • comingSoon -> "Soon" pill (unbuilt route)
+                                //   • locked     -> "Locked" pill (entitlement
+                                //     LOCK; backend 402s the route — upsell). The
+                                //     pill carries a calm amber cue, distinct
+                                //     from the brand-blue roadmap "Soon".
                                 <div
                                     className="flex items-center gap-2 h-11 px-3 text-button text-t-secondary/45 cursor-default select-none"
                                     aria-disabled="true"
+                                    title={item.locked ? "Locked — upgrade to unlock" : undefined}
                                 >
                                     <span className="truncate">{item.title}</span>
-                                    <span className="nav-soon ml-auto">Soon</span>
+                                    {item.locked ? (
+                                        <span className="nav-locked ml-auto">Locked</span>
+                                    ) : (
+                                        <span className="nav-soon ml-auto">Soon</span>
+                                    )}
                                 </div>
                             ) : (
                                 <NavLink

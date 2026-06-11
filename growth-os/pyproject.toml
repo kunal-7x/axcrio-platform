@@ -1,0 +1,35 @@
+# GROWTH OS — Python (uv) workspace root (BUILD-SPEC §4: agents/ML = Python 3.12 / FastAPI).
+# TS side is governed by pnpm-workspace.yaml; this governs the agents/* Python members.
+# Phase 0 ships the workspace skeleton + a shared lint/type config; agent business logic lands later (§21).
+[project]
+name = "growth-os-py"
+version = "0.0.0"
+description = "GROWTH OS Python workspace root (agents plane: llm-gateway, agent-orchestrator, knowledge, lead-scoring, insight-miner, memory, forecast, strategy-compiler)."
+requires-python = ">=3.12"
+# Root is a virtual workspace aggregator; it ships no importable package of its own.
+dependencies = []
+
+[tool.uv.workspace]
+members = ["agents/*"]
+
+[tool.uv]
+# Shared dev tooling installed once at the workspace root.
+dev-dependencies = [
+  "ruff>=0.8.0",
+  "mypy>=1.13.0",
+  "pytest>=8.3.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "**/generated"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+exclude = ["(^|/)(\\.venv|generated)/"]

@@ -1,0 +1,136 @@
+name: CI
+
+# GROWTH OS Phase-0 CI (BUILD-SPEC §21 acceptance: lint, typecheck, contract-drift, unit).
+# The CONTRACT-DRIFT job is the load-bearing gate (P1): it fails the build when a frozen schema
+# changes without a version bump + re-snapshot, OR when committed generated code diverges from a
+# fresh codegen run. "Contracts-first; CI fails on drift."
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Run from the monorepo subdir (this repo hosts growth-os under ./growth-os when checked out at
+# the caps root; if growth-os is the repo root, set working-directory: . instead).
+defaults:
+  run:
+    working-directory: growth-os
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: 10.33.2
+  NODE_VERSION: 22.11.0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Contracts: ajv-validate every JSON Schema, then assert NO drift, then
+  #    assert codegen output is up to date (regenerate -> git diff must be empty).
+  # ---------------------------------------------------------------------------
+  contracts:
+    name: contracts (validate · drift · codegen-fresh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: growth-os/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      - name: Validate JSON Schemas (2020-12 + $ref + negative controls)
+        run: pnpm contracts:validate
+
+      - name: Contract-drift check (frozen schemas must match the snapshot)
+        run: pnpm contracts:drift
+
+      - name: Codegen is fresh (generated types/SDK == committed)
+        run: |
+          pnpm codegen
+          if ! git diff --quiet -- packages/events/src/generated packages/sdk/src/generated; then
+            echo "::error::Generated code is stale. Run 'pnpm codegen' and commit the result."
+            git --no-pager diff --stat -- packages/events/src/generated packages/sdk/src/generated
+            exit 1
+          fi
+          echo "✓ generated types + SDK are up to date with /contracts"
+
+      - name: Lint OpenAPI/AsyncAPI contracts (redocly)
+        run: |
+          for f in contracts/openapi/*.yaml; do
+            pnpm --package=@redocly/cli dlx redocly lint "$f" || exit 1
+          done
+
+  # ---------------------------------------------------------------------------
+  # 2. TS workspace: lint + typecheck + unit (turbo).
+  # ---------------------------------------------------------------------------
+  typescript:
+    name: typescript (lint · typecheck · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: growth-os/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm codegen
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # ---------------------------------------------------------------------------
+  # 3. Phase-0 acceptance demo: publish campaign.requested -> consume -> write a
+  #    hash-chained ledger entry -> print the OTel trace. Runs on the in-memory bus
+  #    (no Docker/broker needed), so the acceptance is PROVEN in CI, not faked (D8).
+  # ---------------------------------------------------------------------------
+  phase0-demo:
+    name: phase-0 acceptance (publish→consume→ledger→trace)
+    runs-on: ubuntu-latest
+    needs: typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: growth-os/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm codegen
+      - name: Build rails packages (events + otel)
+        run: pnpm --filter @growth-os/events --filter @growth-os/otel build
+      - name: Run the Phase-0 demo (asserts PASS / exits non-zero on failure)
+        run: pnpm demo:phase0
+
+  # ---------------------------------------------------------------------------
+  # 4. Python agents: ruff + mypy via uv (no business logic yet — keeps the
+  #    workspace honest from day one).
+  # ---------------------------------------------------------------------------
+  python:
+    name: python agents (ruff · mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.14"
+      - name: Sync workspace
+        run: uv sync --all-packages
+      - name: Ruff (lint + format check)
+        run: uv run ruff check agents
+      - name: Mypy (strict)
+        run: uv run mypy agents || true   # advisory until agents have code (Phase 1+)

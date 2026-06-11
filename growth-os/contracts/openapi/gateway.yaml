@@ -1,0 +1,185 @@
+# GROWTH OS — gateway (BFF / auth / tenant-resolution) — OpenAPI 3.1
+# Spec ref §7.1: edge auth (OIDC; Phase-0 dev-JWT stub D5), tenant resolution, rate
+# limits, trace IDs, BFF, WS/SSE live feed. THIN — no business logic. P1 contracts-first.
+openapi: 3.1.0
+info:
+  title: GROWTH OS — Gateway (BFF)
+  version: 0.1.0
+  description: >
+    Edge surface for the dashboard + public clients. Owns session/token exchange
+    (Phase-0 dev JWT stub, D5), tenant/workspace resolution from the token (P6),
+    health/readiness, and the live SSE feed proxy. All business endpoints live in the
+    other core modules; the gateway only authenticates, resolves tenant, rate-limits
+    (§5.3), attaches trace IDs (P10), and fans out.
+  contact:
+    name: GROWTH OS Platform
+servers:
+  - url: https://api.growthos.local/v1
+    description: Phase-0 dev (compose / box).
+tags:
+  - name: auth
+  - name: session
+  - name: system
+  - name: feed
+security:
+  - bearerUserJwt: []
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness probe.
+      tags: [system]
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /readyz:
+    get:
+      operationId: getReady
+      summary: Readiness probe (bus + db + dependencies reachable).
+      tags: [system]
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, dependencies]
+                properties:
+                  status: { type: string, enum: [ready, degraded] }
+                  dependencies:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      enum: [up, down, degraded]
+                    description: keyed by dependency name (db, bus, temporal, redis).
+        '503':
+          $ref: './_shared/common.yaml#/components/responses/Internal'
+
+  /auth/token:
+    post:
+      operationId: mintDevToken
+      summary: Phase-0 dev-stub token mint (D5).
+      description: >
+        Phase-0 ONLY. Mints a dev JWT for a known dev user + fixed tenant so the
+        contract surface is exercisable before OIDC (Phase 3) is wired. The interface
+        (packages/auth) is stable; only the issuer changes later.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                tenant_id:
+                  description: Optional dev override; ignored in any non-dev environment.
+                  $ref: './_shared/common.yaml#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: A dev JWT + its claims.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [access_token, token_type, expires_in, claims]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, const: Bearer }
+                  expires_in: { type: integer, description: seconds }
+                  claims:
+                    type: object
+                    additionalProperties: false
+                    required: [sub, tenant_id, workspace_id, role]
+                    properties:
+                      sub: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+                      tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+                      workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+                      role: { type: string, enum: [Owner, Admin, Marketer, Analyst, Approver] }
+        '400': { $ref: './_shared/common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /session:
+    get:
+      operationId: getSession
+      summary: Resolve the caller's tenant/workspace/role from the bearer token (P6).
+      description: >
+        The tenant-resolution endpoint. Returns the identity + tenant context the
+        gateway derived from the token — the canonical proof that tenant is bound to
+        the token, not the body. The dashboard calls this on load.
+      tags: [session]
+      responses:
+        '200':
+          description: Resolved session context.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [sub, tenant_id, workspace_id, role]
+                properties:
+                  sub: { $ref: './_shared/common.yaml#/components/schemas/Uuid' }
+                  tenant_id: { $ref: './_shared/common.yaml#/components/schemas/TenantId' }
+                  workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+                  role: { type: string, enum: [Owner, Admin, Marketer, Analyst, Approver] }
+                  workspaces:
+                    type: array
+                    description: All workspaces the user may switch to within the tenant.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [workspace_id, name]
+                      properties:
+                        workspace_id: { $ref: './_shared/common.yaml#/components/schemas/WorkspaceId' }
+                        name: { type: string }
+          headers:
+            X-Request-Id: { $ref: './_shared/common.yaml#/components/headers/XRequestId' }
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+
+  /feed:
+    get:
+      operationId: streamFeed
+      summary: Live SSE event feed for the dashboard (P10, §7.1 WS/SSE live feed).
+      description: >
+        Server-Sent-Events stream of tenant-scoped envelope events (the loop §3.1) for
+        the live activity feed. RLS-scoped to the token's tenant. The data shape of each
+        event is the canonical envelope (see schemas/event-envelope.schema.json).
+      tags: [feed]
+      parameters:
+        - $ref: './_shared/common.yaml#/components/parameters/JourneyQuery'
+        - name: types
+          in: query
+          required: false
+          description: Comma-separated topic filter (e.g. campaign.requested,optimization.decision).
+          schema: { type: string }
+      responses:
+        '200':
+          description: An SSE stream (text/event-stream); each `data:` line is one envelope.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE framing; payload per event = the canonical event envelope.
+        '401': { $ref: './_shared/common.yaml#/components/responses/Unauthorized' }
+        '429': { $ref: './_shared/common.yaml#/components/responses/RateLimited' }
+components:
+  securitySchemes:
+    bearerUserJwt:
+      $ref: './_shared/common.yaml#/components/securitySchemes/bearerUserJwt'

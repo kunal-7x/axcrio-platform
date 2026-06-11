@@ -21,6 +21,8 @@
 // fabricated runtime metrics — the canvas is an honest preview of the studio, and
 // every "live" count/stat degrades to an honest zero / "coming soon".
 
+import type { SelectOption } from "@/types/select";
+
 const BASE =
     typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
         ? process.env.NEXT_PUBLIC_API_BASE
@@ -123,21 +125,54 @@ export type WfRun = {
     spend_minor?: number;
 };
 
+// The engine sub-object the LIVE backend emits (workflow/__init__.py status()).
+// `engine:"in_process"` is the synchronous in-process interpreter — a REAL
+// executor (live-verified: publish -> run drains to a terminal/parked status).
+export type WfEngineInfo = {
+    engine?: string; // "in_process" | "hatchet" | …
+    available?: boolean; // durable (Hatchet) spine bound
+    store_mode?: string; // "memory" | "pg"
+    hatchet_configured?: boolean;
+    killswitch?: boolean;
+    [k: string]: unknown;
+};
+
+// The LIVE /workflows/status contract (verified 2026-06-11): `engine` is an
+// OBJECT (not the string "configured"), `store` is a mode string ("memory"|"pg"),
+// and there is NO top-level `enabled`. The old shape here lied about the contract
+// and pinned `engineLive` to false forever (Run permanently disabled). Everything
+// is optional/loose so the dormant-coming-soon path still renders cleanly.
 export type WfStatus = {
-    module: string;
-    enabled: boolean;
-    // Each dependency reports configured / not_configured — the dormant story.
-    engine: "configured" | "not_configured" | string; // Hatchet durable spine
-    store: "configured" | "not_configured" | string; // Postgres + RLS tables
-    wallet: "configured" | "not_configured" | string; // BUDGET node ledger
-    firewall: "configured" | "not_configured" | string; // APPROVAL step-up
-    audit: "configured" | "not_configured" | string; // immutable audit log
-    registry: "configured" | "not_configured" | string; // AI-Manager tool registry
-    llm_provider?: string; // AI-Agent reasoning (dormant -> deterministic default)
+    module?: string;
+    enabled?: boolean; // legacy/optional — never sent by the live engine
+    engine?: WfEngineInfo | string; // OBJECT live; string only in older shapes
+    store?: string; // "memory" | "pg" | "configured"
+    config?: WfEngineInfo;
+    templates?: number;
+    registry_tools?: string[];
+    // Optional per-dependency signals (rendered if a future status emits them).
+    wallet?: string;
+    firewall?: string;
+    audit?: string;
+    registry?: string;
+    llm_provider?: string;
     workflows_total?: number;
     published_total?: number;
     runs_total?: number;
 };
+
+// Is the engine able to RUN a published workflow right now? The live backend runs
+// synchronously via the in-process interpreter (no Hatchet needed), so treat
+// `engine.available === true` OR `engine.engine === "in_process"` as run-capable.
+// Falls back to the legacy string contract for safety.
+export function isEngineLive(st: WfStatus | null | undefined): boolean {
+    if (!st) return false;
+    const eng = st.engine;
+    if (typeof eng === "object" && eng) {
+        return eng.available === true || eng.engine === "in_process";
+    }
+    return eng === "configured";
+}
 
 // A template = a publishable starter workflow (the industry-pack library).
 export type WfTemplate = {
@@ -289,6 +324,429 @@ export const NODE_GROUPS: { group: NodeMeta["group"]; types: WfNodeType[] }[] = 
 
 export function nodeMeta(t: WfNodeType): NodeMeta {
     return NODE_META[t] || NODE_META.action;
+}
+
+/* ============================================ inspector field schema (spec §2/§3) */
+
+// A tiny, declarative per-type field map. The inspector renders these generically
+// with the ported Core_2 Field / Select / Switch — zero bespoke form code per type.
+// `path` is where the value lives on the RF node.data object:
+//   "config.<key>"  -> node.data.config[key]   (the inspector-edited object)
+//   "label"         -> node.data.label         (studio-only display label)
+//   "role"          -> node.data.role          (ai_agent persona)
+//   "money"         -> node.data.money         (advisory "can spend" flag)
+//   "args"          -> node.data.config.args   (the repeatable key/val sub-editor)
+export type FieldKind = "text" | "number" | "textarea" | "select" | "switch" | "args";
+
+export type FieldDef = {
+    path: string;
+    label: string;
+    kind: FieldKind;
+    placeholder?: string;
+    tooltip?: string;
+    options?: string[]; // for kind="select" — raw enum values
+    when?: { path: string; equals: string }; // conditional visibility (e.g. event only when kind=event)
+    help?: string;
+};
+
+// The curated tool registry options (spec §2: ship the tools the engine already
+// names; later hydrate from GET /workflows/status registry signal).
+export const TOOL_OPTIONS = [
+    "leads.enqueue_calls",
+    "whatsapp.send",
+    "crm.update_lead",
+    "booking.create",
+    "payments.create_invoice",
+    "ads.set_budget",
+    "brain.retrieve",
+    "email.send",
+];
+
+export const AI_ROLE_OPTIONS = [
+    "ai_telecaller",
+    "campaign_strategist",
+    "support_agent",
+    "data_analyst",
+    "content_writer",
+];
+
+// Every type opens with a studio label field, then its type-specific config.
+const LABEL_FIELD: FieldDef = {
+    path: "label",
+    label: "Label",
+    kind: "text",
+    placeholder: "A short name for this step",
+    help: "Studio-only — shown on the node card; not part of execution.",
+};
+
+export const INSPECTOR_FIELDS: Record<WfNodeType, FieldDef[]> = {
+    trigger: [
+        LABEL_FIELD,
+        {
+            path: "config.trigger_kind",
+            label: "Trigger kind",
+            kind: "select",
+            options: ["manual", "schedule", "event", "webhook", "wait"],
+            tooltip: "How a run of this workflow is fired.",
+        },
+        {
+            path: "config.event",
+            label: "Event",
+            kind: "select",
+            options: [
+                "lead.created",
+                "lead.replied",
+                "call.completed",
+                "lead.qualified",
+                "payment.received",
+                "form.submitted",
+                "booking.made",
+            ],
+            when: { path: "config.trigger_kind", equals: "event" },
+            tooltip: "Which lifecycle event triggers the run.",
+        },
+        {
+            path: "config.cron",
+            label: "Schedule (cron)",
+            kind: "text",
+            placeholder: "0 9 * * *",
+            when: { path: "config.trigger_kind", equals: "schedule" },
+        },
+        { path: "config.segment", label: "Segment", kind: "text", placeholder: "hot" },
+    ],
+    condition: [
+        LABEL_FIELD,
+        {
+            path: "config.expr",
+            label: "Expression",
+            kind: "textarea",
+            placeholder: "lead.interest >= 7 && !lead.opted_out",
+            tooltip: "A sandboxed boolean — emits a true and a false branch.",
+            help: "Branches the flow. Wire one edge from the true handle and one from false.",
+        },
+    ],
+    delay: [
+        LABEL_FIELD,
+        { path: "config.after_hours", label: "Delay (hours)", kind: "number", placeholder: "24" },
+        { path: "config.after_minutes", label: "…or minutes", kind: "number", placeholder: "0" },
+        {
+            path: "config.event_key",
+            label: "Wait-for event key",
+            kind: "text",
+            placeholder: "lead.replied",
+            help: "Leave delay blank and set this to wait for an event instead (durable wait).",
+        },
+        { path: "config.timeout_hours", label: "Wait timeout (hours)", kind: "number", placeholder: "48" },
+    ],
+    ai_agent: [
+        LABEL_FIELD,
+        {
+            path: "role",
+            label: "Workforce role",
+            kind: "select",
+            options: AI_ROLE_OPTIONS,
+            tooltip: "Which AI-workforce persona runs this step (reads the Business Brain + KB).",
+        },
+        { path: "config.tool", label: "Tool", kind: "select", options: TOOL_OPTIONS },
+        { path: "args", label: "Arguments", kind: "args" },
+        {
+            path: "money",
+            label: "This step can spend",
+            kind: "switch",
+            help: "Advisory only — the runtime recomputes spend from the resolved tool + args.",
+        },
+    ],
+    action: [
+        LABEL_FIELD,
+        {
+            path: "config.tool",
+            label: "Tool",
+            kind: "select",
+            options: TOOL_OPTIONS,
+            tooltip: "One deterministic registry tool call, gated by its own metadata.",
+        },
+        { path: "args", label: "Arguments", kind: "args" },
+        {
+            path: "money",
+            label: "This step can spend",
+            kind: "switch",
+            help: "Advisory only — the runtime recomputes spend from the resolved tool + args.",
+        },
+    ],
+    integration: [
+        LABEL_FIELD,
+        {
+            path: "config.tool",
+            label: "Adapter",
+            kind: "select",
+            options: ["ads.set_budget", "email.send", "whatsapp.send", "calendar.create", "webhook.post"],
+            tooltip: "A dormant-until-creds external adapter.",
+        },
+        { path: "args", label: "Arguments", kind: "args" },
+        {
+            path: "money",
+            label: "This step can spend",
+            kind: "switch",
+            help: "Advisory only — the runtime recomputes spend from the resolved tool + args.",
+        },
+    ],
+    budget: [
+        LABEL_FIELD,
+        {
+            path: "config.cap_inr",
+            label: "Cap (₹)",
+            kind: "number",
+            placeholder: "2000",
+            tooltip: "Reserves a run-scoped wallet hold. Every money node downstream settles against it.",
+        },
+        { path: "config.threshold_inr", label: "Approval threshold (₹)", kind: "number", placeholder: "500" },
+        {
+            path: "config.on_exceed",
+            label: "On exceed",
+            kind: "select",
+            options: ["park_for_approval", "reject"],
+        },
+    ],
+    approval: [
+        LABEL_FIELD,
+        { path: "config.require", label: "Require", kind: "select", options: ["pin", "otp"] },
+        { path: "config.role", label: "Approver role", kind: "select", options: ["owner", "manager", "admin"] },
+        { path: "config.threshold_inr", label: "Threshold (₹)", kind: "number", placeholder: "0" },
+        { path: "config.timeout_h", label: "Timeout (hours)", kind: "number", placeholder: "24" },
+        {
+            path: "config.on_timeout",
+            label: "On timeout",
+            kind: "select",
+            options: ["reject", "park", "notify"],
+        },
+    ],
+    error: [
+        LABEL_FIELD,
+        {
+            path: "config.action",
+            label: "On failure",
+            kind: "select",
+            options: ["terminate", "notify", "human_handover", "retry"],
+            tooltip: "What happens when an upstream node fails (wire its on-error edge here).",
+        },
+        { path: "config.reason", label: "Reason / note", kind: "text", placeholder: "Escalate to a human" },
+    ],
+    data: [
+        LABEL_FIELD,
+        { path: "args", label: "Set (key / value)", kind: "args" },
+        {
+            path: "config.read_tool",
+            label: "Read from",
+            kind: "select",
+            options: ["brain.retrieve", "crm.get_lead", "none"],
+        },
+        { path: "config.bag_key", label: "Store into bag key", kind: "text", placeholder: "summary" },
+    ],
+};
+
+// SelectOption.id is a NUMBER in the ported kit; our enums are strings. Build a
+// stable index-keyed option list + resolve the selected option from a string.
+export function selOpts(values: string[]): SelectOption[] {
+    return values.map((name, i) => ({ id: i, name }));
+}
+export function selFind(values: string[], current: unknown): SelectOption | null {
+    const cur = current == null ? "" : String(current);
+    const i = values.indexOf(cur);
+    return i >= 0 ? { id: i, name: cur } : null;
+}
+
+/* --------------------------------- graph mapping: RF Node[]/Edge[] ⇄ DSL JSON */
+
+// The single React-Flow custom node type. The DSL `type` lives in data.wfType so
+// the canvas owns ONE renderer while the engine sees the real 10-type taxonomy.
+export const RF_NODE_TYPE = "wfNode" as const;
+
+// What rides on each RF node (mirrors WfNode minus the layout x/y, which RF owns).
+export type WfNodeData = {
+    wfType: WfNodeType;
+    label?: string;
+    role?: string;
+    config: Record<string, unknown>;
+    money?: boolean;
+    on_error?: string;
+};
+
+export type RFNode = {
+    id: string;
+    type: typeof RF_NODE_TYPE;
+    position: { x: number; y: number };
+    data: WfNodeData;
+};
+export type RFEdge = {
+    id: string;
+    source: string;
+    target: string;
+    sourceHandle?: string | null;
+    data?: { when?: "true" | "false"; error?: boolean };
+};
+
+export const NODE_ID_RE = /^[A-Za-z0-9_\-]{1,64}$/;
+
+let _idSeq = 0;
+export function newNodeId(type: WfNodeType): string {
+    _idSeq += 1;
+    return `n_${type}_${Date.now().toString(36)}${_idSeq}`;
+}
+
+// DSL WfDefinition -> React-Flow nodes + edges (load / template "Edit"). Auto-lays
+// any node missing x/y left-to-right (reusing the template auto-layout intent).
+export function fromDefinition(def: WfDefinition): { nodes: RFNode[]; edges: RFEdge[] } {
+    const all = [def.trigger, ...def.nodes];
+    const nodes: RFNode[] = all.map((n, i) => ({
+        id: n.node_id,
+        type: RF_NODE_TYPE,
+        position: {
+            x: typeof n.x === "number" ? n.x : 40 + i * 230,
+            y: typeof n.y === "number" ? n.y : 200,
+        },
+        data: {
+            wfType: n.type,
+            label: n.label,
+            role: n.role,
+            config: { ...(n.config || {}) },
+            money: n.money,
+            on_error: n.on_error,
+        },
+    }));
+    const edges: RFEdge[] = def.edges.map((e, i) => ({
+        id: `e_${e.from}_${e.to}_${i}`,
+        source: e.from,
+        target: e.to,
+        sourceHandle: e.when ? e.when : null,
+        data: { when: e.when, error: e.error },
+    }));
+    return { nodes, edges };
+}
+
+// React-Flow nodes + edges -> DSL WfDefinition (save / validate / publish). The
+// canvas owns x/y; the engine ignores them, so layout never corrupts execution.
+export function toDefinition(
+    nodes: RFNode[],
+    edges: RFEdge[],
+    base: Partial<WfDefinition> & { workflow_id: string; name: string }
+): WfDefinition {
+    const triggerNode = nodes.find((n) => n.data.wfType === "trigger");
+    const toWf = (n: RFNode): WfNode => ({
+        node_id: n.id,
+        type: n.data.wfType,
+        label: n.data.label,
+        role: n.data.role,
+        config: n.data.config || {},
+        money: n.data.money,
+        on_error: n.data.on_error,
+        x: Math.round(n.position.x),
+        y: Math.round(n.position.y),
+    });
+    const trigger: WfNode = triggerNode
+        ? toWf(triggerNode)
+        : {
+              node_id: "n_trigger",
+              type: "trigger",
+              label: "Trigger",
+              config: { trigger_kind: "manual" },
+              x: 40,
+              y: 200,
+          };
+    const others = nodes.filter((n) => n.id !== trigger.node_id).map(toWf);
+    const dslEdges: WfEdge[] = edges.map((e) => {
+        const when = (e.sourceHandle as "true" | "false" | null) || e.data?.when;
+        const out: WfEdge = { from: e.source, to: e.target };
+        if (when === "true" || when === "false") out.when = when;
+        if (e.data?.error) out.error = true;
+        return out;
+    });
+    return {
+        schema_version: base.schema_version ?? 1,
+        workflow_id: base.workflow_id,
+        name: base.name,
+        version: base.version ?? 1,
+        status: base.status ?? "draft",
+        industry_pack: base.industry_pack,
+        trigger,
+        nodes: others,
+        edges: dslEdges,
+        guards:
+            base.guards ?? {
+                max_actions: 500,
+                calling_window: "09:00-21:00 IST",
+                respect_dnd: true,
+                respect_consent: true,
+                kill_switch: false,
+            },
+    };
+}
+
+// A blank starter graph for "New workflow" — just a trigger node, centered.
+export function blankGraph(): { nodes: RFNode[]; edges: RFEdge[] } {
+    return {
+        nodes: [
+            {
+                id: "n_trigger",
+                type: RF_NODE_TYPE,
+                position: { x: 80, y: 220 },
+                data: { wfType: "trigger", label: "Trigger", config: { trigger_kind: "manual" } },
+            },
+        ],
+        edges: [],
+    };
+}
+
+// A fresh, blank WfDefinition for "New workflow" — a brand-new id, an editable
+// name, draft status, the default guards, and ONLY a single manual Trigger node.
+// This is the from-scratch entry point (spec §C): page.tsx loads this so the user
+// builds from zero instead of re-opening the demo SAMPLE_WORKFLOW every time.
+export function blankDefinition(): WfDefinition {
+    const rand = Math.random().toString(36).slice(2, 8);
+    return {
+        schema_version: 1,
+        workflow_id: `wf_${rand}`,
+        name: "Untitled workflow",
+        version: 1,
+        status: "draft",
+        trigger: {
+            node_id: "n_trigger",
+            type: "trigger",
+            label: "Trigger",
+            config: { trigger_kind: "manual" },
+            x: 80,
+            y: 220,
+        },
+        nodes: [],
+        edges: [],
+        guards: {
+            max_actions: 500,
+            calling_window: "09:00-21:00 IST",
+            respect_dnd: true,
+            respect_consent: true,
+            kill_switch: false,
+        },
+    };
+}
+
+// The single node-data factory used by BOTH click-to-add and drag-drop in the
+// editor (spec §B) so the two paths build an identical node (one source of truth).
+export function newNodeData(wfType: WfNodeType): WfNodeData {
+    const meta = nodeMeta(wfType);
+    return { wfType, label: meta.label, config: {}, money: meta.money };
+}
+
+// Edge validation (spec §2): which source type may connect to which target.
+// trigger has no incoming; error/budget/approval are not connection-restricted
+// beyond the trigger rule; a node cannot connect to itself.
+export function isValidWfConnection(
+    sourceType: WfNodeType | undefined,
+    targetType: WfNodeType | undefined,
+    sameNode: boolean
+): boolean {
+    if (sameNode) return false;
+    if (!sourceType || !targetType) return false;
+    if (targetType === "trigger") return false; // nothing connects INTO a trigger
+    return true;
 }
 
 /* ----------------------------------------------- the §3 reference sample DSL */
@@ -620,9 +1078,13 @@ async function read<T>(path: string): Promise<ReadResult<T>> {
     }
 }
 
-async function write<T>(path: string, body: Record<string, unknown>): Promise<T> {
+async function write<T>(
+    path: string,
+    body: Record<string, unknown>,
+    method: "POST" | "PUT" = "POST"
+): Promise<T> {
     const res = await fetch(`${BASE}${path}`, {
-        method: "POST",
+        method,
         headers: { ...authHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify(body),
     });
@@ -667,8 +1129,62 @@ export const instantiateTemplate = (templateId: string) =>
         {}
     );
 
+// Fetch a server-stored workflow and normalise it into an editable WfDefinition.
+// The backend wraps the graph as { definition: { workflow_id, name, status,
+// current_version, industry_pack, draft:{…graph} } }. We lift the draft graph,
+// stamp the authoritative server workflow_id/name on it, and return a def the
+// canvas can open (fromDefinition auto-lays any node missing x/y). On any miss we
+// return null so the caller can fall back to the static template definition.
+export async function loadServerWorkflow(id: string): Promise<WfDefinition | null> {
+    const res = await read<{
+        definition?: {
+            workflow_id?: string;
+            name?: string;
+            status?: string;
+            current_version?: number;
+            industry_pack?: string;
+            draft?: Partial<WfDefinition>;
+        };
+    }>(`/workflows/${encodeURIComponent(id)}`);
+    if (res.kind !== "ok") return null;
+    const d = res.data?.definition;
+    const draft = d?.draft;
+    if (!d || !draft || !draft.trigger) return null;
+    markCreated(d.workflow_id || id);
+    return {
+        schema_version: draft.schema_version ?? 1,
+        workflow_id: d.workflow_id || id,
+        name: draft.name || d.name || "Untitled workflow",
+        version: draft.version ?? (d.current_version || 1),
+        status: (draft.status as WfDefinition["status"]) || (d.status as WfDefinition["status"]) || "draft",
+        industry_pack: draft.industry_pack || d.industry_pack || undefined,
+        trigger: draft.trigger as WfNode,
+        nodes: (draft.nodes as WfNode[]) || [],
+        edges: (draft.edges as WfEdge[]) || [],
+        guards:
+            (draft.guards as WfGuards) || {
+                max_actions: 500,
+                calling_window: "09:00-21:00 IST",
+                respect_dnd: true,
+                respect_consent: true,
+                kill_switch: false,
+            },
+    };
+}
+
+// Trigger a run of the published workflow. The in-process engine runs it
+// synchronously and returns a terminal/parked status inline:
+//   { ok, run_id, engine:"in_process", status:"completed"|"awaiting_approval"|…, steps }
+// On refusal: { ok:false, reason:"not_published"|"budget_no_funds"|… }.
 export const runWorkflow = (id: string) =>
-    write<{ ok: boolean; run_id: string }>(`/workflows/${encodeURIComponent(id)}/run`, {});
+    write<{
+        ok: boolean;
+        run_id?: string;
+        engine?: string;
+        status?: string;
+        steps?: number;
+        reason?: string;
+    }>(`/workflows/${encodeURIComponent(id)}/run`, {});
 
 export const approveRun = (runId: string, pin: string) =>
     write<{ ok: boolean }>(`/workflows/runs/${encodeURIComponent(runId)}/approve`, { pin });
@@ -678,6 +1194,130 @@ export const rejectRun = (runId: string) =>
 
 export const cancelRun = (runId: string) =>
     write<{ ok: boolean }>(`/workflows/runs/${encodeURIComponent(runId)}/cancel`, {});
+
+/* ----------------------------------------- editor mutations (spec §5 — added) */
+
+// These hit the SAME defined-not-mounted router. Each 404/501/503 ⇒ the friendly
+// "engine not configured yet" throw from write(), so the editor degrades to a
+// local-only canvas (Save/Publish show the premium dormant toast) and lights up
+// the moment the wiring diff lands — zero frontend change at cutover (spec §5).
+
+// Load a single workflow's editable draft + version history.
+export const getWorkflow = (id: string) =>
+    read<{ definition: WfDefinition; versions?: { version: number; status: string; updated_at?: string }[] }>(
+        `/workflows/${encodeURIComponent(id)}`
+    );
+
+// Persist the canvas as the workflow draft (the DSL JSON is the contract).
+export const saveWorkflow = (id: string, def: WfDefinition) =>
+    write<{ ok: boolean; version: number; definition?: unknown }>(
+        `/workflows/${encodeURIComponent(id)}`,
+        { draft: def },
+        "PUT"
+    );
+
+// Whether a workflow_id is a server-created (persisted) row vs a client-minted
+// "wf_<rand>" id that has NOT yet been POST-created on the backend. A from-scratch
+// blankDefinition() id is client-side until the first save creates the server row.
+// We persist the mapping so a reload still knows the row exists server-side.
+const CREATED_KEY = "wf_created_ids";
+function loadCreated(): Set<string> {
+    if (typeof window === "undefined") return new Set();
+    try {
+        return new Set(JSON.parse(localStorage.getItem(CREATED_KEY) || "[]") as string[]);
+    } catch {
+        return new Set();
+    }
+}
+function markCreated(id: string): void {
+    if (typeof window === "undefined") return;
+    try {
+        const s = loadCreated();
+        s.add(id);
+        localStorage.setItem(CREATED_KEY, JSON.stringify([...s]));
+    } catch {
+        /* non-fatal */
+    }
+}
+export function isServerCreated(id: string): boolean {
+    return loadCreated().has(id);
+}
+
+// THE save contract (live-verified 2026-06-11):
+//   PUT /workflows/{id} returns {ok:false} unless the row was POST-created first
+//   (update_draft requires a pre-existing row). POST /workflows MINTS ITS OWN id
+//   and IGNORES any client workflow_id. So: on first save of a from-scratch graph
+//   we POST to create the row, ADOPT the server id, rewrite def.workflow_id to it,
+//   then PUT. Subsequent saves PUT straight to the (now server-known) id.
+//
+// Returns the AUTHORITATIVE workflow_id the caller must use for every later
+// validate / publish / run (it differs from the client id on first save).
+export async function upsertWorkflow(
+    id: string,
+    def: WfDefinition
+): Promise<{ workflow_id: string; created: boolean }> {
+    if (isServerCreated(id)) {
+        await saveWorkflow(id, def);
+        return { workflow_id: id, created: false };
+    }
+    // First server save: create the row, adopt the server-minted id, then PUT.
+    const res = await createWorkflow({ name: def.name, industry_pack: def.industry_pack });
+    const serverId = res.workflow_id || id;
+    markCreated(serverId);
+    await saveWorkflow(serverId, { ...def, workflow_id: serverId });
+    return { workflow_id: serverId, created: true };
+}
+
+// Static validator + dominator compile. The LIVE backend returns
+// { ok, errors:[{code,node_ids,msg}], classified, reachable }; older shapes used
+// { ok, code, node_ids, message }. Type covers both so callers can read either.
+export type WfValidationError = { code?: string; node_ids?: string[]; msg?: string };
+export type ValidateResult = {
+    ok: boolean;
+    code?: string;
+    node_ids?: string[];
+    message?: string;
+    errors?: WfValidationError[];
+};
+export const validateWorkflow = (id: string, def: WfDefinition) =>
+    write<ValidateResult>(`/workflows/${encodeURIComponent(id)}/validate`, { draft: def });
+
+// Freeze the current draft as a published version. Refused (ok:false + errors)
+// unless dominator-valid; on success returns { ok, version, hash }.
+export const publishWorkflow = (id: string) =>
+    write<{ ok: boolean; version?: number; hash?: string; errors?: WfValidationError[] }>(
+        `/workflows/${encodeURIComponent(id)}/publish`,
+        {}
+    );
+
+/* --------------------------------------------- local draft fallback (spec §F) */
+
+// Until the engine is mounted, a Save persists the DSL to localStorage so a
+// from-scratch graph survives a reload. Keyed by workflow_id. Live save (PUT)
+// remains the source of truth once the router is mounted.
+const DRAFT_PREFIX = "wf_draft_";
+
+export function saveDraftLocal(def: WfDefinition): void {
+    if (typeof window === "undefined") return;
+    try {
+        localStorage.setItem(DRAFT_PREFIX + def.workflow_id, JSON.stringify(def));
+    } catch {
+        /* quota / disabled — non-fatal, the canvas stays in memory */
+    }
+}
+
+export function loadDraftLocal(id: string): WfDefinition | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = localStorage.getItem(DRAFT_PREFIX + id);
+        if (!raw) return null;
+        const def = JSON.parse(raw) as WfDefinition;
+        if (def && def.workflow_id === id && def.trigger) return def;
+    } catch {
+        /* corrupt entry — ignore */
+    }
+    return null;
+}
 
 /* ------------------------------------------------------------ small helpers */
 

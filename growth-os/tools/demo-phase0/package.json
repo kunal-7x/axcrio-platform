@@ -1,0 +1,22 @@
+{
+  "name": "@growth-os/demo-phase0",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase-0 acceptance demo: publish campaign.requested -> consume -> hash-chained ledger entry -> OTel trace. Runs on the laptop (in-memory bus, no Docker).",
+  "type": "module",
+  "scripts": {
+    "demo": "node --import tsx run.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx run.ts"
+  },
+  "dependencies": {
+    "@growth-os/events": "workspace:*",
+    "@growth-os/otel": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

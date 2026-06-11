@@ -4,10 +4,13 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
-import PageHeader from "@/components/PageHeader";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
-import KpiCard from "@/components/KpiCard";
+import Search from "@/components/Search";
+import Tabs from "@/components/Tabs";
+import Select from "@/components/Select";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
 import {
     getContacts,
     getSegments,
@@ -18,17 +21,24 @@ import {
 } from "./client";
 import { StageBadge, initials, fmtRelative } from "./_ui";
 
-// Stage filter chips (mirrors §4.1 derivation order). "all" + hot are special.
-const STAGE_FILTERS: { id: string; label: string }[] = [
-    { id: "all", label: "All" },
-    { id: "new", label: "New" },
-    { id: "contacted", label: "Contacted" },
-    { id: "engaged", label: "Engaged" },
-    { id: "qualified", label: "Qualified" },
-    { id: "booked", label: "Booked" },
-    { id: "won", label: "Won" },
-    { id: "dormant", label: "Dormant" },
+// Stage filter tabs (mirrors §4.1 derivation order). "all" + hot are special.
+const STAGE_TABS = [
+    { id: 1, name: "All", key: "all" },
+    { id: 2, name: "New", key: "new" },
+    { id: 3, name: "Contacted", key: "contacted" },
+    { id: 4, name: "Engaged", key: "engaged" },
+    { id: 5, name: "Qualified", key: "qualified" },
+    { id: 6, name: "Booked", key: "booked" },
+    { id: 7, name: "Won", key: "won" },
+    { id: 8, name: "Dormant", key: "dormant" },
 ];
+
+const HOT_TABS = [
+    { id: 1, name: "All" },
+    { id: 2, name: "Hot" },
+];
+
+const tableHead = ["Contact", "Stage", "Score", "Last Outcome", "Last Activity"];
 
 export default function CrmWorkspacePage() {
     const [contacts, setContacts] = useState<ContactListItem[]>([]);
@@ -38,12 +48,20 @@ export default function CrmWorkspacePage() {
     const [error, setError] = useState("");
 
     // Filters (server-driven so they reflect the real read-model once mounted).
-    const [stage, setStage] = useState("all");
-    const [hotOnly, setHotOnly] = useState(false);
-    const [segment, setSegment] = useState("");
+    const [stageTab, setStageTab] = useState(STAGE_TABS[0]);
+    const [hotTab, setHotTab] = useState(HOT_TABS[0]);
+    const [segment, setSegment] = useState<{ id: number; name: string } | null>(
+        null
+    );
     const [query, setQuery] = useState("");
 
     const [segments, setSegments] = useState<Segment[]>([]);
+
+    const stage = stageTab.key;
+    const hotOnly = hotTab.id === 2;
+    // option.id (1-based) maps to segments[id-1]; id 0 = "All segments".
+    const segmentId =
+        segment && segment.id > 0 ? segments[segment.id - 1]?.id : undefined;
 
     const load = useCallback(() => {
         setLoading(true);
@@ -51,13 +69,13 @@ export default function CrmWorkspacePage() {
         getContacts({
             stage: stage !== "all" ? stage : undefined,
             hot: hotOnly || undefined,
-            segment: segment || undefined,
+            segment: segmentId,
             sort: "last_activity_at",
             limit: 500,
         })
             .then((r) => {
                 // The live API answers 200 with a `note` (not a 404) when the
-                // module / its PG is down — treat that as dormant, not an empty list.
+                // module / its PG is down — treat that as dormant, not empty.
                 if (isDormantResponse(r)) {
                     setDormant(true);
                     setContacts([]);
@@ -74,11 +92,13 @@ export default function CrmWorkspacePage() {
                     setContacts([]);
                     setTotal(0);
                 } else {
-                    setError(e instanceof Error ? e.message : "Failed to load contacts");
+                    setError(
+                        e instanceof Error ? e.message : "Failed to load contacts"
+                    );
                 }
             })
             .finally(() => setLoading(false));
-    }, [stage, hotOnly, segment]);
+    }, [stage, hotOnly, segmentId]);
 
     useEffect(() => {
         load();
@@ -117,357 +137,299 @@ export default function CrmWorkspacePage() {
         const avg =
             scored.length > 0
                 ? Math.round(
-                      scored.reduce((a, c) => a + (c.score ?? 0), 0) / scored.length
+                      scored.reduce((a, c) => a + (c.score ?? 0), 0) /
+                          scored.length
                   )
                 : null;
-        return {
-            n,
-            hot,
-            qualified,
-            engaged,
-            dormantCount,
-            avg,
-            hotRatio: n > 0 ? hot / n : 0,
-            qualifiedRatio: n > 0 ? qualified / n : 0,
-            engagedRatio: n > 0 ? engaged / n : 0,
-        };
+        return { n, hot, qualified, engaged, dormantCount, avg };
     }, [contacts]);
 
-    const activeSegmentName =
-        segment && segments.find((s) => s.id === segment)?.name;
+    const segmentOptions = useMemo(
+        () => [
+            { id: 0, name: "All segments" },
+            ...segments.map((s, i) => ({ id: i + 1, name: s.name })),
+        ],
+        [segments]
+    );
+
+    const activeFilters =
+        !!query || stage !== "all" || hotOnly || (segment && segment.id !== 0);
+
+    const clearFilters = () => {
+        setQuery("");
+        setStageTab(STAGE_TABS[0]);
+        setHotTab(HOT_TABS[0]);
+        setSegment(null);
+    };
 
     return (
         <Layout title="CRM">
-            <PageHeader
-                eyebrow="Customer 360"
-                title="CRM Workspace"
-                subtitle="One spine per person — every call, message, and outcome unified, with a live stage, score, and next-best action."
-            />
-
             {/* ── Dormant: the read-model isn't switched on yet ─────────── */}
             {dormant ? (
                 <Card title="Customer 360">
-                    <div className="state-block py-16">
-                        <span className="state-glyph">
-                            <Icon name="profile" className="fill-inherit" />
-                        </span>
-                        <div className="state-title">CRM workspace is being prepared</div>
-                        <div className="state-sub max-w-md">
-                            The unified contact spine is part of the Customer&nbsp;360
-                            rollout. It stitches your leads, calls, and WhatsApp into one
-                            timeline per person. This view lights up automatically the
-                            moment the module is enabled for your workspace — nothing for
-                            you to do.
-                        </div>
-                        <span className="nav-soon mt-1">Coming soon</span>
-                    </div>
+                    <DormantBody />
                 </Card>
             ) : (
-                <>
-                    {/* ── Hero KPI row — real meters over the loaded set ── */}
-                    <div className="grid grid-cols-4 gap-3 mb-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                        <KpiCard
-                            label="Contacts"
-                            value={loading ? "—" : total}
-                            icon="profile"
-                            tone="info"
-                            sub={
-                                loading
-                                    ? undefined
-                                    : total === 0
-                                    ? "Awaiting first contacts"
-                                    : `${summary.engaged} engaged or better`
-                            }
-                            meter={loading ? null : summary.engagedRatio}
-                            style={{ animationDelay: "0ms" }}
-                        />
-                        <KpiCard
-                            label="Hot · 70+"
-                            value={loading ? "—" : summary.hot}
-                            icon="star-fill"
-                            tone="success"
-                            sub={
-                                loading || summary.n === 0 ? undefined : (
-                                    <span className="text-primary-02">
-                                        {Math.round(summary.hotRatio * 100)}% of loaded
-                                    </span>
-                                )
-                            }
-                            meter={loading ? null : summary.hotRatio}
-                            style={{ animationDelay: "60ms" }}
-                        />
-                        <KpiCard
-                            label="Qualified+"
-                            value={loading ? "—" : summary.qualified}
-                            icon="check-circle"
-                            tone="warning"
-                            sub={
-                                loading || summary.n === 0
-                                    ? undefined
-                                    : `${Math.round(summary.qualifiedRatio * 100)}% reached qualified`
-                            }
-                            meter={loading ? null : summary.qualifiedRatio}
-                            style={{ animationDelay: "120ms" }}
-                        />
-                        <KpiCard
-                            label="Avg Score"
-                            value={loading ? "—" : summary.avg != null ? summary.avg : "—"}
-                            icon="chart"
-                            tone="neutral"
-                            sub={
-                                loading
-                                    ? undefined
-                                    : summary.dormantCount > 0
-                                    ? `${summary.dormantCount} dormant to re-engage`
-                                    : summary.avg == null
-                                    ? "No scored contacts yet"
-                                    : "0-100 interest scale"
-                            }
-                            meter={
-                                loading || summary.avg == null ? null : summary.avg / 100
-                            }
-                            style={{ animationDelay: "180ms" }}
-                        />
-                    </div>
+                <div className="flex flex-col gap-3">
+                    {/* ── Overview metric strip (Core_2 Overview archetype) ── */}
+                    <Card title="Overview">
+                        <div className="flex gap-8 px-5 pb-5 pt-1 max-lg:gap-6 max-lg:px-3 max-lg:overflow-auto max-lg:scrollbar-none">
+                            <MetricItem
+                                icon="profile"
+                                title="Contacts"
+                                value={loading ? "—" : total}
+                                sub={
+                                    loading
+                                        ? undefined
+                                        : total === 0
+                                        ? "Awaiting first contacts"
+                                        : `${summary.engaged} engaged or better`
+                                }
+                            />
+                            <MetricItem
+                                icon="star-fill"
+                                title="Hot · 70+"
+                                value={loading ? "—" : summary.hot}
+                                sub={
+                                    loading || summary.n === 0
+                                        ? undefined
+                                        : `${Math.round(
+                                              (summary.hot / summary.n) * 100
+                                          )}% of loaded`
+                                }
+                                accent
+                            />
+                            <MetricItem
+                                icon="check-circle"
+                                title="Qualified+"
+                                value={loading ? "—" : summary.qualified}
+                                sub={
+                                    loading || summary.n === 0
+                                        ? undefined
+                                        : `${Math.round(
+                                              (summary.qualified / summary.n) * 100
+                                          )}% reached qualified`
+                                }
+                            />
+                            <MetricItem
+                                icon="chart"
+                                title="Avg Score"
+                                value={
+                                    loading
+                                        ? "—"
+                                        : summary.avg != null
+                                        ? summary.avg
+                                        : "—"
+                                }
+                                sub={
+                                    loading
+                                        ? undefined
+                                        : summary.dormantCount > 0
+                                        ? `${summary.dormantCount} dormant to re-engage`
+                                        : summary.avg == null
+                                        ? "No scored contacts yet"
+                                        : "0–100 interest scale"
+                                }
+                            />
+                        </div>
+                    </Card>
 
-                    <Card
-                        title="Contacts"
-                        headContent={
-                            <div className="flex items-center gap-2.5 max-md:gap-2">
-                                <label className="relative hidden sm:flex items-center">
-                                    <Icon
-                                        name="search"
-                                        className="absolute left-3 size-4 fill-t-tertiary pointer-events-none"
-                                    />
-                                    <input
-                                        value={query}
-                                        onChange={(e) => setQuery(e.target.value)}
-                                        placeholder="Search name or phone"
-                                        className="input-base h-9 w-56 max-lg:w-40 pl-9 pr-3 rounded-full text-body-2"
-                                    />
-                                </label>
-                                {/* Segment filter — only shown when segments exist */}
-                                {segments.length > 0 && (
-                                    <select
-                                        value={segment}
-                                        onChange={(e) => setSegment(e.target.value)}
-                                        className="input-base h-9 px-3 rounded-full text-body-2 max-md:hidden"
-                                        aria-label="Filter by segment"
-                                    >
-                                        <option value="">All segments</option>
-                                        {segments.map((s) => (
-                                            <option key={s.id} value={s.id}>
-                                                {s.name}
-                                            </option>
-                                        ))}
-                                    </select>
-                                )}
-                                <div className="inline-flex p-1 rounded-full bg-b-surface1 border border-s-subtle dark:bg-shade-04/40">
-                                    <SegBtn active={!hotOnly} onClick={() => setHotOnly(false)}>
-                                        All
-                                    </SegBtn>
-                                    <SegBtn active={hotOnly} onClick={() => setHotOnly(true)}>
-                                        Hot
-                                    </SegBtn>
-                                </div>
+                    {/* ── List/Table archetype (Core_2 CustomerListPage) ── */}
+                    <div className="card">
+                        <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
+                            <div className="pl-5 text-h6 max-lg:pl-3 max-md:w-full">
+                                Contacts
                             </div>
-                        }
-                    >
-                        {/* Stage filter chips */}
-                        <div className="flex items-center gap-1.5 px-5 pb-3 overflow-x-auto max-lg:px-3">
-                            {STAGE_FILTERS.map((s) => (
-                                <button
-                                    key={s.id}
-                                    onClick={() => setStage(s.id)}
-                                    className={`shrink-0 px-3 h-8 rounded-full text-button transition-all ${
-                                        stage === s.id
-                                            ? "bg-b-surface2 text-t-primary shadow-widget ring-1 ring-s-subtle"
-                                            : "text-t-secondary hover:text-t-primary hover:bg-b-surface1 dark:hover:bg-shade-04/40"
-                                    }`}
-                                >
-                                    {s.label}
-                                </button>
-                            ))}
+                            <Search
+                                className="w-70 ml-6 mr-auto max-lg:w-56 max-md:w-full max-md:ml-0"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search name or phone"
+                                isGray
+                            />
+                            {query === "" && (
+                                <Tabs
+                                    className="max-md:w-full"
+                                    items={HOT_TABS}
+                                    value={hotTab}
+                                    setValue={setHotTab}
+                                />
+                            )}
                         </div>
 
-                        {/* Count strip */}
-                        {!loading && contacts.length > 0 && (
-                            <div className="flex items-center justify-between px-5 pb-3 max-lg:px-3">
-                                <span className="eyebrow">
-                                    {visible.length}
-                                    {query ? ` of ${contacts.length}` : ""}{" "}
-                                    {visible.length === 1 ? "contact" : "contacts"}
-                                    {activeSegmentName ? ` · ${activeSegmentName}` : ""}
-                                </span>
-                                {summary.hot > 0 && !hotOnly && (
-                                    <span className="flex items-center gap-1.5 text-caption text-t-tertiary">
-                                        <span className="size-1.5 rounded-full bg-primary-02" />
-                                        {summary.hot} hot
-                                    </span>
-                                )}
+                        {/* Stage filter tabs */}
+                        {query === "" && (
+                            <div className="px-2 pt-1 overflow-x-auto scrollbar-none">
+                                <Tabs
+                                    items={STAGE_TABS}
+                                    value={stageTab}
+                                    setValue={(v) =>
+                                        setStageTab(v as (typeof STAGE_TABS)[number])
+                                    }
+                                />
+                            </div>
+                        )}
+
+                        {/* Segment select — only when segments exist */}
+                        {query === "" && segments.length > 0 && (
+                            <div className="flex items-center justify-end px-5 pt-3 max-lg:px-3">
+                                <Select
+                                    className="min-w-44"
+                                    value={segment ?? segmentOptions[0]}
+                                    onChange={setSegment}
+                                    options={segmentOptions}
+                                />
                             </div>
                         )}
 
                         {error && (
-                            <div className="mx-5 mb-3 flex items-center gap-2 p-3.5 rounded-2xl text-body-2 bg-primary-03/8 border border-primary-03/20 text-primary-03 max-lg:mx-3">
-                                <Icon name="info" className="size-4 shrink-0 fill-primary-03" />
+                            <div className="mx-5 mt-3 flex items-center gap-2 p-3.5 rounded-2xl text-body-2 bg-primary-03/8 border border-primary-03/20 text-primary-03 max-lg:mx-3">
+                                <Icon
+                                    name="info"
+                                    className="size-4 shrink-0 fill-primary-03"
+                                />
                                 {error}
                             </div>
                         )}
 
-                        <div className="overflow-x-auto">
-                            <table className="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Contact</th>
-                                        <th>Stage</th>
-                                        <th>Score</th>
-                                        <th>Last Outcome</th>
-                                        <th className="text-right">Last Activity</th>
-                                        <th className="w-8" />
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {loading ? (
-                                        [...Array(7)].map((_, i) => (
-                                            <tr key={i}>
-                                                {[...Array(6)].map((__, j) => (
-                                                    <td key={j}>
-                                                        <div
-                                                            className={`skeleton h-4 ${
-                                                                j === 0
-                                                                    ? "w-40"
-                                                                    : j === 4
-                                                                    ? "w-16 ml-auto"
-                                                                    : "w-20"
+                        <div className="p-1 pt-3 max-lg:px-0">
+                            {loading ? (
+                                <TableSkeleton />
+                            ) : visible.length === 0 ? (
+                                <EmptyState
+                                    query={query}
+                                    hotOnly={hotOnly}
+                                    stageLabel={stageTab.name}
+                                    isAll={stage === "all"}
+                                    canClear={!!activeFilters}
+                                    onClear={clearFilters}
+                                />
+                            ) : (
+                                <Table
+                                    cellsThead={tableHead.map((head) => (
+                                        <th
+                                            className={
+                                                head === "Last Activity"
+                                                    ? "text-right max-md:hidden"
+                                                    : head === "Last Outcome"
+                                                    ? "max-lg:hidden"
+                                                    : head === "Score"
+                                                    ? "max-md:hidden"
+                                                    : ""
+                                            }
+                                            key={head}
+                                        >
+                                            {head}
+                                        </th>
+                                    ))}
+                                >
+                                    {visible.map((c) => {
+                                        const isHot =
+                                            c.hot || (c.score ?? 0) >= 70;
+                                        return (
+                                            <TableRow key={c.id}>
+                                                <td className="font-medium text-t-primary">
+                                                    <Link
+                                                        href={`/crm/${encodeURIComponent(
+                                                            c.id
+                                                        )}`}
+                                                        className="flex items-center gap-3"
+                                                    >
+                                                        <span
+                                                            className={`grid place-items-center size-11 shrink-0 rounded-full text-button font-semibold ${
+                                                                isHot
+                                                                    ? "bg-primary-02/12 text-primary-02"
+                                                                    : "bg-b-surface1 text-t-secondary"
                                                             }`}
-                                                        />
-                                                    </td>
-                                                ))}
-                                            </tr>
-                                        ))
-                                    ) : visible.length === 0 ? (
-                                        <tr>
-                                            <td colSpan={6}>
-                                                <div className="state-block">
-                                                    <span className="state-glyph">
-                                                        <Icon
-                                                            name={query ? "search" : "profile"}
-                                                            className="fill-inherit"
-                                                        />
-                                                    </span>
-                                                    <div className="state-title">
-                                                        {query
-                                                            ? "No matching contacts"
-                                                            : hotOnly
-                                                            ? "No hot contacts yet"
-                                                            : stage !== "all"
-                                                            ? `No contacts in “${
-                                                                  STAGE_FILTERS.find(
-                                                                      (s) => s.id === stage
-                                                                  )?.label ?? stage
-                                                              }”`
-                                                            : "No contacts yet"}
-                                                    </div>
-                                                    <div className="state-sub">
-                                                        {query
-                                                            ? `Nothing matches “${query}”. Try a different name or number.`
-                                                            : "Contacts appear here as people are called or message you — each one builds its own unified timeline."}
-                                                    </div>
-                                                    {(query || stage !== "all" || hotOnly || segment) && (
-                                                        <Button
-                                                            isStroke
-                                                            className="mt-1"
-                                                            onClick={() => {
-                                                                setQuery("");
-                                                                setStage("all");
-                                                                setHotOnly(false);
-                                                                setSegment("");
-                                                            }}
                                                         >
-                                                            Clear filters
-                                                        </Button>
+                                                            {initials(c.name)}
+                                                        </span>
+                                                        <span className="min-w-0">
+                                                            <span className="block truncate max-w-48 text-sub-title-1 text-t-primary">
+                                                                {c.name ||
+                                                                    "Unknown"}
+                                                            </span>
+                                                            <span className="block truncate max-w-48 text-body-2 text-t-tertiary">
+                                                                {c.phone_display ||
+                                                                    "—"}
+                                                            </span>
+                                                        </span>
+                                                    </Link>
+                                                </td>
+                                                <td>
+                                                    <StageBadge
+                                                        stage={c.stage}
+                                                    />
+                                                </td>
+                                                <td className="max-md:hidden">
+                                                    <ScoreCell
+                                                        score={c.score}
+                                                        hot={isHot}
+                                                    />
+                                                </td>
+                                                <td className="text-t-secondary capitalize max-lg:hidden">
+                                                    {c.last_outcome
+                                                        ? c.last_outcome.replace(
+                                                              /_/g,
+                                                              " "
+                                                          )
+                                                        : "—"}
+                                                </td>
+                                                <td className="text-t-secondary text-right max-md:hidden">
+                                                    {fmtRelative(
+                                                        c.last_activity_at
                                                     )}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ) : (
-                                        visible.map((c, i) => {
-                                            const isHot = c.hot || (c.score ?? 0) >= 70;
-                                            return (
-                                                <tr
-                                                    key={c.id}
-                                                    className="rise-in is-clickable group"
-                                                    style={{
-                                                        animationDelay: `${Math.min(i * 25, 300)}ms`,
-                                                    }}
-                                                >
-                                                    <td className="font-medium text-t-primary">
-                                                        <Link
-                                                            href={`/crm/${encodeURIComponent(c.id)}`}
-                                                            className="flex items-center gap-2.5"
-                                                        >
-                                                            <span
-                                                                className={`grid place-items-center size-9 shrink-0 rounded-full text-caption font-semibold ${
-                                                                    isHot
-                                                                        ? "bg-primary-02/12 text-primary-02"
-                                                                        : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
-                                                                }`}
-                                                            >
-                                                                {initials(c.name)}
-                                                            </span>
-                                                            <span className="min-w-0">
-                                                                <span className="block truncate max-w-48 text-t-primary">
-                                                                    {c.name || "Unknown"}
-                                                                </span>
-                                                                <span className="block truncate max-w-48 text-caption text-t-tertiary td-num">
-                                                                    {c.phone_display || "—"}
-                                                                </span>
-                                                            </span>
-                                                        </Link>
-                                                    </td>
-                                                    <td>
-                                                        <StageBadge stage={c.stage} />
-                                                    </td>
-                                                    <td>
-                                                        <ScoreCell score={c.score} hot={isHot} />
-                                                    </td>
-                                                    <td className="text-t-secondary text-caption capitalize">
-                                                        {c.last_outcome
-                                                            ? c.last_outcome.replace(/_/g, " ")
-                                                            : "—"}
-                                                    </td>
-                                                    <td className="text-t-secondary td-num text-right">
-                                                        {fmtRelative(c.last_activity_at)}
-                                                    </td>
-                                                    <td className="text-right">
-                                                        <Link
-                                                            href={`/crm/${encodeURIComponent(c.id)}`}
-                                                            className="inline-grid place-items-center size-7 rounded-full text-t-tertiary opacity-0 group-hover:opacity-100 transition-opacity hover:bg-b-surface1 dark:hover:bg-shade-04/60"
-                                                            aria-label="Open profile"
-                                                        >
-                                                            <Icon
-                                                                name="arrow"
-                                                                className="size-4 fill-t-secondary"
-                                                            />
-                                                        </Link>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })
-                                    )}
-                                </tbody>
-                            </table>
+                                                </td>
+                                            </TableRow>
+                                        );
+                                    })}
+                                </Table>
+                            )}
                         </div>
-                    </Card>
-                </>
+                    </div>
+                </div>
             )}
         </Layout>
     );
 }
 
-// Score chip — token-based, mirrors lib/badges ScoreBadge styling without
-// touching the shared module.
+// ── Core_2 Overview metric tile (ported inline; same structure as
+// templates/Products/OverviewPage/Overview/Item, minus the mock chart) ──
+function MetricItem({
+    icon,
+    title,
+    value,
+    sub,
+    accent,
+}: {
+    icon: string;
+    title: string;
+    value: React.ReactNode;
+    sub?: React.ReactNode;
+    accent?: boolean;
+}) {
+    return (
+        <div className="flex-1 min-w-44 pr-8 border-r border-s-subtle last:border-r-0 last:pr-0 max-lg:shrink-0">
+            <div
+                className={`flex items-center justify-center size-12 mb-6 rounded-full ${
+                    accent ? "bg-primary-02/12" : "bg-b-surface1"
+                }`}
+            >
+                <Icon
+                    className={accent ? "fill-primary-02" : "fill-t-primary"}
+                    name={icon}
+                />
+            </div>
+            <div className="text-sub-title-1 text-t-secondary mb-2">{title}</div>
+            <div className="text-h3">{value}</div>
+            {sub && (
+                <div className="mt-2 text-body-2 text-t-tertiary">{sub}</div>
+            )}
+        </div>
+    );
+}
+
+// Score chip — token-based, mirrors lib/badges ScoreBadge styling.
 function ScoreCell({ score, hot }: { score?: number | null; hot?: boolean }) {
     if (score == null || score === 0)
         return <span className="text-t-tertiary">—</span>;
@@ -476,10 +438,10 @@ function ScoreCell({ score, hot }: { score?: number | null; hot?: boolean }) {
             ? "bg-primary-02/12 text-primary-02"
             : score >= 40
             ? "bg-primary-05/12 text-primary-05"
-            : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60";
+            : "bg-b-surface1 text-t-secondary";
     return (
         <span
-            className={`inline-flex items-center gap-1.5 px-2.5 h-6 rounded-full text-caption font-semibold td-num ${tone}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 h-7 rounded-full text-button font-semibold ${tone}`}
         >
             {hot && <span className="size-1.5 rounded-full bg-primary-02" />}
             {score}
@@ -487,25 +449,92 @@ function ScoreCell({ score, hot }: { score?: number | null; hot?: boolean }) {
     );
 }
 
-function SegBtn({
-    active,
-    onClick,
-    children,
+function TableSkeleton() {
+    return (
+        <Table
+            cellsThead={tableHead.map((head) => (
+                <th key={head}>{head}</th>
+            ))}
+        >
+            {[...Array(7)].map((_, i) => (
+                <TableRow key={i}>
+                    {[...Array(5)].map((__, j) => (
+                        <td key={j}>
+                            <div
+                                className={`skeleton h-4 rounded-lg ${
+                                    j === 0 ? "w-44" : j === 4 ? "w-16 ml-auto" : "w-20"
+                                }`}
+                            />
+                        </td>
+                    ))}
+                </TableRow>
+            ))}
+        </Table>
+    );
+}
+
+function EmptyState({
+    query,
+    hotOnly,
+    stageLabel,
+    isAll,
+    canClear,
+    onClear,
 }: {
-    active: boolean;
-    onClick: () => void;
-    children: React.ReactNode;
+    query: string;
+    hotOnly: boolean;
+    stageLabel: string;
+    isAll: boolean;
+    canClear: boolean;
+    onClear: () => void;
 }) {
     return (
-        <button
-            onClick={onClick}
-            className={`px-3.5 h-8 rounded-full text-button transition-all ${
-                active
-                    ? "bg-b-surface2 text-t-primary shadow-widget"
-                    : "text-t-secondary hover:text-t-primary"
-            }`}
-        >
-            {children}
-        </button>
+        <div className="py-16 text-center max-md:py-12">
+            <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                <Icon
+                    name={query ? "search" : "profile"}
+                    className="fill-t-tertiary"
+                />
+            </span>
+            <div className="text-h6 mb-1">
+                {query
+                    ? "No matching contacts"
+                    : hotOnly
+                    ? "No hot contacts yet"
+                    : !isAll
+                    ? `No contacts in “${stageLabel}”`
+                    : "No contacts yet"}
+            </div>
+            <div className="max-w-md mx-auto text-body-2 text-t-secondary">
+                {query
+                    ? `Nothing matches “${query}”. Try a different name or number.`
+                    : "Contacts appear here as people are called or message you — each one builds its own unified timeline."}
+            </div>
+            {canClear && (
+                <Button className="mt-5" isStroke onClick={onClear}>
+                    Clear filters
+                </Button>
+            )}
+        </div>
+    );
+}
+
+function DormantBody() {
+    return (
+        <div className="py-16 text-center max-md:py-12">
+            <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
+                <Icon name="profile" className="fill-t-tertiary" />
+            </span>
+            <div className="text-h6 mb-1">CRM workspace is being prepared</div>
+            <div className="max-w-md mx-auto text-body-2 text-t-secondary">
+                The unified contact spine is part of the Customer&nbsp;360 rollout.
+                It stitches your leads, calls, and WhatsApp into one timeline per
+                person. This view lights up automatically the moment the module is
+                enabled for your workspace — nothing for you to do.
+            </div>
+            <span className="inline-block mt-5 px-3 h-8 leading-8 rounded-full bg-b-surface1 text-button text-t-secondary">
+                Coming soon
+            </span>
+        </div>
     );
 }

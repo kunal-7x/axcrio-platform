@@ -255,3 +255,156 @@ Build the glue. Build the product intelligence. Build the permissions. Build the
 I can turn this into a 10-phase build plan with exact workstreams, owner agents, and acceptance checks next.Later than that, game has been changed. First you have to run Crazy Explorer agent, Crazy Web Search agent, Crazy Researcher agent, Crazy Planner agent. Not one planner agent, three planner agents, three 10 to 20 researcher agents, 10 to 20 web search agents, and create a crazy plan and then you autonomously execute it without requiring my effort. Completely delegation, complete delegation, nothing. You will not read any file. You will not do anything. You just delegate the task as a team leader, like what you are actually doing from the previous.
 
 see if thing tha tyou already build ont' reubild first fronte dyou laready have so that part isdo ne abou tif soemitng you can use as osss use that don't rebuild like we did in past trying to build our own livekit and get no result and i a day we self host and get a result 10x than so if opensource go with go web research about oss that we able to integrate ok 
+
+
+
+
+That was your complete plan
+
+
+❯ You are SECURITY-ENG, owning Phase P0 of the Famit v4 master plan. Famit is a LIVE multi-tenant AI tele-calling SaaS (panel.famit.in). Your job: add a
+  security + observability baseline that is 100% ADDITIVE and BACKWARDS-COMPATIBLE — the live site must never break, and the existing auth (legacy header
+  `X-Auth: FamitCall2026` = admin, and `tenant_id.hmac` tokens) MUST keep working unchanged. Work in small verified units; back up each file before
+  editing; deploy + verify each unit; never break call flow.
+
+  STEP 0 — LOAD CONTEXT + BRAIN:
+  - Read C:\Users\kunal\.claude\projects\C--Users-kunal-desktop-caps\memory\HANDOFF.md (system, deploy recipe, SSH key, API contract).
+  - Read C:\Users\kunal\.claude\plans\you-have-digitalocean-api-imperative-mist.md (the P0 phase + SECURITY cross-cutting track — build to it).
+  - Skim memory\build_log\*.md for current state.
+  - CREATE (if missing) the agent-learning brain at C:\Users\kunal\.claude\projects\C--Users-kunal-desktop-caps\memory\brain\ with mistakes.md,
+  playbooks.md, decisions.md, patterns.md. Read any existing entries FIRST; APPEND your learnings AFTER each unit (e.g. "caller.py edits must be serialized
+  — it's one 138KB file"; "legacy token path must stay valid until cutover").
+
+  YOU OWN (no other agent touches these this wave): backend at famit@168.144.153.145:/opt/famit-agent/ — caller.py (AUTH region:
+  resolve_tenant/_verify_token, and adding BOLA ownership asserts to the ~12 `/{id}` GET/POST/DELETE handlers) + NEW files auth.py, ratelimit.py,
+  config.py, audit.py, obs.py. Local working copy: C:\Users\kunal\desktop\caps\droplet_work\. systemd `famit-caller`; port 8209. DO NOT touch agent.py or
+  prompt.py (another agent owns them this wave).
+
+  BUILD, each a verified+deployed unit:
+  1) `config.py` — secret resolver: read from Doppler IF `DOPPLER_TOKEN` env present, ELSE fall back to current `.env`/os.environ (today's behavior). Never
+  require Doppler. Note Doppler setup as a user follow-up. Wire caller.py to import secrets via config.py without changing any current values.
+  2) `auth.py` — JWT access(15min)+rotating refresh using stdlib/pyjwt: `POST /auth/login` (email+password → access+refresh), `POST /auth/refresh` (rotate;
+  revoke old), `POST /auth/logout`. Extend resolve_tenant to accept JWT **OR** the existing legacy/hmac token (both valid). Add
+  `LEGACY_TOKEN_ENABLED=true` flag (default true) so nothing breaks. The existing `/login` endpoint and `X-Auth` header keep working exactly as today.
+  3) BOLA fix — add an ownership assert helper `require_object(tenant, obj)` and call it in every per-ID handler (`/campaigns/{id}`, `/calls/{id}`,
+  `/leads/{id}`, `/billing/vendor/{id}`, etc.) so Tenant A can't fetch Tenant B's object (return 403/404). Keep list endpoints' existing tenant filtering.
+  4) `audit.py` — append-only immutable audit log (JSONL at var/audit_log.jsonl now; note PG move later): `record(actor, action, object_type, object_id,
+  ip, channel)`. Call it on every mutating endpoint (create/update/delete/run/optout/billing-config/whatsapp-send). New `GET /audit` (admin, tenant-scoped,
+  read-only, paginated).
+  5) `ratelimit.py` — per-tenant token-bucket. Use Redis IF reachable (provision redis-server on the droplet: `apt-get install -y redis-server` or note if
+  you cannot); if Redis is absent, the middleware must NO-OP gracefully (never block real traffic). Sensible per-route-class limits.
+  6) `obs.py` — add a Prometheus `/metrics` endpoint (prometheus_client) exposing request counts/latency + (reuse) the per-call cost already metered. Add
+  lightweight structured request logging. (Full Grafana/OTel collector deploy = note as a devops follow-up; don't block on it.)
+
+  DEPLOY per unit: backup (`*.P0bak.<ts>`), scp changed files to the server, `sudo systemctl restart famit-caller`, verify. VERIFY (capture real results):
+  legacy `X-Auth: FamitCall2026` still 200 on `/campaigns` (NO REGRESSION — critical); new `/auth/login` returns tokens; access token rejected after 15min
+  (or assert exp claim); Tenant-A token on a Tenant-B `/calls/{id}` → 403; `/audit` returns rows after an action; `/metrics` returns Prometheus text;
+  `/run` still dispatches; famit-caller `active`. Do NOT place a paid real call (endpoint checks suffice).
+
+  OUTPUT: APPEND a durable report to memory\build_log\wave-P0-security.md (each unit, new endpoints/contract, what's additive, env/infra awaited like
+  DOPPLER_TOKEN/Redis, deploy+regression status) and update HANDOFF.md + brain\. Return a concise summary; no secrets, no file dumps. If you sense
+  rate-limiting, deploy what's verified and report rather than dying silently.\
+
+
+  
+❯ You are SECURITY-ENG, owning Phase P0 of the Famit v4 master plan. Famit is a LIVE multi-tenant AI tele-calling SaaS (panel.famit.in). Your job: add a
+  security + observability baseline that is 100% ADDITIVE and BACKWARDS-COMPATIBLE — the live site must never break, and the existing auth (legacy header
+  `X-Auth: FamitCall2026` = admin, and `tenant_id.hmac` tokens) MUST keep working unchanged. Work in small verified units; back up each file before
+  editing; deploy + verify each unit; never break call flow.
+
+  STEP 0 — LOAD CONTEXT + BRAIN:
+  - Read C:\Users\kunal\.claude\projects\C--Users-kunal-desktop-caps\memory\HANDOFF.md (system, deploy recipe, SSH key, API contract).
+  - Read C:\Users\kunal\.claude\plans\you-have-digitalocean-api-imperative-mist.md (the P0 phase + SECURITY cross-cutting track — build to it).
+  - Skim memory\build_log\*.md for current state.
+  - CREATE (if missing) the agent-learning brain at C:\Users\kunal\.claude\projects\C--Users-kunal-desktop-caps\memory\brain\ with mistakes.md,
+  playbooks.md, decisions.md, patterns.md. Read any existing entries FIRST; APPEND your learnings AFTER each unit (e.g. "caller.py edits must be serialized
+  — it's one 138KB file"; "legacy token path must stay valid until cutover").
+
+  YOU OWN (no other agent touches these this wave): backend at famit@168.144.153.145:/opt/famit-agent/ — caller.py (AUTH region:
+  resolve_tenant/_verify_token, and adding BOLA ownership asserts to the ~12 `/{id}` GET/POST/DELETE handlers) + NEW files auth.py, ratelimit.py,
+  config.py, audit.py, obs.py. Local working copy: C:\Users\kunal\desktop\caps\droplet_work\. systemd `famit-caller`; port 8209. DO NOT touch agent.py or
+  prompt.py (another agent owns them this wave).
+
+  BUILD, each a verified+deployed unit:
+  1) `config.py` — secret resolver: read from Doppler IF `DOPPLER_TOKEN` env present, ELSE fall back to current `.env`/os.environ (today's behavior). Never
+  require Doppler. Note Doppler setup as a user follow-up. Wire caller.py to import secrets via config.py without changing any current values.
+  2) `auth.py` — JWT access(15min)+rotating refresh using stdlib/pyjwt: `POST /auth/login` (email+password → access+refresh), `POST /auth/refresh` (rotate;
+  revoke old), `POST /auth/logout`. Extend resolve_tenant to accept JWT **OR** the existing legacy/hmac token (both valid). Add
+  `LEGACY_TOKEN_ENABLED=true` flag (default true) so nothing breaks. The existing `/login` endpoint and `X-Auth` header keep working exactly as today.
+  3) BOLA fix — add an ownership assert helper `require_object(tenant, obj)` and call it in every per-ID handler (`/campaigns/{id}`, `/calls/{id}`,
+  `/leads/{id}`, `/billing/vendor/{id}`, etc.) so Tenant A can't fetch Tenant B's object (return 403/404). Keep list endpoints' existing tenant filtering.
+  4) `audit.py` — append-only immutable audit log (JSONL at var/audit_log.jsonl now; note PG move later): `record(actor, action, object_type, object_id,
+  ip, channel)`. Call it on every mutating endpoint (create/update/delete/run/optout/billing-config/whatsapp-send). New `GET /audit` (admin, tenant-scoped,
+  read-only, paginated).
+  5) `ratelimit.py` — per-tenant token-bucket. Use Redis IF reachable (provision redis-server on the droplet: `apt-get install -y redis-server` or note if
+  you cannot); if Redis is absent, the middleware must NO-OP gracefully (never block real traffic). Sensible per-route-class limits.
+  6) `obs.py` — add a Prometheus `/metrics` endpoint (prometheus_client) exposing request counts/latency + (reuse) the per-call cost already metered. Add
+  lightweight structured request logging. (Full Grafana/OTel collector deploy = note as a devops follow-up; don't block on it.)
+
+  DEPLOY per unit: backup (`*.P0bak.<ts>`), scp changed files to the server, `sudo systemctl restart famit-caller`, verify. VERIFY (capture real results):
+  legacy `X-Auth: FamitCall2026` still 200 on `/campaigns` (NO REGRESSION — critical); new `/auth/login` returns tokens; access token rejected after 15min
+  (or assert exp claim); Tenant-A token on a Tenant-B `/calls/{id}` → 403; `/audit` returns rows after an action; `/metrics` returns Prometheus text;
+  `/run` still dispatches; famit-caller `active`. Do NOT place a paid real call (endpoint checks suffice).
+
+  OUTPUT: APPEND a durable report to memory\build_log\wave-P0-security.md (each unit, new endpoints/contract, what's additive, env/infra awaited like
+  DOPPLER_TOKEN/Redis, deploy+regression status) and update HANDOFF.md + brain\. Return a concise summary; no secrets, no file dumps. If you sense
+  rate-limiting, deploy what's verified and report rather than dying silently.
+
+
+  
+❯  
+  BUILD, each a verified+deployed unit:
+  1) `config.py` — secret resolver: read from Doppler IF `DOPPLER_TOKEN` env present, ELSE fall back to current `.env`/os.environ (today's behavior). Never
+  require Doppler. Note Doppler setup as a user follow-up. Wire caller.py to import secrets via config.py without changing any current values.
+  2) `auth.py` — JWT access(15min)+rotating refresh using stdlib/pyjwt: `POST /auth/login` (email+password → access+refresh), `POST /auth/refresh` (rotate;
+  revoke old), `POST /auth/logout`. Extend resolve_tenant to accept JWT **OR** the existing legacy/hmac token (both valid). Add
+  `LEGACY_TOKEN_ENABLED=true` flag (default true) so nothing breaks. The existing `/login` endpoint and `X-Auth` header keep working exactly as today.
+  3) BOLA fix — add an ownership assert helper `require_object(tenant, obj)` and call it in every per-ID handler (`/campaigns/{id}`, `/calls/{id}`,
+  `/leads/{id}`, `/billing/vendor/{id}`, etc.) so Tenant A can't fetch Tenant B's object (return 403/404). Keep list endpoints' existing tenant filtering.
+  4) `audit.py` — append-only immutable audit log (JSONL at var/audit_log.jsonl now; note PG move later): `record(actor, action, object_type, object_id,
+  ip, channel)`. Call it on every mutating endpoint (create/update/delete/run/optout/billing-config/whatsapp-send). New `GET /audit` (admin, tenant-scoped,
+  read-only, paginated).
+  5) `ratelimit.py` — per-tenant token-bucket. Use Redis IF reachable (provision redis-server on the droplet: `apt-get install -y redis-server` or note if
+  you cannot); if Redis is absent, the middleware must NO-OP gracefully (never block real traffic). Sensible per-route-class limits.
+  6) `obs.py` — add a Prometheus `/metrics` endpoint (prometheus_client) exposing request counts/latency + (reuse) the per-call cost already metered. Add
+  lightweight structured request logging. (Full Grafana/OTel collector deploy = note as a devops follow-up; don't block on it.)
+
+ 
+  rate-limiting, deploy what's verified and report rather than dying silently. The point when I find okay now the limit is getting hit the session limit agent is going to be die and you couldn't able to do anything so I go to the agent window and take the so take the control copy the what actually was the plan and where actually it is at so this is really helping you so like what actually agent has completed and what actually hasn't completed so you get to know sankarankutty the last message is last thing that that particular agent is working I just directly copy so you will get to know 
+
+  ● Unit 4 FULLY VERIFIED:
+  - Regression green.
+  - Created + deleted a campaign → /audit shows both rows newest-first with actor=admin, real action, object_id, captured IP 152.59.32.94 (X-Forwarded-For from nginx), channel=api.
+  - Vendor /audit is tenant-scoped → 0 rows (correctly cannot see admin's audit trail).
+  - File var/audit_log.jsonl exists, is valid JSONL, append-only, with meta enrichment.
+
+   
+
+● Now Unit 5: ratelimit.py — per-tenant token-bucket. First, let me attempt to provision redis-server on the droplet (in the background isn't needed; it's quick). If it succeeds, the limiter uses Redis; if not, NO-OP. Let me try the
+  install while I write the module.
+
+● Bash(ssh -i /c/Users/kunal/.ssh/do-blr-test/id_ed25519 -o ConnectTimeout=20 famit@168.144.153.145 'echo "=== attempting redis-server install ==="; sudo DEBIAN_FRONTE…)
+
+● Interesting: redis-cli ping returns NOAUTH Authentication required — meaning a Redis is already running and password-protected (likely the LiveKit docker redis on 6379, or the apt one started with a requirepass). The systemd
+  redis-server/redis services show "failed" — likely because the port is already taken by the existing (docker) Redis. This is the LiveKit redis from the HANDOFF ("docker: livekit-server/sip/redis").
+ is is the correct, non-invasive choice.
+
+  Let me check what's actually on 6379 and whether there's an unauthenticated instance, to document accurately — but I will NOT reconfigure LiveKit's redis.
+
+
+
+● Confirmed: livekit-redis (docker) owns 127.0.0.1:6379 and is password-protected (that's LiveKit's — must not touch). The apt redis-server failed because the port is occupied.
+
+  Decision: I will configure the apt redis-server to listen on a different port (6380) so it doesn't collide with LiveKit, start it, and point the rate-limiter at it. This gives a real Redis-backed limiter without touching LiveKit's
+  redis. If anything about this is fragile, the limiter still falls back to in-proc. Let me set redis-server to port 6380 + start it.
+
+● Bash(ssh -i /c/Users/kunal/.ssh/do-blr-test/id_ed25519 -o ConnectTimeout=20 famit@168.144.153.145 'set -e
+      echo "=== set apt redis to port 6380 (avoid LiveKit 6379) =…)
+
+● A dedicated rate-limit Redis is now live on 127.0.0.1:6380 (no auth, isolated), with LiveKit's redis on 6379 untouched. Now I'll write ratelimit.py to use this (default URL redis://127.0.0.1:6380/0), with graceful in-proc fallback if
+  Redis is unreachable.
+
+● Write(ratelimit.py)
+  ⎿  PostToolUse:Write hook error                                                                                       ⎿  Failed with non-blocking status code: The argument 'C:Userskunal.claudehooksworklog.ps1' to the -File parameter
+  ⎿  You've hit your session limit · resets 1am (Asia/Calcutta)
+     /upgrade to increase your usage limit.

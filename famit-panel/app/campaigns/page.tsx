@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
-import PageHeader from "@/components/PageHeader";
 import Icon from "@/components/Icon";
+import Search from "@/components/Search";
+import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
 import { StatusBadge } from "@/lib/badges";
 import {
     getCampaigns,
@@ -37,6 +39,7 @@ export default function CampaignsPage() {
     const [campaigns, setCampaigns] = useState<Campaign[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState("");
+    const [query, setQuery] = useState("");
 
     // Create campaign state
     const [brief, setBrief] = useState("");
@@ -195,17 +198,39 @@ export default function CampaignsPage() {
         setVariants((prev) => prev.map((v, i) => (i === idx ? { ...v, fields_override: { ...v.fields_override, [key]: val } } : v)));
     }
 
+    const visibleCampaigns = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        if (!q) return campaigns;
+        return campaigns.filter(
+            (c) =>
+                c.name?.toLowerCase().includes(q) ||
+                c.company?.toLowerCase().includes(q) ||
+                c.product?.toLowerCase().includes(q)
+        );
+    }, [campaigns, query]);
+
+    const tableHead = (
+        <>
+            <th>Name</th>
+            <th className="max-lg:hidden">Company</th>
+            <th className="max-xl:hidden">Product</th>
+            <th>Status</th>
+            <th className="max-md:hidden">Created</th>
+            <th className="text-right">Actions</th>
+        </>
+    );
+
     return (
         <Layout title="Campaigns">
-            <PageHeader
-                eyebrow="Outreach"
-                title="Campaigns"
-                subtitle="Paste a brief, let AI extract the pitch, and launch a voice campaign with your chosen agent voice, calling window and A/B variants."
-            />
-
             {/* Toast */}
             {toast && (
-                <div className={`toast ${toast.type === "success" ? "toast-success" : "toast-error"}`}>
+                <div
+                    className={`mb-3 flex items-center justify-between gap-2 p-3.5 rounded-3xl text-body-2 ${
+                        toast.type === "success"
+                            ? "bg-primary-02/8 text-primary-02"
+                            : "bg-primary-03/8 text-primary-03"
+                    }`}
+                >
                     <span className="flex items-center gap-2">
                         <span className="size-1.5 rounded-full bg-current" />
                         {toast.msg}
@@ -214,106 +239,117 @@ export default function CampaignsPage() {
                 </div>
             )}
 
-            <div className="flex gap-6 max-lg:flex-col">
+            <div className="flex max-lg:block">
                 {/* Left: Campaigns table */}
-                <div className="flex-1 min-w-0">
-                    <Card title="All Campaigns">
+                <div className={writable ? "col-left" : "w-full"}>
+                    <div className="card">
+                        <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
+                            <div className="mr-auto pl-5 text-h6 max-lg:pl-3">
+                                All campaigns
+                            </div>
+                            <Search
+                                className="w-64 max-md:w-full max-md:ml-3"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search name, company or product"
+                                isGray
+                            />
+                        </div>
+
                         {loadError && (
-                            <div className="mx-5 mb-3 toast toast-error">
-                                <span className="flex items-center gap-2">
-                                    <span className="size-1.5 rounded-full bg-current" />
-                                    {loadError}
-                                </span>
+                            <div className="mx-4 mt-3 flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 text-primary-03 text-body-2">
+                                <span className="size-1.5 rounded-full bg-current" />
+                                {loadError}
                             </div>
                         )}
-                        <div className="overflow-x-auto">
-                            <table className="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Name</th>
-                                        <th>Company</th>
-                                        <th>Product</th>
-                                        <th>Status</th>
-                                        <th>Created</th>
-                                        <th className="text-right">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {loading ? (
-                                        [...Array(4)].map((_, i) => (
-                                            <tr key={i}>
-                                                {[...Array(6)].map((__, j) => (
-                                                    <td key={j}>
-                                                        <div className="skeleton h-4 w-20" />
-                                                    </td>
-                                                ))}
-                                            </tr>
-                                        ))
-                                    ) : campaigns.length === 0 ? (
-                                        <tr>
-                                            <td colSpan={6}>
-                                                <div className="state-block">
-                                                    <span className="state-glyph">
-                                                        <Icon name="promote" className="fill-inherit" />
-                                                    </span>
-                                                    <div className="state-title">No campaigns yet</div>
-                                                    <div className="state-sub">
-                                                        Create your first campaign on the right — paste a brief and we extract the pitch for you.
-                                                    </div>
+
+                        <div className="pt-3 overflow-x-auto">
+                            {loading ? (
+                                <Table cellsThead={tableHead}>
+                                    {[...Array(4)].map((_, i) => (
+                                        <TableRow key={i}>
+                                            {[...Array(6)].map((__, j) => (
+                                                <td key={j}>
+                                                    <div className="skeleton h-4 w-20" />
+                                                </td>
+                                            ))}
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            ) : visibleCampaigns.length === 0 ? (
+                                <div className="state-block">
+                                    <span className="state-glyph">
+                                        <Icon
+                                            name={query ? "search" : "promote"}
+                                            className="fill-inherit"
+                                        />
+                                    </span>
+                                    <div className="state-title">
+                                        {query
+                                            ? "No matching campaigns"
+                                            : "No campaigns yet"}
+                                    </div>
+                                    <div className="state-sub">
+                                        {query
+                                            ? `Nothing matches “${query}”.`
+                                            : "Create your first campaign on the right — paste a brief and we extract the pitch for you."}
+                                    </div>
+                                </div>
+                            ) : (
+                                <Table cellsThead={tableHead}>
+                                    {visibleCampaigns.map((c) => (
+                                        <TableRow key={c.id}>
+                                            <td className="text-sub-title-1">
+                                                {c.name}
+                                            </td>
+                                            <td className="text-t-secondary max-lg:hidden">
+                                                {c.company}
+                                            </td>
+                                            <td className="text-t-secondary max-xl:hidden">
+                                                {c.product}
+                                            </td>
+                                            <td>
+                                                <StatusBadge status={c.status} />
+                                            </td>
+                                            <td className="text-t-secondary whitespace-nowrap max-md:hidden">
+                                                {fmtDate(c.created_at)}
+                                            </td>
+                                            <td className="text-right">
+                                                <div className="flex items-center gap-2 justify-end">
+                                                    <Button
+                                                        isStroke
+                                                        className="!h-9 !px-4"
+                                                        onClick={() =>
+                                                            setAbCampaignId(c.id)
+                                                        }
+                                                    >
+                                                        A/B
+                                                    </Button>
+                                                    {writable && (
+                                                        <Button
+                                                            isStroke
+                                                            className="!h-9 !px-4 hover:!border-primary-03/30 hover:!text-primary-03"
+                                                            onClick={() =>
+                                                                handleDelete(c.id)
+                                                            }
+                                                        >
+                                                            Delete
+                                                        </Button>
+                                                    )}
                                                 </div>
                                             </td>
-                                        </tr>
-                                    ) : (
-                                        campaigns.map((c) => (
-                                            <tr key={c.id}>
-                                                <td className="font-medium text-t-primary">
-                                                    {c.name}
-                                                </td>
-                                                <td className="text-t-secondary">
-                                                    {c.company}
-                                                </td>
-                                                <td className="text-t-secondary">
-                                                    {c.product}
-                                                </td>
-                                                <td>
-                                                    <StatusBadge status={c.status} />
-                                                </td>
-                                                <td className="text-t-secondary whitespace-nowrap">
-                                                    {fmtDate(c.created_at)}
-                                                </td>
-                                                <td>
-                                                    <div className="flex items-center gap-2 justify-end">
-                                                        <button
-                                                            onClick={() => setAbCampaignId(c.id)}
-                                                            className="action"
-                                                        >
-                                                            A/B
-                                                        </button>
-                                                        {writable && (
-                                                            <button
-                                                                onClick={() =>
-                                                                    handleDelete(c.id)
-                                                                }
-                                                                className="action hover:!text-primary-03 hover:!border-primary-03/30"
-                                                            >
-                                                                Delete
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            )}
                         </div>
-                    </Card>
+                    </div>
                 </div>
 
                 {/* Right: Create campaign (hidden for read-only agents) */}
                 {writable && (
-                <div className="w-96 max-lg:w-full shrink-0">
-                    <Card title="Create Campaign">
+                <div className="col-right">
+                    <Card title="Create campaign">
                         <div className="px-5 pb-5 space-y-4">
                             <div>
                                 <label className="block text-button mb-3 text-t-primary">
@@ -580,51 +616,47 @@ function ABResultsModal({ campaignId, onClose }: { campaignId: string; onClose: 
         <div className="fixed inset-0 z-50 bg-shade-01/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={handleBackdrop}>
             <div className="surface w-full max-w-3xl max-h-[90vh] flex flex-col rise-in">
                 <div className="flex items-center justify-between p-5 border-b border-s-subtle shrink-0">
-                    <div className="flex items-center gap-2.5">
-                        <span className="signal-glyph !h-3.5" aria-hidden><i /><i /><i /></span>
-                        <h2 className="text-h6 text-t-primary">A/B Results</h2>
-                    </div>
+                    <h2 className="text-h6 text-t-primary">A/B results</h2>
                     <button onClick={onClose} className="flex items-center justify-center size-8 rounded-full text-t-secondary transition-colors hover:bg-b-surface1 hover:text-t-primary dark:hover:bg-shade-04">×</button>
                 </div>
                 <div className="overflow-y-auto p-5">
                     {loading && <div className="py-12 text-center text-t-secondary">Loading…</div>}
-                    {error && <div className="toast toast-error"><span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-current" />{error}</span></div>}
+                    {error && <div className="flex items-center gap-2 p-3.5 rounded-2xl bg-primary-03/8 text-primary-03 text-body-2"><span className="size-1.5 rounded-full bg-current" />{error}</div>}
                     {data && (
                         data.variants.length === 0 ? (
                             <div className="state-block"><div className="state-sub">No variants defined for this campaign.</div></div>
                         ) : (
                             <div className="overflow-x-auto">
-                                <table className="data-table">
-                                    <thead>
-                                        <tr>
+                                <Table
+                                    cellsThead={
+                                        <>
                                             <th>Variant</th>
                                             <th>Weight</th>
                                             <th>Dialed</th>
                                             <th>Connected</th>
                                             <th>Interested</th>
                                             <th>Qualified</th>
-                                            <th className="text-right">Avg Interest</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {data.variants.map((v) => (
-                                            <tr key={v.id} className={winnerId === v.id ? "bg-[#00A656]/8" : ""}>
-                                                <td className="font-medium text-t-primary">
-                                                    {v.label}
-                                                    {winnerId === v.id && (
-                                                        <span className="pill pill-success ml-2">winner</span>
-                                                    )}
-                                                </td>
-                                                <td className="text-t-secondary td-num">{v.weight}</td>
-                                                <td className="text-t-secondary td-num">{v.dialed}</td>
-                                                <td className="text-t-secondary td-num">{v.connected}</td>
-                                                <td className="text-t-secondary td-num">{v.interested}</td>
-                                                <td className="text-t-secondary td-num">{v.qualified}</td>
-                                                <td className="font-medium text-t-primary td-num text-right">{v.avg_interest != null ? v.avg_interest.toFixed(1) : "—"}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
+                                            <th className="text-right">Avg interest</th>
+                                        </>
+                                    }
+                                >
+                                    {data.variants.map((v) => (
+                                        <TableRow key={v.id} className={winnerId === v.id ? "bg-primary-02/8" : ""}>
+                                            <td className="text-sub-title-1">
+                                                {v.label}
+                                                {winnerId === v.id && (
+                                                    <span className="pill pill-success ml-2">winner</span>
+                                                )}
+                                            </td>
+                                            <td className="text-t-secondary td-num">{v.weight}</td>
+                                            <td className="text-t-secondary td-num">{v.dialed}</td>
+                                            <td className="text-t-secondary td-num">{v.connected}</td>
+                                            <td className="text-t-secondary td-num">{v.interested}</td>
+                                            <td className="text-t-secondary td-num">{v.qualified}</td>
+                                            <td className="text-sub-title-1 td-num text-right">{v.avg_interest != null ? v.avg_interest.toFixed(1) : "—"}</td>
+                                        </TableRow>
+                                    ))}
+                                </Table>
                             </div>
                         )
                     )}
