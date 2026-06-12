@@ -77,6 +77,87 @@ def _camp_name(c: dict) -> str:
     return str(c.get("name") or f.get("company_name") or f.get("product_name") or "").strip()
 
 
+def campaigns_summary() -> dict:
+    """Spoken-friendly enumeration of ALL campaigns (real data, never invented). Returns the count and
+    a readable list of "name (status)" so the agent can answer "how many campaigns / list my campaigns"
+    truthfully. The agent MUST call this — it must never guess a campaign name or count."""
+    camps = list_campaigns()
+    if not camps:
+        return {"ok": True, "count": 0, "campaigns": [],
+                "summary": "I don't see any campaigns on your account yet."}
+    items = []
+    for c in camps:
+        nm = _camp_name(c) or "(unnamed)"
+        st = str(c.get("status") or "").strip() or "ready"
+        items.append({"id": str(c.get("id", "")), "name": nm, "status": st})
+    names = "; ".join(f"{i['name']} ({i['status']})" for i in items)
+    n = len(items)
+    return {"ok": True, "count": n, "campaigns": items,
+            "summary": (f"You have {n} campaign{'s' if n != 1 else ''}: {names}.")}
+
+
+def campaign_details(spoken: str) -> dict:
+    """Full detail for ONE campaign, resolved from a spoken name/id (forgiving match), read from GET
+    /campaigns/{id} and unwrapped from the {"campaign":{...}} envelope. Real data only — if no match,
+    say so. Speaks status + goal + language + calling window so the manager hears the real config."""
+    camp = resolve_campaign(spoken)
+    if camp is None:
+        avail = ", ".join(_camp_name(c) for c in list_campaigns()[:8] if _camp_name(c))
+        return {"ok": False, "summary": (f"I couldn't find a campaign called {spoken}." +
+                (f" The ones you have are: {avail}." if avail else ""))}
+    cid = str(camp.get("id", ""))
+    try:
+        d = _get(f"/campaigns/{cid}")
+        full = (d.get("campaign") or d) if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001
+        full = camp  # fall back to the list-view fields we already have
+    f = full.get("fields", {}) or {}
+    name = _camp_name(full) or _camp_name(camp) or spoken
+    status = str(full.get("status") or camp.get("status") or "ready").strip()
+    goal = str(f.get("goal") or "").strip()
+    lang = str(f.get("language") or f.get("primary_language") or "").strip()
+    ws = str(f.get("call_window_start") or "").strip()
+    we = str(f.get("call_window_end") or "").strip()
+    product = str(full.get("product") or f.get("product_name") or "").strip()
+    parts = [f"{name} is {status}"]
+    if product:
+        parts.append(f"for {product}")
+    if goal:
+        parts.append(f"the goal is {goal}")
+    if lang:
+        parts.append(f"language {lang}")
+    if ws and we:
+        parts.append(f"calling window {ws} to {we}")
+    summary = ". ".join(parts) + "."
+    return {"ok": True, "id": cid, "name": name, "status": status,
+            "campaign": full, "summary": summary}
+
+
+def campaign_analytics(spoken: str) -> dict:
+    """Per-campaign analytics (dialed/connected/answered/interested/qualified/voicemail) from
+    GET /analytics?campaign_id=<resolved>. Real numbers only; resolves the spoken name first."""
+    camp = resolve_campaign(spoken)
+    if camp is None:
+        avail = ", ".join(_camp_name(c) for c in list_campaigns()[:8] if _camp_name(c))
+        return {"ok": False, "summary": (f"I couldn't find a campaign called {spoken}." +
+                (f" You have: {avail}." if avail else ""))}
+    cid = str(camp.get("id", ""))
+    cname = _camp_name(camp) or spoken
+    try:
+        d = _get("/analytics", {"campaign_id": cid})
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "summary": f"I couldn't pull the analytics for {cname} right now."}
+    dialed = int(d.get("dialed", 0) or 0)
+    connected = int(d.get("connected", 0) or 0)
+    answered = int(d.get("answered", 0) or 0)
+    interested = int(d.get("interested", 0) or 0)
+    qualified = int(d.get("qualified", 0) or 0)
+    vm = int(d.get("voicemail", 0) or 0)
+    return {"ok": True, "stats": d,
+            "summary": (f"For {cname}: {dialed} dialed, {connected} connected, {answered} answered, "
+                        f"{interested} interested, {qualified} qualified, and {vm} went to voicemail.")}
+
+
 def resolve_campaign(spoken: str) -> dict | None:
     """Best-effort match of a spoken campaign name to a stored campaign. Returns the campaign dict or
     None. Matching is forgiving: exact id, exact name (ci), then substring/word-overlap on the name."""
@@ -205,7 +286,7 @@ def resolve_audience(segment: str, count: int) -> list[dict]:
         rows = [x for x in leads if 40 <= _lead_temp_score(x) < 70]
     elif seg in ("cold",):
         rows = [x for x in leads if _lead_temp_score(x) < 40]
-    else:  # all / everyone / unknown
+    else:  # all / everyone / everybody / corporates / free-text / unknown -> the whole pool (NEVER silent 0)
         rows = list(leads)
     # highest score first so a small count dials the best leads
     rows = sorted(rows, key=_lead_temp_score, reverse=True)
@@ -262,6 +343,10 @@ def run_campaign(campaign: str, segment: str = "all", count: int = 0) -> dict:
                 "job_id": res.get("job_id", ""), "count": n}
     if not job and st not in (200, 202):
         return {"ok": False, "summary": "I couldn't start the campaign just now — please try again."}
+    # Honest read-out: speak ONLY after /run returned a job; include the real count.
+    seg_txt = "" if seg in ("all", "everyone", "everybody") else f"{seg} "
+    is_are = "is" if n == 1 else "are"
     return {"ok": True, "job_id": job, "count": n,
-            "summary": (f"Done — I'm now dialing {n} {seg if seg!='all' else ''} "
-                        f"lead{'s' if n != 1 else ''} for {cname}. They'll start ringing in a few seconds.")}
+            "phones": [str(x.get("phone") or x.get("num") or "") for x in rows][:n],
+            "summary": (f"Done — I've started the run for {cname}. {n} {seg_txt}"
+                        f"lead{'s' if n != 1 else ''} {is_are} dialing now; they'll start ringing in a few seconds.")}

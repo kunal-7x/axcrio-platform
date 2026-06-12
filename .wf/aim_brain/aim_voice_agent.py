@@ -228,17 +228,39 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
             "the `verify_pin` tool with what they say. Do NOT reveal data or run actions until "
             "`verify_pin` returns verified=true. If the PIN is wrong, let them try again politely; never "
             "go silent.\n\n"
-            "ONCE VERIFIED you have real tools — USE them, never make up numbers:\n"
-            "• `check_leads` — how many leads / hot / warm / cold leads.\n"
-            "• `recent_calls` — a summary of the latest calls.\n"
-            "• `analytics` — total calls, answered, voicemail.\n"
+            "ONCE VERIFIED you have FULL read + action access to this whole account, through REAL tools:\n"
+            "• `list_campaigns` — ALL campaigns with their names and status. Call this for 'how many "
+            "campaigns / what campaigns do I have / my other campaigns / list them', AND before you "
+            "resolve any campaign by name.\n"
+            "• `campaign_details(campaign)` — full info on ONE campaign (status, product, goal, "
+            "language, calling window).\n"
+            "• `campaign_analytics(campaign)` — that campaign's real numbers (dialed/connected/"
+            "answered/interested/qualified/voicemail).\n"
+            "• `check_leads(campaign)` — lead counts (total / hot / warm / cold). campaign is optional.\n"
+            "• `recent_calls(count)` — a summary of the latest calls.\n"
+            "• `analytics` — overall totals (calls, answered, voicemail) across campaigns.\n"
             "• `wallet_status` — their balance / plan.\n"
-            "• `run_campaign(campaign, segment, count)` — STARTS a real calling campaign (this DIALS "
-            "phones and spends money). Slot-fill conversationally FIRST: if they didn't say which "
-            "campaign, ask; if they didn't say which leads, ask 'hot, warm, or all?'; ask how many if "
-            "unclear. Then call run_campaign with confirmed=false to get a read-back, SPEAK that "
-            "read-back, and only call run_campaign again with confirmed=true AFTER they clearly say "
-            "yes. Never dial without that spoken confirmation.\n\n"
+            "• `run_campaign(campaign, segment, count, confirmed)` — STARTS a real calling campaign "
+            "(this DIALS phones and spends money).\n\n"
+            "🚫 NO HALLUCINATION — THIS IS THE #1 RULE: For ANY fact, number, name, status, count, list "
+            "or result — campaigns, leads, calls, analytics, wallet — you MUST call a tool and say ONLY "
+            "what the tool returns. NEVER invent or guess a campaign name, a count, a number, or a "
+            "result, and never answer from memory. If you don't know a campaign's name, call "
+            "list_campaigns first. If a tool returns nothing or an error, SAY SO plainly ('I don't see "
+            "a campaign by that name' / 'I couldn't pull that just now') — do not make something up. If "
+            "there is genuinely no tool for what they asked, say you can't fetch that yet. It is always "
+            "better to say 'let me check' and call a tool than to answer from your head.\n\n"
+            "TOOL-ARG TIP: it is SAFE to pass numbers and yes/no as plain strings (count=\"5\", "
+            "confirmed=\"true\"); always include every argument. Pass the campaign name exactly as the "
+            "manager said it — the tools match it forgivingly.\n\n"
+            "RUNNING A CAMPAIGN (risky — dials real phones + spends money): slot-fill conversationally "
+            "FIRST. If they didn't name a campaign, call list_campaigns and ask which one. If they "
+            "didn't say which leads, ask 'hot, warm, or all?' (treat 'everyone'/'all corporates'/any "
+            "group word as 'all'). Then call run_campaign with confirmed=\"false\" to get a read-back, "
+            "SPEAK that exact read-back, and only call run_campaign again with confirmed=\"true\" AFTER "
+            "they clearly say yes. Do NOT tell the caller you are dialing until run_campaign actually "
+            "returns its result — speak the real outcome it gives you (e.g. how many leads are dialing). "
+            "Never claim a call went out unless the tool confirmed it.\n\n"
             "Keep every reply short and natural; let the manager talk. If they just want to chat, answer."
         )
     return common + (
@@ -308,13 +330,13 @@ class ManagerAgent(Agent):
         return None
 
     @function_tool
-    async def check_leads(self, context: RunContext, campaign: str) -> str:
+    async def check_leads(self, context: RunContext, campaign: str = "") -> str:
         """Report the manager's REAL lead counts (total + hot/warm/cold). Use for "how many leads",
         "lead counts", "how many hot leads". Safe read — needs the manager already PIN-verified.
 
         Args:
             campaign: the campaign name the manager mentioned, or "" if they didn't name one (counts
-                      are the whole lead pool either way).
+                      are the whole lead pool either way). ALWAYS optional — never block on it.
         """
         gate = self._gate_read()
         if gate:
@@ -328,15 +350,17 @@ class ManagerAgent(Agent):
         return res.get("summary", "I couldn't pull the lead numbers right now.")
 
     @function_tool
-    async def recent_calls(self, context: RunContext, count: int) -> str:
+    async def recent_calls(self, context: RunContext, count: str = "5") -> str:
         """Give a short spoken summary of the most RECENT calls (name + outcome). Safe read.
 
         Args:
-            count: how many recent calls to summarize (use 5 if the manager didn't specify; max 20).
+            count: how many recent calls to summarize (use "5" if the manager didn't specify; max 20).
+                   It is SAFE to pass this as a plain string like "5".
         """
         gate = self._gate_read()
         if gate:
             return gate
+        count = _to_int(count, 5)
         if not count or count < 1:
             count = 5
         try:
@@ -372,10 +396,74 @@ class ManagerAgent(Agent):
             return "I couldn't reach the wallet right now."
         return res.get("summary", "I couldn't reach the wallet right now.")
 
+    @function_tool
+    async def list_campaigns(self, context: RunContext) -> str:
+        """List ALL of the manager's REAL campaigns (count + each name and status). Use this WHENEVER
+        the caller asks "how many campaigns / what campaigns do I have / list my campaigns / my other
+        campaigns" — or before resolving a campaign by name. Speak ONLY the names this returns; NEVER
+        invent a campaign name or count. Safe read."""
+        gate = self._gate_read()
+        if gate:
+            return gate
+        try:
+            res = await asyncio.to_thread(_vt.campaigns_summary)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("list_campaigns failed: %r", exc)
+            return "I couldn't pull your campaigns right now."
+        logger.info("AIM list_campaigns -> count=%s", res.get("count"))
+        return res.get("summary", "I couldn't pull your campaigns right now.")
+
+    @function_tool
+    async def campaign_details(self, context: RunContext, campaign: str = "") -> str:
+        """Full details for ONE campaign (status, product, goal, language, calling window) — REAL data
+        from the backend. Use when the caller asks about a specific campaign ("tell me about <name>",
+        "what's the status of <name>", "details of <name>"). Resolves the spoken name forgivingly; if
+        no match it says so and lists the real ones. NEVER invent details.
+
+        Args:
+            campaign: the campaign name or id the caller said (e.g. "Codename Joy", "DLF The Crest").
+        """
+        gate = self._gate_read()
+        if gate:
+            return gate
+        if not (campaign or "").strip():
+            return ("Which campaign would you like details on? You can ask me to list your campaigns "
+                    "first.")
+        try:
+            res = await asyncio.to_thread(_vt.campaign_details, campaign)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("campaign_details failed: %r", exc)
+            return f"I couldn't pull the details for {campaign} right now."
+        logger.info("AIM campaign_details(%r) -> ok=%s", campaign, res.get("ok"))
+        return res.get("summary", f"I couldn't pull the details for {campaign} right now.")
+
+    @function_tool
+    async def campaign_analytics(self, context: RunContext, campaign: str = "") -> str:
+        """Per-campaign performance numbers (dialed, connected, answered, interested, qualified,
+        voicemail) — REAL data. Use when the caller asks "how is <campaign> doing / numbers for
+        <campaign> / results of <campaign>". Resolves the name first. NEVER invent numbers.
+
+        Args:
+            campaign: the campaign name or id the caller said.
+        """
+        gate = self._gate_read()
+        if gate:
+            return gate
+        if not (campaign or "").strip():
+            return ("Which campaign's numbers would you like? I can list your campaigns first if you "
+                    "want.")
+        try:
+            res = await asyncio.to_thread(_vt.campaign_analytics, campaign)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("campaign_analytics failed: %r", exc)
+            return f"I couldn't pull the numbers for {campaign} right now."
+        logger.info("AIM campaign_analytics(%r) -> ok=%s", campaign, res.get("ok"))
+        return res.get("summary", f"I couldn't pull the numbers for {campaign} right now.")
+
     # ── RISKY ACTION: run_campaign (dials phones) — PIN-gated + read-back confirm ──
     @function_tool
-    async def run_campaign(self, context: RunContext, campaign: str,
-                           segment: str, count: int, confirmed: bool) -> str:
+    async def run_campaign(self, context: RunContext, campaign: str = "",
+                           segment: str = "all", count: str = "0", confirmed: str = "false") -> str:
         """START a real calling campaign — this DIALS phones (spends money). RISKY.
 
         BEFORE calling this with confirmed=true you MUST have: (1) the manager PIN-verified, and (2)
@@ -385,33 +473,43 @@ class ManagerAgent(Agent):
 
         Args:
             campaign: the campaign name the manager said (e.g. "Codename Joy").
-            segment: which leads — "hot", "warm", "cold", or "all". Use "all" if they didn't specify.
-            count: how many leads to dial; use 0 to dial all in that segment.
-            confirmed: false the FIRST time (to get the read-back to speak); true ONLY after you read
-                       the action back and the manager clearly said yes.
+            segment: which leads — "hot", "warm", "cold", or "all". Use "all" if they didn't specify
+                     or said something free-form like "everyone"/"all corporates".
+            count: how many leads to dial; use "0" to dial all in that segment. SAFE to pass as a
+                   plain string like "5".
+            confirmed: "false" the FIRST time (to get the read-back to speak); "true" ONLY after you
+                       read the action back and the manager clearly said yes. SAFE to pass as the
+                       string "true" or "false".
         """
         if not self._verified:
             return ("not_verified: this dials real phones — ask for the PIN and call verify_pin first. "
                     "Do not start any campaign until verified.")
         if _vt is None:
             return "engine_unavailable: tell the caller you can't reach the calling system right now."
+        # Coerce realtime-LLM stringy args (this is THE fix: strict int/bool typing made the validator
+        # reject the call so the dial never fired). Accept strings, normalize here.
+        n_count = _to_int(count, 0)
+        is_confirmed = _to_bool(confirmed, False)
         seg = (segment or "all").strip().lower()
-        if seg not in ("hot", "warm", "cold", "all", "everyone"):
-            seg = "all"
-        if seg == "everyone":
-            seg = "all"
+        if seg not in ("hot", "warm", "cold"):
+            seg = "all"  # everyone / all corporates / free-text -> whole pool (never silent 0)
+        logger.info("AIM run_campaign args campaign=%r segment=%r->%s count=%r->%d confirmed=%r->%s",
+                    campaign, segment, seg, count, n_count, confirmed, is_confirmed)
+        if not (campaign or "").strip():
+            return ("need_campaign: ask the manager which campaign to run. If unsure, call "
+                    "list_campaigns and read them the options first. Do not dial without a campaign.")
         # PRE-CONFIRM: return a read-back the agent speaks; do NOT dial yet.
-        if not confirmed:
+        if not is_confirmed:
             try:
                 camp = await asyncio.to_thread(_vt.resolve_campaign, campaign)
             except Exception:  # noqa: BLE001
                 camp = None
             if camp is None:
                 return (f"no_match: I couldn't find a campaign called {campaign}. "
-                        "Ask the manager which campaign — read them the options if needed.")
+                        "Call list_campaigns and read the manager the real options.")
             cname = _vt._camp_name(camp) or campaign
             try:
-                aud = await asyncio.to_thread(_vt.resolve_audience, seg, count)
+                aud = await asyncio.to_thread(_vt.resolve_audience, seg, n_count)
             except Exception:  # noqa: BLE001
                 aud = []
             n = len(aud)
@@ -423,10 +521,10 @@ class ManagerAgent(Agent):
                     f"confirmed=true — \"I'll start calling {n} {seg_txt}lead{'s' if n != 1 else ''} "
                     f"for {cname}. Should I go ahead?\"")
         # CONFIRMED: actually dial via the proven /run path.
-        logger.info("AIM run_campaign CONFIRMED campaign=%r segment=%s count=%s caller=%s",
-                    campaign, seg, count, _mask(self._caller_id))
+        logger.info("AIM run_campaign CONFIRMED campaign=%r segment=%s count=%d caller=%s",
+                    campaign, seg, n_count, _mask(self._caller_id))
         try:
-            res = await asyncio.to_thread(_vt.run_campaign, campaign, seg, count)
+            res = await asyncio.to_thread(_vt.run_campaign, campaign, seg, n_count)
         except Exception as exc:  # noqa: BLE001
             logger.warning("run_campaign failed: %r", exc)
             return "I hit a problem starting the campaign. Please try again in a moment."
@@ -443,6 +541,40 @@ _WORD_DIGIT = {
     "shunya": "0", "ek": "1", "do": "2", "teen": "3", "char": "4", "chaar": "4",
     "paanch": "5", "panch": "5", "chah": "6", "chhe": "6", "saat": "7", "aath": "8", "nau": "9",
 }
+
+
+def _to_int(v, default: int = 0) -> int:
+    """Coerce a realtime-LLM tool arg to int. The OpenAI/LiveKit realtime layer often emits numbers as
+    STRINGS ("5"); strict int typing makes the validator HARD-REJECT the whole tool call (so it never
+    runs). Accepting str + coercing here is what lets the action actually execute."""
+    try:
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, (int, float)):
+            return int(v)
+        s = re.sub(r"[^0-9-]", "", str(v or "").strip())
+        return int(s) if s and s != "-" else default
+    except Exception:  # noqa: BLE001
+        return default
+
+
+_TRUE_WORDS = ("true", "1", "yes", "y", "ok", "okay", "haan", "haa", "ha", "confirm",
+               "confirmed", "go", "go ahead", "do it", "sure", "करो", "ठीक", "हाँ", "हां")
+
+
+def _to_bool(v, default: bool = False) -> bool:
+    """Coerce a realtime-LLM tool arg to bool. Same reason as _to_int — the LLM emits confirmed="true"
+    (a string), strict bool typing rejects it, the dial never fires. Truthy-string parse here fixes the
+    #1 bug: 'run it, yes' now actually reaches the CONFIRMED branch and POSTs /run."""
+    try:
+        if isinstance(v, bool):
+            return v
+        s = str(v or "").strip().lower()
+        if not s:
+            return default
+        return any(w == s or w in s for w in _TRUE_WORDS)
+    except Exception:  # noqa: BLE001
+        return default
 
 
 def _extract_digits(text: str, n: int = 4) -> str:
