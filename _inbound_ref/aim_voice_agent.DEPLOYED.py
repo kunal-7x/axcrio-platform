@@ -439,6 +439,46 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     agent = ManagerAgent(caller_id=caller_id, tenant_id=tenant_id, role=role,
                          is_manager=is_manager, session_id=session_id)
 
+    # ---- DTMF keypad PIN (so an exhausted founder can KEY the PIN, not only speak it) ----
+    # SIP DTMF arrives as a livekit.rtc.Room event "sip_dtmf_received" (SipDTMF{digit,code}). We
+    # buffer the digits; once a full PIN (or '#') arrives we inject it into the conversation as a
+    # user turn so the LLM fires its verify_pin tool. This never blocks audio; spoken PIN still works.
+    _dtmf_buf: list[str] = []
+    _loop = asyncio.get_running_loop()
+
+    async def _submit_keyed_pin(digits: str) -> None:
+        try:
+            logger.info("AIM DTMF PIN received (len=%d) -> injecting for verify_pin", len(digits))
+            await session.generate_reply(
+                user_input=f"My PIN is {' '.join(list(digits))}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM DTMF submit failed: %r", exc)
+
+    @ctx.room.on("sip_dtmf_received")
+    def _on_dtmf(ev) -> None:  # noqa: ANN001
+        try:
+            digit = getattr(ev, "digit", None)
+            if digit is None:
+                code = getattr(ev, "code", None)
+                digit = str(code) if code is not None else ""
+            digit = str(digit or "")
+            if not digit:
+                return
+            if digit == "#":
+                d = "".join(_dtmf_buf); _dtmf_buf.clear()
+                if d:
+                    asyncio.run_coroutine_threadsafe(_submit_keyed_pin(d[:_PIN_LEN]), _loop)
+                return
+            d = re.sub(r"\D", "", digit)
+            if not d:
+                return
+            _dtmf_buf.append(d)
+            if len("".join(_dtmf_buf)) >= _PIN_LEN:
+                full = "".join(_dtmf_buf)[:_PIN_LEN]; _dtmf_buf.clear()
+                asyncio.run_coroutine_threadsafe(_submit_keyed_pin(full), _loop)
+        except Exception:  # noqa: BLE001
+            pass
+
     # ---- START + GREET — EXACTLY the proven outbound path (start, then say) ----
     await session.start(room=ctx.room, agent=agent)
 
