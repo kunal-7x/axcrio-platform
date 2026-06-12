@@ -16,6 +16,7 @@ import Badge from "@/components/Badge";
 import Icon from "@/components/Icon";
 import Modal from "@/components/Modal";
 import PhonePreview from "../_components/PhonePreview";
+import { MetaReadinessHint } from "../_components/MetaStatusNote";
 import {
     approveAsset,
     submitTemplateToMeta,
@@ -50,6 +51,8 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
     const [busy, setBusy] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [submitNote, setSubmitNote] = useState<string>("");
+    // Meta's own raw line + code when Meta rejected the submission (debug muted line).
+    const [submitDebug, setSubmitDebug] = useState<string>("");
 
     // The live Meta review state for the persisted template row. Seeded from the
     // draft, then refreshed by submit + polling.
@@ -88,6 +91,7 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
         }
         setSubmitting(true);
         setSubmitNote("");
+        setSubmitDebug("");
         const r = await submitTemplateToMeta({
             templateId: draft.template_id,
             assetId: draft.asset_id, // bind the banner as the IMAGE header (if any)
@@ -108,6 +112,7 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
             notify("Sent to Meta for review — we’ll track the status here", "success");
         } else {
             setSubmitNote(r.message || "The template couldn’t be submitted to Meta right now.");
+            if (r.metaDebug) setSubmitDebug(r.metaDebug);
         }
         setSubmitting(false);
     }, [draft.template_id, draft.asset_id, setDraft, notify]);
@@ -186,16 +191,24 @@ export default function ApprovalStep({ draft, setDraft, goTo, writable, notify }
                                 </div>
                             )}
 
-                            {/* submit note (refused gate / not-an-AI-template / dormant) */}
+                            {/* submit note (refused gate / not-an-AI-template / Meta error) */}
                             {submitNote && (
                                 <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface1 ring-1 ring-s-subtle text-body-2 text-t-secondary">
                                     <Icon className="shrink-0 mt-px fill-primary-05 !size-4" name="info" />
-                                    <span>{submitNote}</span>
+                                    <span>
+                                        {submitNote}
+                                        {submitDebug && (
+                                            <span className="mt-1 block text-caption text-t-tertiary break-words">{submitDebug}</span>
+                                        )}
+                                    </span>
                                 </div>
                             )}
 
                             {writable ? (
                                 <>
+                                    {/* Calm, honest WhatsApp account status near the submit area. */}
+                                    {canSubmit && <MetaReadinessHint />}
+
                                     {/* LIVE Submit-to-Meta — approve (builder) → submit */}
                                     {canSubmit && (
                                         <Button

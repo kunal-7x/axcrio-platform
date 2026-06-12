@@ -17,6 +17,151 @@ import {
     type CampaignContext,
 } from "./types";
 import { type CampaignContextSnapshot } from "@/lib/assets";
+import { type MetaError, type WhatsAppSendResult } from "@/lib/api";
+
+// ── Meta send-error → plain English ──────────────────────────────────────────
+// The backend (fix/wafx-whatsapp-meta-error-surfacing) now returns Meta's REAL
+// Graph error on a failed send/submit. This turns the known reasons into a calm,
+// founder-readable note — and ALWAYS exposes Meta's own raw line + code in a
+// small muted string for debugging. Never fabricates a reason: when we don't
+// recognise the code we fall back to Meta's own error_user_msg/message.
+//
+// The approved templates that actually deliver today (env WAFX_APPROVED_TEMPLATES).
+export const WAFX_APPROVED_TEMPLATES = ["post_call_followup"] as const;
+
+export type MetaExplain = {
+    // headline reason in plain language
+    title: string;
+    // one-line body the founder can act on
+    detail: string;
+    // muted debug string: Meta's own message + code (for the support line)
+    debug?: string;
+    // tone hint for the surfacing card
+    tone: "warning" | "danger" | "info";
+};
+
+function metaDebugLine(code: string | number | undefined, m?: MetaError): string | undefined {
+    const bits: string[] = [];
+    const raw = m?.error_user_msg || m?.message;
+    if (raw) bits.push(raw.trim());
+    const codeStr =
+        m?.code != null
+            ? `code ${m.code}${m.error_subcode != null ? `/${m.error_subcode}` : ""}`
+            : typeof code === "number"
+            ? `code ${code}`
+            : typeof code === "string" && code && code !== "unknown"
+            ? code
+            : "";
+    if (codeStr) bits.push(codeStr);
+    if (m?.fbtrace_id) bits.push(`trace ${m.fbtrace_id}`);
+    return bits.length ? `Meta: ${bits.join(" · ")}` : undefined;
+}
+
+// Map a failed WhatsApp send result → friendly explanation. Reads the structured
+// `meta_error` first (richest), then the machine `error`/`status` code.
+export function explainMetaError(r: {
+    error?: string;
+    status?: string;
+    meta_error?: MetaError;
+    approved_templates?: string[];
+}): MetaExplain {
+    const m = r.meta_error;
+    const code = m?.code;
+    const subcode = m?.error_subcode;
+    const machine = (r.error || r.status || "").toString();
+    const approved =
+        (r.approved_templates && r.approved_templates.length
+            ? r.approved_templates
+            : [...WAFX_APPROVED_TEMPLATES]
+        ).join(", ");
+    const debug = metaDebugLine(code ?? machine, m);
+
+    // unregistered / unknown template name (backend code or Meta side)
+    if (machine.includes("template_not_registered") || code === 132001 || subcode === 2494011) {
+        return {
+            tone: "warning",
+            title: "That template isn’t registered with Meta",
+            detail: `Only approved templates can be sent. Use ${approved || "an approved template"}, or submit a new template for Meta review first.`,
+            debug,
+        };
+    }
+    // hello_world is a Meta test-only template (131058 etc.)
+    if (machine.includes("hello_world") || code === 131058) {
+        return {
+            tone: "warning",
+            title: "hello_world is a Meta test-only template",
+            detail: `“hello_world” can only be sent from Meta’s public test numbers. Use an approved business template (${approved || "post_call_followup"}) for real recipients.`,
+            debug,
+        };
+    }
+    // payment method / billing block — 141006
+    if (code === 141006 || machine.includes("141006")) {
+        return {
+            tone: "danger",
+            title: "Add a payment method on Meta",
+            detail: "Your Meta WhatsApp account needs a payment method before messages can be delivered. Add billing in WhatsApp Manager, then try again.",
+            debug,
+        };
+    }
+    // business not verified / messaging-tier limit (TIER_250 / throughput)
+    if (
+        machine.toUpperCase().includes("TIER_250") ||
+        machine.toLowerCase().includes("not_verified") ||
+        machine.toLowerCase().includes("verification") ||
+        code === 131056 ||
+        code === 131048
+    ) {
+        return {
+            tone: "warning",
+            title: "Meta is still reviewing your business",
+            detail: "Sending is limited until business verification completes. You can send to a small number of recipients now; full volume unlocks once Meta finishes review.",
+            debug,
+        };
+    }
+    // media header upload failed (subcode 2388043 — banner handle missing)
+    if (subcode === 2388043 || machine.includes("2388043") || machine.toLowerCase().includes("header_handle")) {
+        return {
+            tone: "warning",
+            title: "The banner couldn’t be uploaded to Meta",
+            detail: "The image header didn’t resolve. Re-attach an approved banner, or send the template without an image header.",
+            debug,
+        };
+    }
+    // credentials genuinely not set on the box
+    if (machine === "skipped_no_config" || machine === "not_configured" || r.status === "skipped_no_config") {
+        return {
+            tone: "info",
+            title: "WhatsApp isn’t connected on this account",
+            detail: "No WhatsApp provider is configured for this account yet. Once it’s connected, sending starts working.",
+            debug,
+        };
+    }
+    // generic Meta error — surface Meta's OWN words (never invented)
+    if (m?.error_user_title || m?.error_user_msg) {
+        return {
+            tone: "danger",
+            title: m.error_user_title || "Meta couldn’t deliver this message",
+            detail: m.error_user_msg || "Meta returned an error. See the details below, or try again in a moment.",
+            debug,
+        };
+    }
+    return {
+        tone: "danger",
+        title: "Message couldn’t be delivered",
+        detail: "Meta returned an error for this send. The raw reason is shown below — try again in a moment, or check WhatsApp Manager.",
+        debug: debug || (machine && machine !== "unknown" ? `Meta: ${machine}` : undefined),
+    };
+}
+
+// Convenience: explain straight from a sendWhatsApp() result.
+export function explainSendResult(r: WhatsAppSendResult): MetaExplain {
+    return explainMetaError({
+        error: r.error,
+        status: r.status,
+        meta_error: r.meta_error,
+        approved_templates: r.approved_templates,
+    });
+}
 
 const BASE =
     typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
@@ -331,6 +476,9 @@ export type SubmitResult = {
     metaTemplateId?: string;
     // a founder-readable reason when NOT submitted (refused gate / Meta error)
     message?: string;
+    // Meta's own raw line + code, when Meta rejected the submission (for the
+    // small muted debug line — never invented).
+    metaDebug?: string;
 };
 
 function explainSubmit(code: string): string {
@@ -390,11 +538,28 @@ export async function submitTemplateToMeta(input: {
             const status = String(d.status ?? "");
             const submitted = status === "submitted";
             const code = (d.error as string) || (d.detail as string) || status;
+            // When Meta itself rejected the submission the backend now returns its
+            // real Graph error — map it to plain language (template not registered /
+            // billing / verification) and keep Meta's raw line for debugging,
+            // instead of the generic "try again".
+            const metaError = (d.meta_error && typeof d.meta_error === "object"
+                ? (d.meta_error as MetaError)
+                : undefined);
+            const metaSurfaced =
+                !submitted && (metaError || (code && code.startsWith("meta_error")));
+            const explained = metaSurfaced
+                ? explainMetaError({ error: code, status, meta_error: metaError })
+                : null;
             return {
                 submitted,
                 review: submitted ? normalizeReview(d.review_status ?? "PENDING") : "none",
                 metaTemplateId: (d.meta_template_id as string) || undefined,
-                message: submitted ? undefined : explainSubmit(code || "unknown"),
+                message: submitted
+                    ? undefined
+                    : explained
+                    ? `${explained.title} — ${explained.detail}`
+                    : explainSubmit(code || "unknown"),
+                metaDebug: explained?.debug,
             };
         }
     );

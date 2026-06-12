@@ -16,6 +16,8 @@ import Modal from "@/components/Modal";
 import { type TabsOption } from "@/types/tabs";
 import { type SelectOption } from "@/types/select";
 import { sendWhatsApp } from "@/lib/api";
+import { explainSendResult, type MetaExplain } from "../_lib/waapi";
+import { MetaErrorNote, MetaReadinessHint } from "../_components/MetaStatusNote";
 import { type StepCtx } from "../_lib/types";
 
 const MODES: TabsOption[] = [
@@ -35,11 +37,14 @@ export default function ScheduleStep({ draft, goTo, writable, notify }: StepCtx)
     const [confirm, setConfirm] = useState(false);
     const [busy, setBusy] = useState(false);
     const [to, setTo] = useState("");
+    // Meta's real reason when a send fails — surfaced in plain language inline.
+    const [sendError, setSendError] = useState<MetaExplain | null>(null);
 
     const isNow = mode.id === 1;
 
     async function send() {
         setBusy(true);
+        setSendError(null);
         try {
             // LIVE send path — the proven /api/whatsapp/send endpoint. A single
             // recipient send (or a test send to a number) works today; the
@@ -49,8 +54,13 @@ export default function ScheduleStep({ draft, goTo, writable, notify }: StepCtx)
                 text: draft.body.trim() || undefined,
                 template: draft.name || undefined,
             });
-            if (res.status === "skipped_no_config" || !res.configured) {
-                notify("WhatsApp not connected — add provider credentials on the server.", "error");
+            // The backend now returns Meta's REAL reason on failure. Surface it in
+            // plain language (payment block / verification / template not registered),
+            // never a generic "add provider credentials" — the credentials ARE set.
+            if (!res.ok) {
+                const explain = explainSendResult(res);
+                setSendError(explain);
+                notify(explain.title, "error");
             } else {
                 notify(`Message ${res.status} to ${res.to}`, "success");
                 goTo("delivery");
@@ -89,6 +99,9 @@ export default function ScheduleStep({ draft, goTo, writable, notify }: StepCtx)
                                 onChange={(e) => setTo(e.target.value)}
                             />
 
+                            {/* Calm, honest WhatsApp account status near the send area. */}
+                            <MetaReadinessHint />
+
                             {!isNow && (
                                 <div className="flex items-start gap-2.5 p-3.5 rounded-3xl bg-b-surface1 text-caption text-t-tertiary">
                                     <Icon className="shrink-0 mt-px fill-t-tertiary !size-4" name="clock" />
@@ -115,6 +128,13 @@ export default function ScheduleStep({ draft, goTo, writable, notify }: StepCtx)
                                     <div className="grow text-body-2 text-t-primary truncate">{r.v}</div>
                                 </div>
                             ))}
+                            {/* Real Meta reason when the last send failed. */}
+                            {sendError && (
+                                <div className="pt-4">
+                                    <MetaErrorNote explain={sendError} />
+                                </div>
+                            )}
+
                             {writable && (
                                 <div className="pt-4">
                                     <Button

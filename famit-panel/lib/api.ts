@@ -1576,11 +1576,28 @@ export async function postBillingSync(): Promise<BillingSyncResult> {
 }
 
 // ---- WhatsApp (Unit 5) ----
+// Meta's REAL Graph error, surfaced verbatim by the backend (branch
+// fix/wafx-whatsapp-meta-error-surfacing). Any/all fields may be present.
+// We thread the raw shape through so the UI can map it to plain English AND
+// show Meta's own message + code for debugging — never a fabricated reason.
+export type MetaError = {
+    code?: number;            // Meta Graph error code, e.g. 141006 / 131058
+    error_subcode?: number;   // e.g. 2388043
+    error_user_title?: string;
+    error_user_msg?: string;  // Meta's own human-readable line
+    message?: string;         // raw Graph "message"
+    fbtrace_id?: string;
+};
+
 export type WhatsAppSendResult = {
     ok: boolean;
-    status: string;       // "sent" | "skipped_no_config" | ...
+    status: string;       // "sent" | "skipped_no_config" | "meta_error:<code>" | ...
     to: string;
     configured: boolean;
+    // present on failure (the backend now surfaces Meta's real error)
+    error?: string;             // machine code, e.g. "template_not_registered" / "meta_error:141006"
+    meta_error?: MetaError;     // Meta's structured Graph error
+    approved_templates?: string[]; // returned with template_not_registered
 };
 
 export async function sendWhatsApp(data: { to: string; template?: string; text?: string; params?: string }): Promise<WhatsAppSendResult> {
@@ -1591,7 +1608,23 @@ export async function sendWhatsApp(data: { to: string; template?: string; text?:
     if (data.params) fd.append("params", data.params);
     const res = await fetch(`${BASE}/whatsapp/send`, { method: "POST", headers: authHeaders(), body: fd });
     await handle401(res);
-    if (!res.ok) return throwForStatus(res, "Failed to send WhatsApp message");
+    // A non-200 still carries Meta's real error JSON — return it instead of
+    // throwing a generic "try again", so the UI can explain WHAT Meta said.
+    if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as Partial<WhatsAppSendResult> | null;
+        if (body && typeof body === "object") {
+            return {
+                ok: false,
+                status: body.status ?? `http_${res.status}`,
+                to: body.to ?? data.to,
+                configured: body.configured ?? true,
+                error: body.error,
+                meta_error: body.meta_error,
+                approved_templates: body.approved_templates,
+            };
+        }
+        return throwForStatus(res, "Failed to send WhatsApp message");
+    }
     return res.json();
 }
 
@@ -1603,6 +1636,9 @@ export type WhatsAppLogEntry = {
     status: string;
     ok: boolean;
     at: string;
+    // present on failed rows when the backend recorded Meta's reason
+    error?: string;
+    meta_error?: MetaError;
 };
 
 export async function getWhatsAppLog(): Promise<{ log: WhatsAppLogEntry[] }> {

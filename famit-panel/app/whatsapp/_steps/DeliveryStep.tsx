@@ -15,6 +15,8 @@ import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import KpiCard from "@/components/KpiCard";
 import { getWhatsAppLog, type WhatsAppLogEntry } from "@/lib/api";
+import { explainMetaError } from "../_lib/waapi";
+import { MetaErrorNote, MetaReadinessHint } from "../_components/MetaStatusNote";
 import { type StepCtx } from "../_lib/types";
 
 function fmt(d: string) {
@@ -49,10 +51,25 @@ export default function DeliveryStep({ goTo }: StepCtx) {
 
     useEffect(() => { load(); }, [load]);
 
-    const unconfigured = log.some((l) => l.status === "skipped_no_config");
     const sent = log.length;
     const delivered = log.filter((l) => l.ok).length;
     const readRate = sent ? Math.round((delivered / sent) * 100) : 0;
+    // A real successful send proves WhatsApp delivers today (not just "wired").
+    const delivers = delivered > 0;
+    // Surface the MOST RECENT failed row's real Meta reason (log is newest-first
+    // server-side; fall back to a scan). Skipped-no-config rows are the only ones
+    // that mean "no provider"; everything else is a real Meta error worth showing.
+    const lastFailed = useMemo(
+        () => log.find((l) => !l.ok),
+        [log]
+    );
+    const failExplain = lastFailed
+        ? explainMetaError({
+              error: lastFailed.error,
+              status: lastFailed.status,
+              meta_error: lastFailed.meta_error,
+          })
+        : null;
 
     const filtered = useMemo(() => {
         const s = q.trim().toLowerCase();
@@ -64,14 +81,12 @@ export default function DeliveryStep({ goTo }: StepCtx) {
 
     return (
         <div className="flex flex-col gap-3">
-            {unconfigured && (
-                <div className="flex items-start gap-3 p-4 rounded-3xl bg-b-surface2 border border-primary-05/40 text-body-2 text-t-secondary">
-                    <Icon className="shrink-0 mt-0.5 fill-primary-05" name="info" />
-                    <div>
-                        <span className="text-t-primary font-medium">WhatsApp isn&apos;t connected yet.</span>{" "}
-                        Add provider credentials on the server (WA_API_URL / WA_API_KEY / WA_FROM). Sending is wired and starts working once the keys are set.
-                    </div>
-                </div>
+            {/* Truthful Meta status — credentials ARE set; show real readiness
+                + (if any recent send failed) Meta's own reason in plain language. */}
+            {failExplain ? (
+                <MetaErrorNote explain={failExplain} />
+            ) : (
+                <MetaReadinessHint delivers={delivers} />
             )}
 
             <div className="flex gap-3 max-md:flex-col">
