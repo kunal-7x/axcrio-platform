@@ -45,12 +45,21 @@ from livekit import agents
 from livekit.agents import (
     Agent,
     AgentSession,
+    APIConnectOptions,
     JobProcess,
     RunContext,
     WorkerOptions,
     cli,
     function_tool,
 )
+
+# SessionConnectOptions is not publicly re-exported; import it directly. Lets us set per-session
+# llm_conn_options (FAIL-FAST: drop max_retry so a doomed/rejected LLM inference can't storm-retry
+# 4x into minutes of dead air). Guarded so an API rename can't brick the worker.
+try:
+    from livekit.agents.voice.agent_session import SessionConnectOptions as _SessionConnectOptions
+except Exception:  # noqa: BLE001
+    _SessionConnectOptions = None
 from livekit.plugins import elevenlabs, groq, sarvam, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 
@@ -226,6 +235,40 @@ def _build_tts():
     )
 
 
+# ── FIX (C): FILLER SPEECH around any tool fetch that may take >~300ms ──────────
+# Before a data fetch / dial we speak a short, natural Hinglish holding phrase so the caller NEVER
+# hears silence while we hit the backend. We rotate a few so it doesn't sound canned, and we fire it
+# without awaiting (allow_interruptions) so it overlaps the fetch instead of adding latency.
+_FILLER_LINES = [
+    "Ek second, dekh rahi hoon…",
+    "Haan ji, abhi check kar rahi hoon…",
+    "Bas ek pal, nikaal rahi hoon…",
+    "Theek hai, dekhti hoon abhi…",
+]
+_filler_cycle = _itertools.cycle(_FILLER_LINES)
+_FILLER_LOCK = threading.Lock()
+
+
+async def _say_filler(context, custom: str = "") -> None:
+    """Speak a brief holding phrase over the session so a tool fetch never sits in dead air. Never
+    raises; if the session/say is unavailable it's a silent no-op (the fetch still runs)."""
+    if (os.getenv("AIM_FILLER", "1").strip().lower() in ("0", "false", "no", "off")):
+        return
+    try:
+        sess = getattr(context, "session", None)
+        if sess is None:
+            return
+        if custom:
+            line = custom
+        else:
+            with _FILLER_LOCK:
+                line = next(_filler_cycle)
+        # don't await: let the holding phrase play WHILE the fetch runs (zero added latency)
+        await sess.say(line, allow_interruptions=True, add_to_chat_ctx=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ── the Manager Agent (persona + PIN gate + command tools) ─────────────────────
 def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
     """The system prompt. Greeting is spoken separately via session.say(); this drives the convo
@@ -356,6 +399,12 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        # WARM-SNAPSHOT (fix D): if we prefetched lead counts at connect, answer from memory (<5ms)
+        snap = getattr(self, "_hot_leads_summary", "")
+        if snap and not (campaign or "").strip():
+            logger.info("AIM check_leads -> warm snapshot hit")
+            return snap
+        await _say_filler(context)  # fix C: no dead air while we fetch
         try:
             res = await asyncio.to_thread(_vt.lead_counts, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -378,6 +427,7 @@ class ManagerAgent(Agent):
         count = _to_int(count, 5)
         if not count or count < 1:
             count = 5
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.recent_calls, count)
         except Exception as exc:  # noqa: BLE001
@@ -391,6 +441,7 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.analytics)
         except Exception as exc:  # noqa: BLE001
@@ -404,6 +455,7 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.wallet_status)
         except Exception as exc:  # noqa: BLE001
@@ -420,6 +472,12 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        # WARM-SNAPSHOT (fix D): answer from the connect-time prefetch when present (<5ms, no fetch)
+        snap = getattr(self, "_hot_campaigns_summary", "")
+        if snap:
+            logger.info("AIM list_campaigns -> warm snapshot hit")
+            return snap
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaigns_summary)
         except Exception as exc:  # noqa: BLE001
@@ -444,6 +502,7 @@ class ManagerAgent(Agent):
         if not (campaign or "").strip():
             return ("Which campaign would you like details on? You can ask me to list your campaigns "
                     "first.")
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaign_details, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -467,6 +526,7 @@ class ManagerAgent(Agent):
         if not (campaign or "").strip():
             return ("Which campaign's numbers would you like? I can list your campaigns first if you "
                     "want.")
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaign_analytics, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -515,6 +575,7 @@ class ManagerAgent(Agent):
                     "list_campaigns and read them the options first. Do not dial without a campaign.")
         # PRE-CONFIRM: return a read-back the agent speaks; do NOT dial yet.
         if not is_confirmed:
+            await _say_filler(context)  # fix C: no dead air while we resolve campaign + audience
             try:
                 camp = await asyncio.to_thread(_vt.resolve_campaign, campaign)
             except Exception:  # noqa: BLE001
@@ -538,6 +599,7 @@ class ManagerAgent(Agent):
         # CONFIRMED: actually dial via the proven /run path.
         logger.info("AIM run_campaign CONFIRMED campaign=%r segment=%s count=%d caller=%s",
                     campaign, seg, n_count, _mask(self._caller_id))
+        await _say_filler(context, "Theek hai, abhi calls start kar rahi hoon…")  # fix C
         try:
             res = await asyncio.to_thread(_vt.run_campaign, campaign, seg, n_count)
         except Exception as exc:  # noqa: BLE001
@@ -566,6 +628,7 @@ class ManagerAgent(Agent):
             return ("no_number: I don't have your caller-id to ring back. Ask them to confirm the number "
                     "to call, or try from a number that shows its caller-id.")
         logger.info("AIM test_call_me -> dialing manager own number caller=%s", _mask(target))
+        await _say_filler(context, "Theek hai, abhi aapke number par call laga rahi hoon…")  # fix C
         try:
             res = await asyncio.to_thread(_vt.test_call, "Manager", target, "")
         except Exception as exc:  # noqa: BLE001
@@ -990,16 +1053,55 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
 
     _td = _resolve_turn_detection()
     _semantic_on = not isinstance(_td, str)
-    _max_ep_default = "1.8" if _semantic_on else "0.45"
+    # FIX(E-tune): drop the VAD max-endpointing default to ~0.5-0.8s so the model starts thinking
+    # sooner (less perceived silence). Semantic mode keeps its own slack.
+    _max_ep_default = "1.8" if _semantic_on else "0.6"
 
-    session = AgentSession(
+    # ── FIX (A)(i): DISABLE STRICT TOOL SCHEMA on the Groq LLM ──────────────────────
+    # ROOT CAUSE of the 3-5 min dead air: livekit-plugins-openai builds a STRICT JSON schema for the
+    # tools (openai/llm.py: `_strict_tool_schema=True`). Groq then HARD-REJECTS (400 "did not match
+    # schema") any tool call where the small llama-4-scout omits an arg (e.g. check_leads w/o
+    # `campaign`) or sends an int/bool as a string (run_campaign count/confirmed). The 400 is wrapped
+    # retryable -> LiveKit retries 4x re-sending the whole prompt -> all re-fail -> the inference task
+    # dies -> ZERO audio. groq.LLM is a thin OpenAILLM subclass that does NOT forward the private
+    # `_strict_tool_schema` kwarg, so we flip the attribute on the instance AFTER construction. With
+    # strict OFF, Groq tolerates missing/loose-typed args and the body's _to_int/_to_bool coercion +
+    # optional-arg defaults make every tool call ALWAYS valid -> never a rejected call, never dead air.
+    _aim_llm = groq.LLM(
+        model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        api_key=_next_groq_key(),
+        temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+        max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "160")),
+    )
+    try:
+        _aim_llm._strict_tool_schema = False  # noqa: SLF001 — intentional, isolated to THIS agent
+        logger.info("AIM LLM strict_tool_schema DISABLED (forgiving tool calls; no schema-reject storm)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM could not disable strict_tool_schema (relying on body coercion): %r", exc)
+
+    # ── FIX (B): FAIL-FAST — kill the 4x doomed-retry storm ─────────────────────────
+    # Per-session llm_conn_options.max_retry defaults to 3 (=4 attempts, 2s apart) -> a single bad
+    # inference stacks ~8s+ of silence PER turn. Drop it to 1 (one quick retry for a genuine transient
+    # blip, then surface) so a turn can NEVER stall into minutes. We leave max_unrecoverable_errors at
+    # its default so the never-silent guard still gets to apologize rather than the call dropping.
+    _conn_opts = None
+    if _SessionConnectOptions is not None:
+        try:
+            _llm_co = APIConnectOptions(
+                max_retry=int(os.getenv("AIM_LLM_MAX_RETRY", "1")),
+                retry_interval=float(os.getenv("AIM_LLM_RETRY_INTERVAL", "0.5")),
+                timeout=float(os.getenv("AIM_LLM_TIMEOUT", "12")),
+            )
+            _conn_opts = _SessionConnectOptions(llm_conn_options=_llm_co)
+            logger.info("AIM fail-fast LLM conn: max_retry=%s retry_interval=%ss",
+                        _llm_co.max_retry, _llm_co.retry_interval)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM could not set fail-fast llm_conn_options (using defaults): %r", exc)
+            _conn_opts = None
+
+    _sess_kwargs = dict(
         stt=_build_stt(),
-        llm=groq.LLM(
-            model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-            api_key=_next_groq_key(),
-            temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
-            max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "140")),
-        ),
+        llm=_aim_llm,
         tts=_build_tts(),
         vad=_vad,
         preemptive_generation=True,
@@ -1010,24 +1112,81 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         false_interruption_timeout=float(os.getenv("FALSE_INT_TIMEOUT", "1.0")),
         turn_detection=_td,
     )
+    if _conn_opts is not None:
+        _sess_kwargs["conn_options"] = _conn_opts
+    session = AgentSession(**_sess_kwargs)
 
     try:
         ctx._aim_session = session  # let the never-silent guard apologize through it
     except Exception:  # noqa: BLE001
         pass
 
+    # FIX (B): NEVER-DEAD-AIR error handler. If an LLM/tool inference errors (e.g. a transient Groq
+    # blip, or a residual schema reject that slips past strict-off), with fail-fast max_retry we surface
+    # FAST instead of stalling — and here we speak a short natural recovery line so the caller hears a
+    # voice within ~1s rather than the old 3-5 min silence. Debounced so we don't double-talk.
+    _last_recover = {"t": 0.0}
+
+    def _speak_recovery() -> None:
+        try:
+            import time as _t
+            now = _t.monotonic()
+            if now - _last_recover["t"] < 4.0:
+                return
+            _last_recover["t"] = now
+            line = os.getenv("AIM_RECOVER_LINE",
+                             "Ek second, thoda sa system slow hua — main aapke saath hoon, boliye.")
+            asyncio.run_coroutine_threadsafe(session.say(line, allow_interruptions=True), _loop)
+        except Exception:  # noqa: BLE001
+            pass
+
     @session.on("error")
     def _on_session_error(ev) -> None:  # noqa: ANN001
         try:
             err = getattr(ev, "error", ev)
             recoverable = getattr(err, "recoverable", None)
-            logger.warning("AIM session error (recoverable=%s): %r", recoverable, err)
+            src = getattr(ev, "source", "") or ""
+            logger.warning("AIM session error (source=%s recoverable=%s): %r", src, recoverable, err)
+            # LLM/tool path errored -> don't sit in dead air; speak a quick holding line.
+            if "llm" in str(src).lower() or "llm" in repr(err).lower():
+                _speak_recovery()
         except Exception:  # noqa: BLE001
             pass
 
     if is_manager:
         agent = ManagerAgent(caller_id=caller_id, tenant_id=tenant_id, role=role,
                              is_manager=is_manager, session_id=session_id)
+        # ── FIX (D): WARM a small HOT SNAPSHOT once at connect ──────────────────────
+        # Fire-and-forget (never blocks/ delays the greeting): prefetch lead counts + campaign list
+        # into the agent so the FIRST data question ("how many leads / list my campaigns") answers from
+        # memory (<5ms) instead of a cold HTTP round-trip mid-turn. Pooled httpx (fix E) makes this
+        # cheap. Stored only on the agent; the PIN gate still applies before the tool can return them.
+        agent._hot_leads_summary = ""        # type: ignore[attr-defined]
+        agent._hot_campaigns_summary = ""    # type: ignore[attr-defined]
+
+        async def _warm_snapshot() -> None:
+            if _vt is None:
+                return
+            try:
+                lc = await asyncio.to_thread(_vt.lead_counts, "")
+                if isinstance(lc, dict) and lc.get("ok") and lc.get("summary"):
+                    agent._hot_leads_summary = lc["summary"]  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM warm lead snapshot failed: %r", exc)
+            try:
+                cs = await asyncio.to_thread(_vt.campaigns_summary)
+                if isinstance(cs, dict) and cs.get("ok") and cs.get("summary"):
+                    agent._hot_campaigns_summary = cs["summary"]  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM warm campaigns snapshot failed: %r", exc)
+            logger.info("AIM warm snapshot ready leads=%s campaigns=%s",
+                        bool(getattr(agent, "_hot_leads_summary", "")),
+                        bool(getattr(agent, "_hot_campaigns_summary", "")))
+
+        try:
+            asyncio.create_task(_warm_snapshot())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM warm snapshot task spawn failed: %r", exc)
     else:
         agent = CustomerSalesAgent(
             caller_id=caller_id, tenant_id=tenant_id, session_id=session_id,

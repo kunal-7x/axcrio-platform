@@ -38,29 +38,55 @@ _TIMEOUT = float(os.getenv("AIM_CALLER_TIMEOUT", "12"))
 _HEADERS = {"X-Auth": _ADMIN_CRED}
 
 
+# ── FIX (E): ONE keep-alive POOLED httpx client (not a fresh client per call) ──────────────────────
+# The old _client() built a brand-new httpx.Client (new TCP + connection setup) on EVERY read/dial.
+# On loopback that's small but non-zero and it adds up across a chatty voice turn. A single module-
+# level client with a keep-alive connection pool reuses the warm connection, shaving per-call setup.
+# Lazily built + thread-safe (tools run via asyncio.to_thread). Auto-heals if it gets closed.
+import threading as _threading  # noqa: E402
+
+_POOL_LOCK = _threading.Lock()
+_POOL: "httpx.Client | None" = None
+
+
 def _client() -> "httpx.Client":
+    """Return the shared, keep-alive pooled client (built once). Falls back to a fresh client only if
+    httpx is missing the Limits API (older versions). NEVER returns a closed client."""
+    global _POOL
     if httpx is None:  # pragma: no cover — httpx is present on the box
         raise RuntimeError("httpx unavailable")
-    return httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT)
+    c = _POOL
+    if c is not None and not getattr(c, "is_closed", False):
+        return c
+    with _POOL_LOCK:
+        if _POOL is not None and not getattr(_POOL, "is_closed", False):
+            return _POOL
+        try:
+            limits = httpx.Limits(max_keepalive_connections=8, max_connections=16,
+                                  keepalive_expiry=30.0)
+            _POOL = httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT, limits=limits)
+        except Exception:  # noqa: BLE001 — very old httpx without Limits; still pooled per-process
+            _POOL = httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT)
+        return _POOL
 
 
 def _get(path: str, params: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.get(path, params=params or {})
-        r.raise_for_status()
-        return r.json()
+    c = _client()
+    r = c.get(path, params=params or {})
+    r.raise_for_status()
+    return r.json()
 
 
 def _post_form(path: str, data: dict) -> Any:
-    with _client() as c:
-        r = c.post(path, data=data)
-        # /run can legitimately return 202 (queued out of window) or 402 (no balance); surface, don't raise.
-        if r.status_code >= 500:
-            r.raise_for_status()
-        try:
-            return {"_status": r.status_code, **(r.json() if r.content else {})}
-        except Exception:  # noqa: BLE001
-            return {"_status": r.status_code, "_text": (r.text or "")[:200]}
+    c = _client()
+    r = c.post(path, data=data)
+    # /run can legitimately return 202 (queued out of window) or 402 (no balance); surface, don't raise.
+    if r.status_code >= 500:
+        r.raise_for_status()
+    try:
+        return {"_status": r.status_code, **(r.json() if r.content else {})}
+    except Exception:  # noqa: BLE001
+        return {"_status": r.status_code, "_text": (r.text or "")[:200]}
 
 
 # ───────────────────────── campaign resolution ─────────────────────────────────

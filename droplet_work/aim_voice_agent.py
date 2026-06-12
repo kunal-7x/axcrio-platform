@@ -45,12 +45,21 @@ from livekit import agents
 from livekit.agents import (
     Agent,
     AgentSession,
+    APIConnectOptions,
     JobProcess,
     RunContext,
     WorkerOptions,
     cli,
     function_tool,
 )
+
+# SessionConnectOptions is not publicly re-exported; import it directly. Lets us set per-session
+# llm_conn_options (FAIL-FAST: drop max_retry so a doomed/rejected LLM inference can't storm-retry
+# 4x into minutes of dead air). Guarded so an API rename can't brick the worker.
+try:
+    from livekit.agents.voice.agent_session import SessionConnectOptions as _SessionConnectOptions
+except Exception:  # noqa: BLE001
+    _SessionConnectOptions = None
 from livekit.plugins import elevenlabs, groq, sarvam, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 
@@ -74,6 +83,21 @@ try:
 except Exception as _vt_exc:  # noqa: BLE001
     _vt = None
     logging.getLogger("aim-voice").warning("voice_tools import failed (command tools degraded): %r", _vt_exc)
+
+# READ-ONLY reuse of the OUTBOUND earner's proven sales brain + cross-call memory. We IMPORT these
+# modules (never edit them) so the inbound CUSTOMER (sales) agent runs the EXACT same campaign brain
+# the outbound dialer uses. Guarded: if either is absent the customer agent still works on a generic
+# friendly-sales fallback (never crashes the worker, never goes silent).
+try:
+    import prompt as _prompt  # build_system_prompt(fields) -> the human telecaller brain (READ-ONLY)
+except Exception as _prompt_exc:  # noqa: BLE001
+    _prompt = None
+    logging.getLogger("aim-voice").warning("prompt import failed (sales brain degraded): %r", _prompt_exc)
+try:
+    import memory as _memory  # load_memory/build_recap/save_memory keyed by phone digits (READ-ONLY)
+except Exception as _memory_exc:  # noqa: BLE001
+    _memory = None
+    logging.getLogger("aim-voice").warning("memory import failed (cross-call recap degraded): %r", _memory_exc)
 
 load_dotenv("/opt/famit-agent/.env")
 load_dotenv(".env")
@@ -211,6 +235,40 @@ def _build_tts():
     )
 
 
+# ── FIX (C): FILLER SPEECH around any tool fetch that may take >~300ms ──────────
+# Before a data fetch / dial we speak a short, natural Hinglish holding phrase so the caller NEVER
+# hears silence while we hit the backend. We rotate a few so it doesn't sound canned, and we fire it
+# without awaiting (allow_interruptions) so it overlaps the fetch instead of adding latency.
+_FILLER_LINES = [
+    "Ek second, dekh rahi hoon…",
+    "Haan ji, abhi check kar rahi hoon…",
+    "Bas ek pal, nikaal rahi hoon…",
+    "Theek hai, dekhti hoon abhi…",
+]
+_filler_cycle = _itertools.cycle(_FILLER_LINES)
+_FILLER_LOCK = threading.Lock()
+
+
+async def _say_filler(context, custom: str = "") -> None:
+    """Speak a brief holding phrase over the session so a tool fetch never sits in dead air. Never
+    raises; if the session/say is unavailable it's a silent no-op (the fetch still runs)."""
+    if (os.getenv("AIM_FILLER", "1").strip().lower() in ("0", "false", "no", "off")):
+        return
+    try:
+        sess = getattr(context, "session", None)
+        if sess is None:
+            return
+        if custom:
+            line = custom
+        else:
+            with _FILLER_LOCK:
+                line = next(_filler_cycle)
+        # don't await: let the holding phrase play WHILE the fetch runs (zero added latency)
+        await sess.say(line, allow_interruptions=True, add_to_chat_ctx=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ── the Manager Agent (persona + PIN gate + command tools) ─────────────────────
 def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
     """The system prompt. Greeting is spoken separately via session.say(); this drives the convo
@@ -341,6 +399,12 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        # WARM-SNAPSHOT (fix D): if we prefetched lead counts at connect, answer from memory (<5ms)
+        snap = getattr(self, "_hot_leads_summary", "")
+        if snap and not (campaign or "").strip():
+            logger.info("AIM check_leads -> warm snapshot hit")
+            return snap
+        await _say_filler(context)  # fix C: no dead air while we fetch
         try:
             res = await asyncio.to_thread(_vt.lead_counts, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -363,6 +427,7 @@ class ManagerAgent(Agent):
         count = _to_int(count, 5)
         if not count or count < 1:
             count = 5
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.recent_calls, count)
         except Exception as exc:  # noqa: BLE001
@@ -376,6 +441,7 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.analytics)
         except Exception as exc:  # noqa: BLE001
@@ -389,6 +455,7 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.wallet_status)
         except Exception as exc:  # noqa: BLE001
@@ -405,6 +472,12 @@ class ManagerAgent(Agent):
         gate = self._gate_read()
         if gate:
             return gate
+        # WARM-SNAPSHOT (fix D): answer from the connect-time prefetch when present (<5ms, no fetch)
+        snap = getattr(self, "_hot_campaigns_summary", "")
+        if snap:
+            logger.info("AIM list_campaigns -> warm snapshot hit")
+            return snap
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaigns_summary)
         except Exception as exc:  # noqa: BLE001
@@ -429,6 +502,7 @@ class ManagerAgent(Agent):
         if not (campaign or "").strip():
             return ("Which campaign would you like details on? You can ask me to list your campaigns "
                     "first.")
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaign_details, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -452,6 +526,7 @@ class ManagerAgent(Agent):
         if not (campaign or "").strip():
             return ("Which campaign's numbers would you like? I can list your campaigns first if you "
                     "want.")
+        await _say_filler(context)  # fix C
         try:
             res = await asyncio.to_thread(_vt.campaign_analytics, campaign)
         except Exception as exc:  # noqa: BLE001
@@ -500,6 +575,7 @@ class ManagerAgent(Agent):
                     "list_campaigns and read them the options first. Do not dial without a campaign.")
         # PRE-CONFIRM: return a read-back the agent speaks; do NOT dial yet.
         if not is_confirmed:
+            await _say_filler(context)  # fix C: no dead air while we resolve campaign + audience
             try:
                 camp = await asyncio.to_thread(_vt.resolve_campaign, campaign)
             except Exception:  # noqa: BLE001
@@ -523,6 +599,7 @@ class ManagerAgent(Agent):
         # CONFIRMED: actually dial via the proven /run path.
         logger.info("AIM run_campaign CONFIRMED campaign=%r segment=%s count=%d caller=%s",
                     campaign, seg, n_count, _mask(self._caller_id))
+        await _say_filler(context, "Theek hai, abhi calls start kar rahi hoon…")  # fix C
         try:
             res = await asyncio.to_thread(_vt.run_campaign, campaign, seg, n_count)
         except Exception as exc:  # noqa: BLE001
@@ -531,6 +608,232 @@ class ManagerAgent(Agent):
         logger.info("AIM run_campaign result ok=%s job=%s count=%s",
                     res.get("ok"), res.get("job_id", ""), res.get("count", ""))
         return res.get("summary", "I couldn't start the campaign just now.")
+
+    # ── test_call_me: ring the manager's OWN verified phone (the founder feels a real call) ──
+    @function_tool
+    async def test_call_me(self, context: RunContext) -> str:
+        """Place a REAL test call to the MANAGER'S OWN phone — the verified caller-id they're calling
+        from — so they can feel a live AI call ring their own handset. Use when the manager says things
+        like "call me", "ring my phone", "give me a test call", "let me hear a sample call", "call my
+        number". Needs the manager PIN-verified first (it dials a real phone + spends money). Dials via
+        the same proven path as a campaign; speak ONLY the result it returns (don't claim it rang until
+        the tool confirms)."""
+        if not self._verified:
+            return ("not_verified: this places a real call — ask for the PIN and call verify_pin first, "
+                    "then try the test call.")
+        if _vt is None:
+            return "engine_unavailable: tell the caller you can't reach the calling system right now."
+        target = self._caller_id
+        if not (target or "").strip():
+            return ("no_number: I don't have your caller-id to ring back. Ask them to confirm the number "
+                    "to call, or try from a number that shows its caller-id.")
+        logger.info("AIM test_call_me -> dialing manager own number caller=%s", _mask(target))
+        await _say_filler(context, "Theek hai, abhi aapke number par call laga rahi hoon…")  # fix C
+        try:
+            res = await asyncio.to_thread(_vt.test_call, "Manager", target, "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("test_call_me failed: %r", exc)
+            return "I couldn't place the test call just now. Please try again in a moment."
+        logger.info("AIM test_call_me result ok=%s job=%s", res.get("ok"), res.get("job_id", ""))
+        return res.get("summary", "I couldn't place the test call just now.")
+
+
+# ── the Customer (sales) Agent — a natural human salesperson for NON-manager callers ───────────
+def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
+                              is_returning: bool, pending_disambig: bool,
+                              campaign_options: list[dict] | None) -> str:
+    """Render the inbound CUSTOMER persona. Body REUSES the outbound earner brain verbatim
+    (prompt.build_system_prompt(fields)) when a campaign is resolved, so an inbound prospect gets the
+    SAME proven Hinglish human-telecaller flow as an outbound call — but reframed for INBOUND (they
+    called us). When no campaign is resolved yet, ask ONE open question to disambiguate. NEVER mentions
+    a PIN. Greeting is spoken separately via session.say()."""
+    company = (fields.get("company_name") if fields else "") or _COMPANY
+    agent = (fields.get("agent_name") if fields else "") or _AGENT_VOICE
+
+    head = (
+        f"You are {agent}, a warm, real human salesperson for {company} on a LIVE INBOUND phone call — "
+        "the CALLER dialled US because they're interested. Speak in short, natural beats (one or two "
+        "sentences, then STOP and listen), in the SAME language/code-mix the caller uses "
+        "(Hinglish/Hindi/English). NEVER sound robotic, NEVER say 'I am an AI assistant from', and "
+        "NEVER ask for any PIN or password — this is a customer, not a manager. This is INBOUND: do "
+        "NOT do the outbound 'is this a good time / do you have two minutes' permission opener — they "
+        "called you, so get straight to warmly helping them.\n\n"
+    )
+
+    # Disambiguation mode (new caller, no campaign resolved yet): ONE open question, then match.
+    if pending_disambig:
+        opts = campaign_options or []
+        names = "; ".join(o.get("name", "") for o in opts if o.get("name"))[:400]
+        ask = (
+            "You do NOT yet know which project/property this caller is asking about. Your FIRST job is "
+            "to find out with ONE friendly open question — ask: \"Aap kis project ke baare mein jaanna "
+            "chahte hain?\" (or the same idea in the caller's language). LISTEN to their answer, then "
+            "call the `pick_campaign` tool with what they said so I can load the right project's "
+            "details. Do NOT pitch any specifics until pick_campaign confirms a project — you must not "
+            "give the wrong project's script.\n"
+        )
+        if names:
+            ask += (f"\nFor YOUR reference only (do NOT read this whole list out unless they ask "
+                    f"what's available), the active projects are: {names}. If they clearly name or "
+                    "describe one, call pick_campaign with it. If they're unsure or just exploring, "
+                    "you may briefly mention one or two by name and ask which interests them — then "
+                    "call pick_campaign.\n")
+        return head + ask + (
+            "\nIf after a couple of tries you genuinely can't tell which project they mean, call "
+            "`capture_interest` with their name and what they're looking for so the team can follow "
+            "up — never leave them with the wrong details and never go silent."
+        )
+
+    # Campaign resolved -> run the FULL outbound sales brain (reused read-only), reframed for inbound.
+    brain = ""
+    if _prompt is not None and fields:
+        try:
+            brain = _prompt.build_system_prompt(fields)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("build_system_prompt failed (sales fallback): %r", exc)
+            brain = ""
+    if not brain:
+        # Fallback brain if prompt module/fields unavailable — still helpful, still never silent.
+        prod = (fields.get("product_name") if fields else "") or "our project"
+        brain = (
+            f"Help this caller about {prod}. Answer their questions warmly and accurately from what you "
+            "know, find out what they're looking for (budget, configuration, timeline), and offer a "
+            "site visit or a callback from the team. Keep it natural and short.\n"
+        )
+
+    recap_block = ""
+    if is_returning and recap:
+        nm = f" ({caller_name})" if caller_name else ""
+        recap_block = (
+            "\n\n=== PICHHLI BAAT (this SAME caller spoke to us before — CONTINUE that conversation, "
+            f"don't restart) ==={nm}\n" + recap.strip() + "\n"
+            "Greet them like someone you already know, briefly reference what you discussed last time, "
+            "and pick the sale up from there — do NOT re-introduce the project from zero.\n"
+        )
+    elif caller_name:
+        recap_block = f"\n\nThe caller's name on file is {caller_name} — use it warmly.\n"
+
+    inbound_note = (
+        "\n\nINBOUND REMINDER: they called YOU, so skip the outbound permission/identity opener — just "
+        "warmly help. When the moment is right, move toward a concrete next step (site visit OR a "
+        "callback / sharing details on WhatsApp) and confirm it. Keep every turn to one or two short "
+        "sentences, then listen."
+    )
+    return head + brain + recap_block + inbound_note
+
+
+class CustomerSalesAgent(Agent):
+    """Inbound CUSTOMER (sales) persona for NON-manager callers. Runs the OUTBOUND campaign brain
+    (prompt.build_system_prompt, imported read-only) so a prospect who calls in gets the same proven
+    human telecaller flow. Two entry shapes:
+      • returning lead (caller-id matched a prior call/lead) -> recap injected, continue the sale;
+      • new caller -> ONE open question + pick_campaign NLU-match (short-circuited if exactly one
+        active campaign).
+    On hangup the entrypoint creates/updates the lead + merges memory so the thread continues. NOTHING
+    here touches the manager command machine — a customer can NEVER reach PIN/commands (separate class,
+    separate instructions, no command tools)."""
+
+    def __init__(self, *, caller_id: str, tenant_id: str, session_id: str,
+                 fields: dict | None, recap: str, caller_name: str,
+                 is_returning: bool, pending_disambig: bool,
+                 campaign_options: list[dict] | None) -> None:
+        super().__init__(instructions=_build_sales_instructions(
+            fields or {}, recap, caller_name, is_returning, pending_disambig, campaign_options))
+        self._caller_id = caller_id
+        self._tenant_id = tenant_id or ADMIN_TENANT
+        self._session_id = session_id
+        self._fields = dict(fields or {})
+        self._caller_name = caller_name or ""
+        self._is_returning = is_returning
+        self._pending_disambig = pending_disambig
+        self._campaign_options = campaign_options or []
+        # the resolved campaign id/name drive the lead-attach + returning-caller link on the next call
+        self._campaign_id = str((fields or {}).get("_campaign_id", "")) if fields else ""
+        self._campaign_name = str((fields or {}).get("_campaign_name", "")) if fields else ""
+
+    @function_tool
+    async def pick_campaign(self, context: RunContext, project: str = "") -> str:
+        """Load the RIGHT project's details after a NEW caller says which one they want. Call this with
+        whatever the caller said about the project/property (name, area, builder, BHK — anything). It
+        NLU-matches against the active campaigns and loads that project's full brain so you can sell it
+        accurately. Use this the moment the caller indicates a project.
+
+        Args:
+            project: what the caller said about the project they're interested in (e.g. "the one in
+                     Gurgaon", "Codename Joy", "your 3 BHK project"). Pass it as a plain string.
+        """
+        if _vt is None:
+            return "engine_unavailable: tell the caller you can't reach the system right now; offer a callback."
+        q = (project or "").strip()
+        if not q:
+            return ("need_project: ask once more, warmly — \"Aap kis project ke baare mein jaanna "
+                    "chahte hain?\" — then call pick_campaign with their answer.")
+        try:
+            fields = await asyncio.to_thread(_vt.campaign_fields, q)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pick_campaign campaign_fields failed: %r", exc)
+            fields = {}
+        if not fields:
+            # no confident match -> read the real options so we never load the wrong script
+            try:
+                opts = await asyncio.to_thread(_vt.active_campaigns)
+            except Exception:  # noqa: BLE001
+                opts = []
+            names = ", ".join(o.get("name", "") for o in opts[:6] if o.get("name"))
+            if names:
+                return (f"no_match: I couldn't tell which project they mean. The active projects are: "
+                        f"{names}. Ask which of these they want, then call pick_campaign again. Do NOT "
+                        "pitch a project until one matches.")
+            return ("no_match: I couldn't match a project. Call capture_interest with their name and "
+                    "what they're looking for so the team follows up.")
+        # matched -> swap this agent's brain to the resolved campaign + keep selling
+        self._fields = dict(fields)
+        self._campaign_id = str(fields.get("_campaign_id", ""))
+        self._campaign_name = str(fields.get("_campaign_name", ""))
+        self._pending_disambig = False
+        try:
+            await self.update_instructions(_build_sales_instructions(
+                self._fields, "", self._caller_name, False, False, None))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pick_campaign update_instructions failed: %r", exc)
+        logger.info("AIM pick_campaign matched -> %s (%s)", self._campaign_name, self._campaign_id)
+        cname = self._campaign_name or "that project"
+        return (f"matched: loaded {cname}. Now warmly continue helping them about {cname} using its "
+                "details — one short beat at a time. Find out what they need and move toward a site "
+                "visit or a callback.")
+
+    @function_tool
+    async def remember_name(self, context: RunContext, name: str = "") -> str:
+        """Record the caller's name once they tell you it (so the lead and the next call are personal).
+        Call this whenever the caller gives their name.
+
+        Args:
+            name: the caller's name as they said it.
+        """
+        nm = (name or "").strip()
+        if nm:
+            self._caller_name = nm[:60]
+            logger.info("AIM customer name captured caller=%s", _mask(self._caller_id))
+        return "noted: thank them naturally and keep the conversation going."
+
+    @function_tool
+    async def capture_interest(self, context: RunContext, name: str = "", interest: str = "") -> str:
+        """Capture a caller we COULDN'T match to a project (or who just wants the team to call back) as a
+        fresh lead so the team follows up. Use when no project matches, the caller is unsure, or they
+        ask for a human/callback. Saves them so the interest is never lost.
+
+        Args:
+            name: the caller's name if they gave it (else "").
+            interest: a short note of what they're looking for ("3 BHK in Gurgaon", "investment", etc.).
+        """
+        if (name or "").strip():
+            self._caller_name = name.strip()[:60]
+        if (interest or "").strip():
+            # stash on fields so the end-of-call lead note can carry it (best-effort, never blocks)
+            self._fields["_interest_note"] = interest.strip()[:200]
+        logger.info("AIM capture_interest caller=%s name=%r", _mask(self._caller_id), self._caller_name)
+        return ("captured: reassure them warmly that our team will call them back shortly with the "
+                "details, confirm their name, and close the call politely.")
 
 
 # ── spoken-digit -> PIN extraction (deterministic) ─────────────────────────────
@@ -674,6 +977,70 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
 
     session_id = "vs_" + uuid.uuid4().hex[:12]
 
+    # ---- CUSTOMER (sales) classify branch: resolve returning lead + campaign + memory recap ----
+    # Manager -> ManagerAgent (PIN). Else -> CustomerSalesAgent (no PIN, runs the outbound brain).
+    # All resolution is read-only-over-HTTP (voice_tools) + read-only memory.py; never raises.
+    cust_fields: dict | None = None
+    cust_recap = ""
+    cust_name = ""
+    cust_is_returning = False
+    cust_pending_disambig = False
+    cust_campaign_options: list[dict] = []
+    cust_phone_digits = re.sub(r"\D", "", caller_id or "")
+    if not is_manager:
+        # 1) returning caller? most-recent call/lead carries the campaign + name (HTTP resolve)
+        contact = {}
+        if _vt is not None and caller_id:
+            try:
+                contact = await asyncio.to_thread(_vt.resolve_contact_by_phone, caller_id) or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM resolve_contact_by_phone failed: %r", exc)
+                contact = {}
+        cust_name = (contact.get("name") or "").strip()
+        ret_cid = (contact.get("campaign_id") or "").strip()
+        if contact.get("tenant_id"):
+            tenant_id = contact.get("tenant_id") or tenant_id
+        # 2) per-person cross-call memory recap (so we CONTINUE the conversation)
+        if _memory is not None and cust_phone_digits:
+            try:
+                mem = _memory.load_memory(cust_phone_digits)
+                cust_recap = (_memory.build_recap(mem) or "")[:600]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM memory load failed: %r", exc)
+        # 3) resolve which campaign brain to load
+        if ret_cid and _vt is not None:
+            # returning lead -> load THAT campaign's brain, greet recognising them, continue the sale
+            try:
+                cust_fields = await asyncio.to_thread(_vt.campaign_fields, ret_cid) or None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM campaign_fields(returning) failed: %r", exc)
+                cust_fields = None
+            if cust_fields:
+                cust_is_returning = True
+                logger.info("AIM customer RETURNING lead name=%r campaign=%s recap_chars=%d",
+                            cust_name, cust_fields.get("_campaign_name", ret_cid), len(cust_recap))
+        if cust_fields is None and _vt is not None:
+            # new caller -> short-circuit if exactly one active campaign, else ask which project
+            try:
+                cust_campaign_options = await asyncio.to_thread(_vt.active_campaigns) or []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM active_campaigns failed: %r", exc)
+                cust_campaign_options = []
+            if len(cust_campaign_options) == 1:
+                only = cust_campaign_options[0]
+                try:
+                    cust_fields = await asyncio.to_thread(
+                        _vt.campaign_fields, only.get("id") or only.get("name", "")) or None
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("AIM campaign_fields(one-active) failed: %r", exc)
+                    cust_fields = None
+                logger.info("AIM customer NEW caller -> one active campaign short-circuit: %s",
+                            (cust_fields or {}).get("_campaign_name", ""))
+            if cust_fields is None:
+                cust_pending_disambig = True
+                logger.info("AIM customer NEW caller -> disambiguate (%d active campaigns)",
+                            len(cust_campaign_options))
+
     # ---- build the tuned voice stack — IDENTICAL construction to the outbound earner ----
     _vad = None
     try:
@@ -686,16 +1053,55 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
 
     _td = _resolve_turn_detection()
     _semantic_on = not isinstance(_td, str)
-    _max_ep_default = "1.8" if _semantic_on else "0.45"
+    # FIX(E-tune): drop the VAD max-endpointing default to ~0.5-0.8s so the model starts thinking
+    # sooner (less perceived silence). Semantic mode keeps its own slack.
+    _max_ep_default = "1.8" if _semantic_on else "0.6"
 
-    session = AgentSession(
+    # ── FIX (A)(i): DISABLE STRICT TOOL SCHEMA on the Groq LLM ──────────────────────
+    # ROOT CAUSE of the 3-5 min dead air: livekit-plugins-openai builds a STRICT JSON schema for the
+    # tools (openai/llm.py: `_strict_tool_schema=True`). Groq then HARD-REJECTS (400 "did not match
+    # schema") any tool call where the small llama-4-scout omits an arg (e.g. check_leads w/o
+    # `campaign`) or sends an int/bool as a string (run_campaign count/confirmed). The 400 is wrapped
+    # retryable -> LiveKit retries 4x re-sending the whole prompt -> all re-fail -> the inference task
+    # dies -> ZERO audio. groq.LLM is a thin OpenAILLM subclass that does NOT forward the private
+    # `_strict_tool_schema` kwarg, so we flip the attribute on the instance AFTER construction. With
+    # strict OFF, Groq tolerates missing/loose-typed args and the body's _to_int/_to_bool coercion +
+    # optional-arg defaults make every tool call ALWAYS valid -> never a rejected call, never dead air.
+    _aim_llm = groq.LLM(
+        model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+        api_key=_next_groq_key(),
+        temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+        max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "160")),
+    )
+    try:
+        _aim_llm._strict_tool_schema = False  # noqa: SLF001 — intentional, isolated to THIS agent
+        logger.info("AIM LLM strict_tool_schema DISABLED (forgiving tool calls; no schema-reject storm)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM could not disable strict_tool_schema (relying on body coercion): %r", exc)
+
+    # ── FIX (B): FAIL-FAST — kill the 4x doomed-retry storm ─────────────────────────
+    # Per-session llm_conn_options.max_retry defaults to 3 (=4 attempts, 2s apart) -> a single bad
+    # inference stacks ~8s+ of silence PER turn. Drop it to 1 (one quick retry for a genuine transient
+    # blip, then surface) so a turn can NEVER stall into minutes. We leave max_unrecoverable_errors at
+    # its default so the never-silent guard still gets to apologize rather than the call dropping.
+    _conn_opts = None
+    if _SessionConnectOptions is not None:
+        try:
+            _llm_co = APIConnectOptions(
+                max_retry=int(os.getenv("AIM_LLM_MAX_RETRY", "1")),
+                retry_interval=float(os.getenv("AIM_LLM_RETRY_INTERVAL", "0.5")),
+                timeout=float(os.getenv("AIM_LLM_TIMEOUT", "12")),
+            )
+            _conn_opts = _SessionConnectOptions(llm_conn_options=_llm_co)
+            logger.info("AIM fail-fast LLM conn: max_retry=%s retry_interval=%ss",
+                        _llm_co.max_retry, _llm_co.retry_interval)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM could not set fail-fast llm_conn_options (using defaults): %r", exc)
+            _conn_opts = None
+
+    _sess_kwargs = dict(
         stt=_build_stt(),
-        llm=groq.LLM(
-            model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-            api_key=_next_groq_key(),
-            temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
-            max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "140")),
-        ),
+        llm=_aim_llm,
         tts=_build_tts(),
         vad=_vad,
         preemptive_generation=True,
@@ -706,23 +1112,87 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         false_interruption_timeout=float(os.getenv("FALSE_INT_TIMEOUT", "1.0")),
         turn_detection=_td,
     )
+    if _conn_opts is not None:
+        _sess_kwargs["conn_options"] = _conn_opts
+    session = AgentSession(**_sess_kwargs)
 
     try:
         ctx._aim_session = session  # let the never-silent guard apologize through it
     except Exception:  # noqa: BLE001
         pass
 
+    # FIX (B): NEVER-DEAD-AIR error handler. If an LLM/tool inference errors (e.g. a transient Groq
+    # blip, or a residual schema reject that slips past strict-off), with fail-fast max_retry we surface
+    # FAST instead of stalling — and here we speak a short natural recovery line so the caller hears a
+    # voice within ~1s rather than the old 3-5 min silence. Debounced so we don't double-talk.
+    _last_recover = {"t": 0.0}
+
+    def _speak_recovery() -> None:
+        try:
+            import time as _t
+            now = _t.monotonic()
+            if now - _last_recover["t"] < 4.0:
+                return
+            _last_recover["t"] = now
+            line = os.getenv("AIM_RECOVER_LINE",
+                             "Ek second, thoda sa system slow hua — main aapke saath hoon, boliye.")
+            asyncio.run_coroutine_threadsafe(session.say(line, allow_interruptions=True), _loop)
+        except Exception:  # noqa: BLE001
+            pass
+
     @session.on("error")
     def _on_session_error(ev) -> None:  # noqa: ANN001
         try:
             err = getattr(ev, "error", ev)
             recoverable = getattr(err, "recoverable", None)
-            logger.warning("AIM session error (recoverable=%s): %r", recoverable, err)
+            src = getattr(ev, "source", "") or ""
+            logger.warning("AIM session error (source=%s recoverable=%s): %r", src, recoverable, err)
+            # LLM/tool path errored -> don't sit in dead air; speak a quick holding line.
+            if "llm" in str(src).lower() or "llm" in repr(err).lower():
+                _speak_recovery()
         except Exception:  # noqa: BLE001
             pass
 
-    agent = ManagerAgent(caller_id=caller_id, tenant_id=tenant_id, role=role,
-                         is_manager=is_manager, session_id=session_id)
+    if is_manager:
+        agent = ManagerAgent(caller_id=caller_id, tenant_id=tenant_id, role=role,
+                             is_manager=is_manager, session_id=session_id)
+        # ── FIX (D): WARM a small HOT SNAPSHOT once at connect ──────────────────────
+        # Fire-and-forget (never blocks/ delays the greeting): prefetch lead counts + campaign list
+        # into the agent so the FIRST data question ("how many leads / list my campaigns") answers from
+        # memory (<5ms) instead of a cold HTTP round-trip mid-turn. Pooled httpx (fix E) makes this
+        # cheap. Stored only on the agent; the PIN gate still applies before the tool can return them.
+        agent._hot_leads_summary = ""        # type: ignore[attr-defined]
+        agent._hot_campaigns_summary = ""    # type: ignore[attr-defined]
+
+        async def _warm_snapshot() -> None:
+            if _vt is None:
+                return
+            try:
+                lc = await asyncio.to_thread(_vt.lead_counts, "")
+                if isinstance(lc, dict) and lc.get("ok") and lc.get("summary"):
+                    agent._hot_leads_summary = lc["summary"]  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM warm lead snapshot failed: %r", exc)
+            try:
+                cs = await asyncio.to_thread(_vt.campaigns_summary)
+                if isinstance(cs, dict) and cs.get("ok") and cs.get("summary"):
+                    agent._hot_campaigns_summary = cs["summary"]  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM warm campaigns snapshot failed: %r", exc)
+            logger.info("AIM warm snapshot ready leads=%s campaigns=%s",
+                        bool(getattr(agent, "_hot_leads_summary", "")),
+                        bool(getattr(agent, "_hot_campaigns_summary", "")))
+
+        try:
+            asyncio.create_task(_warm_snapshot())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM warm snapshot task spawn failed: %r", exc)
+    else:
+        agent = CustomerSalesAgent(
+            caller_id=caller_id, tenant_id=tenant_id, session_id=session_id,
+            fields=cust_fields, recap=cust_recap, caller_name=cust_name,
+            is_returning=cust_is_returning, pending_disambig=cust_pending_disambig,
+            campaign_options=cust_campaign_options)
 
     # ---- DTMF keypad PIN (so an exhausted founder can KEY the PIN, not only speak it) ----
     # SIP DTMF arrives as a livekit.rtc.Room event "sip_dtmf_received" (SipDTMF{digit,code}). We
@@ -741,6 +1211,8 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
 
     @ctx.room.on("sip_dtmf_received")
     def _on_dtmf(ev) -> None:  # noqa: ANN001
+        if not is_manager:
+            return  # customers have no PIN — DTMF is a no-op on the sales path
         try:
             digit = getattr(ev, "digit", None)
             if digit is None:
@@ -764,6 +1236,61 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+    # ---- CUSTOMER (sales) cross-call thread: collect turns + persist lead/memory on hangup ----
+    # Mirrors the outbound earner's memory pattern (agent.py): accumulate {role,content} turns from the
+    # session, then on room-disconnect (a) merge+save_memory so the NEXT call continues the thread, and
+    # (b) create/update the lead (caller-id + name asked in-call) so the inbound sale is visible in the
+    # panel. All best-effort; a persistence failure NEVER affects the live call. Managers persist via
+    # their own command-audit path (not here).
+    _cust_turns: list[dict] = []
+    _cust_persisted = {"done": False}
+
+    if not is_manager:
+        @session.on("conversation_item_added")
+        def _on_cust_item(ev) -> None:  # noqa: ANN001
+            try:
+                item = getattr(ev, "item", None)
+                role = getattr(item, "role", "") if item is not None else ""
+                text = (getattr(item, "text_content", "") or "") if item is not None else ""
+                if text and role in ("user", "assistant"):
+                    _cust_turns.append({"role": role, "content": text})
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def _persist_customer() -> None:
+            if _cust_persisted["done"]:
+                return
+            _cust_persisted["done"] = True
+            # (a) merge with prior memory + save so the thread continues next time
+            try:
+                if _memory is not None and cust_phone_digits and _cust_turns:
+                    prior = _memory.load_memory(cust_phone_digits) or {}
+                    prior_hist = list(prior.get("history") or [])
+                    merged = prior_hist + _cust_turns
+                    _memory.save_memory(cust_phone_digits, merged,
+                                        summary=str(prior.get("summary") or ""))
+                    logger.info("AIM customer memory saved phone-digits=%s turns=%d",
+                                cust_phone_digits[-4:] if cust_phone_digits else "", len(merged))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM customer memory save failed: %r", exc)
+            # (b) create/update the lead so the inbound sale is visible (caller-id + name from the call)
+            try:
+                if _vt is not None and caller_id:
+                    nm = getattr(agent, "_caller_name", "") or cust_name or ""
+                    cid = getattr(agent, "_campaign_id", "") or ""
+                    res = await asyncio.to_thread(_vt.create_lead, nm, caller_id, cid)
+                    logger.info("AIM customer lead upsert ok=%s added=%s name=%r",
+                                res.get("ok"), res.get("added"), nm)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM customer lead create failed: %r", exc)
+
+        @ctx.room.on("disconnected")
+        def _on_room_disconnected(*_a) -> None:  # noqa: ANN002
+            try:
+                asyncio.run_coroutine_threadsafe(_persist_customer(), _loop)
+            except Exception:  # noqa: BLE001
+                pass
+
     # ---- START + GREET — EXACTLY the proven outbound path (start, then say) ----
     await session.start(room=ctx.room, agent=agent)
 
@@ -771,8 +1298,24 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         greeting = (f"Hey! This is {_AGENT_VOICE} from {_COMPANY} — your AI manager. "
                     f"To get you in securely, please say or key in your four-digit PIN.")
     else:
-        greeting = (f"Hello! This is {_AGENT_VOICE} from {_COMPANY}. "
-                    f"How can I help you today?")
+        # CUSTOMER (sales): warm human greeting; recognise returning callers; ask the open question
+        # for a new caller who needs disambiguation. NEVER a PIN. Persona name follows the campaign.
+        sales_agent_name = (cust_fields.get("agent_name") if cust_fields else "") or _AGENT_VOICE
+        sales_company = (cust_fields.get("company_name") if cust_fields else "") or _COMPANY
+        if cust_is_returning:
+            who = f" {cust_name.split()[0]}" if cust_name else ""
+            greeting = (f"Hi{who}! This is {sales_agent_name} from {sales_company}. "
+                        "Good to hear from you again — picking up from where we left off, "
+                        "how can I help you today?")
+        elif cust_pending_disambig:
+            greeting = (f"Hello! This is {sales_agent_name} from {sales_company}. "
+                        "Aap kis project ke baare mein jaanna chahte hain?")
+        else:
+            who = f" {cust_name.split()[0]}" if cust_name else ""
+            proj = (cust_fields.get("_campaign_name") if cust_fields else "") or ""
+            proj_txt = f" about {proj}" if proj else ""
+            greeting = (f"Hello{who}! This is {sales_agent_name} from {sales_company}. "
+                        f"Thanks for calling{proj_txt} — how can I help you today?")
     if (os.getenv("AIM_DISCLOSE_RECORDING", "0").strip().lower() not in ("", "0", "false", "no", "off")):
         greeting += " Just so you know, this call may be recorded for quality."
     logger.info("AIM greeting (manager=%s): %s", is_manager, greeting[:120])

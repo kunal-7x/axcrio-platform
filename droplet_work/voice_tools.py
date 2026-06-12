@@ -38,29 +38,55 @@ _TIMEOUT = float(os.getenv("AIM_CALLER_TIMEOUT", "12"))
 _HEADERS = {"X-Auth": _ADMIN_CRED}
 
 
+# ── FIX (E): ONE keep-alive POOLED httpx client (not a fresh client per call) ──────────────────────
+# The old _client() built a brand-new httpx.Client (new TCP + connection setup) on EVERY read/dial.
+# On loopback that's small but non-zero and it adds up across a chatty voice turn. A single module-
+# level client with a keep-alive connection pool reuses the warm connection, shaving per-call setup.
+# Lazily built + thread-safe (tools run via asyncio.to_thread). Auto-heals if it gets closed.
+import threading as _threading  # noqa: E402
+
+_POOL_LOCK = _threading.Lock()
+_POOL: "httpx.Client | None" = None
+
+
 def _client() -> "httpx.Client":
+    """Return the shared, keep-alive pooled client (built once). Falls back to a fresh client only if
+    httpx is missing the Limits API (older versions). NEVER returns a closed client."""
+    global _POOL
     if httpx is None:  # pragma: no cover — httpx is present on the box
         raise RuntimeError("httpx unavailable")
-    return httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT)
+    c = _POOL
+    if c is not None and not getattr(c, "is_closed", False):
+        return c
+    with _POOL_LOCK:
+        if _POOL is not None and not getattr(_POOL, "is_closed", False):
+            return _POOL
+        try:
+            limits = httpx.Limits(max_keepalive_connections=8, max_connections=16,
+                                  keepalive_expiry=30.0)
+            _POOL = httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT, limits=limits)
+        except Exception:  # noqa: BLE001 — very old httpx without Limits; still pooled per-process
+            _POOL = httpx.Client(base_url=_BASE, headers=_HEADERS, timeout=_TIMEOUT)
+        return _POOL
 
 
 def _get(path: str, params: dict | None = None) -> Any:
-    with _client() as c:
-        r = c.get(path, params=params or {})
-        r.raise_for_status()
-        return r.json()
+    c = _client()
+    r = c.get(path, params=params or {})
+    r.raise_for_status()
+    return r.json()
 
 
 def _post_form(path: str, data: dict) -> Any:
-    with _client() as c:
-        r = c.post(path, data=data)
-        # /run can legitimately return 202 (queued out of window) or 402 (no balance); surface, don't raise.
-        if r.status_code >= 500:
-            r.raise_for_status()
-        try:
-            return {"_status": r.status_code, **(r.json() if r.content else {})}
-        except Exception:  # noqa: BLE001
-            return {"_status": r.status_code, "_text": (r.text or "")[:200]}
+    c = _client()
+    r = c.post(path, data=data)
+    # /run can legitimately return 202 (queued out of window) or 402 (no balance); surface, don't raise.
+    if r.status_code >= 500:
+        r.raise_for_status()
+    try:
+        return {"_status": r.status_code, **(r.json() if r.content else {})}
+    except Exception:  # noqa: BLE001
+        return {"_status": r.status_code, "_text": (r.text or "")[:200]}
 
 
 # ───────────────────────── campaign resolution ─────────────────────────────────
@@ -75,6 +101,87 @@ def list_campaigns() -> list[dict]:
 def _camp_name(c: dict) -> str:
     f = c.get("fields", {}) or {}
     return str(c.get("name") or f.get("company_name") or f.get("product_name") or "").strip()
+
+
+def campaigns_summary() -> dict:
+    """Spoken-friendly enumeration of ALL campaigns (real data, never invented). Returns the count and
+    a readable list of "name (status)" so the agent can answer "how many campaigns / list my campaigns"
+    truthfully. The agent MUST call this — it must never guess a campaign name or count."""
+    camps = list_campaigns()
+    if not camps:
+        return {"ok": True, "count": 0, "campaigns": [],
+                "summary": "I don't see any campaigns on your account yet."}
+    items = []
+    for c in camps:
+        nm = _camp_name(c) or "(unnamed)"
+        st = str(c.get("status") or "").strip() or "ready"
+        items.append({"id": str(c.get("id", "")), "name": nm, "status": st})
+    names = "; ".join(f"{i['name']} ({i['status']})" for i in items)
+    n = len(items)
+    return {"ok": True, "count": n, "campaigns": items,
+            "summary": (f"You have {n} campaign{'s' if n != 1 else ''}: {names}.")}
+
+
+def campaign_details(spoken: str) -> dict:
+    """Full detail for ONE campaign, resolved from a spoken name/id (forgiving match), read from GET
+    /campaigns/{id} and unwrapped from the {"campaign":{...}} envelope. Real data only — if no match,
+    say so. Speaks status + goal + language + calling window so the manager hears the real config."""
+    camp = resolve_campaign(spoken)
+    if camp is None:
+        avail = ", ".join(_camp_name(c) for c in list_campaigns()[:8] if _camp_name(c))
+        return {"ok": False, "summary": (f"I couldn't find a campaign called {spoken}." +
+                (f" The ones you have are: {avail}." if avail else ""))}
+    cid = str(camp.get("id", ""))
+    try:
+        d = _get(f"/campaigns/{cid}")
+        full = (d.get("campaign") or d) if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001
+        full = camp  # fall back to the list-view fields we already have
+    f = full.get("fields", {}) or {}
+    name = _camp_name(full) or _camp_name(camp) or spoken
+    status = str(full.get("status") or camp.get("status") or "ready").strip()
+    goal = str(f.get("goal") or "").strip()
+    lang = str(f.get("language") or f.get("primary_language") or "").strip()
+    ws = str(f.get("call_window_start") or "").strip()
+    we = str(f.get("call_window_end") or "").strip()
+    product = str(full.get("product") or f.get("product_name") or "").strip()
+    parts = [f"{name} is {status}"]
+    if product:
+        parts.append(f"for {product}")
+    if goal:
+        parts.append(f"the goal is {goal}")
+    if lang:
+        parts.append(f"language {lang}")
+    if ws and we:
+        parts.append(f"calling window {ws} to {we}")
+    summary = ". ".join(parts) + "."
+    return {"ok": True, "id": cid, "name": name, "status": status,
+            "campaign": full, "summary": summary}
+
+
+def campaign_analytics(spoken: str) -> dict:
+    """Per-campaign analytics (dialed/connected/answered/interested/qualified/voicemail) from
+    GET /analytics?campaign_id=<resolved>. Real numbers only; resolves the spoken name first."""
+    camp = resolve_campaign(spoken)
+    if camp is None:
+        avail = ", ".join(_camp_name(c) for c in list_campaigns()[:8] if _camp_name(c))
+        return {"ok": False, "summary": (f"I couldn't find a campaign called {spoken}." +
+                (f" You have: {avail}." if avail else ""))}
+    cid = str(camp.get("id", ""))
+    cname = _camp_name(camp) or spoken
+    try:
+        d = _get("/analytics", {"campaign_id": cid})
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "summary": f"I couldn't pull the analytics for {cname} right now."}
+    dialed = int(d.get("dialed", 0) or 0)
+    connected = int(d.get("connected", 0) or 0)
+    answered = int(d.get("answered", 0) or 0)
+    interested = int(d.get("interested", 0) or 0)
+    qualified = int(d.get("qualified", 0) or 0)
+    vm = int(d.get("voicemail", 0) or 0)
+    return {"ok": True, "stats": d,
+            "summary": (f"For {cname}: {dialed} dialed, {connected} connected, {answered} answered, "
+                        f"{interested} interested, {qualified} qualified, and {vm} went to voicemail.")}
 
 
 def resolve_campaign(spoken: str) -> dict | None:
@@ -205,7 +312,7 @@ def resolve_audience(segment: str, count: int) -> list[dict]:
         rows = [x for x in leads if 40 <= _lead_temp_score(x) < 70]
     elif seg in ("cold",):
         rows = [x for x in leads if _lead_temp_score(x) < 40]
-    else:  # all / everyone / unknown
+    else:  # all / everyone / everybody / corporates / free-text / unknown -> the whole pool (NEVER silent 0)
         rows = list(leads)
     # highest score first so a small count dials the best leads
     rows = sorted(rows, key=_lead_temp_score, reverse=True)
@@ -262,6 +369,166 @@ def run_campaign(campaign: str, segment: str = "all", count: int = 0) -> dict:
                 "job_id": res.get("job_id", ""), "count": n}
     if not job and st not in (200, 202):
         return {"ok": False, "summary": "I couldn't start the campaign just now — please try again."}
+    # Honest read-out: speak ONLY after /run returned a job; include the real count.
+    seg_txt = "" if seg in ("all", "everyone", "everybody") else f"{seg} "
+    is_are = "is" if n == 1 else "are"
     return {"ok": True, "job_id": job, "count": n,
-            "summary": (f"Done — I'm now dialing {n} {seg if seg!='all' else ''} "
-                        f"lead{'s' if n != 1 else ''} for {cname}. They'll start ringing in a few seconds.")}
+            "phones": [str(x.get("phone") or x.get("num") or "") for x in rows][:n],
+            "summary": (f"Done — I've started the run for {cname}. {n} {seg_txt}"
+                        f"lead{'s' if n != 1 else ''} {is_are} dialing now; they'll start ringing in a few seconds.")}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CUSTOMER (sales) MODE additions (BUILD #5). All read-only-over-HTTP against the
+# SAME live caller.py the panel uses; never import/edit caller.py/agent.py. Every
+# function NEVER raises — returns a safe value/spoken-friendly dict on any error.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _norm_phone(phone: str) -> str:
+    """Match caller.py norm(): digits-only -> +91XXXXXXXXXX (drop leading 0, add 91 for
+    a bare 10-digit). Used to reconcile the SIP caller-id against stored call/lead phones."""
+    import re as _re
+    d = _re.sub(r"\D", "", phone or "")
+    if d.startswith("0"):
+        d = d[1:]
+    if len(d) == 10:
+        d = "91" + d
+    return ("+" + d) if len(d) >= 11 else ""
+
+
+def _digits(phone: str) -> str:
+    import re as _re
+    return _re.sub(r"\D", "", phone or "")
+
+
+def resolve_contact_by_phone(phone: str) -> dict:
+    """Returning-caller link over HTTP (mirrors caller._resolve_contact_by_phone, but read-only
+    against /calls + /leads). Returns {name, campaign_id, campaign_name, tenant_id, is_known}.
+    Most-recent CALL to this number wins (it carries campaign_id); falls back to a stored lead.
+    NEVER raises."""
+    out = {"name": "", "campaign_id": "", "campaign_name": "", "tenant_id": "", "is_known": False}
+    key = _norm_phone(phone)
+    if not key:
+        return out
+    # 1) most-recent call to this number (carries campaign_id + name)
+    try:
+        d = _get("/calls", {"limit": 1000})
+        for c in (d.get("calls", []) or []):
+            if _norm_phone(c.get("phone", "") or c.get("num", "")) == key:
+                out["name"] = c.get("name", "") or out["name"]
+                out["campaign_id"] = c.get("campaign_id", "") or out["campaign_id"]
+                out["campaign_name"] = c.get("campaign_name", "") or out["campaign_name"]
+                out["tenant_id"] = c.get("tenant_id", "") or out["tenant_id"]
+                out["is_known"] = True
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    # 2) fall back to a stored lead (name only; leads have no campaign in this data model)
+    if not out["name"]:
+        try:
+            d = _get("/leads")
+            for x in (d.get("leads", []) or []):
+                if _norm_phone(x.get("phone", "")) == key:
+                    out["name"] = x.get("name", "") or out["name"]
+                    out["tenant_id"] = out["tenant_id"] or x.get("tenant_id", "")
+                    out["is_known"] = True
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def campaign_fields(spoken_or_id: str) -> dict:
+    """Resolve a spoken name / id to its FULL campaign `fields` dict (the same shape
+    prompt.build_system_prompt expects) by reading GET /campaigns/{id}. Returns {} if it
+    can't resolve. NEVER raises."""
+    try:
+        camp = resolve_campaign(spoken_or_id)
+        if camp is None:
+            return {}
+        cid = str(camp.get("id", ""))
+        if not cid:
+            return {}
+        d = _get(f"/campaigns/{cid}")
+        full = (d.get("campaign") or d) if isinstance(d, dict) else {}
+        f = dict(full.get("fields", {}) or {})
+        # stamp id/name so the caller (customer agent) can attach the lead later
+        f.setdefault("_campaign_id", cid)
+        f.setdefault("_campaign_name", _camp_name(full) or _camp_name(camp))
+        return f
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def active_campaigns() -> list[dict]:
+    """The campaigns a NEW inbound caller could be calling about — those that are 'active' OR
+    'ready' (i.e. live enough to take inbound interest). Returns [{id, name, status}]. Falls back
+    to ALL campaigns if none are flagged active/ready (never leave a caller with zero options).
+    NEVER raises."""
+    camps = list_campaigns()
+    if not camps:
+        return []
+    act = []
+    for c in camps:
+        st = str(c.get("status") or "").strip().lower()
+        if st in ("active", "running", "ready", "live", "on"):
+            act.append({"id": str(c.get("id", "")), "name": _camp_name(c) or "(unnamed)", "status": st})
+    if not act:  # nothing flagged -> offer the whole set so a new caller is never stranded
+        act = [{"id": str(c.get("id", "")), "name": _camp_name(c) or "(unnamed)",
+                "status": str(c.get("status") or "")} for c in camps]
+    return act
+
+
+def create_lead(name: str, phone: str, campaign_id: str = "") -> dict:
+    """Create/refresh a lead for an inbound CUSTOMER caller so the sale is visible in the panel.
+    POSTs to /leads (the same route the panel 'Add leads' uses) with a 'name,phone' line. Idempotent
+    server-side (de-dups on phone within the tenant). Returns {ok, added}. NEVER raises.
+
+    NOTE: caller.py's /leads stores tenant-wide leads (no campaign column), so campaign_id is recorded
+    only for the spoken/audit context here; the lead row links to the tenant. The CALL record (written
+    by the inbound run) is what carries campaign_id for the next returning-caller resolution."""
+    ph = _norm_phone(phone)
+    if not ph:
+        return {"ok": False, "added": 0, "summary": "no_phone"}
+    nm = (name or "").strip() or "Inbound caller"
+    line = f"{nm},{ph}"
+    try:
+        res = _post_form("/leads", {"leads": line})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "added": 0, "error": type(exc).__name__}
+    added = int(res.get("added", 0) or 0)
+    return {"ok": True, "added": added, "phone": ph, "name": nm,
+            "summary": ("saved as a new lead" if added else "already on file")}
+
+
+def test_call(name: str, phone: str, campaign_id: str = "") -> dict:
+    """Place ONE real outbound call to an explicit phone via the PROVEN /run dial path — used by the
+    manager's `test_call_me` tool so the founder's own verified number RINGS. POSTs the phone as an
+    ad-hoc lead line ('name,phone') + a campaign + force=1 (so it dials immediately, outside-window
+    safe). Returns a spoken-friendly result. NEVER raises. SAFETY: this is the SAME /run route the
+    panel Run button uses — no new dial code; it just dispatches one lead."""
+    ph = _norm_phone(phone)
+    if not ph:
+        return {"ok": False, "summary": "I don't have a verified number on file to ring you back on."}
+    cid = (campaign_id or "").strip()
+    if not cid:
+        # pick the first active/ready campaign so the test call has a brain
+        acts = active_campaigns()
+        cid = acts[0]["id"] if acts else ""
+    if not cid:
+        return {"ok": False, "summary": "I couldn't find a campaign to place the test call with."}
+    nm = (name or "").strip() or "Manager"
+    form = {"campaign_id": cid, "leads": f"{nm},{ph}", "force": "1"}
+    try:
+        res = _post_form("/run", form)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "summary": "I couldn't place the test call — the calling engine didn't respond.",
+                "error": type(exc).__name__}
+    st = res.get("_status", 0)
+    if st == 402:
+        return {"ok": False, "summary": "I couldn't place the test call — the prepaid balance is exhausted."}
+    job = res.get("job_id", "")
+    n = res.get("count", 0)
+    if not job and st not in (200, 202):
+        return {"ok": False, "summary": "I couldn't place the test call just now — please try again."}
+    return {"ok": True, "job_id": job, "count": n, "phone": ph,
+            "summary": "Done — I'm ringing your phone now. It should start ringing in a few seconds."}
