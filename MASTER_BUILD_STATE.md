@@ -46,3 +46,21 @@ Each item: verify (real test) + commit + update this ledger BEFORE launching the
 
 ## BOX / CREDS
 Backend `famit@168.144.153.145` (priv 10.122.0.4), key `C:\Users\kunal\.ssh\do-blr-test\id_ed25519`, app `/opt/famit-agent/`, X-Auth `FamitCall2026`, capsy venv `/opt/capsy-agent/.venv`. Frontend `root@143.110.247.249` `/opt/famit-panel` (FORTRESS deploy backup-first). Creds `.env.local` + `lead/ALL_CREDENTIALS.md` (gitignored). Inbound DID +918071583488; founder test phone +917861019021; PIN 4827.
+
+---
+## WAP-FE wave — WhatsApp builder frontend (Submit-to-Meta + partial-OK + banner field)
+- Run: feat/premium-ui, commit 03af687 (6 files, build EXIT 0).
+- Backend already done (commit 1638921): generate/submit/banner-handle all LIVE on box (FEATURE_WHATSAPP_BUILDER=1, builder/status => llm+whatsapp+meta_submit all "ready").
+- FE shipped: waapi.ts (never error-wall when templates exist; partial-OK; thread template_id; submitTemplateToMeta/attachBanner/getMetaStatus); ApprovalStep (Submit-to-Meta + live PENDING/APPROVED/REJECTED badge + 12s poll + rejection reason); TemplatesStep (carry template_id, per-card submit + badge, partial note); AiSuggestionCard (onSubmitMeta + review badge); PreviewStep (clearer header-banner field); types.ts.
+- Regression gate PASSED pre-deploy: real outbound call to +917861019021 RANG (agent joined room famit-917861019021-7298df, Riya Hinglish opener, tts_ttfb=0.385s, participant connected); famit-agent + famit-caller active; /me /campaigns /leads = 200; zero 5xx.
+- FORTRESS backup-first DONE: /opt/famit-panel/app/whatsapp/{...}.WAPbak.20260611-235723 (all 6); box current files md5-matched local HEAD~1 baseline (clean superset, nothing to clobber).
+- BLOCKER (IN PROGRESS): FORTRESS box 143.110.247.249 port 22 became FILTERED from egress IP 152.59.33.132 mid-deploy (after mkdir+backups succeeded). Likely dynamic-IP rotation or fail2ban after retry burst. panel.famit.in still serving (CF 403 = WAF on unauth fetch, not down). DEPLOY (scp 6 files -> on-box npm run build -> restart famit-panel) PENDING reachability. Staging dirs created: /tmp/wapstage/_{components,lib,steps}.
+
+### WAP-FE — DEPLOY DONE (2026-06-12)
+- FORTRESS deploy COMPLETE: 6 files installed (deployuser-owned), on-box md5 == local HEAD (commit 03af687). .next backed up (.next.WAPbak.<ts>).
+- Build hiccup: on-box `next build` OOM-killed twice (1.9G RAM box). FIX: temp 4G swapfile (/swapfile.build) → build EXIT 0 → removed temp swap (back to base 2G). NODE_OPTIONS=--max-old-space-size=2048.
+- famit-panel restarted: active. /whatsapp=200 (local 3001 + edge panel.famit.in via CF). /,/login,/campaigns=200. Zero panel 5xx.
+- POST-DEPLOY regression PASSED: real outbound call +917861019021 RANG (room famit-917861019021-beccc8, Riya opener, tts_ttfb=0.358s); famit-agent+caller active; /me /campaigns /leads=200; zero 5xx.
+- FE submit-chain smoke (live backend): generate→approve→submit-to-meta→meta-status all 200; Meta returned real verdict (one throwaway template submitted id 1774610770044511 review=REJECTED, then cleaned up via reject). Confirms FE wiring round-trips to real Meta.
+- Backups: earner /opt/famit-agent/...WAPbak.20260611-232133/233410 (prior backend wave). FORTRESS /opt/famit-panel/app/whatsapp/*.WAPbak.20260611-235723 + /opt/famit-panel/.next.WAPbak.<ts>.
+- STATUS: WAVE COMPLETE.
