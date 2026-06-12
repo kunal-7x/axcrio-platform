@@ -42,6 +42,24 @@ greets in ~1s on every real call.
 ## STATUS
 - [x] Diagnosed from live logs (above).
 - [x] BEFORE gate PASS (earner active, md5 ok, real outbound opener spoke 07:31, no 5xx).
-- [ ] Rebuild aim_voice_agent.py on outbound pattern (greeting via session.say, plain STT).
-- [ ] Clear lock + stale row.
-- [ ] Deploy (restart aim-voice-agent only), AFTER gate, founder test call.
+- [x] Rebuilt aim_voice_agent.py on the outbound pattern (plain AgentSession + Agent;
+      greeting via `await session.say()` right after `session.start()`; PIN gate + commands as
+      Agent function-tools `verify_pin`/`manager_status`). Compiles + imports clean in venv
+      (firewall_ready=True). Backup `aim_voice_agent.py.OWNbak.20260612-074847`.
+- [x] Cleared `06375548830` lockout + re-activated founder forms; reverted PROBE_A_num
+      (+919999900001) wrongly promoted -> now revoked/inert. JSONL backup `.OWNbak.20260612-074809`.
+- [x] Deployed; restarted ONLY aim-voice-agent -> `active`, worker `manager` registered
+      (AW_J4JR7MbHRY8K). Earner untouched (agent.py md5 9150fabe… unchanged, famit-agent active).
+- [x] AFTER gate PASS: real outbound SIP call to +917861019021 created+rang (SCL_DxY8gdxmmtbZ),
+      earner spoke opener (capsy room gatetest-7e5546), zero 5xx.
+- [ ] **AWAITING FOUNDER REAL INBOUND TEST CALL** to +918071583488 — must hear:
+      "Hey! This is Riya from Famit — your AI manager. To get you in securely, please say or key in
+      your four-digit PIN." then say/key PIN 4827. Diagnose THAT call's live log on report.
+
+## HONEST CAVEAT (the real call is the only truth)
+This is verified at the SERVICE level (clean start, worker registered, earner safe) and the structure
+now matches the proven outbound earner. It is NOT yet proven on a REAL inbound SIP call — only the
+founder's next call confirms audio. If still silent: pull `journalctl -u aim-voice-agent` for the new
+`aim-_…` room and check whether `session.say` fired and STT connected fast (it should now, since the
+30s-block path is gone). Rollback: restore `aim_voice_agent.py.OWNbak.20260612-074847`, restart
+aim-voice-agent only.
