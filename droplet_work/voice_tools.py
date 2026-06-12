@@ -532,3 +532,69 @@ def test_call(name: str, phone: str, campaign_id: str = "") -> dict:
         return {"ok": False, "summary": "I couldn't place the test call just now — please try again."}
     return {"ok": True, "job_id": job, "count": n, "phone": ph,
             "summary": "Done — I'm ringing your phone now. It should start ringing in a few seconds."}
+
+
+# ───────────────────────── HUMAN HANDOFF (warm-transfer + hot-lead) ─────────────
+# The handoff team list lives on the Business Brain (`handoff` block, var/brain/<tenant>.json).
+# We read it DIRECTLY off the filesystem (same box as the voice worker) so the warm-transfer tool
+# can pick a number with ZERO HTTP/auth round-trip; the WhatsApp notify rides the caller.py
+# loopback (/handoff/notify) so the send logic stays in ONE place (notify_handoff_team).
+_BRAIN_DIR = (os.getenv("BRAIN_VAR_DIR")
+              or os.path.join(os.getenv("FAMIT_VAR", "/opt/famit-agent/var"), "brain"))
+
+
+def handoff_list(tenant_id: str) -> list[dict]:
+    """The vendor's handoff team, priority-sorted: [{phone, whatsapp, role, hours, priority}, ...].
+    Reads var/brain/<tenant>.json directly. [] when none / unreadable. NEVER raises."""
+    if not tenant_id:
+        return []
+    try:
+        import json as _json
+        safe = "".join(c for c in tenant_id if c.isalnum() or c in ("-", "_")) or "_"
+        path = os.path.join(_BRAIN_DIR, f"{safe}.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            prof = _json.load(fh)
+        hl = (prof or {}).get("handoff")
+        if isinstance(hl, dict):
+            hl = hl.get("team") or hl.get("numbers") or []
+        if not isinstance(hl, list):
+            return []
+        out = []
+        for h in hl:
+            if not isinstance(h, dict):
+                continue
+            ph = _norm_phone(str(h.get("phone", ""))) or str(h.get("phone", "")).strip()
+            wa = _norm_phone(str(h.get("whatsapp", ""))) or str(h.get("whatsapp", "")).strip() or ph
+            if not ph and not wa:
+                continue
+            out.append({"phone": ph, "whatsapp": wa,
+                        "role": str(h.get("role", "") or ""),
+                        "hours": str(h.get("hours", "") or ""),
+                        "priority": int(h.get("priority", 99) or 99)})
+        out.sort(key=lambda x: x.get("priority", 99))
+        return out
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def notify_handoff_team(name: str, phone: str, summary: str = "", score: int = 0) -> dict:
+    """Fire the HOT-LEAD WhatsApp to the vendor's handoff team via the caller.py loopback
+    (/handoff/notify). Used by the warm-transfer fallback (no human answered) so the lead is
+    never a dead drop. Returns the send report. NEVER raises (spoken-friendly on failure)."""
+    try:
+        import json as _json
+        c = _client()
+        r = c.post("/handoff/notify",
+                   content=_json.dumps({"name": name or "", "phone": phone or "",
+                                        "summary": summary or "", "score": int(score or 0)}),
+                   headers={"Content-Type": "application/json"})
+        if r.status_code >= 500:
+            return {"ok": False, "status": r.status_code}
+        try:
+            return {"_status": r.status_code, **(r.json() if r.content else {})}
+        except Exception:  # noqa: BLE001
+            return {"_status": r.status_code}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": type(exc).__name__}

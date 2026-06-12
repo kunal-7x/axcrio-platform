@@ -69,6 +69,23 @@ try:
 except Exception:  # noqa: BLE001 — plugin may be absent; the agent MUST still run on VAD
     _SemanticTurnModel = None
 
+# ── HUMAN WARM TRANSFER (BUILD#6) ──────────────────────────────────────────────
+# LiveKit's NATIVE warm-transfer task: dials the human INTO the room over the OUTBOUND trunk
+# (CreateSIPParticipant -> brief with chat_ctx -> MoveParticipant = a true warm conference bridge).
+# Carrier-agnostic (no SIP REFER needed). We REUSE the earner's outbound trunk ID as a STRING ONLY —
+# never editing the trunk / dispatch / agent.py. Guarded so the worker still boots if the beta API
+# is renamed/absent (transfer then degrades to the WhatsApp+callback fallback, never a dead drop).
+try:
+    from livekit.agents.beta.workflows import WarmTransferTask as _WarmTransferTask
+except Exception:  # noqa: BLE001
+    _WarmTransferTask = None
+    logging.getLogger("aim-voice").warning(
+        "WarmTransferTask import failed; transfer_to_human will use WhatsApp+callback fallback only")
+
+# Read-only reuse of the earner's outbound trunk id (env LIVEKIT_SIP_TRUNK_ID). NEVER mutated here.
+_OUTBOUND_TRUNK = (os.getenv("LIVEKIT_SIP_TRUNK_ID", "ST_fmtVmNJmpzKa") or "ST_fmtVmNJmpzKa").strip()
+_TRANSFER_RING_TIMEOUT = float(os.getenv("AIM_TRANSFER_RING_TIMEOUT", "25"))
+
 import itertools as _itertools
 
 # The AI-Manager command brain modules (used by the function-tools, NOT to gate audio).
@@ -319,6 +336,10 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
             "they clearly say yes. Do NOT tell the caller you are dialing until run_campaign actually "
             "returns its result — speak the real outcome it gives you (e.g. how many leads are dialing). "
             "Never claim a call went out unless the tool confirmed it.\n\n"
+            "• `transfer_to_human(reason)` — connect the manager to a REAL person on the team (warm "
+            "transfer). Call this ONLY if they explicitly ask to talk to a human/person, or you "
+            "genuinely cannot handle what they need. It dials a team member into the call; once it "
+            "hands off, stop talking and let the human take over.\n\n"
             "Keep every reply short and natural; let the manager talk. If they just want to chat, answer."
         )
     return common + (
@@ -326,6 +347,120 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
         f"{_COMPANY}. Find out what they need, answer their questions warmly, and offer to have the team "
         "follow up. Do NOT ask for any PIN. Keep it natural and short."
     )
+
+
+# ── HUMAN WARM TRANSFER helper (shared by BOTH agents) ─────────────────────────
+def _transfer_whisper(reason: str, name: str, phone: str, summary: str) -> str:
+    """The one-line private brief the AI speaks to the human as they join (rides chat_ctx too)."""
+    who = (name or "the caller").strip() or "the caller"
+    bits = [f"Connecting you to {who}"]
+    if phone:
+        bits.append(f"on {phone}")
+    if (reason or "").strip():
+        bits.append(f"— reason: {reason.strip()}")
+    if (summary or "").strip():
+        bits.append(f". Context: {summary.strip()[:200]}")
+    bits.append(". Over to you — please take it from here.")
+    return " ".join(bits)
+
+
+async def _do_warm_transfer(agent, context, reason: str) -> str:
+    """Bridge the LIVE caller to a real human. Picks the first eligible handoff number and DIALS
+    that human INTO the current room via LiveKit's native WarmTransferTask (CreateSIPParticipant on
+    the OUTBOUND trunk -> brief with chat_ctx -> MoveParticipant = warm conference; carrier-agnostic,
+    no REFER). Speaks a brief line to the caller first, and fires the hot-lead WhatsApp SIMULTANEOUSLY
+    (belt-and-braces). If no human answers / dial fails on every number, falls back to a logged
+    callback + the (already-sent) hot-lead WhatsApp — NEVER a dead drop. Returns a spoken-friendly
+    string for the LLM to read. NEVER raises."""
+    tenant_id = getattr(agent, "_tenant_id", "") or ADMIN_TENANT
+    caller_id = getattr(agent, "_caller_id", "") or ""
+    name = getattr(agent, "_caller_name", "") or ""
+    summary = _summary_for_handoff(agent)
+
+    # 1) read the vendor handoff team (filesystem, no HTTP/auth).
+    team = []
+    if _vt is not None:
+        try:
+            team = await asyncio.to_thread(_vt.handoff_list, tenant_id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM handoff_list failed: %r", exc)
+            team = []
+
+    # 2) bridge line to the caller (off-loop so it overlaps the dial; never silent).
+    await _say_filler(context, "Bilkul — ek second, main aapko abhi ek team member se connect karti hoon…")
+
+    # 3) fire the hot-lead WhatsApp SIMULTANEOUSLY (belt-and-braces; lands the lead in the team's chat).
+    if _vt is not None and team:
+        try:
+            asyncio.create_task(asyncio.to_thread(
+                _vt.notify_handoff_team, name, caller_id, summary, 80))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM handoff WA notify spawn failed: %r", exc)
+
+    # 4) if no team configured -> capture + WhatsApp(if any) + tell caller the team will call back.
+    if not team:
+        logger.info("AIM transfer_to_human: NO handoff team (tenant=%s) -> callback fallback", tenant_id)
+        return ("no_human_available: there's no team member on the handoff list to connect right now. "
+                "Warmly tell the caller our team will call them back very shortly, confirm their number, "
+                "and close politely — never leave them hanging.")
+
+    # 5) WarmTransferTask present? if not, degrade to the WhatsApp+callback fallback (already fired).
+    if _WarmTransferTask is None:
+        logger.warning("AIM transfer_to_human: WarmTransferTask unavailable -> WA+callback fallback")
+        return ("handoff_logged: I couldn't open a live bridge just now, but I've alerted the team with "
+                "the caller's details on WhatsApp. Tell the caller a team member will call them right "
+                "back, confirm the number, and close warmly.")
+
+    # 6) dial each eligible human INTO the room (priority order) until one answers.
+    chat_ctx = getattr(agent, "chat_ctx", None)
+    last_err = ""
+    for h in team:
+        num = (h.get("phone") or h.get("whatsapp") or "").strip()
+        if not num:
+            continue
+        logger.info("AIM transfer_to_human: dialing human %s (role=%s) into room",
+                    _mask(num), h.get("role", ""))
+        try:
+            task_kwargs = dict(
+                sip_call_to=num,
+                sip_trunk_id=_OUTBOUND_TRUNK,           # read-only reuse of the earner's trunk id
+                instructions=_transfer_whisper(reason, name, caller_id, summary),
+                ringing_timeout=_TRANSFER_RING_TIMEOUT,
+            )
+            if chat_ctx is not None:
+                task_kwargs["chat_ctx"] = chat_ctx
+            task = _WarmTransferTask(**task_kwargs)
+            await task                                    # inline-task: dial -> brief -> merge into room
+            logger.info("AIM transfer_to_human: HANDED OFF to %s", _mask(num))
+            return ("handed_off: a team member is now on the line with the caller. Briefly tell the "
+                    "caller you're connecting them, then STOP talking and let the human take over.")
+        except Exception as exc:  # noqa: BLE001 — no-answer / busy / decline -> next number
+            last_err = type(exc).__name__
+            logger.info("AIM transfer_to_human: %s didn't connect (%s) -> next number",
+                        _mask(num), last_err)
+            continue
+
+    # 7) nobody answered -> never a dead drop. The hot-lead WA already fired (step 3).
+    logger.info("AIM transfer_to_human: no human answered (last_err=%s) -> callback fallback", last_err)
+    return ("no_human_answered: I couldn't reach a team member live, but I've alerted them with the "
+            "caller's details on WhatsApp. Reassure the caller warmly that the team will call them "
+            "back very shortly, confirm their number, and close politely — never leave them hanging.")
+
+
+def _summary_for_handoff(agent) -> str:
+    """Best-effort one-line context for the human/WhatsApp: campaign + caller name + any interest note."""
+    parts = []
+    nm = getattr(agent, "_caller_name", "") or ""
+    if nm:
+        parts.append(f"Caller: {nm}")
+    fields = getattr(agent, "_fields", {}) or {}
+    cn = fields.get("_campaign_name") or getattr(agent, "_campaign_name", "") or ""
+    if cn:
+        parts.append(f"Project: {cn}")
+    note = fields.get("_interest_note") or ""
+    if note:
+        parts.append(f"Wants: {note}")
+    return " | ".join(parts) if parts else "Hot inbound caller — wants to speak to a human."
 
 
 class ManagerAgent(Agent):
@@ -637,6 +772,22 @@ class ManagerAgent(Agent):
         logger.info("AIM test_call_me result ok=%s job=%s", res.get("ok"), res.get("job_id", ""))
         return res.get("summary", "I couldn't place the test call just now.")
 
+    @function_tool
+    async def transfer_to_human(self, context: RunContext, reason: str = "") -> str:
+        """Connect the caller to a REAL human team member NOW (warm transfer). Use ONLY when the
+        manager explicitly asks to talk to a person, or you genuinely cannot handle their request.
+        Dials the next available human from the handoff list INTO this call (a warm bridge) and steps
+        you back; if no one answers, the team is alerted on WhatsApp and will call back. Speak the
+        result it returns; once handed off, stop talking and let the human take over.
+
+        Args:
+            reason: a short reason for the transfer (e.g. "wants to speak to a person", "billing
+                    dispute I can't resolve"). Pass as a plain string.
+        """
+        logger.info("AIM transfer_to_human (manager) reason=%r tenant=%s", (reason or "")[:80],
+                    getattr(self, "_tenant_id", ""))
+        return await _do_warm_transfer(self, context, reason or "")
+
 
 # ── the Customer (sales) Agent — a natural human salesperson for NON-manager callers ───────────
 def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
@@ -681,7 +832,9 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         return head + ask + (
             "\nIf after a couple of tries you genuinely can't tell which project they mean, call "
             "`capture_interest` with their name and what they're looking for so the team can follow "
-            "up — never leave them with the wrong details and never go silent."
+            "up — never leave them with the wrong details and never go silent.\n"
+            "If the caller explicitly asks to talk to a human/person/agent, call the "
+            "`transfer_to_human(reason)` tool to connect a real team member into the call."
         )
 
     # Campaign resolved -> run the FULL outbound sales brain (reused read-only), reframed for inbound.
@@ -717,7 +870,11 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "\n\nINBOUND REMINDER: they called YOU, so skip the outbound permission/identity opener — just "
         "warmly help. When the moment is right, move toward a concrete next step (site visit OR a "
         "callback / sharing details on WhatsApp) and confirm it. Keep every turn to one or two short "
-        "sentences, then listen."
+        "sentences, then listen.\n\n"
+        "HANDOFF TO A HUMAN: if the caller explicitly asks to talk to a person/human/agent, OR they're "
+        "clearly a HOT, ready-to-buy lead who'd close better with a human, call the `transfer_to_human"
+        "(reason)` tool — it connects a real team member into the call. Once it hands off, stop talking "
+        "and let the human take over. Don't offer a human for ordinary questions you can answer yourself."
     )
     return head + brain + recap_block + inbound_note
 
@@ -834,6 +991,23 @@ class CustomerSalesAgent(Agent):
         logger.info("AIM capture_interest caller=%s name=%r", _mask(self._caller_id), self._caller_name)
         return ("captured: reassure them warmly that our team will call them back shortly with the "
                 "details, confirm their name, and close the call politely.")
+
+    @function_tool
+    async def transfer_to_human(self, context: RunContext, reason: str = "") -> str:
+        """Connect this caller to a REAL human salesperson NOW (warm transfer). Use when the caller
+        explicitly asks to speak to a person/human/agent, OR when they're clearly a HOT, ready-to-buy
+        lead who'd be best served by a human closing the deal, OR when you genuinely can't help. Dials
+        the next available team member from the handoff list INTO this call (a warm bridge) and steps
+        you back; if no one answers, the team is alerted on WhatsApp with the caller's details and will
+        call back. Speak the result it returns; once handed off, stop talking and let the human take over.
+
+        Args:
+            reason: a short reason (e.g. "asked for a human", "hot lead ready to book", "needs the
+                    builder directly"). Pass as a plain string.
+        """
+        logger.info("AIM transfer_to_human (customer) reason=%r tenant=%s", (reason or "")[:80],
+                    getattr(self, "_tenant_id", ""))
+        return await _do_warm_transfer(self, context, reason or "")
 
 
 # ── spoken-digit -> PIN extraction (deterministic) ─────────────────────────────
