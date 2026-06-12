@@ -33,11 +33,14 @@ Env:  /opt/famit-agent/.env  (reuses the box's Sarvam/Groq/ElevenLabs keys + FIR
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -52,6 +55,17 @@ from livekit.agents import (
     cli,
     function_tool,
 )
+
+# HOLD-AUDIO (calm reassurance while a human is being rung) — played to the CALLER, in the CALLER's
+# CURRENT room, by US (never a side room). BackgroundAudioPlayer publishes a looped clip on its own
+# track in the room; we stop it the instant the human answers. Import-guarded: if the API is absent
+# the transfer still works (spoken reassurance only, no music) — a missing clip NEVER breaks a call.
+try:
+    from livekit.agents import BackgroundAudioPlayer as _BgAudio, BuiltinAudioClip as _Clip, AudioConfig as _AudioCfg
+except Exception:  # noqa: BLE001 — older/newer agents: degrade to spoken-reassurance only.
+    _BgAudio = None  # type: ignore
+    _Clip = None  # type: ignore
+    _AudioCfg = None  # type: ignore
 
 # SessionConnectOptions is not publicly re-exported; import it directly. Lets us set per-session
 # llm_conn_options (FAIL-FAST: drop max_retry so a doomed/rejected LLM inference can't storm-retry
@@ -536,6 +550,114 @@ def _transfer_whisper(reason: str, name: str, phone: str, summary: str) -> str:
     return " ".join(bits)
 
 
+# ── HANDOFF VOICE-UX HELPERS (hold audio · availability gate · per-attempt analytics) ───────────
+# All best-effort + NEVER raise: any failure here degrades the UX (e.g. no music) but can never break
+# or silence the live call. The bridge itself (create_sip_participant into the caller room) is left
+# exactly as it was — these only wrap it with reassurance, gating, visibility, and a durable log.
+_HOLD_VOLUME = float(os.getenv("AIM_HOLD_VOLUME", "0.5") or 0.5)
+_HOLD_ENABLED = os.getenv("AIM_HOLD_AUDIO", "1").strip().lower() not in ("0", "false", "no", "off")
+# durable per-attempt analytics sink (JSONL, next to the other var/ state; mirrors live_registry base).
+_HANDOFF_LOG = os.getenv(
+    "AIM_HANDOFF_LOG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "var", "aim_handoff_attempts.jsonl"),
+)
+_IST_OFFSET_SEC = 5 * 3600 + 30 * 60  # Asia/Kolkata, no DST
+
+
+def _now_ist_hm() -> str:
+    """Current wall-clock 'HH:MM' in IST (no tz database dependency)."""
+    try:
+        return datetime.fromtimestamp(time.time() + _IST_OFFSET_SEC, tz=timezone.utc).strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _within_hours(hours: str) -> bool:
+    """Availability gate for ONE handoff number. `hours` is a free string from the tenant's brain:
+    "24x7"/"always"/"" -> always available; "HH:MM-HH:MM" (IST) -> in-window only (handles wrap past
+    midnight). Anything unparseable -> treat as available (fail-OPEN: never block a transfer on a
+    formatting quirk — we'd rather try the number than skip a reachable human)."""
+    h = (hours or "").strip().lower()
+    if not h or h in ("24x7", "24/7", "always", "anytime", "all", "any"):
+        return True
+    m = re.search(r"(\d{1,2}):(\d{2})\s*[-–to]+\s*(\d{1,2}):(\d{2})", h)
+    if not m:
+        return True
+    try:
+        s = f"{int(m.group(1)):02d}:{m.group(2)}"
+        e = f"{int(m.group(3)):02d}:{m.group(4)}"
+        now = _now_ist_hm()
+        if not now:
+            return True
+        if s <= e:
+            return s <= now <= e
+        return now >= s or now <= e  # window wraps past midnight (e.g. 21:00-06:00)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _handoff_log_attempt(tenant_id: str, room: str, number: str, idx: int,
+                         outcome: str, wait_s: float, reason: str = "") -> None:
+    """Append ONE handoff attempt to the durable JSONL analytics sink. NEVER raises."""
+    try:
+        os.makedirs(os.path.dirname(_HANDOFF_LOG), exist_ok=True)
+        rec = {
+            "ts": round(time.time(), 3),
+            "iso": datetime.now(timezone.utc).isoformat(),
+            "tenant_id": tenant_id or "",
+            "room": room or "",
+            "number": number or "",
+            "attempt": int(idx),
+            "outcome": outcome or "",          # answered | no_answer | busy | invalid | out_of_hours | error
+            "wait_s": round(float(wait_s or 0), 2),
+            "reason": (reason or "")[:160],
+        }
+        with open(_HANDOFF_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _start_hold_audio(room_obj, session):
+    """Start calm HOLD music to the CALLER, in the CALLER's CURRENT room (NOT a side room), played by
+    US on our own track. Returns (player, handle) so the caller can stop it the instant the human
+    answers — or (None, None) if the audio API/room is unavailable (then we degrade to spoken
+    reassurance only). NEVER raises: hold music is a comfort layer, never load-bearing."""
+    if not (_HOLD_ENABLED and _BgAudio is not None and _Clip is not None and room_obj is not None):
+        return None, None
+    try:
+        # thinking/ambient OFF — we drive the clip ourselves so we fully control start/stop.
+        player = _BgAudio(thinking_sound=None)
+        await player.start(room=room_obj, agent_session=session)
+        if _AudioCfg is not None:
+            clip = _AudioCfg(_Clip.HOLD_MUSIC, volume=_HOLD_VOLUME)
+        else:  # pragma: no cover — config class absent; play the raw clip enum
+            clip = _Clip.HOLD_MUSIC
+        handle = player.play(clip, loop=True)  # loop so it never runs out under a long ring
+        return player, handle
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM hold-audio start failed (degrading to spoken-only): %r", exc)
+        return None, None
+
+
+async def _stop_hold_audio(player, handle):
+    """Stop hold music + release the player track. Idempotent + NEVER raises. Called the instant the
+    human answers (so the caller doesn't hear music over the live human) and on every exit path."""
+    try:
+        if handle is not None:
+            try:
+                handle.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        if player is not None:
+            try:
+                await player.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _do_warm_transfer(agent, context, reason: str) -> str:
     """Bridge the LIVE caller to a real human. Picks the first eligible handoff number and DIALS
     that human INTO the current room via LiveKit's native WarmTransferTask (CreateSIPParticipant on
@@ -549,7 +671,9 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
     name = getattr(agent, "_caller_name", "") or ""
     summary = _summary_for_handoff(agent)
 
-    # 1) read the vendor handoff team (filesystem, no HTTP/auth).
+    session = getattr(context, "session", None)
+
+    # 1) read the vendor handoff team (filesystem, no HTTP/auth). Priority-sorted already.
     team = []
     if _vt is not None:
         try:
@@ -558,8 +682,20 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
             logger.warning("AIM handoff_list failed: %r", exc)
             team = []
 
-    # 2) bridge line to the caller (off-loop so it overlaps the dial; never silent).
-    await _say_filler(context, "Bilkul — ek second, main aapko abhi ek team member se connect karti hoon…")
+    # 1b) GATING: keep only ENABLED numbers that are WITHIN their availability hours (priority order).
+    #     A disabled/out-of-hours number is skipped (and logged as such for analytics), never dialed.
+    eligible = []
+    for h in team:
+        if h.get("enabled") is False:
+            continue
+        eligible.append(h)
+    dialable = [h for h in eligible if _within_hours(str(h.get("hours", "") or ""))]
+
+    # 2) REASSURANCE — speak ONE calm line to the caller immediately (off-loop so it overlaps the dial;
+    #    the caller is NEVER in dead air). The hold AUDIO is started below, just before the first ring.
+    await _say_filler(
+        context,
+        "Ek minute, main aapko hamari team se connect kar rahi hoon, line par baney rahiye…")
 
     # 3) fire the hot-lead WhatsApp SIMULTANEOUSLY (belt-and-braces; lands the lead in the team's chat).
     if _vt is not None and team:
@@ -569,7 +705,7 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
         except Exception as exc:  # noqa: BLE001
             logger.warning("AIM handoff WA notify spawn failed: %r", exc)
 
-    # 4) if no team configured -> capture + WhatsApp(if any) + tell caller the team will call back.
+    # 4) if no team configured (or none enabled/in-hours) -> capture + WhatsApp(if any) + callback.
     if not team:
         logger.info("AIM transfer_to_human: NO handoff team (tenant=%s) -> callback fallback", tenant_id)
         return ("no_human_available: there's no team member on the handoff list to connect right now. "
@@ -578,7 +714,7 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
 
     # 5) resolve the LIVE room + a LiveKit API handle from the running job. This is the SAME room the
     #    caller is in -> dialing the human here = an instant 2-way conference bridge (no side room, no
-    #    secondary agent, no hold music). We REUSE the earner's outbound trunk id as a STRING only.
+    #    secondary agent). We REUSE the earner's outbound trunk id as a STRING only.
     job_ctx = None
     try:
         job_ctx = _get_job_context()
@@ -596,46 +732,102 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
                 "the caller's details on WhatsApp. Tell the caller a team member will call them right "
                 "back, confirm the number, and close warmly.")
 
+    # 5b) if EVERY number is disabled or out-of-hours -> never dead air: apology + callback + WA(already).
+    if not dialable:
+        logger.info("AIM transfer_to_human: no eligible number (enabled+in-hours) tenant=%s -> callback",
+                    tenant_id)
+        for h in eligible:
+            _handoff_log_attempt(tenant_id, room_name,
+                                 (h.get("phone") or h.get("whatsapp") or ""), 0,
+                                 "out_of_hours", 0.0, str(h.get("hours", "")))
+        _live_set_handoff(room_name, "Failed")
+        return ("no_human_available_now: the team isn't available at this hour, but I've alerted them with "
+                "the caller's details on WhatsApp. Warmly tell the caller a team member will call them back, "
+                "confirm their number, and close politely — never leave them hanging.")
+
     _live_set_handoff(room_name, "Requested")
 
+    # 5c) HOLD AUDIO — start calm music to the CALLER, in the CALLER's room, played by US. It loops
+    #     under the whole ring sequence and is STOPPED the instant a human answers (step 6). If the
+    #     audio API is unavailable we degrade to spoken-reassurance only (never blocks the bridge).
+    hold_player, hold_handle = await _start_hold_audio(room_obj, session)
+
     # 6) dial each eligible human DIRECTLY INTO THE CALLER'S CURRENT ROOM (priority order) until one
-    #    answers. create_sip_participant(room_name=<caller room>) = the EXACT earner dial primitive
-    #    (caller.py:/run), so the human and caller share one room and hear each other immediately.
+    #    answers. The dial runs in a BACKGROUND TASK so the caller keeps hearing hold music while the
+    #    human's phone rings (no dead air); we await the task with a hard timeout. On answer we STOP
+    #    the hold, whisper ONE context line to the human, then step back. create_sip_participant(
+    #    room_name=<caller room>) = the EXACT earner dial primitive (caller.py:/run) — same room, so
+    #    caller + human hear each other immediately. The hot-lead WA already fired (step 3).
     last_err = ""
-    for h in team:
-        num = (h.get("phone") or h.get("whatsapp") or "").strip()
-        if not num:
-            continue
-        logger.info("AIM transfer_to_human: dialing human %s (role=%s) INTO caller room %s",
-                    _mask(num), h.get("role", ""), room_name)
-        _live_set_handoff(room_name, "Dialing", target=num)
-        try:
-            req = _lk_api.CreateSIPParticipantRequest(
-                sip_trunk_id=_OUTBOUND_TRUNK,          # read-only reuse of the earner's trunk id
-                sip_call_to=num,
-                room_name=room_name,                   # ← the CALLER'S room == the bridge
-                participant_identity=f"human-handoff-{num}",
-                participant_name=(h.get("role") or "Team") + " (human)",
-                participant_metadata="aim-human-handoff",
-                wait_until_answered=True,              # block until the human actually answers (or fails)
-                ringing_timeout=_DurationLK(seconds=int(_TRANSFER_RING_TIMEOUT)),
-            )
-            await lk_api.sip.create_sip_participant(req, timeout=_TRANSFER_RING_TIMEOUT + 10)
-        except Exception as exc:  # noqa: BLE001 — busy(486) / no-answer / decline -> next number
-            last_err = f"{type(exc).__name__}:{str(exc)[:120]}"
-            logger.info("AIM transfer_to_human: %s didn't connect (%s) -> next number",
-                        _mask(num), last_err)
-            continue
-        # answered -> the human is now a participant in the caller's room (audibly bridged).
-        logger.info("AIM transfer_to_human: BRIDGED %s into room %s", _mask(num), room_name)
-        _live_set_handoff(room_name, "Bridged", target=num)
-        # whisper ONE line of context to the caller, then step back (the human takes over).
-        await _say_filler(
-            context,
-            "Aapko humari team se connect kar diya hai — ye lijiye, main line par hoon.")
-        return ("handed_off: a team member is now LIVE on the line with the caller in the same call. "
-                "Say ONE short sentence like 'Main aapko connect kar rahi hoon' then STOP talking "
-                "completely and let the human take over — do not speak again.")
+    bridged_num = ""
+    try:
+        for i, h in enumerate(dialable, start=1):
+            num = (h.get("phone") or h.get("whatsapp") or "").strip()
+            if not num:
+                continue
+            # invalid phone -> log + skip to next (never dial a malformed number).
+            if not (num.startswith("+") and num[1:].isdigit() and 10 <= len(num[1:]) <= 15):
+                logger.info("AIM transfer_to_human: invalid number %s (attempt #%d) -> next", _mask(num), i)
+                _handoff_log_attempt(tenant_id, room_name, num, i, "invalid", 0.0, "bad_format")
+                last_err = "invalid_number"
+                continue
+            logger.info("AIM transfer_to_human: dialing #%d human %s (role=%s) INTO caller room %s",
+                        i, _mask(num), h.get("role", ""), room_name)
+            # LIVE registry: surface the CURRENT number + attempt index (panel shows "Dialing #1 → …").
+            _live_set_handoff(room_name, f"Dialing #{i}", target=num)
+            t0 = time.time()
+            try:
+                req = _lk_api.CreateSIPParticipantRequest(
+                    sip_trunk_id=_OUTBOUND_TRUNK,          # read-only reuse of the earner's trunk id
+                    sip_call_to=num,
+                    room_name=room_name,                   # ← the CALLER'S room == the bridge
+                    participant_identity=f"human-handoff-{num}",
+                    participant_name=(h.get("role") or "Team") + " (human)",
+                    participant_metadata="aim-human-handoff",
+                    wait_until_answered=True,              # task blocks until answer/fail; caller hears hold
+                    ringing_timeout=_DurationLK(seconds=int(_TRANSFER_RING_TIMEOUT)),
+                )
+                # run the (blocking) dial in a background task so the caller's hold music keeps playing.
+                dial_task = asyncio.create_task(
+                    lk_api.sip.create_sip_participant(req, timeout=_TRANSFER_RING_TIMEOUT + 15))
+                await asyncio.wait_for(dial_task, timeout=_TRANSFER_RING_TIMEOUT + 12)
+            except asyncio.TimeoutError:
+                last_err = "ring_timeout"
+                logger.info("AIM transfer_to_human: %s no-answer (ring timeout) #%d -> next", _mask(num), i)
+                _handoff_log_attempt(tenant_id, room_name, num, i, "no_answer", time.time() - t0, "timeout")
+                continue
+            except Exception as exc:  # noqa: BLE001 — busy(486) / declined / no-answer -> next number
+                last_err = f"{type(exc).__name__}:{str(exc)[:120]}"
+                low = last_err.lower()
+                outcome = "busy" if ("486" in low or "busy" in low) else "no_answer"
+                logger.info("AIM transfer_to_human: %s didn't connect (%s) #%d -> next",
+                            _mask(num), last_err, i)
+                _handoff_log_attempt(tenant_id, room_name, num, i, outcome, time.time() - t0, last_err)
+                continue
+            # answered -> the human is now a participant in the caller's room (audibly bridged).
+            bridged_num = num
+            wait_s = time.time() - t0
+            logger.info("AIM transfer_to_human: BRIDGED %s into room %s (#%d, %.1fs)",
+                        _mask(num), room_name, i, wait_s)
+            _handoff_log_attempt(tenant_id, room_name, num, i, "answered", wait_s)
+            # STOP the hold music the INSTANT the human answers (caller must not hear music over them).
+            await _stop_hold_audio(hold_player, hold_handle)
+            hold_player, hold_handle = None, None
+            _live_set_handoff(room_name, "Bridged", target=num)
+            # WHISPER ONE line of context as the human joins (brief in-room line — per-participant
+            # private audio isn't available in a shared SIP room, so we say it in-room, THEN step back).
+            try:
+                whisper = _transfer_whisper(reason, name, caller_id, summary)
+                if session is not None:
+                    await session.say(whisper, allow_interruptions=False, add_to_chat_ctx=False)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM transfer whisper failed (non-fatal): %r", exc)
+            return ("handed_off: a team member is now LIVE on the line with the caller in the same call. "
+                    "You have ALREADY spoken the one-line context to the team. Now STOP talking "
+                    "completely and let the human take over — do not speak again.")
+    finally:
+        # belt-and-braces: never leave hold music playing on any exit path.
+        await _stop_hold_audio(hold_player, hold_handle)
 
     # 7) nobody answered on any number -> never a dead drop. The hot-lead WA already fired (step 3).
     _live_set_handoff(room_name, "Failed")

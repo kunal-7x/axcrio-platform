@@ -144,3 +144,52 @@ handoff_list + the warm bridge; this adds per-entry CRUD + voice/chat management
 - `*.HOTLbak.20260612-170656` (caller.py / ai_manager/voice_tools.py / aim_voice_agent.py). ROLLBACK: restore
   the 3 + restart famit-caller + aim-voice-agent. Box ledger: /opt/famit-agent/ai_manager/HANDOFF_CONFIG_STATE.md.
 - Founder seed INTACT: +916375548830 (p1), +917861019021 (p2).
+
+---
+
+## HOFX-UX SUB-WAVE (2026-06-12) — handoff VOICE UX on top of the working bridge ⭐ DONE
+
+**Scope:** add the 5 missing UX layers to `aim_voice_agent.py:_do_warm_transfer` (KEEP the same-room
+direct-dial `create_sip_participant(room_name=<caller room>)` — NO side-room hold-music regression).
+Edited `aim_voice_agent.py` + `ai_manager/voice_tools.py` ONLY. Bridge primitive + trunk UNCHANGED.
+
+### What was added
+1. **HOLD / REASSURANCE** — speak a calm line immediately ("Ek minute, main aapko hamari team se
+   connect kar rahi hoon, line par baney rahiye…") + play `BuiltinAudioClip.HOLD_MUSIC` to the CALLER,
+   in the CALLER's room, via `BackgroundAudioPlayer(thinking_sound=None)` (local OGG, no external API).
+   The dial runs in a background task (`asyncio.create_task` + `wait_for`) so the caller hears hold
+   music WHILE the human's phone rings (zero dead air); hold STOPPED (`handle.stop()`+`player.aclose()`)
+   the instant a human answers; `finally`-guarded so it never leaks on any exit path.
+2. **GATING** — skip `enabled:false` + out-of-hours numbers in priority order. `_within_hours()` =
+   IST availability gate ("24x7"/""→always, "HH:MM-HH:MM" window w/ midnight wrap, fail-OPEN on
+   unparseable). `handoff_list` now emits `enabled` (default-True; only explicit false disables).
+   All-ineligible → spoken apology + hot-lead WA + logged callback (never dead air).
+3. **WHISPER** — on answer, `_transfer_whisper(reason,name,phone,summary)` spoken in-room as the human
+   joins (per-participant private audio isn't available in a shared SIP room), then the AI steps back.
+4. **LIVE** — `live_registry` handoff state = `Dialing #N` + target per attempt → GET /ai-manager/live
+   shows "Dialing #1 → +91…" (attempt index encoded in the state string, zero schema change).
+5. **ANALYTICS** — every attempt appended to `var/aim_handoff_attempts.jsonl`
+   {tenant,room,number,attempt,outcome,wait_s,reason,ts}.
+
+### Smoke (real LiveKit job; founder phone dialed in AS THE CALLER)
+- **HOLD-AUDIO**: `_start_hold_audio` published a track (local tracks 0 → 2); founder HEARD ~8s of
+  hold music; stop clean. (Local OGG — unaffected by the harness's lack of TTS http-context.)
+- **FALLBACK + LIVE**: LIVE showed `Dialing #1 +910000000000` (busy 486) → `Dialing #2 +916375548830`
+  → `Bridged`. Bad first number skipped, fell through to #2 which answered.
+- **ANALYTICS**: 2 rows — #1 `busy` @2.05s, #2 `answered` @6.31s.
+- WHISPER/reassurance TTS speak in the REAL worker; a standalone harness can't reach ElevenLabs
+  without the worker job http-context (`http_context.open()`) — harness-only artifact, not a code bug.
+
+### Earner gate (BEFORE + AFTER) = PASS
+- Outbound `/run` → **+917861019021 RANG** both times: rooms `famit-917861019021-7a9076` (before) +
+  `…-be6afd` (after), each **1 participant + 2 publishers** = SIP call connected.
+- `agent.py` md5 = `9150fabe4ff62b4b4470f9a87df346e5` **UNCHANGED**; famit-agent active **PID 1477083**
+  (never restarted); aim-voice-agent restarted clean (registered worker `agent_name=manager`); core 200, 0 5xx.
+- (Out-of-hours ring: used a throwaway `call_window 00:00-23:59` campaign, deleted after; cleared a
+  test-only `opt_out_call` suppression on the founder number.)
+
+### Backups / cleanup
+- `*.HOFXUXbak.20260612-172359` (aim_voice_agent.py, voice_tools.py) + `suppression.json.HOFXUXbak.*`.
+  ROLLBACK: restore the 2 + restart aim-voice-agent.
+- Temp campaign `b99746b013` deleted; founder suppression cleared; admin seed intact (+916375548830 p1,
+  +917861019021 p2, both enabled). Smoke scripts removed from box.

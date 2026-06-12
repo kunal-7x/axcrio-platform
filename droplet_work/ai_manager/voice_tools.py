@@ -544,8 +544,10 @@ _BRAIN_DIR = (os.getenv("BRAIN_VAR_DIR")
 
 
 def handoff_list(tenant_id: str) -> list[dict]:
-    """The vendor's handoff team, priority-sorted: [{phone, whatsapp, role, hours, priority}, ...].
-    Reads var/brain/<tenant>.json directly. [] when none / unreadable. NEVER raises."""
+    """The vendor's handoff team, priority-sorted: [{phone, whatsapp, role, hours, priority, enabled},
+    ...]. `enabled` defaults True (seeded entries with no flag stay dialable); the voice warm-transfer
+    skips enabled:false + out-of-hours numbers. Reads var/brain/<tenant>.json directly. [] when none /
+    unreadable. NEVER raises."""
     if not tenant_id:
         return []
     try:
@@ -570,7 +572,10 @@ def handoff_list(tenant_id: str) -> list[dict]:
             out.append({"phone": ph, "whatsapp": wa,
                         "role": str(h.get("role", "") or ""),
                         "hours": str(h.get("hours", "") or ""),
-                        "priority": int(h.get("priority", 99) or 99)})
+                        "priority": int(h.get("priority", 99) or 99),
+                        # enabled gate: default-True so already-seeded entries (no flag) stay dialable;
+                        # only an explicit enabled:false (or 0/"no") disables a number for handoff.
+                        "enabled": str(h.get("enabled", True)).strip().lower() not in ("false", "0", "no", "off")})
         out.sort(key=lambda x: x.get("priority", 99))
         return out
     except FileNotFoundError:

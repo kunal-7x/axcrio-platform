@@ -118,3 +118,9 @@ Backend `famit@168.144.153.145` (priv 10.122.0.4), key `C:\Users\kunal\.ssh\do-b
 
 ### HOTL CONFIG LAYER addendum (2026-06-12)
 Additive per-entry handoff CRUD on the working bridge: caller.py `POST /brain/handoff/add` + `DELETE /brain/handoff/remove` (+91-validated, idempotent, write-gated, tenant-from-token); voice_tools `add_handoff/remove_handoff` (in-process brain.upsert_profile — NOT loopback, so the real tenant is scoped not the admin cred); aim_voice_agent ManagerAgent `@function_tool list_handoff/add_handoff/remove_handoff` (PIN-gated, strict-off). SMOKE: admin CRUD + invalid→400 ✅; TENANT-SCOPING proven (tenant 21d0a13603da isolated from admin both ways) ✅. EARNER GATE before+after RANG (+917861019021), agent.py md5 9150fabe… UNCHANGED, 0 5xx, only famit-caller+aim-voice-agent restarted. Backups *.HOTLbak.20260612-170656.
+
+- 2026-06-12 HOFX-UX (handoff voice UX): _do_warm_transfer now does hold-audio-while-ringing
+  (BackgroundAudioPlayer HOLD_MUSIC to the caller, stop on answer) + enabled/availability gating +
+  in-room whisper + live "Dialing #N" + per-attempt JSONL analytics. Same-room bridge UNCHANGED.
+  Smoke PASS (hold tracks 0→2, fallback #1 busy→#2 bridged, 2 analytics rows). Earner gate before+after
+  RANG (rooms 7a9076+be6afd), agent.py md5 9150fabe… UNCHANGED, only aim-voice-agent restarted.
