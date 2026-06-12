@@ -52,14 +52,25 @@ greets in ~1s on every real call.
       (AW_J4JR7MbHRY8K). Earner untouched (agent.py md5 9150fabe… unchanged, famit-agent active).
 - [x] AFTER gate PASS: real outbound SIP call to +917861019021 created+rang (SCL_DxY8gdxmmtbZ),
       earner spoke opener (capsy room gatetest-7e5546), zero 5xx.
-- [ ] **AWAITING FOUNDER REAL INBOUND TEST CALL** to +918071583488 — must hear:
-      "Hey! This is Riya from Famit — your AI manager. To get you in securely, please say or key in
-      your four-digit PIN." then say/key PIN 4827. Diagnose THAT call's live log on report.
+- [x] DTMF PIN added (git ab01c2d): founder can KEY the 4-digit PIN, not only speak it. Redeployed
+      clean (worker AW_JanqkcVsKTwy), AFTER gate PASS (earner ring SCL_6zo3vrmqzZ3U, md5 unchanged).
+      Backup `aim_voice_agent.py.OWNbak.20260612-080336`.
+- [x] ✅✅ **FOUNDER REAL INBOUND CALL SUCCEEDED (08:02, room aim-_06375548830_Nk9F4B7RRkau).**
+      SILENCE FIXED. Log proof: 08:02:29 greeting FIRED (~150ms after join); 08:02:44 + 08:02:54 two
+      PIN mismatches (STT misheard the SPOKEN digits); 08:03:12 **PIN VERIFIED** — verify_pin tool
+      fired + authenticated. Founder confirms: greets, he speaks, gets a response. Pipeline WORKS.
 
-## HONEST CAVEAT (the real call is the only truth)
-This is verified at the SERVICE level (clean start, worker registered, earner safe) and the structure
-now matches the proven outbound earner. It is NOT yet proven on a REAL inbound SIP call — only the
-founder's next call confirms audio. If still silent: pull `journalctl -u aim-voice-agent` for the new
-`aim-_…` room and check whether `session.say` fired and STT connected fast (it should now, since the
-30s-block path is gone). Rollback: restore `aim_voice_agent.py.OWNbak.20260612-074847`, restart
-aim-voice-agent only.
+## ✅ SILENCE = SOLVED. NEXT PHASE = "the real thing" (answer QUALITY / actual manager work)
+Founder report: greeting + speech + response all work, but the ANSWER content was "incorrect". Two gaps:
+1. **Spoken-PIN unreliable** — Sarvam misheard the digits twice before it matched. FIX: use DTMF keying
+   (now wired) — founder should KEY 4827. Optionally tighten the verify_pin spoken-digit extraction.
+2. **No real command tools yet** — after verify, `manager_status` returns a generic line and there are
+   NO action tools (run campaign, read leads/calls, send WhatsApp, status with real numbers). The old
+   build's CommandMachine had the deterministic command spine (slot-fill, risk/step-up, confirm,
+   delegate.execute → workforce.run_agent). NEXT BUILD = re-attach that command capability as Agent
+   function-tools on the NOW-WORKING audio base (audio-first, tools on top), reusing the live
+   ai_manager command/delegate/workforce modules. That is the "real thing" the founder means.
+
+## ROLLBACK
+Restore `aim_voice_agent.py.OWNbak.20260612-080336` (or earlier), restart ONLY aim-voice-agent.
+Earner is never touched (agent.py md5 9150fabe… invariant; verified every deploy).
