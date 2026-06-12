@@ -37,5 +37,14 @@ that call the SAME backend the chat Test Console uses. run_campaign -> the PROVE
    after room -7ec966 ttfb 0.212s); agent.py md5 9150fabe... UNCHANGED; all 4 services active; 0 5xx.
 6. [IN PROGRESS] commit + append MASTER_BUILD_STATE.md
 
+7. [DONE] STRICT-MODE FIX — a live test job surfaced Groq rejecting tool calls
+   ("missing properties: 'campaign'"): LiveKit 1.5.17 sends tool schemas with strict:true, so EVERY
+   declared property must be supplied even if it has a Python default. Fix: dropped in-signature
+   defaults on optional tool params (check_leads.campaign, recent_calls.count,
+   run_campaign.segment/count/confirmed) so required==properties; docstrings tell the model what to
+   pass when unspecified + methods coerce empties internally. Proven: Groq strict tool-call now
+   succeeds (OpenAI-compat endpoint fired check_leads with all params). Earner re-gated PASS after.
+   Commits b768eee (feat) + f849ea6 (fix).
+
 ## RESULT = DONE. Box backup: /opt/famit-agent/aim_voice_agent.py.CMDbak.20260612-134700.
 ## ROLLBACK: restore that .CMDbak + rm /opt/famit-agent/ai_manager/voice_tools.py + restart aim-voice-agent.
