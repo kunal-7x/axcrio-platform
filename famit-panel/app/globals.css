@@ -806,8 +806,16 @@
        field swaps cleanly if a light variant is ever wanted; the canvas
        resolves these on mount (and on theme change). */
     .gl-card {
-        --gl-dot: var(--shade-10); /* near-white core */
-        --gl-dot-soft: var(--shade-07); /* grey halo */
+        --gl-dot: var(--shade-10); /* near-white spark core */
+        --gl-dot-soft: var(--shade-07); /* grey spark halo */
+        --gl-spark-tint: var(--primary-01); /* Signal-blue crest tint */
+
+        /* Aurora 3-stop palette (resolved by the shader via getComputedStyle).
+           deep indigo-black -> Signal blue -> cool white highlight. Anchored on
+           the brand token so the whole field reads as Signal, not grey. */
+        --gl-aur-a: #0a0d17; /* deep base */
+        --gl-aur-b: var(--primary-01); /* Signal blue energy */
+        --gl-aur-c: #d1e5ff; /* cool white highlight */
 
         @apply relative mx-auto p-8 max-md:p-6 rounded-4xl bg-b-dark2
             shadow-depth ring-1 ring-white/[0.04] text-center
@@ -815,14 +823,57 @@
             flex flex-col items-center;
     }
 
-    /* The inner field zone — a darker inset so the dots read as lit. */
+    /* The inner field zone — a deep near-black inset so the aurora reads as lit. */
     .gl-field-zone {
         @apply relative flex-1 w-full min-h-[12rem] my-4
-            rounded-3xl bg-b-dark1 overflow-hidden
+            rounded-3xl overflow-hidden
             flex items-center justify-center;
+        background: radial-gradient(
+            120% 120% at 50% 45%,
+            var(--gl-aur-a) 0%,
+            #060810 62%,
+            #04060c 100%
+        );
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.03),
+            inset 0 14px 48px -18px rgb(0 0 0 / 0.7);
     }
+    /* WebGL aurora — the living flow field, behind the sparks. */
+    .gl-aurora-canvas {
+        @apply absolute inset-0 w-full h-full;
+        opacity: 0.96;
+    }
+    /* The spark canvas rides on top of the aurora. */
     .gl-canvas {
         @apply absolute inset-0 w-full h-full;
+        mix-blend-mode: screen; /* sparks add light over the aurora */
+    }
+    /* Animated film grain — kills banding, adds premium texture. */
+    .gl-grain {
+        @apply absolute inset-0 pointer-events-none;
+        background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+        background-size: 180px 180px;
+        opacity: 0.05;
+        mix-blend-mode: overlay;
+        animation: gl-grain 0.7s steps(3) infinite;
+    }
+    @keyframes gl-grain {
+        0% {
+            transform: translate3d(0, 0, 0);
+        }
+        33% {
+            transform: translate3d(-3%, 1%, 0);
+        }
+        66% {
+            transform: translate3d(2%, -2%, 0);
+        }
+        100% {
+            transform: translate3d(0, 0, 0);
+        }
+    }
+    /* Soft edge-fade so the field melts into the card inset. */
+    .gl-vignette {
+        @apply absolute inset-0 pointer-events-none rounded-3xl;
+        box-shadow: inset 0 0 60px 12px rgb(4 6 12 / 0.8);
     }
 
     /* Pulsing "Thinking" dot — the lone brand accent up top. */
@@ -895,50 +946,61 @@
         }
     }
 
-    /* ---- CSS-fallback field (reduced-motion / no-canvas / lowPower) ----
-       A token-only static-to-gentle field: a dot grid masked to a
-       bright centre / faded edge, with one slow breathe. Same visual
-       language as the canvas so swapping is seamless. */
-    .gl-field--css {
+    /* ---- gradient-mesh fallback (reduced-motion / no-WebGL / lowPower) ----
+       A premium CSS-only stand-in: two large, soft, slowly-drifting
+       Signal-tinted radial blobs over the deep base + a faint dot sheen.
+       Same dark/fluid visual language as the aurora so the swap is seamless,
+       but with NO noise advection (cheap + reduced-motion-safe). */
+    .gl-field--mesh {
         @apply absolute inset-0;
-        background: radial-gradient(
-                circle,
-                var(--gl-dot) 0 1px,
-                transparent 1.5px
-            )
-            0 0 / 14px 14px;
-        -webkit-mask-image: radial-gradient(
-            circle at 50% 50%,
-            black 0%,
-            black 38%,
-            transparent 72%
-        );
-        mask-image: radial-gradient(
-            circle at 50% 50%,
-            black 0%,
-            black 38%,
-            transparent 72%
-        );
-        opacity: 0.55;
-        animation: gl-breathe 3.6s ease-in-out infinite;
+        background:
+            radial-gradient(
+                42% 50% at 38% 40%,
+                color-mix(in srgb, var(--gl-aur-b) 55%, transparent) 0%,
+                transparent 70%
+            ),
+            radial-gradient(
+                46% 54% at 66% 64%,
+                color-mix(in srgb, var(--gl-aur-c) 32%, transparent) 0%,
+                transparent 72%
+            ),
+            radial-gradient(
+                90% 90% at 50% 50%,
+                color-mix(in srgb, var(--gl-aur-a) 70%, transparent) 0%,
+                transparent 100%
+            );
+        filter: blur(14px) saturate(1.1);
+        opacity: 0.9;
+        animation: gl-mesh-drift 9s ease-in-out infinite;
     }
-    @keyframes gl-breathe {
+    @keyframes gl-mesh-drift {
         0%,
         100% {
-            opacity: 0.45;
+            background-position:
+                0% 0%,
+                0% 0%,
+                0% 0%;
+            transform: scale(1);
         }
         50% {
-            opacity: 0.7;
+            background-position:
+                6% 8%,
+                -7% -5%,
+                0% 0%;
+            transform: scale(1.06);
         }
     }
 
     /* Reduced-motion: no field/chrome animation — a calm static state.
-       The status line still crossfades gently (handled by re-key) but the
-       ellipsis/breathe/think-dot/card-exit motions are stopped. */
+       The status line still swaps gently (handled by re-key) but the
+       ellipsis/drift/think-dot/grain/card-exit motions are stopped. */
     @media (prefers-reduced-motion: reduce) {
-        .gl-field--css {
+        .gl-field--mesh,
+        .gl-grain {
             animation: none;
-            opacity: 0.5;
+        }
+        .gl-field--mesh {
+            opacity: 0.85;
         }
         .gl-think-dot,
         .gl-ellipsis,

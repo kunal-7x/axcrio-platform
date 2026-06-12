@@ -52,6 +52,13 @@ export type DrawConfig = FieldConfig & {
     /** centre of the field in canvas CSS px (zoneW/2, zoneH/2) */
     cx: number;
     cy: number;
+    /** Signal-blue tint applied to the brightest sparks (resolved from --primary-01). */
+    tintRGB?: [number, number, number];
+    /** Optional aurora luminance sampler (nx,ny in -1..1) so sparks shimmer WITH the
+     *  flow underneath — the "something is being created in there" coupling. */
+    sampleLuma?: (nx: number, ny: number, timeSec: number, intensity: number) => number;
+    /** Current intensity 0..1 fed to the luma sampler + spark energy. */
+    flow?: number;
 };
 
 // Typed as `number` (not the literal `7`) so the defensive `RINGS === 1` guards
@@ -226,9 +233,13 @@ export function drawFrame(
     collapse = 0,
     frozen = false
 ): void {
-    const { cx, cy, coreRGB, softRGB } = cfg;
+    const { cx, cy, coreRGB, softRGB, tintRGB, sampleLuma, fieldR } = cfg;
+    const flow = cfg.flow ?? 0.5;
     const inv = 1 - collapse; // 1 -> 0 as we collapse
     const globalFade = inv; // whole field fades out on collapse
+    const safeR = fieldR > 0 ? fieldR : 1;
+
+    const prevComposite = ctx.globalCompositeOperation;
 
     for (let i = 0; i < dots.length; i++) {
         const dot = dots[i];
@@ -241,26 +252,51 @@ export function drawFrame(
         const px = cx + (dot.hx + dx) * inv;
         const py = cy + (dot.hy + dy) * inv;
 
+        // ---- couple the spark to the aurora luminance underneath ----
+        // Sample the flow field at this spark's home position (normalised -1..1).
+        let luma = 0.5;
+        if (!frozen && sampleLuma) {
+            const nx = (dot.hx + dx) / safeR;
+            const ny = (dot.hy + dy) / safeR;
+            luma = sampleLuma(nx, ny, time, flow);
+        }
+        // flowBoost: sparks riding a bright crest brighten + grow (the coupling).
+        const flowBoost = frozen ? 0 : (luma - 0.45) * (0.6 + 0.6 * flow);
+
         let alpha = frozen
             ? dot.o * 0.5 // calm static state for "failed"
             : dotAlpha(dot, time, cfg);
+        alpha = clamp(alpha + flowBoost * dot.o, 0, 1);
         alpha *= globalFade;
         if (alpha <= 0.002) continue;
 
-        const r = dotRadius(dot, time, cfg) * (frozen ? 1 : 1);
+        const r =
+            dotRadius(dot, time, cfg) *
+            (frozen ? 1 : 1 + Math.max(0, flowBoost) * 0.6);
 
-        // grey -> white across the radius: white core (t=0) -> soft grey (t=1)
-        const cr = Math.round(lerp(coreRGB[0], softRGB[0], dot.t));
-        const cg = Math.round(lerp(coreRGB[1], softRGB[1], dot.t));
-        const cb = Math.round(lerp(coreRGB[2], softRGB[2], dot.t));
+        // grey -> white across the radius, then tint the brightest cores toward
+        // Signal blue when they sit on a bright crest (brand colour in the field).
+        let cr = lerp(coreRGB[0], softRGB[0], dot.t);
+        let cg = lerp(coreRGB[1], softRGB[1], dot.t);
+        let cb = lerp(coreRGB[2], softRGB[2], dot.t);
+        if (tintRGB && !frozen) {
+            const tintK = clamp((luma - 0.5) * 1.4 * flow, 0, 0.7);
+            cr = lerp(cr, tintRGB[0], tintK);
+            cg = lerp(cg, tintRGB[1], tintK);
+            cb = lerp(cb, tintRGB[2], tintK);
+        }
 
+        // bright sparks blend additively -> a soft glow, not flat dots.
+        const bright = !frozen && (alpha > 0.6 || flowBoost > 0.12);
+        ctx.globalCompositeOperation = bright ? "lighter" : "source-over";
         ctx.globalAlpha = alpha;
-        ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+        ctx.fillStyle = `rgb(${Math.round(cr)},${Math.round(cg)},${Math.round(cb)})`;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         ctx.fill();
     }
     ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = prevComposite;
 }
 
 /** Parse a CSS colour value (#rrggbb / #rgb / rgb(...)) into [r,g,b] channels. */
