@@ -87,6 +87,8 @@ export const navigation = [
         feature_key: "mod.ai_manager",
         list: [
             { title: "Overview", href: "/ai-manager/overview", feature_key: "ai_manager.overview" },
+            { title: "Live Calls", href: "/ai-manager/live" },
+            { title: "Handoff Team", href: "/ai-manager/handoff" },
             { title: "Try it", href: "/ai-manager/test", feature_key: "ai_manager.test" },
             { title: "Command History", href: "/ai-manager/commands", feature_key: "ai_manager.commands" },
             { title: "Pending Approvals", href: "/ai-manager/approvals", feature_key: "ai_manager.approvals" },

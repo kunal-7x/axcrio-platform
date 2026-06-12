@@ -1647,3 +1647,171 @@ export async function getWhatsAppLog(): Promise<{ log: WhatsAppLogEntry[] }> {
     if (!res.ok) throw new Error("Failed to fetch WhatsApp log");
     return res.json();
 }
+
+// ============================================================
+// HANDOFF TEAM — the per-tenant human-escalation roster the AI warm-transfers a
+// live caller to (and WhatsApps a hot lead to when nobody answers). The backend
+// is LIVE on caller.py, tenant-from-TOKEN, write-role gated, reached via the same
+// /api proxy + X-Auth pattern as everything above. Contract:
+//   GET    /brain/handoff            -> ordered [{ phone, whatsapp?, role?, hours?, priority, enabled }]
+//   POST   /brain/handoff/add        -> add/UPDATE one (idempotent by phone; +91… or 400; auto-priority = max+1)
+//   DELETE /brain/handoff/remove?phone=<E164> -> remove one (idempotent)
+//   PUT    /brain/handoff { handoff:[…ordered…] } -> replace the whole list (REORDER / enable-toggle / bulk save)
+// DORMANT-SAFE: a 404 (route not mounted / older box) or a network error resolves
+// to an EMPTY list so the panel shows a calm "no team yet" state, never an error
+// wall. Mutations surface the backend's {error} body as a readable message
+// (e.g. invalid-phone 400 -> "That number must be an Indian +91 mobile number.").
+// ============================================================
+
+// One escalation contact. `priority` is the ring order (1 = first). `enabled`
+// gates whether the AI dials it. `hours` is a free-form availability window
+// ("24x7" / "09:00-20:00" — the backend parses it). All but phone are optional.
+export type HandoffMember = {
+    phone: string;
+    whatsapp?: string;
+    role?: string;
+    hours?: string;
+    priority: number;
+    enabled: boolean;
+};
+
+// Typed error for handoff mutations — carries the backend machine code so the
+// form can map it to plain English (the most common is "invalid-phone" 400).
+export class HandoffError extends Error {
+    status: number;
+    code: string;
+    constructor(status: number, code: string, message: string) {
+        super(message);
+        this.name = "HandoffError";
+        this.status = status;
+        this.code = code;
+    }
+}
+
+// Map a backend {error} body (or HTTP status) to a readable, founder-friendly line.
+function explainHandoffError(status: number, code: string): string {
+    const c = (code || "").toLowerCase();
+    if (status === 400 && /phone|e164|invalid|\+91/.test(c))
+        return "That number must be a valid Indian mobile number starting with +91.";
+    if (status === 403)
+        return "You don't have permission to change the handoff team.";
+    if (status === 404)
+        return "Handoff team isn't available on this account yet.";
+    if (c) return c.replace(/_/g, " ");
+    if (status >= 500) return "Something went wrong saving the handoff team — try again.";
+    return "Couldn't save the handoff team — please try again.";
+}
+
+async function throwHandoff(res: Response): Promise<never> {
+    let body: Record<string, unknown> = {};
+    try {
+        body = await res.json();
+    } catch {
+        /* non-JSON */
+    }
+    const code = typeof body.error === "string" ? body.error : typeof body.detail === "string" ? body.detail : "";
+    throw new HandoffError(res.status, code, explainHandoffError(res.status, code));
+}
+
+// Normalize a raw backend row into a well-typed HandoffMember (tolerant of
+// missing/odd fields so a partial payload never crashes the list).
+function toHandoffMember(r: Record<string, unknown>, idx: number): HandoffMember {
+    const prio = Number(r.priority);
+    return {
+        phone: String(r.phone ?? "").trim(),
+        whatsapp: r.whatsapp ? String(r.whatsapp).trim() : undefined,
+        role: r.role ? String(r.role).trim() : undefined,
+        hours: r.hours ? String(r.hours).trim() : undefined,
+        // auto-fill priority from position when the backend omits/garbles it
+        priority: Number.isFinite(prio) && prio > 0 ? prio : idx + 1,
+        // default-true so already-seeded entries stay dialable (matches backend)
+        enabled: r.enabled === undefined ? true : !!r.enabled,
+    };
+}
+
+// GET the ordered roster. Never throws — dormant/empty -> []. Sorted by priority
+// so callers can render the ring order directly.
+export async function getHandoffTeam(): Promise<{ team: HandoffMember[] }> {
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/brain/handoff`, { headers: authHeaders() });
+    } catch {
+        return { team: [] }; // not deployed / offline -> calm empty state
+    }
+    await handle401(res);
+    if (res.status === 404) return { team: [] };
+    if (!res.ok) return { team: [] }; // quiet inline note path; never an error wall
+    const data = await res.json().catch(() => ({}));
+    // backend may return a bare array OR { handoff:[...] } / { team:[...] }
+    const raw: unknown = Array.isArray(data)
+        ? data
+        : Array.isArray((data as { handoff?: unknown }).handoff)
+        ? (data as { handoff: unknown[] }).handoff
+        : Array.isArray((data as { team?: unknown }).team)
+        ? (data as { team: unknown[] }).team
+        : [];
+    const team = (raw as Record<string, unknown>[])
+        .map(toHandoffMember)
+        .sort((a, b) => a.priority - b.priority);
+    return { team };
+}
+
+// Add OR update one member (idempotent by phone). Omit priority to auto-append
+// (backend sets max+1). Throws a readable HandoffError on 400/403/etc.
+export async function addHandoffMember(member: {
+    phone: string;
+    whatsapp?: string;
+    role?: string;
+    hours?: string;
+    priority?: number;
+    enabled?: boolean;
+}): Promise<{ ok: boolean }> {
+    const fd = new FormData();
+    fd.append("phone", member.phone);
+    if (member.whatsapp) fd.append("whatsapp", member.whatsapp);
+    if (member.role) fd.append("role", member.role);
+    if (member.hours) fd.append("hours", member.hours);
+    if (member.priority != null) fd.append("priority", String(member.priority));
+    if (member.enabled != null) fd.append("enabled", member.enabled ? "1" : "0");
+    const res = await fetch(`${BASE}/brain/handoff/add`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwHandoff(res);
+    return res.json().catch(() => ({ ok: true }));
+}
+
+// Remove one member by E.164 phone (idempotent — removing an absent number is fine).
+export async function removeHandoffMember(phone: string): Promise<{ removed: boolean }> {
+    const res = await fetch(`${BASE}/brain/handoff/remove?phone=${encodeURIComponent(phone)}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) return throwHandoff(res);
+    return res.json().catch(() => ({ removed: true }));
+}
+
+// Replace the WHOLE ordered list — the single call behind REORDER, enable/disable
+// toggles and bulk save. Re-numbers priority from the array position (1-based) so
+// the sent order is authoritative. Sent as JSON per the PUT contract.
+export async function saveHandoffOrder(list: HandoffMember[]): Promise<{ ok: boolean }> {
+    const handoff = list.map((m, i) => ({
+        phone: m.phone,
+        whatsapp: m.whatsapp || undefined,
+        role: m.role || undefined,
+        hours: m.hours || undefined,
+        priority: i + 1,
+        enabled: !!m.enabled,
+    }));
+    const res = await fetch(`${BASE}/brain/handoff`, {
+        method: "PUT",
+        headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
+        body: JSON.stringify({ handoff }),
+    });
+    await handle401(res);
+    if (!res.ok) return throwHandoff(res);
+    return res.json().catch(() => ({ ok: true }));
+}

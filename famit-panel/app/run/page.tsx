@@ -32,6 +32,7 @@ import {
 import { useMe, canWrite } from "@/lib/auth";
 import { type SelectOption } from "@/types/select";
 import { type TabsOption } from "@/types/tabs";
+import HandoffTeam from "@/app/ai-manager/_handoff";
 import { SOURCE_TABS, SOURCE_ID, TEMP_DEFS, type Temp } from "./_lib/types";
 import {
     type AudienceFilter,
@@ -787,6 +788,12 @@ export default function RunPage() {
                             />
                         </div>
                     </Card>
+
+                    {/* 7 ── Handoff team (review / add escalation people before launch) ──
+                        Reuses the SAME manager + /brain/handoff* calls as the dedicated
+                        Handoff Team view, so what's set here is what the AI dials when a
+                        caller asks for a human or a lead goes hot during this run. */}
+                    <HandoffTeam compact />
                 </div>
 
                 {/* ── RIGHT: preview bar + live status ── */}

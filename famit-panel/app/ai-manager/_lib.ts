@@ -796,6 +796,97 @@ export const getAimActionRuns = (q: { command_id?: string; session_id?: string; 
         `/ai-manager/action-runs${aimQs({ command_id: q.command_id, session_id: q.session_id, limit: q.limit ?? 200 })}`,
     );
 
+/* ============================================================================
+ * LIVE CALLS MONITOR — GET /ai-manager/live.
+ *
+ * The backend emits the in-progress state of every active room, including the
+ * human-escalation (handoff) progression: a `handoff` label the aim-voice-agent
+ * writes per attempt ("Dialing #1", "Dialing #2", "Bridged", "Failed") plus the
+ * `handoff_target` (the +91 number currently being rung). The list_active() pass-
+ * through carries the handoff string verbatim, so "Dialing #N" surfaces with zero
+ * schema change. We tolerate several field names (rooms / active / calls) and both
+ * a flat target string and a per-attempt history if the backend later adds one.
+ * Dormant (404 / not mounted) -> the page renders a calm "no live calls" state.
+ * ========================================================================== */
+
+// One live (in-progress) call/room. Every field optional — partial payloads
+// render cleanly. `handoff` is the escalation state label; `handoff_target` the
+// number being dialed right now; `handoff_attempts` an optional per-number trail.
+export type AimLiveHandoffAttempt = {
+    attempt?: number; // 1-based ring index
+    number?: string; // the +91 number tried
+    phone?: string; // tolerated alias
+    outcome?: string; // answered | busy | no_answer | invalid | out_of_hours | error | dialing
+    wait_s?: number;
+};
+
+export type AimLiveCall = {
+    room?: string;
+    room_name?: string;
+    caller?: string;
+    caller_phone?: string;
+    phone?: string;
+    campaign?: string;
+    campaign_name?: string;
+    status?: string; // ringing | in_progress | bridged | …
+    started_at?: string;
+    duration_s?: number;
+    // handoff / warm-transfer progression (what THIS wave renders)
+    handoff?: string; // "Dialing #1" | "Dialing #2" | "Bridged" | "Failed" | ""
+    handoff_target?: string; // current +91 number being rung
+    handoff_attempts?: AimLiveHandoffAttempt[]; // optional ordered trail
+};
+
+export type AimLivePayload = {
+    rooms?: AimLiveCall[];
+    active?: AimLiveCall[];
+    calls?: AimLiveCall[];
+    count?: number;
+    updated_at?: string;
+};
+
+// Read the live monitor. Never throws — dormant maps to {kind:"dormant"} like the
+// other reads. The page normalises rooms/active/calls into one list.
+export const getAimLive = () => read<AimLivePayload>("/ai-manager/live");
+
+// Pull the live-call list out of whichever field the backend used.
+export function aimLiveCalls(p?: AimLivePayload | null): AimLiveCall[] {
+    if (!p) return [];
+    if (Array.isArray(p.rooms)) return p.rooms;
+    if (Array.isArray(p.active)) return p.active;
+    if (Array.isArray(p.calls)) return p.calls;
+    return [];
+}
+
+// Canonical id/label for a live call regardless of field naming.
+export function liveCallRoom(c: AimLiveCall): string {
+    return c.room || c.room_name || "";
+}
+export function liveCallCaller(c: AimLiveCall): string {
+    return c.caller_phone || c.caller || c.phone || "";
+}
+
+// Classify a handoff state string into a coarse phase for colour + copy. The
+// backend encodes the attempt index INTO the string ("Dialing #2"), so we parse
+// it out for the stepper without needing a separate schema.
+export type AimHandoffPhase = "idle" | "dialing" | "bridged" | "failed";
+
+export function handoffPhase(s?: string | null): AimHandoffPhase {
+    const t = (s || "").toLowerCase();
+    if (!t) return "idle";
+    if (/bridg|connect|answer/.test(t)) return "bridged";
+    if (/fail|no.?answer|busy|miss|apolog|callback/.test(t)) return "failed";
+    if (/dial|ring|attempt|transfer/.test(t)) return "dialing";
+    return "idle";
+}
+
+// Extract the 1-based attempt number from a "Dialing #N" label (else null).
+export function handoffAttemptNo(s?: string | null): number | null {
+    const m = /#\s*(\d+)/.exec(s || "");
+    if (m) return parseInt(m[1], 10);
+    return null;
+}
+
 /* ---- INTENT CATALOG (master §11 taxonomy) — static, ships with the bundle ----
  * Powers the Capability Catalog page (browse what the AI Manager can do, by risk)
  * with ZERO backend. `grant` = the KNOWN_GRANTS family a number must hold; `risk`
