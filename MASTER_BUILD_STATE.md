@@ -124,3 +124,16 @@ Additive per-entry handoff CRUD on the working bridge: caller.py `POST /brain/ha
   in-room whisper + live "Dialing #N" + per-attempt JSONL analytics. Same-room bridge UNCHANGED.
   Smoke PASS (hold tracks 0→2, fallback #1 busy→#2 bridged, 2 analytics rows). Earner gate before+after
   RANG (rooms 7a9076+be6afd), agent.py md5 9150fabe… UNCHANGED, only aim-voice-agent restarted.
+
+- 2026-06-12 HANDOFF BACKEND VERIFY (honest, independent, live box :8209): ALL 6 items PASS.
+  (1) per-tenant CRUD: tenant 21d0a13603da isolated both ways, body tenant_id/org_id stripped (RT-5),
+  invalid + non-+91 → 400, idempotent remove, 401 on no/bad token. (2) hold + NO side-room regression
+  (bridge = create_sip_participant(room_name=<caller room>), comments confirm side-room path deleted).
+  (3) whisper-on-answer. (4) gating/fallback (_within_hours fail-open + enabled gate; all-fail → apology+
+  WA+callback; analytics JSONL has a real #1-busy→#2-answered run). (5) /ai-manager/live shows
+  handoff:"Bridged"/handoff_target. (6) EARNER GATE AFTER = +917861019021 RANG (room 43fdd1, agent log
+  participant phone-+917861019021 = SIP connected), agent.py md5 9150fabe… UNCHANGED, famit-agent PID
+  1477083 NEVER restarted, core 200, 0 5xx. Cleanup: temp campaign deleted, founder not suppressed, seed
+  intact. RESIDUAL: two-human end-to-end inbound bridge proven by parts not one live call; hot_lead_alert
+  Meta template unapproved (graceful 404; post_call_followup sends real wamid). Founder recipe + FE API
+  contract → AGENT_LEARNINGS.md (HOTL/HOFX VERIFY entry) + this wave's return.
