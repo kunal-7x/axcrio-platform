@@ -1,0 +1,8 @@
+{
+  "name": "aim-inbound-dispatch",
+  "trunk_ids": ["ST_K785ASpNh5ow"],
+  "rule": { "dispatchRuleIndividual": { "roomPrefix": "aim-" } },
+  "room_config": {
+    "agents": [ { "agent_name": "manager" } ]
+  }
+}

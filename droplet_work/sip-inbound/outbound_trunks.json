@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "sipTrunkId": "ST_LH8ighJJtHSi",
+      "name": "vobiz-outbound",
+      "address": "2c24f731.sip.vobiz.ai",
+      "transport": "SIP_TRANSPORT_UDP",
+      "numbers": [
+        "+918071583488"
+      ],
+      "authUsername": "capsy-project",
+      "authPassword": "@capsyproject12"
+    },
+    {
+      "sipTrunkId": "ST_fmtVmNJmpzKa",
+      "name": "vobiz-outbound-tcp",
+      "address": "2c24f731.sip.vobiz.ai",
+      "transport": "SIP_TRANSPORT_TCP",
+      "numbers": [
+        "+918071583488"
+      ],
+      "authUsername": "capsy-project",
+      "authPassword": "@capsyproject12"
+    }
+  ]
+}

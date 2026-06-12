@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "sipDispatchRuleId": "SDR_RaCvweSMA2p5",
+      "rule": {
+        "dispatchRuleIndividual": {
+          "roomPrefix": "aim-"
+        }
+      },
+      "trunkIds": [
+        "ST_K785ASpNh5ow"
+      ],
+      "name": "aim-inbound-dispatch",
+      "roomConfig": {
+        "agents": [
+          {
+            "agentName": "manager"
+          }
+        ]
+      }
+    }
+  ]
+}
