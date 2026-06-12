@@ -308,12 +308,13 @@ class ManagerAgent(Agent):
         return None
 
     @function_tool
-    async def check_leads(self, context: RunContext, campaign: str = "") -> str:
+    async def check_leads(self, context: RunContext, campaign: str) -> str:
         """Report the manager's REAL lead counts (total + hot/warm/cold). Use for "how many leads",
         "lead counts", "how many hot leads". Safe read — needs the manager already PIN-verified.
 
         Args:
-            campaign: optional spoken campaign name for phrasing (counts are the whole lead pool).
+            campaign: the campaign name the manager mentioned, or "" if they didn't name one (counts
+                      are the whole lead pool either way).
         """
         gate = self._gate_read()
         if gate:
@@ -327,15 +328,17 @@ class ManagerAgent(Agent):
         return res.get("summary", "I couldn't pull the lead numbers right now.")
 
     @function_tool
-    async def recent_calls(self, context: RunContext, count: int = 5) -> str:
+    async def recent_calls(self, context: RunContext, count: int) -> str:
         """Give a short spoken summary of the most RECENT calls (name + outcome). Safe read.
 
         Args:
-            count: how many recent calls to summarize (default 5, max 20).
+            count: how many recent calls to summarize (use 5 if the manager didn't specify; max 20).
         """
         gate = self._gate_read()
         if gate:
             return gate
+        if not count or count < 1:
+            count = 5
         try:
             res = await asyncio.to_thread(_vt.recent_calls, count)
         except Exception as exc:  # noqa: BLE001
@@ -372,8 +375,7 @@ class ManagerAgent(Agent):
     # ── RISKY ACTION: run_campaign (dials phones) — PIN-gated + read-back confirm ──
     @function_tool
     async def run_campaign(self, context: RunContext, campaign: str,
-                           segment: str = "all", count: int = 0,
-                           confirmed: bool = False) -> str:
+                           segment: str, count: int, confirmed: bool) -> str:
         """START a real calling campaign — this DIALS phones (spends money). RISKY.
 
         BEFORE calling this with confirmed=true you MUST have: (1) the manager PIN-verified, and (2)
@@ -383,9 +385,10 @@ class ManagerAgent(Agent):
 
         Args:
             campaign: the campaign name the manager said (e.g. "Codename Joy").
-            segment: which leads — "hot", "warm", "cold", or "all" (default all).
-            count: how many leads to dial; 0 = all in that segment.
-            confirmed: set true ONLY after you read the action back and the manager said yes.
+            segment: which leads — "hot", "warm", "cold", or "all". Use "all" if they didn't specify.
+            count: how many leads to dial; use 0 to dial all in that segment.
+            confirmed: false the FIRST time (to get the read-back to speak); true ONLY after you read
+                       the action back and the manager clearly said yes.
         """
         if not self._verified:
             return ("not_verified: this dials real phones — ask for the PIN and call verify_pin first. "
