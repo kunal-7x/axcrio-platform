@@ -69,18 +69,68 @@ try:
 except Exception:  # noqa: BLE001 — plugin may be absent; the agent MUST still run on VAD
     _SemanticTurnModel = None
 
-# ── HUMAN WARM TRANSFER (BUILD#6) ──────────────────────────────────────────────
-# LiveKit's NATIVE warm-transfer task: dials the human INTO the room over the OUTBOUND trunk
-# (CreateSIPParticipant -> brief with chat_ctx -> MoveParticipant = a true warm conference bridge).
-# Carrier-agnostic (no SIP REFER needed). We REUSE the earner's outbound trunk ID as a STRING ONLY —
-# never editing the trunk / dispatch / agent.py. Guarded so the worker still boots if the beta API
-# is renamed/absent (transfer then degrades to the WhatsApp+callback fallback, never a dead drop).
+# ── HUMAN WARM TRANSFER (BUILD#6 — DIRECT-BRIDGE, HOFX) ─────────────────────────
+# We dial the human DIRECTLY INTO THE CALLER'S CURRENT ROOM via create_sip_participant on the
+# OUTBOUND trunk (the EXACT primitive the earner uses in caller.py:/run). Same room == an instant
+# 2-way conference bridge: the caller and the human hear each other immediately, the AI whispers one
+# line and steps back. No side room, no secondary briefing agent, no hold music (those were the
+# WarmTransferTask path that left the caller stuck on hold while the merge never fired). Carrier-
+# agnostic (no SIP REFER). We REUSE the earner's outbound trunk ID as a STRING ONLY — never editing
+# the trunk / dispatch / agent.py / firewall / SIP container.
+from livekit import api as _lk_api                      # CreateSIPParticipantRequest (same as earner)
 try:
-    from livekit.agents.beta.workflows import WarmTransferTask as _WarmTransferTask
+    from livekit.protocol.types import Duration as _DurationLK   # ringing_timeout proto
+except Exception:  # noqa: BLE001 — proto path varies by livekit version; try the api re-export.
+    try:
+        from livekit.api import Duration as _DurationLK  # type: ignore
+    except Exception:  # noqa: BLE001
+        from google.protobuf.duration_pb2 import Duration as _DurationLK  # final fallback
+# get_job_context() yields the live JobContext (room + api) for the CURRENTLY-RUNNING call — this is
+# how we obtain the caller's room to bridge INTO. Guarded so an API rename can't brick the worker.
+try:
+    from livekit.agents import get_job_context as _get_job_context
 except Exception:  # noqa: BLE001
-    _WarmTransferTask = None
-    logging.getLogger("aim-voice").warning(
-        "WarmTransferTask import failed; transfer_to_human will use WhatsApp+callback fallback only")
+    try:
+        from livekit.agents.job import get_job_context as _get_job_context  # type: ignore
+    except Exception:  # noqa: BLE001
+        _get_job_context = None  # type: ignore
+
+# Live-call registry (cross-process, file-backed). The voice worker WRITES active-call + handoff
+# state here; caller.py's GET /ai-manager/live READS it. Import-guarded: a missing module degrades to
+# no live-call visibility, never a crash / a broken call.
+try:
+    from ai_manager import live_registry as _live
+except Exception as _live_exc:  # noqa: BLE001
+    _live = None
+    logging.getLogger("aim-voice").warning("live_registry import failed (live-calls OFF): %r", _live_exc)
+
+
+def _live_upsert(room: str, **kw) -> None:
+    """Best-effort write to the live-call registry. NEVER raises."""
+    if _live is None or not room:
+        return
+    try:
+        _live.upsert(room, **kw)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _live_set_handoff(room: str, handoff: str, target: str = "") -> None:
+    if _live is None or not room:
+        return
+    try:
+        _live.set_handoff(room, handoff, target=target)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _live_remove(room: str) -> None:
+    if _live is None or not room:
+        return
+    try:
+        _live.remove(room)
+    except Exception:  # noqa: BLE001
+        pass
 
 # Read-only reuse of the earner's outbound trunk id (env LIVEKIT_SIP_TRUNK_ID). NEVER mutated here.
 _OUTBOUND_TRUNK = (os.getenv("LIVEKIT_SIP_TRUNK_ID", "ST_fmtVmNJmpzKa") or "ST_fmtVmNJmpzKa").strip()
@@ -101,6 +151,23 @@ except Exception as _vt_exc:  # noqa: BLE001
     _vt = None
     logging.getLogger("aim-voice").warning("voice_tools import failed (command tools degraded): %r", _vt_exc)
 
+# DURABLE SESSION LOGGING + RECORDING (BUILD QUEUE #8). store = PG-native, RLS-scoped persistence of the
+# per-call session row + transcript turns + executed commands + outcome (degrade-safe: a PG outage is a
+# silent no-op, NEVER breaks/silences the live call). recorder = LiveKit room-composite Egress -> DO
+# Spaces (dormant NullRecorder until AIM_RECORDING_ENABLED + creds). Both are read by the panel Call
+# History page via GET /ai-manager/sessions[/{id}]. Import-guarded so a missing module can never stop the
+# worker booting. We NEVER touch agent.py / the earner / trunks / firewall / SIP.
+try:
+    from ai_manager import store as _aim_store
+except Exception as _store_exc:  # noqa: BLE001
+    _aim_store = None
+    logging.getLogger("aim-voice").warning("ai_manager.store import failed (PG session logging OFF): %r", _store_exc)
+try:
+    from ai_manager import recorder as _aim_recorder
+except Exception as _rec_exc:  # noqa: BLE001
+    _aim_recorder = None
+    logging.getLogger("aim-voice").warning("ai_manager.recorder import failed (recording OFF): %r", _rec_exc)
+
 # READ-ONLY reuse of the OUTBOUND earner's proven sales brain + cross-call memory. We IMPORT these
 # modules (never edit them) so the inbound CUSTOMER (sales) agent runs the EXACT same campaign brain
 # the outbound dialer uses. Guarded: if either is absent the customer agent still works on a generic
@@ -115,6 +182,17 @@ try:
 except Exception as _memory_exc:  # noqa: BLE001
     _memory = None
     logging.getLogger("aim-voice").warning("memory import failed (cross-call recap degraded): %r", _memory_exc)
+
+# READ-ONLY reuse of the hybrid RAG engine (kb/core.py: FTS sparse leg keyless today + pgvector dense
+# when an embedder is configured). Used for (a) a fire-and-forget GROUNDING prefetch at call connect,
+# folded into the sales instructions, and (b) a mid-call `lookup` tool for deep/edge questions. STRICTLY
+# import-safe-degrade: a KB/PG outage returns [] -> the call runs EXACTLY as before. We NEVER write to kb
+# from here (only kb.retrieve, read-only) and NEVER touch agent.py / the outbound earner.
+try:
+    import kb as _kb  # kb.retrieve(tenant, query, top_k, scope, channel, scope_campaign_id) (READ-ONLY)
+except Exception as _kb_exc:  # noqa: BLE001
+    _kb = None
+    logging.getLogger("aim-voice").warning("kb import failed (RAG grounding degraded -> no-op): %r", _kb_exc)
 
 load_dotenv("/opt/famit-agent/.env")
 load_dotenv(".env")
@@ -153,6 +231,25 @@ def _init_firewall() -> bool:
 
 
 _FIREWALL_READY = _init_firewall()
+
+
+# ── PG engine init (LOAD-BEARING for #8 session logging) ───────────────────────
+# This worker is a SEPARATE process from caller.py, so db.engine has NOT been wired here. Without
+# engine.init() the strangler stays in "PG disabled" mode and every store.* write is a silent no-op
+# (the call still runs, but nothing is logged). Replicate caller.py's one-time init against the SAME
+# PG_DSN already loaded from .env above. Idempotent + NEVER raises (degrades to available()==False).
+def _init_db() -> bool:
+    try:
+        from db import engine as _db_engine
+        ok = bool(_db_engine.init())
+        logger.info("AIM db.engine init: available=%s", ok)
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM db.engine init failed (PG session logging OFF, call unaffected): %r", exc)
+        return False
+
+
+_DB_READY = _init_db()
 
 # ── identity / config ──────────────────────────────────────────────────────────
 AGENT_NAME = os.getenv("AIM_VOICE_AGENT_NAME", "manager")
@@ -286,6 +383,76 @@ async def _say_filler(context, custom: str = "") -> None:
         pass
 
 
+# ── RAG grounding helpers (kb.retrieve, READ-ONLY, import-safe-degrade) ─────────
+# VoiceAgentRAG pattern (design/latency-research.md §6): at call connect, run ONE off-hot-path
+# kb.retrieve for the resolved campaign and fold the chunks into the agent instructions as a
+# "GROUNDING (verified facts)" block (zero per-turn latency); a `lookup` tool then covers deep
+# questions mid-call. Every entrypoint returns "" / [] on any failure -> a KB outage cannot break
+# a call. The query SEED is the campaign name + product + a few sales-relevant probe words so the
+# prefetch surfaces the price / location / USP / objection chunks the agent most often needs.
+_GROUNDING_PREFETCH_K = int(os.getenv("AIM_KB_PREFETCH_K", "5") or 5)
+_GROUNDING_LOOKUP_K = int(os.getenv("AIM_KB_LOOKUP_K", "3") or 3)
+_GROUNDING_CHAR_CAP = int(os.getenv("AIM_KB_GROUNDING_CHARS", "1400") or 1400)
+
+
+def _kb_retrieve(tenant_id: str, query: str, *, campaign_id: str, top_k: int) -> list[dict]:
+    """Thin READ-ONLY wrapper over kb.retrieve, scoped to this tenant + campaign + the voice channel.
+    Returns [] on any failure (KB absent / PG down / no hits) so every caller no-ops cleanly."""
+    if _kb is None or not tenant_id or not (query or "").strip():
+        return []
+    try:
+        return _kb.retrieve(tenant_id, query, top_k=top_k, scope="business",
+                            channel="voice", scope_campaign_id=campaign_id or "") or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM kb.retrieve degrade (return []): %r", exc)
+        return []
+
+
+def _format_grounding(rows: list[dict], *, char_cap: int = _GROUNDING_CHAR_CAP) -> str:
+    """Render retrieved chunks into a compact, prompt-ready GROUNDING block (char-capped). '' when no
+    rows -> the instructions are unchanged (exactly today's behaviour)."""
+    if not rows:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for r in rows:
+        body = (r.get("content") or "").strip()
+        if not body:
+            continue
+        sec = (r.get("section") or "").strip()
+        piece = (f"- ({sec}) {body}" if sec else f"- {body}")
+        piece = " ".join(piece.split())  # collapse newlines/whitespace for a tight block
+        if used + len(piece) > char_cap:
+            piece = piece[: max(0, char_cap - used)]
+        if not piece:
+            break
+        lines.append(piece)
+        used += len(piece)
+        if used >= char_cap:
+            break
+    if not lines:
+        return ""
+    return (
+        "\n\n=== GROUNDING (verified facts retrieved for THIS project — quote these for "
+        "price / location / specs / objections; if a detail isn't here, call the `lookup` tool or "
+        "say the team will confirm — NEVER invent specifics) ===\n" + "\n".join(lines) + "\n"
+    )
+
+
+def _grounding_seed(fields: dict) -> str:
+    """Build the prefetch query seed from the resolved campaign fields: project + product + location
+    + a few high-frequency sales probe words so the top chunks cover price/USP/objection up front."""
+    f = fields or {}
+    parts = [
+        str(f.get("_campaign_name") or ""),
+        str(f.get("product_name") or ""),
+        str(f.get("product_summary") or "")[:160],
+        str(f.get("location") or ""),
+        "price location amenities USP objection",
+    ]
+    return " ".join(p for p in parts if p).strip()[:400]
+
+
 # ── the Manager Agent (persona + PIN gate + command tools) ─────────────────────
 def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
     """The system prompt. Greeting is spoken separately via session.say(); this drives the convo
@@ -340,6 +507,11 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
             "transfer). Call this ONLY if they explicitly ask to talk to a human/person, or you "
             "genuinely cannot handle what they need. It dials a team member into the call; once it "
             "hands off, stop talking and let the human take over.\n\n"
+            "• `list_handoff()` / `add_handoff(phone,name,priority)` / `remove_handoff(phone)` — manage "
+            "the manager's HUMAN HANDOFF TEAM (the people you warm-transfer and send hot-lead alerts "
+            "to). When they say things like 'add Rajesh +91… to my handoff team', 'list my handoff "
+            "team', 'remove that number', call these. Read back the number you heard to confirm before "
+            "adding. These are verified-manager only.\n\n"
             "Keep every reply short and natural; let the manager talk. If they just want to chat, answer."
         )
     return common + (
@@ -404,43 +576,69 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
                 "Warmly tell the caller our team will call them back very shortly, confirm their number, "
                 "and close politely — never leave them hanging.")
 
-    # 5) WarmTransferTask present? if not, degrade to the WhatsApp+callback fallback (already fired).
-    if _WarmTransferTask is None:
-        logger.warning("AIM transfer_to_human: WarmTransferTask unavailable -> WA+callback fallback")
+    # 5) resolve the LIVE room + a LiveKit API handle from the running job. This is the SAME room the
+    #    caller is in -> dialing the human here = an instant 2-way conference bridge (no side room, no
+    #    secondary agent, no hold music). We REUSE the earner's outbound trunk id as a STRING only.
+    job_ctx = None
+    try:
+        job_ctx = _get_job_context()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM transfer_to_human: no job context (%r) -> WA+callback fallback", exc)
+        job_ctx = None
+    room_obj = getattr(job_ctx, "room", None) if job_ctx is not None else None
+    room_name = getattr(room_obj, "name", "") or getattr(agent, "_room_name", "") or ""
+    lk_api = getattr(job_ctx, "api", None) if job_ctx is not None else None
+    if job_ctx is None or not room_name or lk_api is None:
+        logger.warning("AIM transfer_to_human: room/api unavailable (room=%r api=%s) -> WA+callback fallback",
+                       room_name, lk_api is not None)
+        _live_set_handoff(room_name, "Failed")
         return ("handoff_logged: I couldn't open a live bridge just now, but I've alerted the team with "
                 "the caller's details on WhatsApp. Tell the caller a team member will call them right "
                 "back, confirm the number, and close warmly.")
 
-    # 6) dial each eligible human INTO the room (priority order) until one answers.
-    chat_ctx = getattr(agent, "chat_ctx", None)
+    _live_set_handoff(room_name, "Requested")
+
+    # 6) dial each eligible human DIRECTLY INTO THE CALLER'S CURRENT ROOM (priority order) until one
+    #    answers. create_sip_participant(room_name=<caller room>) = the EXACT earner dial primitive
+    #    (caller.py:/run), so the human and caller share one room and hear each other immediately.
     last_err = ""
     for h in team:
         num = (h.get("phone") or h.get("whatsapp") or "").strip()
         if not num:
             continue
-        logger.info("AIM transfer_to_human: dialing human %s (role=%s) into room",
-                    _mask(num), h.get("role", ""))
+        logger.info("AIM transfer_to_human: dialing human %s (role=%s) INTO caller room %s",
+                    _mask(num), h.get("role", ""), room_name)
+        _live_set_handoff(room_name, "Dialing", target=num)
         try:
-            task_kwargs = dict(
+            req = _lk_api.CreateSIPParticipantRequest(
+                sip_trunk_id=_OUTBOUND_TRUNK,          # read-only reuse of the earner's trunk id
                 sip_call_to=num,
-                sip_trunk_id=_OUTBOUND_TRUNK,           # read-only reuse of the earner's trunk id
-                instructions=_transfer_whisper(reason, name, caller_id, summary),
-                ringing_timeout=_TRANSFER_RING_TIMEOUT,
+                room_name=room_name,                   # ← the CALLER'S room == the bridge
+                participant_identity=f"human-handoff-{num}",
+                participant_name=(h.get("role") or "Team") + " (human)",
+                participant_metadata="aim-human-handoff",
+                wait_until_answered=True,              # block until the human actually answers (or fails)
+                ringing_timeout=_DurationLK(seconds=int(_TRANSFER_RING_TIMEOUT)),
             )
-            if chat_ctx is not None:
-                task_kwargs["chat_ctx"] = chat_ctx
-            task = _WarmTransferTask(**task_kwargs)
-            await task                                    # inline-task: dial -> brief -> merge into room
-            logger.info("AIM transfer_to_human: HANDED OFF to %s", _mask(num))
-            return ("handed_off: a team member is now on the line with the caller. Briefly tell the "
-                    "caller you're connecting them, then STOP talking and let the human take over.")
-        except Exception as exc:  # noqa: BLE001 — no-answer / busy / decline -> next number
-            last_err = type(exc).__name__
+            await lk_api.sip.create_sip_participant(req, timeout=_TRANSFER_RING_TIMEOUT + 10)
+        except Exception as exc:  # noqa: BLE001 — busy(486) / no-answer / decline -> next number
+            last_err = f"{type(exc).__name__}:{str(exc)[:120]}"
             logger.info("AIM transfer_to_human: %s didn't connect (%s) -> next number",
                         _mask(num), last_err)
             continue
+        # answered -> the human is now a participant in the caller's room (audibly bridged).
+        logger.info("AIM transfer_to_human: BRIDGED %s into room %s", _mask(num), room_name)
+        _live_set_handoff(room_name, "Bridged", target=num)
+        # whisper ONE line of context to the caller, then step back (the human takes over).
+        await _say_filler(
+            context,
+            "Aapko humari team se connect kar diya hai — ye lijiye, main line par hoon.")
+        return ("handed_off: a team member is now LIVE on the line with the caller in the same call. "
+                "Say ONE short sentence like 'Main aapko connect kar rahi hoon' then STOP talking "
+                "completely and let the human take over — do not speak again.")
 
-    # 7) nobody answered -> never a dead drop. The hot-lead WA already fired (step 3).
+    # 7) nobody answered on any number -> never a dead drop. The hot-lead WA already fired (step 3).
+    _live_set_handoff(room_name, "Failed")
     logger.info("AIM transfer_to_human: no human answered (last_err=%s) -> callback fallback", last_err)
     return ("no_human_answered: I couldn't reach a team member live, but I've alerted them with the "
             "caller's details on WhatsApp. Reassure the caller warmly that the team will call them "
@@ -742,6 +940,19 @@ class ManagerAgent(Agent):
             return "I hit a problem starting the campaign. Please try again in a moment."
         logger.info("AIM run_campaign result ok=%s job=%s count=%s",
                     res.get("ok"), res.get("job_id", ""), res.get("count", ""))
+        # #8: persist this risky, PIN-gated command onto the session's command chain (best-effort).
+        try:
+            slog = getattr(self, "_slog", None)
+            if slog is not None:
+                slog.note_command(
+                    intent="run_campaign",
+                    args={"campaign": campaign, "segment": seg, "count": n_count},
+                    result={"ok": res.get("ok"), "job_id": res.get("job_id", ""),
+                            "count": res.get("count", "")},
+                    pin_required=True, pin_verified=bool(self._verified),
+                    risk_level=3, status=("executed" if res.get("ok") else "failed"))
+        except Exception:  # noqa: BLE001
+            pass
         return res.get("summary", "I couldn't start the campaign just now.")
 
     # ── test_call_me: ring the manager's OWN verified phone (the founder feels a real call) ──
@@ -788,11 +999,110 @@ class ManagerAgent(Agent):
                     getattr(self, "_tenant_id", ""))
         return await _do_warm_transfer(self, context, reason or "")
 
+    # ── HANDOFF-TEAM MANAGEMENT (conversational CRUD; verified manager only) ─────────────────────
+    # The manager can curate WHO the AI warm-transfers / hot-lead-alerts to, by voice/chat:
+    # "add Rajesh +91… to my handoff team", "remove +91…", "list my handoff team". Tenant-scoped to
+    # the verified caller (self._tenant_id from their token), validated +91, durably audited.
+    @function_tool
+    async def list_handoff(self, context: RunContext) -> str:
+        """List THIS manager's human-handoff team (the people the AI warm-transfers / alerts to).
+        Use for "list my handoff team", "who's on my handoff list", "who do you transfer to".
+        Verified-manager only. Reads the live list; speak it back naturally."""
+        if not self._verified:
+            return "not_verified: ask for the PIN and call verify_pin first; do not reveal any data yet."
+        if _vt is None:
+            return "engine_unavailable: tell the caller you can't reach the system right now."
+        try:
+            team = await asyncio.to_thread(_vt.handoff_list, self._tenant_id) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM list_handoff failed: %r", exc)
+            return "I couldn't pull your handoff team just now. Please try again in a moment."
+        if not team:
+            return ("handoff_empty: there's no one on your handoff team yet. Offer to add a team "
+                    "member — ask for their name and mobile number.")
+        lines = []
+        for h in team:
+            who = (h.get("role") or "Team").strip() or "Team"
+            num = h.get("phone") or h.get("whatsapp") or ""
+            state = "" if h.get("enabled", True) else " (paused)"
+            lines.append(f"{who} on {num}{state}")
+        spoken = "; ".join(lines)
+        return (f"handoff_team ({len(team)}): {spoken}. "
+                "Read this back to the manager naturally, in priority order.")
+
+    @function_tool
+    async def add_handoff(self, context: RunContext, phone: str = "", name: str = "",
+                          priority: str = "", whatsapp: str = "") -> str:
+        """Add (or update) a person on THIS manager's human-handoff team so the AI can warm-transfer
+        and send hot-lead alerts to them. Use for "add Rajesh +916375548830 to my handoff team",
+        "add my sales head 98765…". Verified-manager only.
+
+        Args:
+            phone: the team member's mobile, ANY spoken form ("+91 63755 48830", "six three…",
+                   "9876543210"). It is canonicalised to +91XXXXXXXXXX; reject non-Indian-mobiles.
+            name:  who they are / their role (e.g. "Rajesh", "sales head"). Optional.
+            priority: dialing order as a STRING ("1" = tried first). "" = append at the end. Optional.
+            whatsapp: a different WhatsApp number if they gave one; "" = same as phone. Optional.
+        """
+        if not self._verified:
+            return ("not_verified: this changes who real calls get transferred to — ask for the PIN "
+                    "and call verify_pin first.")
+        if _vt is None:
+            return "engine_unavailable: tell the caller you can't reach the system right now."
+        prio = _to_int(priority, 0)
+        await _say_filler(context, "Theek hai, add kar rahi hoon…")
+        try:
+            res = await asyncio.to_thread(_vt.add_handoff, self._tenant_id, phone or "",
+                                          name or "", prio, whatsapp or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM add_handoff failed: %r", exc)
+            return "I couldn't add that number just now. Please try again in a moment."
+        if not res.get("ok"):
+            if res.get("note") == "invalid_phone":
+                return res.get("spoken", "That number didn't look valid — please say a 10-digit Indian mobile.")
+            return "I couldn't add that number just now. Please try again in a moment."
+        n = len(res.get("handoff", []) or [])
+        who = (name or "that person").strip() or "that person"
+        logger.info("AIM add_handoff tenant=%s added=%s total=%d", self._tenant_id,
+                    _mask(res.get("added", "")), n)
+        return (f"added: {who} is now on your handoff team ({res.get('added','')}). You now have "
+                f"{n} team member{'s' if n != 1 else ''}. Confirm this back to the manager warmly.")
+
+    @function_tool
+    async def remove_handoff(self, context: RunContext, phone: str = "") -> str:
+        """Remove a person from THIS manager's human-handoff team. Use for "remove +916375548830
+        from my handoff team", "take Rajesh off the list". Verified-manager only.
+
+        Args:
+            phone: the mobile to remove, ANY spoken form (canonicalised to +91XXXXXXXXXX).
+        """
+        if not self._verified:
+            return ("not_verified: this changes who real calls get transferred to — ask for the PIN "
+                    "and call verify_pin first.")
+        if _vt is None:
+            return "engine_unavailable: tell the caller you can't reach the system right now."
+        await _say_filler(context, "Theek hai, hata rahi hoon…")
+        try:
+            res = await asyncio.to_thread(_vt.remove_handoff, self._tenant_id, phone or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM remove_handoff failed: %r", exc)
+            return "I couldn't update your handoff team just now. Please try again in a moment."
+        if not res.get("ok"):
+            return "I couldn't update your handoff team just now. Please try again in a moment."
+        n = len(res.get("handoff", []) or [])
+        if not res.get("removed"):
+            return ("not_found: that number wasn't on your handoff team. Offer to list the team so the "
+                    "manager can pick who to remove.")
+        logger.info("AIM remove_handoff tenant=%s total=%d", self._tenant_id, n)
+        return (f"removed: done — that number is off your handoff team. You now have {n} team "
+                f"member{'s' if n != 1 else ''}. Confirm back to the manager warmly.")
+
 
 # ── the Customer (sales) Agent — a natural human salesperson for NON-manager callers ───────────
 def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
                               is_returning: bool, pending_disambig: bool,
-                              campaign_options: list[dict] | None) -> str:
+                              campaign_options: list[dict] | None,
+                              grounding: str = "") -> str:
     """Render the inbound CUSTOMER persona. Body REUSES the outbound earner brain verbatim
     (prompt.build_system_prompt(fields)) when a campaign is resolved, so an inbound prospect gets the
     SAME proven Hinglish human-telecaller flow as an outbound call — but reframed for INBOUND (they
@@ -837,7 +1147,12 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
             "`transfer_to_human(reason)` tool to connect a real team member into the call."
         )
 
-    # Campaign resolved -> run the FULL outbound sales brain (reused read-only), reframed for inbound.
+    # Campaign resolved. We REUSE the outbound earner brain (prompt.build_system_prompt) ONLY for its
+    # campaign FACTS/knowledge (product, price, location, USPs, objection rebuttals, qualifying Qs) --
+    # NOT for its conversation flow. That brain is written for an OUTBOUND cold call (scripted self-
+    # intro + 'do minute hain?' permission + a top-down telecaller flow). For INBOUND we must NOT run
+    # that opener/flow, so we fence the brain between a strong override header + footer that tell the
+    # LLM: this is reference knowledge to ANSWER from, the customer leads, you react.
     brain = ""
     if _prompt is not None and fields:
         try:
@@ -876,7 +1191,44 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "(reason)` tool — it connects a real team member into the call. Once it hands off, stop talking "
         "and let the human take over. Don't offer a human for ordinary questions you can answer yourself."
     )
-    return head + brain + recap_block + inbound_note
+    # RAG: append the prefetched grounding block (verified, campaign-scoped facts) AFTER the persona/
+    # flow brain so the proven telecaller flow still dominates; '' when KB is empty/down (= today).
+    inbound_override = (
+        "=== INBOUND CALL -- HOW YOU BEHAVE (this OVERRIDES everything in the KNOWLEDGE PACK below) ===\n"
+        "The customer phoned YOU. You did NOT call them. So:\n"
+        "1. Do NOT introduce yourself with a scripted pitch, do NOT run any outbound opener, and do "
+        "NOT ask 'do you have two minutes / abhi do minute hain?'. They already chose to call -- that "
+        "permission step is meaningless here. After your short warm greeting, simply ask how you can "
+        "help: \"Haan ji, boliye -- main kis tarah help kar sakti hoon?\" / \"Aap kis baare mein "
+        "jaanna chahte the?\" (match their language). Then STOP and let THEM lead.\n"
+        "2. Be REACTIVE and human: ANSWER the question they actually asked, using the KNOWLEDGE PACK "
+        "below (product, price, location, USPs, objection answers) and the lookup tool for specifics. "
+        "Do NOT march through a sales script or fire details they didn't ask for. One short beat, then "
+        "listen.\n"
+        "3. The KNOWLEDGE PACK below is written as if it were an OUTBOUND cold call (it contains a "
+        "scripted opener, a 'permission' step, and a top-down telecaller FLOW). IGNORE that flow and "
+        "that opener entirely -- they are for outbound. Use ONLY its FACTS and objection rebuttals to "
+        "answer what the customer asks.\n"
+        "4. Only AFTER you've genuinely helped and they seem interested, gently steer toward a next "
+        "step (a site visit, or sharing details / a callback on WhatsApp) -- softly, never pushy, and "
+        "never as a scripted close.\n"
+        "=== KNOWLEDGE PACK (campaign FACTS to ANSWER from -- NOT a script to recite) ===\n"
+    )
+    inbound_after_brain = (
+        "\n=== END KNOWLEDGE PACK -- remember: INBOUND, customer-led. Greet warmly, ask how you can "
+        "help, then ANSWER their questions from the facts above + the lookup tool. No outbound opener, "
+        "no unprompted pitch. ===\n"
+    )
+    grounding_block = grounding if isinstance(grounding, str) else ""
+    lookup_note = (
+        "\n\nLOOKUP TOOL: when the caller asks something specific you're not certain of (exact carpet "
+        "area, a charge, an amenity, a policy, a rare objection), call the `lookup(question)` tool — it "
+        "fetches the verified answer from this project's knowledge base. Say a tiny filler first so "
+        "there's no silence, then answer ONLY from what it returns; if it returns nothing, say the team "
+        "will confirm — never invent a specific."
+    ) if _kb is not None else ""
+    return (head + inbound_override + brain + inbound_after_brain
+            + grounding_block + recap_block + inbound_note + lookup_note)
 
 
 class CustomerSalesAgent(Agent):
@@ -893,9 +1245,10 @@ class CustomerSalesAgent(Agent):
     def __init__(self, *, caller_id: str, tenant_id: str, session_id: str,
                  fields: dict | None, recap: str, caller_name: str,
                  is_returning: bool, pending_disambig: bool,
-                 campaign_options: list[dict] | None) -> None:
+                 campaign_options: list[dict] | None, grounding: str = "") -> None:
         super().__init__(instructions=_build_sales_instructions(
-            fields or {}, recap, caller_name, is_returning, pending_disambig, campaign_options))
+            fields or {}, recap, caller_name, is_returning, pending_disambig, campaign_options,
+            grounding=grounding))
         self._caller_id = caller_id
         self._tenant_id = tenant_id or ADMIN_TENANT
         self._session_id = session_id
@@ -904,6 +1257,8 @@ class CustomerSalesAgent(Agent):
         self._is_returning = is_returning
         self._pending_disambig = pending_disambig
         self._campaign_options = campaign_options or []
+        self._recap = recap or ""
+        self._grounding = grounding or ""  # RAG grounding block (prefetched or per-campaign); '' = none
         # the resolved campaign id/name drive the lead-attach + returning-caller link on the next call
         self._campaign_id = str((fields or {}).get("_campaign_id", "")) if fields else ""
         self._campaign_name = str((fields or {}).get("_campaign_name", "")) if fields else ""
@@ -948,9 +1303,23 @@ class CustomerSalesAgent(Agent):
         self._campaign_id = str(fields.get("_campaign_id", ""))
         self._campaign_name = str(fields.get("_campaign_name", ""))
         self._pending_disambig = False
+        # RAG: retrieve grounding for the JUST-matched campaign (off the loop) so the rebuilt
+        # instructions carry verified facts. Never blocks the reply; '' on any miss/outage.
+        try:
+            rows = await asyncio.to_thread(
+                _kb_retrieve, (self._tenant_id or ADMIN_TENANT),
+                _grounding_seed(self._fields), campaign_id=self._campaign_id,
+                top_k=_GROUNDING_PREFETCH_K)
+            self._grounding = _format_grounding(rows)
+            logger.info("AIM pick_campaign grounding chunks=%d campaign=%s",
+                        len(rows), self._campaign_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pick_campaign grounding prefetch failed: %r", exc)
+            self._grounding = ""
         try:
             await self.update_instructions(_build_sales_instructions(
-                self._fields, "", self._caller_name, False, False, None))
+                self._fields, "", self._caller_name, False, False, None,
+                grounding=self._grounding))
         except Exception as exc:  # noqa: BLE001
             logger.warning("pick_campaign update_instructions failed: %r", exc)
         logger.info("AIM pick_campaign matched -> %s (%s)", self._campaign_name, self._campaign_id)
@@ -958,6 +1327,50 @@ class CustomerSalesAgent(Agent):
         return (f"matched: loaded {cname}. Now warmly continue helping them about {cname} using its "
                 "details — one short beat at a time. Find out what they need and move toward a site "
                 "visit or a callback.")
+
+    @function_tool
+    async def lookup(self, context: RunContext, question: str = "") -> str:
+        """Look up a SPECIFIC verified fact about THIS project from its knowledge base — use it the
+        moment the caller asks something you're not 100% sure of: exact price/carpet area, a charge, a
+        specific amenity, RERA/legal detail, a policy, or an objection rebuttal. It returns the real
+        grounded facts to answer from — so you never guess. Call this BEFORE claiming any specific
+        number or detail you weren't already given.
+
+        Args:
+            question: what the caller wants to know, in their words (e.g. "3 BHK ka carpet area",
+                      "registration charge kitna", "possession kab"). Pass as a plain string.
+        """
+        q = (question or "").strip()
+        if not q:
+            return ("need_question: ask the caller once more, warmly, exactly what detail they want, "
+                    "then call lookup again with it.")
+        # filler so the (sub-second) retrieve never sits in dead air — never blocks the fetch.
+        try:
+            await _say_filler(context, "Ek second, dekh ke batati hoon…")
+        except Exception:  # noqa: BLE001
+            pass
+        tenant = getattr(self, "_tenant_id", "") or ADMIN_TENANT
+        cid = getattr(self, "_campaign_id", "") or ""
+        try:
+            rows = await asyncio.to_thread(
+                _kb_retrieve, tenant, q, campaign_id=cid, top_k=_GROUNDING_LOOKUP_K)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM lookup kb.retrieve failed: %r", exc)
+            rows = []
+        if not rows:
+            logger.info("AIM lookup MISS tenant=%s campaign=%s q=%r", tenant, cid, q[:60])
+            return ("no_facts: the knowledge base didn't have that specific detail. Tell the caller "
+                    "warmly that our team will confirm the exact detail on a quick callback / on "
+                    "WhatsApp — do NOT make up a number or specific.")
+        snippets = []
+        for r in rows:
+            body = " ".join((r.get("content") or "").split())
+            if body:
+                snippets.append(body[:280])
+        logger.info("AIM lookup HIT tenant=%s campaign=%s hits=%d q=%r", tenant, cid, len(snippets), q[:60])
+        joined = " | ".join(snippets[:_GROUNDING_LOOKUP_K])
+        return ("verified_facts (answer the caller ONLY from these, in their language, short and "
+                "natural — do not read them verbatim, weave the relevant bit in): " + joined)
 
     @function_tool
     async def remember_name(self, context: RunContext, name: str = "") -> str:
@@ -1089,6 +1502,176 @@ def prewarm(proc: JobProcess) -> None:
         logger.warning("AIM prewarm VAD load failed (will load inline per call): %r", exc)
 
 
+# ── DURABLE SESSION LOGGER (BUILD QUEUE #8) ─────────────────────────────────────
+# A single, degrade-safe sink that makes EVERY inbound call durable + viewable in the panel:
+#   * create the PG ai_manager_sessions row at connect (RLS-scoped by vendor/tenant)
+#   * append each transcript turn (one ai_manager_session_turns row) as the conversation happens
+#   * persist each executed manager command (ai_manager_commands) so the detail view shows the chain
+#   * start/stop a LiveKit Egress recording -> DO Spaces, mirror the handle onto the session row
+#   * close the session on hangup (status + ended_at + full transcript + outcome + #commands)
+# ALL PG/recorder work is wrapped + offloaded so a failure (PG down, egress absent, etc.) is a SILENT
+# no-op — it can NEVER break or silence the live call (the earner-safety rule applies to inbound too).
+class _SessionLogger:
+    def __init__(self, *, vendor_id: str, session_id: str, channel: str, caller_phone: str,
+                 user_id: str, role: str, room_name: str):
+        self.vendor_id = vendor_id or ""
+        self.session_id = session_id
+        self.channel = channel or "phone"
+        self.caller_phone = caller_phone or ""
+        self.user_id = user_id or ""
+        self.role = role or ""
+        self.room_name = room_name or ""
+        self._seq = 0
+        self._turns: list[dict] = []          # {role,text} kept in-memory -> end-of-call transcript_text
+        self._n_commands = 0
+        self._recorder = None
+        self._rec_handle: dict = {}
+        self._closed = False
+        self._started = False
+
+    # -- connect: session row + (optional) recording start --
+    async def start(self, *, llm_provider: str = "groq", stt_provider: str = "sarvam",
+                    tts_provider: str = "elevenlabs") -> None:
+        if not self.vendor_id or not self.session_id:
+            return
+        try:
+            await asyncio.to_thread(
+                _aim_store.create_session, self.vendor_id, self.session_id,
+                channel=self.channel, caller_phone=_mask(self.caller_phone),
+                user_id=self.user_id, llm_provider=llm_provider,
+                metadata={"role": self.role, "room": self.room_name,
+                          "stt": stt_provider, "tts": tts_provider},
+            )
+            self._started = True
+            logger.info("AIM session row created id=%s vendor=%s channel=%s",
+                        self.session_id, self.vendor_id, self.channel)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM create_session failed (logging degraded): %r", exc)
+        # arm the recorder (NullRecorder when dormant -> a clean 'disabled' status, no-op)
+        try:
+            if _aim_recorder is not None:
+                self._recorder = _aim_recorder.build(self.room_name, self.session_id)
+                handle = await asyncio.to_thread(self._recorder.start)
+                self._rec_handle = handle or {}
+                await asyncio.to_thread(
+                    _aim_store.set_recording, self.vendor_id, self.session_id,
+                    status=self._rec_handle.get("status", "") or "",
+                    egress_id=self._rec_handle.get("egress_id", "") or "",
+                    bucket=self._rec_handle.get("bucket", "") or "",
+                    key=self._rec_handle.get("key", "") or "",
+                )
+                logger.info("AIM recording start status=%s egress=%s",
+                            self._rec_handle.get("status"), self._rec_handle.get("egress_id"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM recorder start failed (call continues unrecorded): %r", exc)
+
+    # -- per-turn transcript (called from conversation_item_added; runs the PG write off-loop) --
+    def add_turn(self, role: str, text: str) -> None:
+        if not self._started or self._closed:
+            return
+        t = (text or "").strip()
+        if not t or role not in ("user", "assistant"):
+            return
+        self._seq += 1
+        seq = self._seq
+        self._turns.append({"role": ("user" if role == "user" else "agent"), "text": t})
+        try:
+            asyncio.create_task(asyncio.to_thread(
+                _aim_store.add_turn, self.vendor_id, self.session_id,
+                ("user" if role == "user" else "agent"), t, seq=seq))
+        except Exception:  # noqa: BLE001
+            pass
+
+    # -- persist an executed manager command (intent/args/result/pin) for the detail chain --
+    def note_command(self, *, intent: str, args: dict | None, result: dict | None,
+                     pin_required: bool = False, pin_verified: bool = False,
+                     risk_level: int = 0, status: str = "executed") -> None:
+        if not self._started or self._closed or not self.vendor_id:
+            return
+        self._n_commands += 1
+        try:
+            asyncio.create_task(self._persist_command(
+                intent=intent, args=args, result=result, pin_required=pin_required,
+                pin_verified=pin_verified, risk_level=risk_level, status=status))
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _persist_command(self, *, intent, args, result, pin_required, pin_verified,
+                               risk_level, status) -> None:
+        try:
+            cid = await asyncio.to_thread(
+                _aim_store.create_command, self.vendor_id,
+                session_id=self.session_id, user_id=self.user_id,
+                raw_text=str(intent or ""), detected_intent=str(intent or ""),
+                action_type=str(intent or ""), action_payload=(args or {}),
+                risk_level=int(risk_level or 0), status="pending")
+            if cid:
+                await asyncio.to_thread(
+                    _aim_store.update_command, self.vendor_id, cid,
+                    status=status, pin_required=bool(pin_required),
+                    pin_verified=bool(pin_verified),
+                    execution_result=(result or {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM note_command persist failed: %r", exc)
+
+    # -- hangup: stop recording + close the session row --
+    async def finish(self, *, outcome: str = "", status: str = "completed") -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if not self._started:
+            return
+        # stop the recording (the egress finalizes the Spaces upload async on LiveKit's side)
+        try:
+            if self._recorder is not None:
+                stop = await asyncio.to_thread(self._recorder.stop)
+                if isinstance(stop, dict):
+                    await asyncio.to_thread(
+                        _aim_store.set_recording, self.vendor_id, self.session_id,
+                        status=stop.get("status", "") or "",
+                        egress_id=stop.get("egress_id", "") or "",
+                        bucket=stop.get("bucket", "") or "",
+                        key=stop.get("key", "") or "",
+                        duration_s=int(stop.get("duration_s", 0) or 0))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM recorder stop failed: %r", exc)
+        # close the session row with the full transcript + outcome + command count
+        try:
+            transcript = "\n".join(f"{x['role']}: {x['text']}" for x in self._turns)[:60000]
+            await asyncio.to_thread(
+                _aim_store.end_session, self.vendor_id, self.session_id,
+                status=status, transcript_text=transcript,
+                outcome=(outcome or status), n_actions=self._n_commands)
+            logger.info("AIM session closed id=%s outcome=%s turns=%d commands=%d",
+                        self.session_id, outcome or status, len(self._turns), self._n_commands)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM end_session failed: %r", exc)
+
+
+def _build_session_logger(*, vendor_id: str, session_id: str, is_manager: bool,
+                          caller_id: str, user_id: str, role: str, room_name: str):
+    """Factory: a live _SessionLogger when PG persistence is importable, else a no-op stand-in (so the
+    entrypoint calls are unconditional + clean). NEVER raises."""
+    if _aim_store is None:
+        return _NoopLogger()
+    try:
+        return _SessionLogger(
+            vendor_id=vendor_id, session_id=session_id,
+            channel="phone", caller_phone=caller_id, user_id=user_id,
+            role=role, room_name=room_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM session logger build failed (no-op): %r", exc)
+        return _NoopLogger()
+
+
+class _NoopLogger:
+    """Stand-in when persistence is unavailable — every method is a silent no-op."""
+    async def start(self, **_kw) -> None: ...
+    def add_turn(self, *_a, **_kw) -> None: ...
+    def note_command(self, **_kw) -> None: ...
+    async def finish(self, **_kw) -> None: ...
+
+
 # ── the worker entrypoint ──────────────────────────────────────────────────────
 async def entrypoint(ctx: agents.JobContext) -> None:
     """NEVER-SILENT outer guard. The real work is _entrypoint_impl; on any pre-greet crash we still
@@ -1215,6 +1798,14 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
                 logger.info("AIM customer NEW caller -> disambiguate (%d active campaigns)",
                             len(cust_campaign_options))
 
+    # ---- DURABLE SESSION LOGGER (#8): one PG session row + transcript + commands + recording ----
+    # Built AFTER the customer branch resolves the final tenant_id (a returning lead may rebind it).
+    # start() is deferred until AFTER session.start() (the room must be connected before Egress can
+    # attach). Degrade-safe / no-op when PG / the store module is absent.
+    _slog = _build_session_logger(
+        vendor_id=tenant_id, session_id=session_id, is_manager=is_manager,
+        caller_id=caller_id, user_id=(caller_id or ""), role=role, room_name=room_name)
+
     # ---- build the tuned voice stack — IDENTICAL construction to the outbound earner ----
     _vad = None
     try:
@@ -1330,6 +1921,7 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     if is_manager:
         agent = ManagerAgent(caller_id=caller_id, tenant_id=tenant_id, role=role,
                              is_manager=is_manager, session_id=session_id)
+        agent._slog = _slog  # type: ignore[attr-defined]  # #8: tools persist executed commands
         # ── FIX (D): WARM a small HOT SNAPSHOT once at connect ──────────────────────
         # Fire-and-forget (never blocks/ delays the greeting): prefetch lead counts + campaign list
         # into the agent so the FIRST data question ("how many leads / list my campaigns") answers from
@@ -1367,6 +1959,41 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             fields=cust_fields, recap=cust_recap, caller_name=cust_name,
             is_returning=cust_is_returning, pending_disambig=cust_pending_disambig,
             campaign_options=cust_campaign_options)
+
+        # ── RAG GROUNDING PREFETCH (VoiceAgentRAG, design/latency-research.md §6) ────
+        # Fire-and-forget at connect: if a campaign is already resolved, retrieve its top KB chunks
+        # (off the loop) and fold them into the agent instructions as a GROUNDING block — so price/
+        # location/spec/objection facts are in-context for turn one WITHOUT delaying the greeting.
+        # NEVER blocks: it runs as a task; the greeting + first turns proceed regardless. Import-safe-
+        # degrade: a KB outage / empty corpus -> '' -> instructions exactly as today. New callers with
+        # no campaign yet get grounding the moment pick_campaign matches (handled in that tool).
+        if _kb is not None and cust_fields and (cust_fields.get("_campaign_id") or ""):
+            async def _prefetch_grounding() -> None:
+                try:
+                    seed = _grounding_seed(cust_fields)
+                    rows = await asyncio.to_thread(
+                        _kb_retrieve, (tenant_id or ADMIN_TENANT), seed,
+                        campaign_id=str(cust_fields.get("_campaign_id") or ""),
+                        top_k=_GROUNDING_PREFETCH_K)
+                    block = _format_grounding(rows)
+                    if not block:
+                        logger.info("AIM grounding prefetch: 0 chunks (FTS-only / empty) -> no-op")
+                        return
+                    agent._grounding = block  # type: ignore[attr-defined]
+                    # re-render instructions WITH grounding (recap/name preserved). Best-effort.
+                    await agent.update_instructions(_build_sales_instructions(
+                        agent._fields, agent._recap, agent._caller_name,
+                        agent._is_returning, agent._pending_disambig, None,
+                        grounding=block))
+                    logger.info("AIM grounding prefetch ready chunks=%d campaign=%s chars=%d",
+                                len(rows), cust_fields.get("_campaign_id"), len(block))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("AIM grounding prefetch failed (degrade): %r", exc)
+
+            try:
+                asyncio.create_task(_prefetch_grounding())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM grounding prefetch task spawn failed: %r", exc)
 
     # ---- DTMF keypad PIN (so an exhausted founder can KEY the PIN, not only speak it) ----
     # SIP DTMF arrives as a livekit.rtc.Room event "sip_dtmf_received" (SipDTMF{digit,code}). We
@@ -1428,6 +2055,7 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
                 text = (getattr(item, "text_content", "") or "") if item is not None else ""
                 if text and role in ("user", "assistant"):
                     _cust_turns.append({"role": role, "content": text})
+                    _slog.add_turn(role, text)   # #8: durable per-turn PG transcript (off-loop)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1465,8 +2093,48 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- #8 DURABLE SESSION LOGGING — UNIVERSAL (manager + customer) ----
+    # Capture EVERY turn into the PG transcript (the customer branch also feeds _slog above; for the
+    # MANAGER this is the ONLY transcript listener — managers had none). The PIN tool masks digits to
+    # '****' upstream, so no secret ever reaches the transcript. On hangup, close the session row +
+    # stop the recording (idempotent; _slog.finish guards a double-close). Best-effort throughout.
+    if is_manager:
+        @session.on("conversation_item_added")
+        def _on_mgr_item(ev) -> None:  # noqa: ANN001
+            try:
+                item = getattr(ev, "item", None)
+                role = getattr(item, "role", "") if item is not None else ""
+                text = (getattr(item, "text_content", "") or "") if item is not None else ""
+                if text and role in ("user", "assistant"):
+                    _slog.add_turn(role, text)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @ctx.room.on("disconnected")
+    def _on_room_disconnected_log(*_a) -> None:  # noqa: ANN002
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _slog.finish(outcome="completed", status="completed"), _loop)
+        except Exception:  # noqa: BLE001
+            pass
+        # HOFX: drop the live-call record so GET /ai-manager/live stops showing a dead call.
+        _live_remove(room_name)
+
     # ---- START + GREET — EXACTLY the proven outbound path (start, then say) ----
     await session.start(room=ctx.room, agent=agent)
+
+    # ---- HOFX: register this call in the cross-process live-call registry (panel reads it via
+    #      GET /ai-manager/live). Best-effort; a registry failure never affects the call. ----
+    _live_upsert(room_name, tenant_id=(tenant_id or ADMIN_TENANT),
+                 caller=caller_id, mode=("manager" if is_manager else "customer"),
+                 state="active", handoff=_live.HANDOFF_NONE if _live is not None else "none")
+
+    # #8: now the room is connected -> create the PG session row + arm the recorder (Egress attaches
+    # to a live room). Deferred to here so recording captures the greeting onward. Never blocks/raises.
+    try:
+        await _slog.start(llm_provider="groq", stt_provider="sarvam", tts_provider="elevenlabs")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AIM session logger start failed (call continues unlogged): %r", exc)
 
     if is_manager:
         greeting = (f"Hey! This is {_AGENT_VOICE} from {_COMPANY} — your AI manager. "

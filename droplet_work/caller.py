@@ -1403,6 +1403,46 @@ async def _wa_log(tenant_id: str, to: str, template: str, result: dict, kind: st
         _write(WA_LOG_FILE, log)
 
 
+# ============================================================================
+# WAFX — approved Meta WhatsApp TEMPLATE registry + name resolver.
+# Meta rejects (#132001 / "template name does not exist") any send whose template
+# name is not registered+approved on the WABA. We keep a small allow-list of the
+# names that ARE registered, map common internal aliases onto them, and refuse
+# unregistered names (hot_lead_alert / benefit_focus / special_offer) with a CLEAR
+# error instead of a generic failure. Override via WAFX_APPROVED_TEMPLATES (CSV) and
+# WAFX_TEMPLATE_ALIASES ("alias=approved,alias2=approved2").
+# ============================================================================
+WAFX_APPROVED_TEMPLATES = {
+    s.strip() for s in (os.getenv("WAFX_APPROVED_TEMPLATES",
+                                  "post_call_followup,hello_world") or "").split(",")
+    if s.strip()
+}
+def _wafx_alias_map() -> dict:
+    m = {}
+    raw = (os.getenv("WAFX_TEMPLATE_ALIASES", "") or "").strip()
+    if raw:
+        for pair in raw.split(","):
+            if "=" in pair:
+                a, _, b = pair.partition("=")
+                if a.strip() and b.strip():
+                    m[a.strip()] = b.strip()
+    return m
+def _wafx_resolve_template(name: str) -> dict:
+    """Resolve a requested template name to an APPROVED one.
+    Returns {"ok":True,"name":<approved>} or {"ok":False,"status":"template_not_registered",
+    "requested":<name>,"approved":[...]}. Empty/whitespace name -> ok (caller validates)."""
+    n = (name or "").strip()
+    if not n:
+        return {"ok": True, "name": n}
+    if n in WAFX_APPROVED_TEMPLATES:
+        return {"ok": True, "name": n}
+    mapped = _wafx_alias_map().get(n)
+    if mapped and mapped in WAFX_APPROVED_TEMPLATES:
+        return {"ok": True, "name": mapped, "mapped_from": n}
+    return {"ok": False, "status": "template_not_registered", "requested": n,
+            "approved": sorted(WAFX_APPROVED_TEMPLATES)}
+
+
 async def _wa_send(tenant_id: str, to: str, template: str, params, kind: str = "manual",
                    is_text: bool = False) -> dict:
     """Send via whatsapp.py (no-ops gracefully if unconfigured). Logs every attempt.
@@ -1417,6 +1457,22 @@ async def _wa_send(tenant_id: str, to: str, template: str, params, kind: str = "
     elif is_text and hasattr(wa_mod, "send_whatsapp_text_async"):
         result = await wa_mod.send_whatsapp_text_async(to, template)
     else:
+        # WAFX: template sends must use a REGISTERED+APPROVED Meta template name.
+        # Map known aliases; refuse unregistered names with a clear error (not a
+        # generic failure / "not connected").
+        _res = _wafx_resolve_template(template)
+        if not _res.get("ok"):
+            result = {"ok": False, "status": "template_not_registered",
+                      "to": to, "provider": "meta",
+                      "meta_error": {"error_user_title": "Template not registered",
+                                     "error_user_msg": ("WhatsApp template '" + (template or "")
+                                                        + "' is not registered/approved on Meta. "
+                                                        "Approved: " + ", ".join(_res.get("approved", []))),
+                                     "requested": _res.get("requested", template),
+                                     "approved": _res.get("approved", [])}}
+            await _wa_log(tenant_id, to, template, result, kind=kind)
+            return result
+        template = _res.get("name", template)
         result = await wa_mod.send_whatsapp_async(to, template, params)
     await _wa_log(tenant_id, to, template, result, kind=kind)
     return result
@@ -1461,7 +1517,10 @@ def _handoff_get(tenant_id: str) -> list[dict]:
             out.append({"phone": ph, "whatsapp": wa,
                         "role": str(h.get("role", "") or ""),
                         "hours": str(h.get("hours", "") or ""),
-                        "priority": int(h.get("priority", 99) or 99)})
+                        "priority": int(h.get("priority", 99) or 99),
+                        # additive: default-True so already-seeded entries (no `enabled`) keep working.
+                        "enabled": (False if str(h.get("enabled", True)).strip().lower()
+                                    in ("false", "0", "no", "off") else True)})
         out.sort(key=lambda x: x.get("priority", 99))
         return out
     except Exception as exc:  # noqa: BLE001
@@ -1486,13 +1545,75 @@ def _handoff_set(tenant_id: str, team: list, actor: str = "system") -> list[dict
                       "whatsapp": norm(wa) or wa or (norm(ph) or ph),
                       "role": str(h.get("role", "") or ""),
                       "hours": str(h.get("hours", "") or ""),
-                      "priority": int(h.get("priority", 99) or 99)})
+                      "priority": int(h.get("priority", 99) or 99),
+                      "enabled": (False if str(h.get("enabled", True)).strip().lower()
+                                  in ("false", "0", "no", "off") else True)})
     try:
         _brain_mod.upsert_profile(tenant_id, {"handoff": clean}, actor=actor)
     except Exception as exc:  # noqa: BLE001
         _lg_handoff.warning("handoff_set failed tenant=%s: %r", tenant_id, exc)
         return _handoff_get(tenant_id)
     return _handoff_get(tenant_id)
+
+
+def _handoff_valid_phone(phone: str) -> str:
+    """Validate + canonicalise a handoff number to +91XXXXXXXXXX (Indian E.164).
+    Returns "" when it is not a valid +91 mobile (so callers reject it). Reuses norm()
+    (digits-only -> +91…, drops leading 0, prefixes 91 for a bare 10-digit). We additionally
+    REQUIRE a 91 country code + 10 national digits so a tenant can't seed a malformed target."""
+    n = norm(phone or "")
+    # norm() yields "+<cc><number>"; require India (+91) + exactly 10 national digits.
+    if n.startswith("+91") and len(n) == 13 and n[1:].isdigit():
+        return n
+    return ""
+
+
+def _handoff_add_one(tenant_id: str, entry: dict, actor: str = "system") -> tuple[list, str]:
+    """ADD or UPDATE a single handoff entry (keyed by canonical phone). Returns (stored_list, err).
+    err="" on success; non-empty spoken-friendly reason on validation failure. Re-uses the
+    existing replace path (_handoff_set) so versioning/audit/history stay in ONE place. Token-
+    scoped by the caller (tenant_id from resolve_tenant). NEVER raises."""
+    if not tenant_id or _brain_mod is None:
+        return (_handoff_get(tenant_id), "brain module unavailable")
+    entry = entry or {}
+    ph = _handoff_valid_phone(str(entry.get("phone", "") or entry.get("whatsapp", "")))
+    if not ph:
+        return (_handoff_get(tenant_id),
+                "invalid phone — give a valid Indian mobile in +91XXXXXXXXXX form")
+    wa = _handoff_valid_phone(str(entry.get("whatsapp", ""))) or ph
+    cur = _handoff_get(tenant_id)
+    # de-dup by canonical phone: replace an existing entry for the same number (idempotent add).
+    cur = [h for h in cur if (h.get("phone") or "") != ph]
+    try:
+        prio = int(entry.get("priority", 0) or 0)
+    except Exception:  # noqa: BLE001
+        prio = 0
+    if prio <= 0:
+        prio = (max([int(h.get("priority", 0) or 0) for h in cur], default=0) + 1) if cur else 1
+    cur.append({"phone": ph, "whatsapp": wa,
+                "role": str(entry.get("role", "") or ""),
+                "hours": str(entry.get("hours", "") or ""),
+                "priority": prio,
+                "enabled": (False if str(entry.get("enabled", "true")).strip().lower()
+                            in ("false", "0", "no", "off") else True)})
+    return (_handoff_set(tenant_id, cur, actor=actor), "")
+
+
+def _handoff_remove_one(tenant_id: str, phone: str, actor: str = "system") -> tuple[list, str, bool]:
+    """REMOVE the single handoff entry matching `phone` (canonicalised). Returns
+    (stored_list, err, removed_bool). Token-scoped. NEVER raises."""
+    if not tenant_id or _brain_mod is None:
+        return (_handoff_get(tenant_id), "brain module unavailable", False)
+    target = _handoff_valid_phone(phone) or norm(phone or "") or str(phone or "").strip()
+    if not target:
+        return (_handoff_get(tenant_id), "no phone given to remove", False)
+    cur = _handoff_get(tenant_id)
+    kept = [h for h in cur
+            if (h.get("phone") or "") != target and (h.get("whatsapp") or "") != target]
+    removed = len(kept) != len(cur)
+    if not removed:
+        return (cur, "", False)
+    return (_handoff_set(tenant_id, kept, actor=actor), "", True)
 
 
 async def notify_handoff_team(tenant_id: str, lead: dict, summary: str = "",
@@ -1594,6 +1715,13 @@ WA_AUTO_FOLLOWUP = (os.getenv("WA_AUTO_FOLLOWUP", "0") or "0").strip().lower() i
 # about {{2}}. ..."  -> {{1}}=lead name, {{2}}=product/enquiry. Lang from WA_LANG (en).
 WA_FOLLOWUP_TEMPLATE = (os.getenv("WA_FOLLOWUP_TEMPLATE", "post_call_followup") or "post_call_followup").strip()
 WA_FOLLOWUP_ENQUIRY_FALLBACK = (os.getenv("WA_FOLLOWUP_ENQUIRY_FALLBACK", "your enquiry") or "your enquiry").strip()
+# #10(c) SCORE-GATE: auto-send the post-call WhatsApp follow-up ONLY to INTERESTED leads
+# whose lead score is STRICTLY GREATER than this threshold (default 50). Tunable via env;
+# a campaign may also override with fields.wa_followup_min_score. Lowered from the old 70.
+try:
+    WA_FOLLOWUP_MIN_SCORE = int(os.getenv("WA_FOLLOWUP_MIN_SCORE", "50") or "50")
+except Exception:  # noqa: BLE001
+    WA_FOLLOWUP_MIN_SCORE = 50
 _WA_OPTOUT_WORDS = ("stop", "unsubscribe", "opt out", "optout", "band karo",
                     "band karein", "mat bhejo", "remove me", "do not", "dont contact",
                     "don't contact", "block")
@@ -1798,6 +1926,52 @@ def _wa_followup_product(camp_fields: dict, tr: dict) -> str:
     return cand or WA_FOLLOWUP_ENQUIRY_FALLBACK
 
 
+def _wa_brochure_link(camp_fields: dict) -> str:
+    """Resolve a publicly-fetchable URL for a campaign's brochure PDF, for a WhatsApp
+    DOCUMENT send. Prefers minting a short-lived presigned GET URL from the stored Spaces
+    KEY (the live ``capsy-recordings`` bucket keeps objects PRIVATE — a presigned URL is
+    what Meta can actually fetch at send time). Falls back to a stored public URL only if
+    no key is present. Returns "" when no brochure is configured. Never raises."""
+    cf = camp_fields or {}
+    key = (cf.get("brochure_pdf_key") or "").strip()
+    if key:
+        try:
+            from media_gen import spaces as _spaces
+            cli = _spaces._client()
+            if cli is not None:
+                bucket = (os.getenv("SPACES_BUCKET") or "").strip()
+                if bucket:
+                    return cli.generate_presigned_url(
+                        "get_object", Params={"Bucket": bucket, "Key": key},
+                        ExpiresIn=3600)
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback: a directly-public URL stored on the campaign (other bucket / CDN).
+    return (cf.get("brochure_pdf_url") or "").strip()
+
+
+async def _wa_send_brochure(tenant_id: str, phone_n: str, camp_fields: dict,
+                            product: str) -> str:
+    """#10(b) BROCHURE: after a qualifying call, send the per-campaign brochure PDF as a
+    WhatsApp DOCUMENT message (native Meta path). Best-effort, never raises into the call
+    loop. Returns the wamid/status string on send, "" when no brochure / not configured."""
+    try:
+        link = _wa_brochure_link(camp_fields)
+        if not link:
+            return ""
+        if not (wa_mod and getattr(wa_mod, "meta_configured", lambda: False)()):
+            return ""  # documents are a native-Meta-only feature here
+        fname = (camp_fields or {}).get("brochure_pdf_name", "") or "brochure.pdf"
+        if not fname.lower().endswith(".pdf"):
+            fname = fname + ".pdf"
+        caption = f"Here's more about {product}." if product else "Here's our brochure."
+        result = await wa_mod.send_whatsapp_document_async(phone_n, link, fname, caption)
+        await _wa_log(tenant_id, phone_n, "brochure_pdf", result, kind="auto_brochure")
+        return result.get("status", "") if isinstance(result, dict) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: dict, tr: dict):
     """WA-AUTO post-call WhatsApp follow-up.
 
@@ -1812,9 +1986,20 @@ async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: 
         # GATE: global flag OR per-campaign flag.
         if not (WA_AUTO_FOLLOWUP or (camp_fields or {}).get("wa_followup")):
             return
-        # Only act on meaningful outcomes (interested / callback / high interest).
+        # #10(c) SCORE-GATE: send ONLY to INTERESTED leads — lead score STRICTLY > threshold
+        # (default 50, was 70), OR an explicitly interested/callback outcome. The per-campaign
+        # fields.wa_followup_min_score overrides the global WA_FOLLOWUP_MIN_SCORE when set.
+        try:
+            min_score = int((camp_fields or {}).get("wa_followup_min_score")
+                            or WA_FOLLOWUP_MIN_SCORE)
+        except Exception:  # noqa: BLE001
+            min_score = WA_FOLLOWUP_MIN_SCORE
         score = rec.get("interest", 0) or 0
-        if not (outcome in ("interested", "callback") or score >= 70):
+        try:
+            score = int(score)
+        except Exception:  # noqa: BLE001
+            score = 0
+        if not (outcome in ("interested", "callback") or score > min_score):
             return
         configured = bool(wa_mod and wa_mod.is_configured())
         phone = rec.get("phone", "")
@@ -1875,6 +2060,18 @@ async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: 
 
         # Mark idempotency (one send per call) regardless of which path fired.
         rec["wa_followup_sent"] = datetime.now().isoformat(timespec="seconds")
+
+        # #10(b) BROCHURE: alongside the template, send the per-campaign brochure PDF as a
+        # WhatsApp DOCUMENT (only the qualifying leads that already passed the score-gate
+        # above reach here). Best-effort + idempotent (one brochure per call). No brochure
+        # configured -> no-op. Never blocks / raises into the call loop.
+        try:
+            if not rec.get("wa_brochure_sent"):
+                br_status = await _wa_send_brochure(tenant_id, phone_n, camp_fields, product)
+                if br_status:
+                    rec["wa_brochure_sent"] = br_status
+        except Exception:  # noqa: BLE001
+            pass
 
         # Seed / update the conversation thread, persisting the CALL CONTEXT so the inbound
         # reply brain (_wa_reply_text) can ground every later turn in what happened on the call.
@@ -2353,9 +2550,73 @@ async def run_job(job_id: str) -> None:
 
 
 # ---------- JSON API (frontend hits these via nginx /api -> /) ----------
+# HRD #9: dependency-aware health probe. Bare {status:ok} kept as the DEFAULT response
+# shape (back-compat: callers that just check 200 still pass when healthy), but the route
+# now LIVE-checks DB + redis + LiveKit reachability and returns 503 when a hard dependency
+# (DB) is down so the watchdog/load-balancer can see "degraded". Every check is bounded and
+# fully exception-guarded — /health itself can NEVER hang or 500. `?deep=0` returns the old
+# cheap liveness probe (process-up) for high-frequency pings.
+def _hc_db() -> tuple[bool, str]:
+    """Live bounded SELECT 1 (NOT the cached startup flag). True/err-string."""
+    try:
+        from db import engine as _eng  # local import (import-safe; mirrors the rest of caller.py)
+        if not _eng.available():
+            return False, "engine_unavailable"
+        from sqlalchemy import text
+        with _eng.session(tenant_id="", is_admin=True) as s:
+            s.execute(text("SET LOCAL statement_timeout = '1500ms'"))
+            s.execute(text("SELECT 1"))
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, repr(exc)[:120]
+
+
+def _hc_redis() -> tuple[bool, str]:
+    """Ping the rate-limiter redis (:6380). Soft dependency — degraded, not fatal."""
+    try:
+        import redis as _r  # type: ignore
+        url = os.getenv("RATELIMIT_REDIS_URL", "redis://127.0.0.1:6380/0")
+        cli = _r.from_url(url, socket_connect_timeout=1.0, socket_timeout=1.0)
+        return (bool(cli.ping()), "")
+    except Exception as exc:  # noqa: BLE001
+        return False, repr(exc)[:120]
+
+
+def _hc_livekit() -> tuple[bool, str]:
+    """TCP-reachability of the LiveKit signalling host (ws[s]://host[:port]). Soft dependency."""
+    try:
+        import socket
+        from urllib.parse import urlparse
+        raw = cfg_get("LIVEKIT_URL", "ws://127.0.0.1:7880") or "ws://127.0.0.1:7880"
+        u = urlparse(raw if "://" in raw else "ws://" + raw)
+        host = u.hostname or "127.0.0.1"
+        port = u.port or (443 if (u.scheme or "").endswith("s") else 7880)
+        with socket.create_connection((host, port), timeout=1.5):
+            return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, repr(exc)[:120]
+
+
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health(deep: int = 1):
+    # cheap liveness (process up) — for high-frequency pings or load-balancer wiring.
+    if not deep:
+        return {"status": "ok"}
+    db_ok, db_err = await asyncio.to_thread(_hc_db)
+    redis_ok, redis_err = await asyncio.to_thread(_hc_redis)
+    lk_ok, lk_err = await asyncio.to_thread(_hc_livekit)
+    # DB is the only HARD dependency (data plane). redis/livekit are soft (the app FAILS-OPEN
+    # on redis and the earner runs in its own process) -> they mark 'degraded' but keep 200
+    # unless DB is also down. DB down => 503 so the watchdog/LB pulls the node.
+    checks = {
+        "db": {"ok": db_ok, **({"error": db_err} if db_err else {})},
+        "redis": {"ok": redis_ok, **({"error": redis_err} if redis_err else {})},
+        "livekit": {"ok": lk_ok, **({"error": lk_err} if lk_err else {})},
+    }
+    healthy = db_ok and redis_ok and lk_ok
+    status = "ok" if healthy else ("unhealthy" if not db_ok else "degraded")
+    code = 200 if db_ok else 503
+    return JSONResponse({"status": status, "checks": checks}, status_code=code)
 
 
 @app.get("/metrics")
@@ -2541,6 +2802,59 @@ async def brain_handoff_put(request: Request):
         return JSONResponse({"error": "handoff must be an array"}, status_code=400)
     stored = _handoff_set(t["tenant_id"], team, actor=t["tenant_id"])
     return JSONResponse({"handoff": stored})
+
+
+@app.post("/brain/handoff/add")
+async def brain_handoff_add(request: Request):
+    """ADD/UPDATE a SINGLE handoff team member (vs PUT which replaces the whole list).
+    write-role gated; tenant from TOKEN only (never body). Body = {phone, whatsapp?, role?,
+    hours?, priority?, enabled?}. Phone MUST be a valid +91 Indian mobile. Idempotent: re-adding
+    the same number updates it. Returns the full priority-sorted list."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden()
+    if _brain_mod is None:
+        return JSONResponse({"error": "brain module unavailable"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object {phone,...}"}, status_code=400)
+    body.pop("org_id", None)              # RT-5: never honour a body-supplied tenant
+    body.pop("tenant_id", None)
+    stored, err = _handoff_add_one(t["tenant_id"], body, actor=t["tenant_id"])
+    if err:
+        return JSONResponse({"error": err, "handoff": stored}, status_code=400)
+    return JSONResponse({"handoff": stored, "ok": True})
+
+
+@app.delete("/brain/handoff/remove")
+async def brain_handoff_remove(request: Request):
+    """REMOVE a SINGLE handoff member by phone. write-role gated; tenant from TOKEN only.
+    Phone via ?phone= or JSON body {phone}. Returns the remaining priority-sorted list +
+    removed:bool (idempotent — removing a missing number is a no-op, not an error)."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden()
+    if _brain_mod is None:
+        return JSONResponse({"error": "brain module unavailable"}, status_code=503)
+    phone = (request.query_params.get("phone") or "").strip()
+    if not phone:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                phone = str(body.get("phone", "") or "").strip()
+        except Exception:  # noqa: BLE001
+            phone = ""
+    stored, err, removed = _handoff_remove_one(t["tenant_id"], phone, actor=t["tenant_id"])
+    if err:
+        return JSONResponse({"error": err, "handoff": stored}, status_code=400)
+    return JSONResponse({"handoff": stored, "removed": removed, "ok": True})
 
 
 @app.post("/handoff/notify")
@@ -2979,9 +3293,21 @@ def _coerce_fields(fields: dict) -> dict:
     # Defaults OFF so nothing fires until the user enables it AND adds WA_* creds.
     out["wa_followup"] = bool(out.get("wa_followup", False))
     for k in ("wa_template_qualified", "wa_template_noanswer",
-              "wa_template_interested", "wa_template_callback"):
+              "wa_template_interested", "wa_template_callback",
+              # #10(b) BROCHURE: per-campaign brochure PDF (Spaces key + public/CDN url +
+              # display filename), populated by POST /campaigns/{cid}/brochure upload route.
+              "brochure_pdf_url", "brochure_pdf_key", "brochure_pdf_name"):
         v = out.get(k)
         out[k] = str(v).strip() if v is not None else ""
+    # #10(c) per-campaign override for the post-call WhatsApp score-gate (blank -> global).
+    msc = out.get("wa_followup_min_score")
+    if msc in (None, ""):
+        out["wa_followup_min_score"] = ""
+    else:
+        try:
+            out["wa_followup_min_score"] = int(msc)
+        except Exception:  # noqa: BLE001
+            out["wa_followup_min_score"] = ""
     # list-of-strings
     for k in ("usps", "talking_points", "qualifying_questions"):
         v = out.get(k)
@@ -3150,6 +3476,83 @@ async def update_campaign(request: Request, cid: str, fields_json: str = Form(""
         pass
     _audit(request, t, "campaign.update", "campaign", d["id"], meta={"name": d.get("name")})
     return JSONResponse({"id": d["id"], "name": d["name"]})
+
+
+@app.post("/campaigns/{cid}/brochure")
+async def upload_campaign_brochure(request: Request, cid: str,
+                                   pdf: UploadFile | None = File(None)):
+    """#10(b) BROCHURE: upload a per-campaign brochure PDF to DO Spaces and store its key +
+    url on the campaign (fields.brochure_pdf_url / brochure_pdf_key / brochure_pdf_name). The
+    file is stored PRIVATE (the live bucket has object-ACLs disabled); the post-call sender
+    mints a short-lived presigned GET URL for Meta to fetch. Tenant-scoped, write-gated."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden("read-only role cannot edit campaigns")
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if pdf is None:
+        return JSONResponse({"error": "pdf file is required (form field 'pdf')"},
+                            status_code=400)
+    try:
+        data = await pdf.read()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"could not read upload: {repr(exc)[:120]}"},
+                            status_code=400)
+    if not data:
+        return JSONResponse({"error": "empty file"}, status_code=400)
+    if len(data) > 25 * 1024 * 1024:  # WhatsApp document cap is 100MB; keep brochures lean
+        return JSONResponse({"error": "brochure too large (max 25MB)"}, status_code=413)
+    # Light PDF sniff (don't hard-block, but reject obviously-wrong types).
+    if not (data[:5] == b"%PDF-" or (pdf.content_type or "").lower() == "application/pdf"):
+        return JSONResponse({"error": "file does not look like a PDF"}, status_code=415)
+    fname = "".join(ch for ch in (pdf.filename or "brochure.pdf")
+                    if ch.isalnum() or ch in "-_. ").strip() or "brochure.pdf"
+    if not fname.lower().endswith(".pdf"):
+        fname = fname + ".pdf"
+    # Store on Spaces (no ACL -> private object; presigned at send time). Reuse the shared
+    # media_gen.spaces boto3 client (READ-ONLY reuse of the proven AI-Asset client).
+    try:
+        from media_gen import spaces as _spaces
+        cli = _spaces._client()
+        if cli is None:
+            return JSONResponse({"error": "object storage not configured"},
+                                status_code=503)
+        import uuid as _uuid
+        bucket = (os.getenv("SPACES_BUCKET") or "").strip()
+        safe_cid = "".join(ch for ch in cid if ch.isalnum() or ch in "-_")
+        key = f"wa_brochures/{safe_cid}/{_uuid.uuid4().hex}.pdf"
+        cli.put_object(Bucket=bucket, Key=key, Body=data,
+                       ContentType="application/pdf")
+        public_url = _spaces._public_url(key)  # canonical reference (may be 403 if private)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"upload failed: {type(exc).__name__}"},
+                            status_code=502)
+    # Persist onto the campaign fields.
+    try:
+        fields = d.get("fields") or {}
+        fields["brochure_pdf_url"] = public_url
+        fields["brochure_pdf_key"] = key
+        fields["brochure_pdf_name"] = fname
+        d["fields"] = _coerce_fields(fields)
+        safe = "".join(ch for ch in cid if ch.isalnum() or ch in "-_")
+        (CAMPAIGN_DIR / f"{safe}.json").write_text(
+            json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"saved file but could not update campaign: "
+                                      f"{repr(exc)[:120]}"}, status_code=500)
+    try:
+        if _store is not None:
+            _store.mirror_campaign_upsert(d)
+    except Exception:  # noqa: BLE001
+        pass
+    _audit(request, t, "campaign.brochure", "campaign", d["id"],
+           meta={"key": key, "name": fname, "bytes": len(data)})
+    return JSONResponse({"ok": True, "brochure_pdf_key": key,
+                         "brochure_pdf_url": public_url, "brochure_pdf_name": fname,
+                         "bytes": len(data)})
 
 
 @app.delete("/campaigns/{cid}")
@@ -4671,7 +5074,10 @@ async def whatsapp_send(request: Request, to: str = Form(""), template: str = Fo
     _audit(request, t, "whatsapp.send", "whatsapp", to_n, channel="whatsapp",
            meta={"status": result.get("status")})
     return JSONResponse({"ok": bool(result.get("ok")), "status": result.get("status"),
-                         "to": to_n, "configured": bool(wa_mod and wa_mod.is_configured())},
+                         "to": to_n, "configured": bool(wa_mod and wa_mod.is_configured()),
+                         # WAFX: surface Meta's REAL error (141006 payment, template-not-registered,
+                         # etc.) so the panel shows the true reason instead of "try again".
+                         "error": result.get("meta_error")},
                         status_code=code)
 
 

@@ -579,6 +579,74 @@ def handoff_list(tenant_id: str) -> list[dict]:
         return []
 
 
+# ── HANDOFF-LIST MUTATION (tenant-scoped, in-process via the brain package) ──────────────────────
+# WHY in-process (not the loopback like other tools): the loopback carries the box's ADMIN credential,
+# so a write over HTTP would always target the ADMIN tenant — wrong for a real vendor. The `handoff`
+# block lives on var/brain/<tenant>.json; the `brain` package (same box, importable) writes it WITH
+# version-bump + history + audit. So we mutate by the EXPLICIT tenant_id the agent passes (resolved
+# from the verified caller's token, NEVER from a body) -> correct tenant scoping + durable audit.
+def _hv_phone(phone: str) -> str:
+    """Canonicalise to +91XXXXXXXXXX; "" when not a valid Indian mobile (rejects malformed adds)."""
+    n = _norm_phone(phone or "")
+    return n if (n.startswith("+91") and len(n) == 13 and n[1:].isdigit()) else ""
+
+
+def add_handoff(tenant_id: str, phone: str, role: str = "", priority: int = 0,
+                whatsapp: str = "", hours: str = "", enabled: bool = True) -> dict:
+    """ADD/UPDATE one handoff team member for THIS tenant. Idempotent (re-adding a number updates it).
+    Validates the +91 format. Returns {ok, handoff:[...], note}. NEVER raises (spoken-friendly note)."""
+    if not tenant_id:
+        return {"ok": False, "note": "no_tenant"}
+    ph = _hv_phone(phone)
+    if not ph:
+        return {"ok": False, "note": "invalid_phone",
+                "spoken": "That number doesn't look like a valid Indian mobile — please say it as a 10-digit number."}
+    try:
+        import brain as _brain  # in-process, versioned + audited write
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "note": "brain_unavailable"}
+    cur = handoff_list(tenant_id)
+    cur = [h for h in cur if (h.get("phone") or "") != ph]   # de-dup by canonical phone
+    try:
+        prio = int(priority or 0)
+    except Exception:  # noqa: BLE001
+        prio = 0
+    if prio <= 0:
+        prio = (max([int(h.get("priority", 0) or 0) for h in cur], default=0) + 1) if cur else 1
+    wa = _hv_phone(whatsapp) or ph
+    cur.append({"phone": ph, "whatsapp": wa, "role": str(role or ""),
+                "hours": str(hours or ""), "priority": prio, "enabled": bool(enabled)})
+    cur.sort(key=lambda x: int(x.get("priority", 99) or 99))
+    try:
+        _brain.upsert_profile(tenant_id, {"handoff": cur}, actor=tenant_id)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "note": "write_failed"}
+    return {"ok": True, "handoff": handoff_list(tenant_id), "added": ph}
+
+
+def remove_handoff(tenant_id: str, phone: str) -> dict:
+    """REMOVE one handoff member by phone for THIS tenant. Idempotent. Returns {ok, removed, handoff}."""
+    if not tenant_id:
+        return {"ok": False, "note": "no_tenant"}
+    target = _hv_phone(phone) or _norm_phone(phone or "") or str(phone or "").strip()
+    if not target:
+        return {"ok": False, "note": "no_phone"}
+    try:
+        import brain as _brain
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "note": "brain_unavailable"}
+    cur = handoff_list(tenant_id)
+    kept = [h for h in cur
+            if (h.get("phone") or "") != target and (h.get("whatsapp") or "") != target]
+    if len(kept) == len(cur):
+        return {"ok": True, "removed": False, "handoff": cur}   # not present == no-op
+    try:
+        _brain.upsert_profile(tenant_id, {"handoff": kept}, actor=tenant_id)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "note": "write_failed"}
+    return {"ok": True, "removed": True, "handoff": handoff_list(tenant_id)}
+
+
 def notify_handoff_team(name: str, phone: str, summary: str = "", score: int = 0) -> dict:
     """Fire the HOT-LEAD WhatsApp to the vendor's handoff team via the caller.py loopback
     (/handoff/notify). Used by the warm-transfer fallback (no human answered) so the lead is

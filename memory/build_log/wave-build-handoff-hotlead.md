@@ -100,3 +100,47 @@ STRING ONLY (never edits the trunk/dispatch). Restarted ONLY famit-caller + aim-
   ManagerAgent + CustomerSalesAgent; instruction mentions in `_build_instructions` + `_build_sales_instructions`.
 - Design grounding: design/research-livekit-handoff.md (WarmTransferTask = primary, carrier-agnostic),
   design/plan-handoff-hotlead.md (the 3-part map).
+
+---
+
+## ADDENDUM — HOTL CONFIG LAYER (2026-06-12, additive single-entry CRUD + conversational tools)
+
+Built ON TOP of the working bridge (untouched). The prior wave shipped GET/PUT /brain/handoff +
+handoff_list + the warm bridge; this adds per-entry CRUD + voice/chat management + a tenant-scoping proof.
+
+### caller.py (3 helpers + 2 routes)
+- `_handoff_valid_phone(phone)` — norm() then REQUIRE +91 + 13 chars (rejects malformed adds).
+- `_handoff_add_one(tenant, entry)` / `_handoff_remove_one(tenant, phone)` — single add/update (idempotent
+  by canonical phone, auto priority=max+1) / single remove (idempotent); both reuse `_handoff_set` so
+  versioning/audit/history stay in ONE place.
+- `_handoff_get/_set` now carry an `enabled` flag (default-True — already-seeded entries keep working).
+- `POST /brain/handoff/add` (add/UPDATE one) + `DELETE /brain/handoff/remove` (?phone= or body) — write-role
+  gated, TENANT-FROM-TOKEN (strip body org_id/tenant_id; RT-5). Invalid phone → 400 clear error.
+
+### ai_manager/voice_tools.py
+- `add_handoff(tenant_id, phone, role, priority, whatsapp, ...)` / `remove_handoff(tenant_id, phone)` —
+  mutate IN-PROCESS via `brain.upsert_profile(tenant_id, {"handoff": list})` (versioned+audited), NOT the
+  loopback (loopback carries the box ADMIN cred → would always hit the admin tenant; wrong for a vendor).
+  +91-validated; `handoff_list` reused for read.
+
+### aim_voice_agent.py
+- ManagerAgent `@function_tool list_handoff / add_handoff / remove_handoff` — PIN-gated (self._verified),
+  loose strings strict-off (priority via _to_int), `_say_filler` for no dead air. Manager system-prompt bullet
+  added so the LLM calls them ("add Rajesh +91… to my handoff team", "list my handoff team").
+
+### SMOKE (real loopback HTTP)
+- admin CRUD: list(2 founders) → add +919999000011 → list(3) → invalid "12345" → 400 → delete → list(2). ✅
+- TENANT-SCOPING: minted hmac token for real tenant `21d0a13603da` (axcrio) via caller._make_token; B added
+  +918888000022 and saw ONLY it; admin list stayed the 2 founder numbers (no B leak); B never saw founder
+  numbers; cleanup removed=True. ✅  (note: _verify_token → None for an UNREGISTERED tenant → 401; use a real /tenants id.)
+- voice_tools add/remove/list importable on the venv; ManagerAgent tools present. ✅
+
+### EARNER GATE before+after = PASS
+- outbound /run → +917861019021 RANG both times (rooms `famit-917861019021-a3ff67` + `…-b908c8`, AI opener
+  spoken, USER_REJECTED = a real ring). agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent
+  PID 1477083 untouched; 0 5xx; only famit-caller + aim-voice-agent restarted.
+
+### Backups / state
+- `*.HOTLbak.20260612-170656` (caller.py / ai_manager/voice_tools.py / aim_voice_agent.py). ROLLBACK: restore
+  the 3 + restart famit-caller + aim-voice-agent. Box ledger: /opt/famit-agent/ai_manager/HANDOFF_CONFIG_STATE.md.
+- Founder seed INTACT: +916375548830 (p1), +917861019021 (p2).
