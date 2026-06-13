@@ -157,6 +157,69 @@ AGENT = cfg_get("LIVEKIT_AGENT_NAME", "capsy")
 LK_URL = cfg_get("LIVEKIT_URL", "ws://127.0.0.1:7880")
 LK_KEY = cfg_require("LIVEKIT_API_KEY")
 LK_SECRET = cfg_require("LIVEKIT_API_SECRET")
+
+
+# ---------- REC-B: server-side auto-egress for OUTBOUND calls ----------
+# Every outbound campaign call records server-side via LiveKit room-composite AUTO-egress
+# (attached to CreateRoomRequest.egress at room create — NOT agent.py-side). Audio-only OGG ->
+# DO Spaces (S3Upload). DORMANT-UNTIL-CREDS, identical posture to the inbound AIM recorder:
+# arms only when AIM_RECORDING_ENABLED is truthy AND the Spaces creds are complete; otherwise a
+# no-op (egress=None) so the dial path is byte-identical to pre-REC-B. NEVER raises — an egress
+# build failure must never block a paid outbound call (earner-safety: the call always dials).
+# Reuses the SAME AIM_SPACES_* creds the inbound recorder already uses (bucket capsy-recordings).
+def _outbound_recording_enabled() -> bool:
+    if (cfg_get("AIM_RECORDING_ENABLED", "") or "").strip().lower() not in ("1", "true", "yes", "on"):
+        return False
+    need = ("AIM_SPACES_BUCKET", "AIM_SPACES_KEY", "AIM_SPACES_SECRET", "AIM_SPACES_ENDPOINT")
+    return all((cfg_get(k, "") or "").strip() for k in need)
+
+
+def _outbound_recording_key(call_id: str) -> str:
+    """Deterministic Spaces object key: outbound-recordings/YYYY/MM/DD/<call_id>.ogg.
+    Chosen BEFORE egress confirms so the call row can store it immediately; the object lands here."""
+    day = time.strftime("%Y/%m/%d")
+    cid = (call_id or uuid.uuid4().hex)[:48]
+    return f"outbound-recordings/{day}/{cid}.ogg"
+
+
+def _build_outbound_egress(call_id: str):
+    """Build a RoomEgress(room=RoomCompositeEgressRequest(audio-only OGG -> Spaces)) for embedding
+    in CreateRoomRequest.egress. Returns (egress_obj_or_None, recording_key, bucket). Never raises;
+    returns (None, "", "") when disabled/dormant or on any build error (call dials unrecorded)."""
+    try:
+        if not _outbound_recording_enabled():
+            return None, "", ""
+        bucket = (cfg_get("AIM_SPACES_BUCKET", "") or "").strip()
+        region = (cfg_get("AIM_SPACES_REGION", "") or "us-east-1").strip()
+        endpoint = (cfg_get("AIM_SPACES_ENDPOINT", "") or "").strip()
+        s3key = (cfg_get("AIM_SPACES_KEY", "") or "").strip()
+        s3secret = (cfg_get("AIM_SPACES_SECRET", "") or "").strip()
+        key = _outbound_recording_key(call_id)
+        file_out = api.EncodedFileOutput(
+            file_type=api.EncodedFileType.OGG,   # audio-only (no video on a SIP call)
+            filepath=key,
+            s3=api.S3Upload(
+                access_key=s3key, secret=s3secret, bucket=bucket,
+                region=region, endpoint=endpoint, force_path_style=True,
+            ),
+        )
+        egress = api.RoomEgress(
+            room=api.RoomCompositeEgressRequest(
+                audio_only=True,
+                file_outputs=[file_out],
+            )
+        )
+        return egress, key, bucket
+    except Exception as exc:  # noqa: BLE001
+        try:
+            import logging as _lg_rec
+            _lg_rec.getLogger("famit-caller").warning(
+                "REC-B outbound egress build failed (call dials unrecorded): %r", exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return None, "", ""
+
+
 USER = cfg_get("CALLER_USER", "famit")
 PW = cfg_get("CALLER_PASS", "Famit@2026")
 GROQ_KEY = cfg_require("GROQ_API_KEY")
@@ -589,7 +652,7 @@ def authed(request: Request) -> bool:
 
 
 def need_auth() -> Response:
-    return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Famit"'})
+    return Response(status_code=401)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1515,6 +1578,7 @@ def _handoff_get(tenant_id: str) -> list[dict]:
             if not ph and not wa:
                 continue
             out.append({"phone": ph, "whatsapp": wa,
+                        "name": str(h.get("name", "") or ""),
                         "role": str(h.get("role", "") or ""),
                         "hours": str(h.get("hours", "") or ""),
                         "priority": int(h.get("priority", 99) or 99),
@@ -1543,6 +1607,7 @@ def _handoff_set(tenant_id: str, team: list, actor: str = "system") -> list[dict
             continue
         clean.append({"phone": norm(ph) or ph,
                       "whatsapp": norm(wa) or wa or (norm(ph) or ph),
+                      "name": str(h.get("name", "") or ""),
                       "role": str(h.get("role", "") or ""),
                       "hours": str(h.get("hours", "") or ""),
                       "priority": int(h.get("priority", 99) or 99),
@@ -1591,6 +1656,7 @@ def _handoff_add_one(tenant_id: str, entry: dict, actor: str = "system") -> tupl
     if prio <= 0:
         prio = (max([int(h.get("priority", 0) or 0) for h in cur], default=0) + 1) if cur else 1
     cur.append({"phone": ph, "whatsapp": wa,
+                "name": str(entry.get("name", "") or ""),
                 "role": str(entry.get("role", "") or ""),
                 "hours": str(entry.get("hours", "") or ""),
                 "priority": prio,
@@ -2465,8 +2531,14 @@ async def run_job(job_id: str) -> None:
                     await _finalize_call(it, now, tenant_id, cid, camp_fields)
             active = still
             # P0.1 window gate: out of window + nothing active -> idle and auto-resume.
+            # LPR-FORCE-WINDOW: an AIM/panel "dial now" job (force_window) bypasses this idle
+            # so "run <campaign>" actually rings even outside 09-21 IST. SIP/trunk/agent.py
+            # are UNTOUCHED — only this compliance idle is skipped for an explicitly-forced job.
             in_win, win = _in_window(camp_fields)
-            if not in_win:
+            if job.get("force_window"):
+                in_win = True
+                job.pop("paused_reason", None)
+            elif not in_win:
                 job["paused_reason"] = "out_of_window"
                 if not active and idx < len(pending):
                     await asyncio.sleep(60)
@@ -2515,8 +2587,13 @@ async def run_job(job_id: str) -> None:
                     md_obj["variant_label"] = v_label
                     md_obj["fields_override"] = vdef.get("fields_override") or {}
                 md = json.dumps(md_obj)
+                # REC-B: call_id chosen BEFORE create_room so the recording object key embeds it
+                # (the call row id == the <call_id> in outbound-recordings/.../<call_id>.ogg).
+                _call_id = uuid.uuid4().hex[:10]
+                _egress, _rec_key, _rec_bucket = _build_outbound_egress(_call_id)
                 try:
-                    await lk.room.create_room(api.CreateRoomRequest(name=room, empty_timeout=300, departure_timeout=20))
+                    await lk.room.create_room(api.CreateRoomRequest(
+                        name=room, empty_timeout=300, departure_timeout=20, egress=_egress))
                     await lk.agent_dispatch.create_dispatch(api.CreateAgentDispatchRequest(
                         room=room, agent_name=AGENT, metadata=md))
                     _sip_resp = await lk.sip.create_sip_participant(api.CreateSIPParticipantRequest(
@@ -2525,13 +2602,19 @@ async def run_job(job_id: str) -> None:
                         wait_until_answered=False, ringing_timeout=Duration(seconds=45)))
                     _sip_call_id = (getattr(_sip_resp, "sip_call_id", "") or "").strip()
                     it["status"] = "calling"; it["room"] = room; it["launched_at"] = time.time()
-                    rec = {"id": uuid.uuid4().hex[:10], "tenant_id": tenant_id,
+                    rec = {"id": _call_id, "tenant_id": tenant_id,
                            "name": it.get("name", ""), "phone": num,
                            "campaign_id": cid, "campaign_name": cname, "status": "calling",
                            "variant_id": v_id, "variant_label": v_label,
                            "started_at": datetime.now().isoformat(timespec="seconds"),
                            "ended_at": "", "duration_s": 0, "room": room,
-                           "sip_call_id": _sip_call_id}
+                           "sip_call_id": _sip_call_id,
+                           # REC-B server-side auto-egress handle (additive). egress_id is assigned
+                           # asynchronously by LiveKit (auto-egress returns none at room-create), so the
+                           # AUTHORITATIVE handle is the deterministic recording_key (object lands there).
+                           "recording_key": _rec_key,
+                           "recording_bucket": _rec_bucket,
+                           "recording_status": ("recording" if _egress is not None else "disabled")}
                     it["_rec"] = rec
                     record_call(rec)
                     ACTIVE_CALLS[tenant_id] = ACTIVE_CALLS.get(tenant_id, 0) + 1
@@ -3805,6 +3888,7 @@ async def run(request: Request, campaign_id: str = Form(""), leads: str = Form("
               use_stored: str = Form(""), concurrency: int = Form(3),
               hourly_cap: int = Form(200), daily_cap: int = Form(1000),
               force: str = Form(""),
+              now: str = Form(""),  # LPR-FORCE-WINDOW: AIM "run now" -> bypass the calling-window idle in run_job
               # RC2 composable OPTIONAL audience selectors (all default ""/absent
               # -> legacy behaviour: csv + leads-text + use_stored unchanged).
               source_mode: str = Form(""), lead_ids: str = Form(""),
@@ -3875,6 +3959,9 @@ async def run(request: Request, campaign_id: str = Form(""), leads: str = Form("
         "state": "queued", "campaign_id": cid, "tenant_id": tenant_id,
         "concurrency": conc,
         "hourly_cap": max(1, int(hourly_cap)), "daily_cap": max(1, int(daily_cap)),
+        # LPR-FORCE-WINDOW: when AIM (or the panel) explicitly asks to dial NOW, run_job
+        # skips the out-of-window idle. Default False -> normal TRAI 09-21 window honoured.
+        "force_window": bool(str(now).strip()),
         "leads": [{"name": x["name"], "num": x["num"], "status": "queued", "room": "",
                    "launched_at": 0.0, "attempt": 0}
                   for x in uniq],
@@ -3884,7 +3971,8 @@ async def run(request: Request, campaign_id: str = Form(""), leads: str = Form("
            meta={"campaign_id": cid, "count": len(uniq), "suppressed": suppressed_count})
     # P0.1 calling-window gate: out of window (and not forced) -> 202, job still created + auto-resumes.
     in_win, win = _in_window(camp_fields)
-    if not in_win and not force:
+    _dial_now = bool(str(now).strip())  # LPR-FORCE-WINDOW: explicit dial-now bypasses the window
+    if not in_win and not force and not _dial_now:
         return JSONResponse({"queued_out_of_window": True, "window": win, "job_id": job_id,
                              "count": len(uniq), "suppressed_count": suppressed_count,
                              "breakdown": temp_breakdown}, status_code=202)
@@ -3941,6 +4029,175 @@ async def call_detail(request: Request, call_id: str):
         return guard
     transcript = _read(TRANSCRIPT_DIR / f"{rec.get('room', '')}.json", {}) if rec.get("room") else {}
     return JSONResponse({"call": rec, "transcript": transcript})
+
+
+# ==============================================================================================
+# REC-C: UNIFIED RECORDINGS API (tenant-scoped). One shape over BOTH call directions:
+#   - OUTBOUND: the JSON CALLS store (REC-B server-side auto-egress; recording_key embeds call_id).
+#   - INBOUND : the ai_manager_sessions PG table (REC-A; recording_egress_id + finalize-on-read).
+# Every recording url is a SHORT-LIVED presigned GET (the capsy-recordings bucket is PRIVATE) that is
+# range-streamable + downloadable; the bucket is NEVER made public. Tenant is pinned from the TOKEN
+# (resolve_tenant) exactly like /contacts -> a tenant can only read its OWN recordings (RLS on the
+# inbound PG side; tenant_id filter + BOLA guard on the outbound JSON side). All helpers NEVER raise
+# (a Spaces/boto3/PG hiccup degrades to has_recording with an empty url, never a 500).
+# additive: famit-caller only; agent.py / earner / trunks / firewall / SIP untouched.
+# ----------------------------------------------------------------------------------------------
+_REC_TERMINAL = ("uploaded", "failed", "disabled")
+
+
+def _rec_presign(bucket: str, key: str, expires_s: int = 3600) -> str:
+    """Mint a short-lived presigned GET for a Spaces recording object. Reuses the PROVEN AIM
+    recorder.presign (sigv4 + path-style, plays + serves 206 ranges). '' when no object / boto3
+    absent / any error -> the panel shows 'recorded, link unavailable' instead of a broken player."""
+    if not bucket or not key:
+        return ""
+    try:
+        from ai_manager import recorder as _recorder
+        return _recorder.presign(bucket, key, expires_s=int(expires_s)) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
+    """Shape ONE outbound call row (REC-B) into the unified recording item. The deterministic
+    recording_key IS the authoritative handle (auto-egress returns no id at room-create)."""
+    bucket = (rec.get("recording_bucket", "") or "")
+    key = (rec.get("recording_key", "") or "")
+    rstatus = (rec.get("recording_status", "") or "")
+    has_rec = bool(bucket and key and rstatus not in ("", "disabled"))
+    item = {
+        "call_id": rec.get("id", ""),
+        "direction": "outbound",
+        "phone": rec.get("phone", ""),
+        "name": rec.get("name", ""),
+        "campaign_id": rec.get("campaign_id", ""),
+        "started_at": rec.get("started_at", ""),
+        "duration_s": int(rec.get("duration_s", 0) or 0),
+        "status": rec.get("status", ""),
+        "recording_status": rstatus or ("disabled" if not key else ""),
+        "has_recording": has_rec,
+        "recording_presigned_url": (_rec_presign(bucket, key) if (presign and has_rec) else ""),
+    }
+    return item
+
+
+def _inbound_rec_items(tid: str, phone_n: str, *, presign: bool = True) -> list[dict]:
+    """All INBOUND (ai_manager_sessions) recordings for one phone, RLS-scoped to `tid`. Reuses the
+    AIM store (token-scoped vendor reads) + the REC-A finalize-on-read self-heal so a stuck
+    'recording'/0 row gets its true terminal status + duration from LiveKit ListEgress before we
+    presign. NEVER raises -> [] on any failure (PG down / module absent)."""
+    out: list[dict] = []
+    try:
+        from ai_manager import store as _store
+        if not _store.available():
+            return out
+        # list_sessions is RLS-scoped (engine.session(tenant_id=tid)); filter the voice rows for THIS phone.
+        rows = _store.list_sessions(tid, limit=200, channel="voice") or []
+        sids = [r.get("id") for r in rows
+                if (r.get("caller_phone", "") or "") == phone_n and r.get("id")]
+        for sid in sids:
+            full = _store.get_session(tid, sid)  # RLS-scoped; bucket/key/egress_id
+            if not full:
+                continue
+            bucket = (full.get("recording_bucket", "") or "")
+            key = (full.get("recording_key", "") or "")
+            rstatus = (full.get("recording_status", "") or "")
+            rdur = int(full.get("recording_duration_s", 0) or 0)
+            eg = (full.get("recording_egress_id", "") or "").strip()
+            # REC-A finalize-on-read self-heal: a fire-and-forget hangup write often loses the race, so
+            # reconcile the authoritative terminal state from LiveKit when the row still looks un-final.
+            if eg and (rstatus not in _REC_TERMINAL or rdur <= 0):
+                try:
+                    from ai_manager import recorder as _recorder
+                    fin = _recorder.finalize(eg)
+                    if fin.get("complete"):
+                        new_key = (fin.get("key", "") or "") or key
+                        new_dur = int(fin.get("duration_s", 0) or 0)
+                        try:
+                            _store.set_recording(tid, sid, status="uploaded",
+                                                 key=new_key, duration_s=new_dur)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        rstatus = "uploaded"
+                        if new_key:
+                            key = new_key
+                        if new_dur > 0:
+                            rdur = new_dur
+                    elif fin.get("status") == "failed":
+                        try:
+                            _store.set_recording(tid, sid, status="failed")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        rstatus = "failed"
+                except Exception:  # noqa: BLE001
+                    pass
+            has_rec = bool(bucket and key and rstatus not in ("", "disabled"))
+            out.append({
+                "call_id": sid,
+                "direction": "inbound",
+                "phone": full.get("caller_phone", "") or phone_n,
+                "name": "",
+                "campaign_id": "",
+                "started_at": str(full.get("started_at", "") or ""),
+                "duration_s": rdur,
+                "status": full.get("status", "") or "",
+                "recording_status": rstatus or ("disabled" if not key else ""),
+                "has_recording": has_rec,
+                "recording_presigned_url": (_rec_presign(bucket, key) if (presign and has_rec) else ""),
+            })
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+@app.get("/calls/{call_id}/recording")
+async def call_recording(request: Request, call_id: str):
+    """The recording for ONE outbound call (REC-B). Returns a freshly-minted presigned, range-
+    streamable + downloadable URL + metadata. Tenant pinned from token; BOLA-guarded (another
+    tenant's id -> 404). 404 when the call id is unknown; has_recording=False (url '') when the
+    call was placed before recording was armed / dialed unrecorded."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    rec = next((c for c in CALLS if c.get("id") == call_id), None)
+    if rec is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    guard = require_object(t, rec, not_found=True)   # cross-tenant -> 404 (don't reveal existence)
+    if guard is not None:
+        return guard
+    return JSONResponse({"recording": _outbound_rec_item(rec)})
+
+
+@app.get("/contacts/{phone}/recordings")
+async def contact_recordings(request: Request, phone: str):
+    """ALL recordings for one lead, UNIFIED across both directions (newest-first):
+      outbound calls (REC-B JSON store) + inbound AI-Manager sessions (REC-A PG table),
+    joined by the canonicalized phone. Each item: {call_id, direction, phone, started_at,
+    duration_s, status, recording_status, has_recording, recording_presigned_url}. Tenant pinned
+    from token (RLS on the inbound side, tenant_id filter on the outbound side) -> a tenant can
+    only ever see its OWN lead's recordings. NEVER raises -> a degraded side returns []."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    phone_n = norm(phone) or (phone or "")
+    items: list[dict] = []
+    # OUTBOUND: the tenant-scoped JSON calls store, matched on the canonicalized phone.
+    try:
+        for c in calls_for(t):
+            if norm(c.get("phone", "") or "") == phone_n or (c.get("phone", "") or "") == phone_n:
+                items.append(_outbound_rec_item(c))
+    except Exception:  # noqa: BLE001
+        pass
+    # INBOUND: the RLS-scoped ai_manager_sessions, matched on caller_phone (with finalize self-heal).
+    try:
+        items.extend(await asyncio.to_thread(
+            lambda: _inbound_rec_items(t["tenant_id"], phone_n)))
+    except Exception:  # noqa: BLE001
+        pass
+    items.sort(key=lambda x: (x.get("started_at", "") or ""), reverse=True)
+    n_rec = sum(1 for x in items if x.get("has_recording"))
+    return JSONResponse({"phone": phone_n, "recordings": items,
+                         "total": len(items), "with_recording": n_rec})
 
 
 @app.get("/stats")
@@ -6119,3 +6376,113 @@ if FEATURE_WHATSAPP_BUILDER and _build_wab_router is not None:
     except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
         import logging as _lg_wab
         _lg_wab.getLogger("famit-caller").warning("whatsapp-builder router mount failed", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LPR — PLATFORM PROVIDER KEY-STORE (super-admin only). Hot-reloadable: a key added
+# here reaches the live AIM rotation on the next pick() with NO redeploy/restart.
+# These are PLATFORM keys (Groq/Sarvam/SambaNova/OpenRouter), NOT per-tenant. Gated
+# by require_super_admin (legacy_pw EXCLUDED). Raw key NEVER returned — only masked.
+# Import-guarded: a missing llm_router can never crash startup or any other route.
+# ═══════════════════════════════════════════════════════════════════════════════
+try:
+    from llm_router import key_store as _pk_store, get_pool as _pk_get_pool  # noqa: E402
+except Exception:  # noqa: BLE001
+    _pk_store = None  # type: ignore
+    _pk_get_pool = None  # type: ignore
+
+_PK_PROVIDERS = ("groq", "sarvam", "sambanova", "openrouter")
+
+
+def _pk_unavailable():
+    return JSONResponse({"error": "provider key-store unavailable"}, status_code=503)
+
+
+@app.get("/admin/provider-keys")
+async def admin_provider_keys_list(request: Request):
+    """List platform provider keys (masked) grouped by provider. Raw key NEVER returned."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _pk_store is None:
+        return _pk_unavailable()
+    return JSONResponse({"providers": _pk_store.list_all_masked()})
+
+
+@app.post("/admin/provider-keys")
+async def admin_provider_keys_add(request: Request, provider: str = Form(...),
+                                  key: str = Form(...), label: str = Form("")):
+    """Add a provider key. Enters the live rotation on the next pick() (hot-reload)."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _pk_store is None:
+        return _pk_unavailable()
+    p = (provider or "").strip().lower()
+    if p not in _PK_PROVIDERS:
+        return JSONResponse({"error": "unknown provider", "allowed": list(_PK_PROVIDERS)}, status_code=400)
+    if not (key or "").strip():
+        return JSONResponse({"error": "empty key"}, status_code=400)
+    try:
+        res = _pk_store.add_key(p, key, label=label)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "add failed", "detail": type(exc).__name__}, status_code=400)
+    _audit(request, t, "provider_key.add", "provider_key", res.get("id", ""),
+           channel="control", meta={"provider": p, "masked": res.get("masked", ""),
+                                    "deduped": res.get("deduped", False)})
+    return JSONResponse({"ok": True, **res})
+
+
+@app.put("/admin/provider-keys/{key_id}")
+async def admin_provider_keys_update(request: Request, key_id: str,
+                                     enabled: str = Form(""), label: str = Form("")):
+    """Toggle enabled / relabel by id. Never edits the secret. Hot-reloads live."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _pk_store is None:
+        return _pk_unavailable()
+    en = None
+    if str(enabled).strip() != "":
+        en = str(enabled).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    lbl = label if str(label).strip() != "" else None
+    res = _pk_store.update_key(key_id, enabled=en, label=lbl)
+    if not res.get("ok"):
+        return JSONResponse({"error": "key not found", "id": key_id}, status_code=404)
+    _audit(request, t, "provider_key.update", "provider_key", key_id,
+           channel="control", meta={"enabled": en, "relabel": lbl is not None})
+    return JSONResponse(res)
+
+
+@app.delete("/admin/provider-keys/{key_id}")
+async def admin_provider_keys_delete(request: Request, key_id: str):
+    """Delete a provider key by id. Removed from rotation on the next pick()."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _pk_store is None:
+        return _pk_unavailable()
+    res = _pk_store.delete_key(key_id)
+    if not res.get("deleted"):
+        return JSONResponse({"error": "key not found", "id": key_id}, status_code=404)
+    _audit(request, t, "provider_key.delete", "provider_key", key_id, channel="control")
+    return JSONResponse(res)
+
+
+@app.get("/admin/provider-keys/status")
+async def admin_provider_keys_status(request: Request):
+    """Live pool view per key: cooling_until / pick_count / last_429_at / available.
+    Reads each pool's snapshot() (masked; no raw key)."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _pk_get_pool is None:
+        return _pk_unavailable()
+    out = {}
+    for p in _PK_PROVIDERS:
+        try:
+            pool = _pk_get_pool(p)
+            out[p] = pool.snapshot() if pool is not None else []
+        except Exception:  # noqa: BLE001
+            out[p] = []
+    return JSONResponse({"status": out})
