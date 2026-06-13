@@ -34,6 +34,7 @@ import { type SelectOption } from "@/types/select";
 import { type TabsOption } from "@/types/tabs";
 import HandoffTeam from "@/app/ai-manager/_handoff";
 import VoiceProviders from "./_voice-providers";
+import Stepper, { type Step } from "./_stepper";
 import { SOURCE_TABS, SOURCE_ID, TEMP_DEFS, type Temp } from "./_lib/types";
 import {
     type AudienceFilter,
@@ -60,6 +61,14 @@ function initials(name?: string): string {
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
+
+// The four steps of the Run flow. Pure labels — the stepper is presentational.
+const STEPS: Step[] = [
+    { label: "Campaign & Audience", hint: "Who gets called" },
+    { label: "Voice & Providers", hint: "Quality & cost" },
+    { label: "Pacing & Handoff", hint: "Speed & escalation" },
+    { label: "Review & Launch", hint: "Confirm & dial" },
+];
 
 export default function RunPage() {
     // ── Campaign ──
@@ -104,6 +113,9 @@ export default function RunPage() {
     const [queuedResult, setQueuedResult] = useState<RunResult | null>(null);
     const [insufficient, setInsufficient] = useState(false);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // ── Stepper position (pure layout state — single source of truth stays this component) ──
+    const [step, setStep] = useState(0);
 
     const { me } = useMe();
     const writable = canWrite(me);
@@ -329,17 +341,21 @@ export default function RunPage() {
         if (!campaignId) {
             setToastType("error");
             setToast("Please select a campaign");
+            setStep(0);
             return;
         }
         if (audience.length === 0 && sourceTab.id !== SOURCE_ID.all) {
             setToastType("error");
             setToast("No leads match the current audience — adjust your filters.");
+            setStep(0);
             return;
         }
         setStarting(true);
         setToast("");
         setQueuedResult(null);
         setInsufficient(false);
+        // Launching always lands on Review & Launch so live status is in view.
+        setStep(3);
         try {
             const result = await run(buildRunPayload());
             setJobId(result.job_id);
@@ -388,8 +404,47 @@ export default function RunPage() {
     const showTemperature = sourceTab.id === SOURCE_ID.temperature;
     const showManual = sourceTab.id === SOURCE_ID.manual;
 
+    // The single truth for the headline audience count, shared by the summary
+    // rail, the cost meter and the run payload (so the estimate matches dialed).
+    const audienceCount =
+        sourceTab.id === SOURCE_ID.all && audience.length === 0
+            ? storedLeads.length
+            : breakdown.total;
+
+    // ── Stepper gating ──
+    // Step 0 is valid once a campaign is chosen (and, for non-"all" modes, the
+    // audience is non-empty). Steps 1–2 are always passable. Step 3 is launch.
+    const step0Valid =
+        !!campaignId &&
+        (sourceTab.id === SOURCE_ID.all || audienceCount > 0);
+    // Furthest step the user may jump forward to. Lock step ≥1 until step 0 is
+    // valid; otherwise every step is reachable.
+    const maxReachable = step0Valid ? STEPS.length - 1 : 0;
+
+    const goNext = () => setStep((s) => Math.min(STEPS.length - 1, s + 1));
+    const goBack = () => setStep((s) => Math.max(0, s - 1));
+    const onStep = (i: number) => {
+        if (i <= maxReachable) setStep(i);
+    };
+
+    // Audience-count chip shown in the step-1 header.
+    const audienceChip = (
+        <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full bg-b-surface1 border border-s-subtle text-caption text-t-secondary dark:bg-shade-04/40">
+            <span className="size-1.5 rounded-full bg-primary-02" />
+            <span className="tabular-nums text-t-primary font-medium">
+                {loadingLeads &&
+                sourceTab.id === SOURCE_ID.all &&
+                audience.length === 0
+                    ? "…"
+                    : audienceCount}
+            </span>
+            in audience
+        </span>
+    );
+
     return (
         <Layout title="Run">
+            {/* ── Banners (verbatim behaviour) ── */}
             {toast && (
                 <div
                     className={`mb-3 flex items-start justify-between gap-2 p-3.5 rounded-3xl text-body-2 ${
@@ -453,497 +508,811 @@ export default function RunPage() {
                 </div>
             )}
 
+            {/* ── Sticky stepper spine ── */}
+            <div className="sticky top-2 z-20 mb-4">
+                <Stepper
+                    steps={STEPS}
+                    step={step}
+                    maxReachable={maxReachable}
+                    onStep={onStep}
+                />
+            </div>
+
             <div className="flex gap-6 max-lg:flex-col">
-                {/* ── LEFT: scrollable audience-builder rail ── */}
-                <div className="w-[26rem] max-lg:w-full shrink-0 flex flex-col gap-4 max-h-[calc(100vh-12rem)] max-lg:max-h-none overflow-y-auto max-lg:overflow-visible pr-1 -mr-1 pb-2 scrollbar scrollbar-thumb-t-tertiary/40 scrollbar-track-transparent">
-                    {/* 1 ── Campaign ── */}
-                    <Card title="Campaign">
-                        <div className="px-5 pb-5 max-lg:px-3">
-                            <Select
-                                label="Choose campaign"
-                                value={campaign}
-                                onChange={setCampaign}
-                                options={campaignOptions}
-                                placeholder={
-                                    campaigns.length === 0
-                                        ? "No campaigns available"
-                                        : "Select a campaign"
-                                }
-                            />
-                            <div className="mt-3 flex items-center gap-2 text-caption text-t-tertiary">
-                                <Icon
-                                    name="clock"
-                                    className="size-4 fill-t-tertiary shrink-0"
-                                />
-                                Calls outside the calling window are queued and
-                                dialed automatically.
-                            </div>
-                        </div>
-                    </Card>
-
-                    {/* 2 ── Audience source tabs ── */}
-                    <Card title="Audience source">
-                        <div className="px-5 pb-5 max-lg:px-3">
-                            <Tabs
-                                items={SOURCE_TABS}
-                                value={sourceTab}
-                                setValue={setSourceTab}
-                                className="flex-wrap"
-                                classButton="!h-10 !px-4 text-button"
-                            />
-                            <p className="mt-3 text-caption text-t-tertiary">
-                                Filters compose — pick a temperature and/or a
-                                file, then hand-pick if you want. The preview
-                                always reflects exactly who will be dialed.
-                            </p>
-                        </div>
-                    </Card>
-
-                    {/* 3 ── Upload + batch list (source = By upload) ── */}
-                    {showUpload && (
-                        <Card title="Upload leads (CSV / Excel)">
-                            <div className="px-5 pb-5 max-lg:px-3 space-y-4">
-                                <FieldFiles
-                                    onChange={(f) => setUploadFile(f)}
-                                />
-                                {/* widen accept to xlsx via the hidden input that
-                                    FieldFiles renders — handled by the file picker;
-                                    server routes by extension. */}
-                                {uploadFile && writable && (
-                                    <Button
-                                        isBlack
-                                        className="w-full justify-center"
-                                        onClick={handleUpload}
-                                        disabled={uploading}
-                                    >
-                                        {uploading
-                                            ? "Importing…"
-                                            : `Import ${uploadFile.name}`}
-                                    </Button>
-                                )}
-
-                                <div className="pt-1">
-                                    <div className="text-button mb-2.5">
-                                        Uploaded batches
+                {/* ── LEFT: ONE focused step panel at a time ── */}
+                <div className="flex-1 min-w-0">
+                    {/* ① Campaign & Audience ─────────────────────────────── */}
+                    {step === 0 && (
+                        <div key="step-0" className="step-reveal flex flex-col gap-4">
+                            <Card title="Campaign">
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <Select
+                                        label="Choose campaign"
+                                        value={campaign}
+                                        onChange={setCampaign}
+                                        options={campaignOptions}
+                                        placeholder={
+                                            campaigns.length === 0
+                                                ? "No campaigns available"
+                                                : "Select a campaign"
+                                        }
+                                    />
+                                    <div className="mt-3 flex items-center gap-2 text-caption text-t-tertiary">
+                                        <Icon
+                                            name="clock"
+                                            className="size-4 fill-t-tertiary shrink-0"
+                                        />
+                                        Calls outside the calling window are
+                                        queued and dialed automatically.
                                     </div>
-                                    {batches.length === 0 ? (
-                                        <div className="p-4 rounded-2xl bg-b-surface1 border border-s-subtle text-caption text-t-tertiary dark:bg-shade-04/30">
-                                            No uploaded files yet. Drop a CSV or
-                                            Excel file above — each import
-                                            becomes a selectable batch.
+                                </div>
+                            </Card>
+
+                            <Card
+                                title="Audience"
+                                headContent={
+                                    <div className="mr-1">{audienceChip}</div>
+                                }
+                            >
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <Tabs
+                                        items={SOURCE_TABS}
+                                        value={sourceTab}
+                                        setValue={setSourceTab}
+                                        className="flex-wrap"
+                                        classButton="!h-10 !px-4 text-button"
+                                    />
+                                    <p className="mt-3 text-caption text-t-tertiary">
+                                        Filters compose — pick a temperature
+                                        and/or a file, then hand-pick if you
+                                        want. The preview always reflects exactly
+                                        who will be dialed.
+                                    </p>
+
+                                    {/* Progressive disclosure: only the active
+                                        source mode's controls render. */}
+                                    {showUpload && (
+                                        <div className="mt-5 space-y-4">
+                                            <FieldFiles
+                                                onChange={(f) =>
+                                                    setUploadFile(f)
+                                                }
+                                            />
+                                            {uploadFile && writable && (
+                                                <Button
+                                                    isBlack
+                                                    className="w-full justify-center"
+                                                    onClick={handleUpload}
+                                                    disabled={uploading}
+                                                >
+                                                    {uploading
+                                                        ? "Importing…"
+                                                        : `Import ${uploadFile.name}`}
+                                                </Button>
+                                            )}
+
+                                            <div className="pt-1">
+                                                <div className="text-button mb-2.5">
+                                                    Uploaded batches
+                                                </div>
+                                                {batches.length === 0 ? (
+                                                    <div className="p-4 rounded-2xl bg-b-surface1 border border-s-subtle text-caption text-t-tertiary dark:bg-shade-04/30">
+                                                        No uploaded files yet.
+                                                        Drop a CSV or Excel file
+                                                        above — each import
+                                                        becomes a selectable
+                                                        batch.
+                                                    </div>
+                                                ) : (
+                                                    <div className="overflow-hidden rounded-2xl border border-s-subtle">
+                                                        <Table
+                                                            cellsThead={
+                                                                <>
+                                                                    <th>File</th>
+                                                                    <th className="text-right">
+                                                                        Leads
+                                                                    </th>
+                                                                </>
+                                                            }
+                                                        >
+                                                            {batches.map((b) => {
+                                                                const on =
+                                                                    selectedBatchIds.has(
+                                                                        b.batch_id
+                                                                    );
+                                                                return (
+                                                                    <TableRow
+                                                                        key={
+                                                                            b.batch_id
+                                                                        }
+                                                                        selectedRows={
+                                                                            on
+                                                                        }
+                                                                        onRowSelect={() =>
+                                                                            toggleBatch(
+                                                                                b.batch_id
+                                                                            )
+                                                                        }
+                                                                    >
+                                                                        <td>
+                                                                            <div className="font-medium text-t-primary truncate max-w-40">
+                                                                                {
+                                                                                    b.source_file
+                                                                                }
+                                                                            </div>
+                                                                            <div className="text-caption text-t-tertiary">
+                                                                                {fmtDate(
+                                                                                    b.added_at
+                                                                                )}
+                                                                            </div>
+                                                                        </td>
+                                                                        <td className="text-right td-num text-t-secondary">
+                                                                            {
+                                                                                b.count
+                                                                            }
+                                                                        </td>
+                                                                    </TableRow>
+                                                                );
+                                                            })}
+                                                        </Table>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {showTemperature && (
+                                        <div className="mt-5 space-y-4">
+                                            <div className="flex flex-wrap gap-2">
+                                                {TEMP_DEFS.map((t) => {
+                                                    const on = temps.has(t.key);
+                                                    return (
+                                                        <button
+                                                            key={t.key}
+                                                            onClick={() =>
+                                                                toggleTemp(
+                                                                    t.key
+                                                                )
+                                                            }
+                                                            className={`group flex items-center gap-2 h-10 px-4 rounded-full border text-button transition-colors ${
+                                                                on
+                                                                    ? "border-s-stroke2 text-t-primary bg-b-surface1 dark:bg-shade-04/50"
+                                                                    : "border-transparent text-t-secondary hover:text-t-primary bg-b-surface1/60 dark:bg-shade-04/30"
+                                                            }`}
+                                                        >
+                                                            <span
+                                                                className={`size-2 rounded-full ${
+                                                                    t.key ===
+                                                                    "hot"
+                                                                        ? "bg-primary-02"
+                                                                        : t.key ===
+                                                                          "warm"
+                                                                        ? "bg-primary-05"
+                                                                        : "bg-t-tertiary"
+                                                                }`}
+                                                            />
+                                                            {t.label}
+                                                            <Badge
+                                                                variant={
+                                                                    on
+                                                                        ? "info"
+                                                                        : "neutral"
+                                                                }
+                                                            >
+                                                                {
+                                                                    tempCounts[
+                                                                        t.key
+                                                                    ]
+                                                                }
+                                                            </Badge>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                            <p className="text-caption text-t-tertiary">
+                                                Hot 70+ · Warm 40–69 · Cold under
+                                                40 / unscored. Pick one or more.
+                                            </p>
+
+                                            <div className="pt-2 border-t border-s-subtle">
+                                                <label className="flex items-center justify-between cursor-pointer mb-3">
+                                                    <span className="text-button">
+                                                        Custom score band
+                                                    </span>
+                                                    <input
+                                                        type="checkbox"
+                                                        className="size-4 rounded"
+                                                        checked={useBand}
+                                                        onChange={(e) => {
+                                                            setManualSelected(
+                                                                new Set()
+                                                            );
+                                                            setUseBand(
+                                                                e.target.checked
+                                                            );
+                                                        }}
+                                                    />
+                                                </label>
+                                                {useBand && (
+                                                    <Range
+                                                        values={band}
+                                                        setValues={(v) => {
+                                                            setManualSelected(
+                                                                new Set()
+                                                            );
+                                                            setBand([
+                                                                v[0],
+                                                                v[1],
+                                                            ]);
+                                                        }}
+                                                        min={0}
+                                                        max={100}
+                                                        step={1}
+                                                    />
+                                                )}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {showManual && (
+                                        <div className="mt-5">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <span className="text-button">
+                                                    Pick leads
+                                                </span>
+                                                <Search
+                                                    className="w-44 max-md:w-32"
+                                                    classInput="!h-9"
+                                                    isGray
+                                                    value={query}
+                                                    onChange={(e) =>
+                                                        setQuery(e.target.value)
+                                                    }
+                                                    placeholder="Search"
+                                                />
+                                            </div>
+                                            {loadingLeads ? (
+                                                <div className="px-3 py-8 text-center text-caption text-t-tertiary">
+                                                    Loading leads…
+                                                </div>
+                                            ) : pickerRows.length === 0 ? (
+                                                <div className="px-3 py-8 text-center text-caption text-t-tertiary">
+                                                    {query
+                                                        ? `Nothing matches “${query}”.`
+                                                        : "No leads in the current pool."}
+                                                </div>
+                                            ) : (
+                                                <div className="max-h-80 overflow-y-auto scrollbar scrollbar-thumb-t-tertiary/40 scrollbar-track-transparent">
+                                                    <Table
+                                                        selectAll={
+                                                            allPickerSelected
+                                                        }
+                                                        onSelectAll={
+                                                            toggleSelectAllPicker
+                                                        }
+                                                        cellsThead={
+                                                            <>
+                                                                <th>Lead</th>
+                                                                <th className="text-right">
+                                                                    Score
+                                                                </th>
+                                                            </>
+                                                        }
+                                                    >
+                                                        {pickerRows.map((l) => (
+                                                            <TableRow
+                                                                key={l.id}
+                                                                selectedRows={manualSelected.has(
+                                                                    l.id
+                                                                )}
+                                                                onRowSelect={(
+                                                                    on
+                                                                ) =>
+                                                                    toggleRow(
+                                                                        l.id,
+                                                                        on
+                                                                    )
+                                                                }
+                                                            >
+                                                                <td>
+                                                                    <div className="flex items-center gap-2.5">
+                                                                        <span
+                                                                            className={`grid place-items-center size-8 shrink-0 rounded-full text-caption font-semibold ${
+                                                                                (l.score ??
+                                                                                    0) >=
+                                                                                70
+                                                                                    ? "bg-primary-02/12 text-primary-02"
+                                                                                    : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
+                                                                            }`}
+                                                                        >
+                                                                            {initials(
+                                                                                l.name
+                                                                            )}
+                                                                        </span>
+                                                                        <div className="min-w-0">
+                                                                            <div className="font-medium text-t-primary truncate max-w-36">
+                                                                                {
+                                                                                    l.name
+                                                                                }
+                                                                            </div>
+                                                                            <div className="text-caption text-t-tertiary td-num truncate max-w-36">
+                                                                                {
+                                                                                    l.phone
+                                                                                }
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                </td>
+                                                                <td className="text-right">
+                                                                    <ScoreBadge
+                                                                        score={
+                                                                            l.score
+                                                                        }
+                                                                    />
+                                                                </td>
+                                                            </TableRow>
+                                                        ))}
+                                                    </Table>
+                                                </div>
+                                            )}
+                                            <p className="pt-3 text-caption text-t-tertiary">
+                                                {manualSelected.size > 0
+                                                    ? `${manualSelected.size} hand-picked — these exact leads will be dialed.`
+                                                    : "Tick rows to dial an exact subset, or leave empty to call everything that passed the filters."}
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            </Card>
+                        </div>
+                    )}
+
+                    {/* ② Voice & Providers ───────────────────────────────── */}
+                    {step === 1 && (
+                        <div key="step-1" className="step-reveal">
+                            <VoiceProviders
+                                campaignId={campaignId}
+                                audienceCount={audienceCount}
+                                writable={writable}
+                            />
+                        </div>
+                    )}
+
+                    {/* ③ Pacing & Handoff ────────────────────────────────── */}
+                    {step === 2 && (
+                        <div key="step-2" className="step-reveal flex flex-col gap-4">
+                            <Card title="Pacing & caps">
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+                                        <Field
+                                            label="Concurrency"
+                                            type="number"
+                                            min={1}
+                                            value={concurrency || ""}
+                                            onChange={(e) =>
+                                                setConcurrency(
+                                                    parseInt(e.target.value) || 0
+                                                )
+                                            }
+                                        />
+                                        <Field
+                                            label="Hourly cap"
+                                            type="number"
+                                            min={0}
+                                            value={hourlyCap || ""}
+                                            onChange={(e) =>
+                                                setHourlyCap(
+                                                    parseInt(e.target.value) || 0
+                                                )
+                                            }
+                                        />
+                                        <Field
+                                            label="Daily cap"
+                                            type="number"
+                                            min={0}
+                                            value={dailyCap || ""}
+                                            onChange={(e) =>
+                                                setDailyCap(
+                                                    parseInt(e.target.value) || 0
+                                                )
+                                            }
+                                        />
+                                    </div>
+                                    <p className="mt-3 text-caption text-t-tertiary">
+                                        Concurrency caps simultaneous calls;
+                                        hourly / daily caps throttle volume. Leave
+                                        a cap at 0 for no limit.
+                                    </p>
+                                </div>
+                            </Card>
+
+                            {/* Reuses the SAME manager + /brain/handoff* calls as
+                                the dedicated Handoff Team view, so what's set here
+                                is what the AI dials when a caller asks for a human
+                                or a lead goes hot during this run. */}
+                            <HandoffTeam compact />
+                        </div>
+                    )}
+
+                    {/* ④ Review & Launch ─────────────────────────────────── */}
+                    {step === 3 && (
+                        <div key="step-3" className="step-reveal flex flex-col gap-4">
+                            <Card title="Review">
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <div className="grid grid-cols-2 gap-px rounded-2xl overflow-hidden border border-s-subtle bg-s-subtle max-md:grid-cols-1">
+                                        <ReviewCell
+                                            label="Campaign"
+                                            value={
+                                                campaign?.name ||
+                                                "No campaign selected"
+                                            }
+                                        />
+                                        <ReviewCell
+                                            label="Audience"
+                                            value={`${audienceCount} leads`}
+                                            sub={[
+                                                breakdown.hot > 0
+                                                    ? `${breakdown.hot} hot`
+                                                    : "",
+                                                breakdown.warm > 0
+                                                    ? `${breakdown.warm} warm`
+                                                    : "",
+                                                breakdown.cold > 0
+                                                    ? `${breakdown.cold} cold`
+                                                    : "",
+                                            ]
+                                                .filter(Boolean)
+                                                .join(" · ")}
+                                        />
+                                        <ReviewCell
+                                            label="Source"
+                                            value={sourceTab.name}
+                                            sub={
+                                                manualSelected.size > 0
+                                                    ? `${manualSelected.size} hand-picked`
+                                                    : undefined
+                                            }
+                                        />
+                                        <ReviewCell
+                                            label="Pacing"
+                                            value={`${
+                                                concurrency || 1
+                                            } concurrent`}
+                                            sub={[
+                                                hourlyCap
+                                                    ? `${hourlyCap}/hr`
+                                                    : "",
+                                                dailyCap
+                                                    ? `${dailyCap}/day`
+                                                    : "",
+                                            ]
+                                                .filter(Boolean)
+                                                .join(" · ") || "no caps"}
+                                        />
+                                    </div>
+
+                                    {queuedResult && (
+                                        <div className="mt-4 flex items-start gap-2 p-3 rounded-2xl bg-primary-05/8 text-body-2">
+                                            <Icon
+                                                name="clock"
+                                                className="size-4 fill-primary-05 shrink-0 mt-0.5"
+                                            />
+                                            <span className="text-caption text-t-secondary">
+                                                Outside the calling window — leads
+                                                are queued and will dial
+                                                automatically when the window
+                                                opens. Use{" "}
+                                                <span className="text-t-primary">
+                                                    Start anyway
+                                                </span>{" "}
+                                                in the banner to override.
+                                            </span>
+                                        </div>
+                                    )}
+
+                                    <div className="mt-5 flex items-center gap-3 max-md:flex-col max-md:items-stretch">
+                                        <Button
+                                            isBlack
+                                            className="max-md:w-full max-md:justify-center"
+                                            icon="send"
+                                            onClick={handleStart}
+                                            disabled={
+                                                starting ||
+                                                !writable ||
+                                                !campaignId
+                                            }
+                                        >
+                                            {starting
+                                                ? "Starting…"
+                                                : !writable
+                                                ? "Read-only"
+                                                : "Launch — call now"}
+                                        </Button>
+                                        {queuedResult && (
+                                            <button
+                                                className="inline-flex items-center justify-center h-12 px-5 rounded-3xl border border-s-stroke2 text-button text-t-secondary transition-colors hover:text-t-primary hover:border-s-highlight max-md:w-full"
+                                                onClick={async () => {
+                                                    setStarting(true);
+                                                    try {
+                                                        const r = await run(
+                                                            buildRunPayload(true)
+                                                        );
+                                                        setJobId(r.job_id);
+                                                        setJobState("running");
+                                                        setToastType("success");
+                                                        setToast(
+                                                            `Started anyway! Job ${r.job_id} — ${r.count} leads`
+                                                        );
+                                                        setQueuedResult(null);
+                                                    } catch {
+                                                        /* ignore */
+                                                    } finally {
+                                                        setStarting(false);
+                                                    }
+                                                }}
+                                            >
+                                                Start anyway
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </Card>
+
+                            {/* Live status (renders once a run has been launched) */}
+                            <Card
+                                title={
+                                    jobId
+                                        ? `Live Status — Job ${jobId} (${jobState})`
+                                        : "Live Status"
+                                }
+                            >
+                                <div className="px-2 max-lg:px-1">
+                                    {!jobId ? (
+                                        <div className="state-block">
+                                            <span className="state-glyph">
+                                                <Icon
+                                                    name="send"
+                                                    className="fill-inherit"
+                                                />
+                                            </span>
+                                            <div className="state-title">
+                                                No active run
+                                            </div>
+                                            <div className="state-sub">
+                                                Press Launch above and each
+                                                lead&apos;s live status appears
+                                                here.
+                                            </div>
+                                        </div>
+                                    ) : liveLeads.length === 0 ? (
+                                        <div className="state-block">
+                                            <span className="state-glyph">
+                                                <Icon
+                                                    name="clock"
+                                                    className="fill-inherit"
+                                                />
+                                            </span>
+                                            <div className="state-title">
+                                                Waiting for updates…
+                                            </div>
+                                            <div className="state-sub">
+                                                The dialer is spinning up —
+                                                statuses refresh every few
+                                                seconds.
+                                            </div>
                                         </div>
                                     ) : (
-                                        <div className="overflow-hidden rounded-2xl border border-s-subtle">
+                                        <div className="overflow-x-auto">
                                             <Table
                                                 cellsThead={
                                                     <>
-                                                        <th>File</th>
+                                                        <th>Name</th>
+                                                        <th>Number</th>
                                                         <th className="text-right">
-                                                            Leads
+                                                            Status
                                                         </th>
                                                     </>
                                                 }
                                             >
-                                                {batches.map((b) => {
-                                                    const on =
-                                                        selectedBatchIds.has(
-                                                            b.batch_id
-                                                        );
-                                                    return (
-                                                        <TableRow
-                                                            key={b.batch_id}
-                                                            selectedRows={on}
-                                                            onRowSelect={() =>
-                                                                toggleBatch(
-                                                                    b.batch_id
-                                                                )
-                                                            }
-                                                        >
-                                                            <td>
-                                                                <div className="font-medium text-t-primary truncate max-w-40">
-                                                                    {
-                                                                        b.source_file
-                                                                    }
-                                                                </div>
-                                                                <div className="text-caption text-t-tertiary">
-                                                                    {fmtDate(
-                                                                        b.added_at
-                                                                    )}
-                                                                </div>
-                                                            </td>
-                                                            <td className="text-right td-num text-t-secondary">
-                                                                {b.count}
-                                                            </td>
-                                                        </TableRow>
-                                                    );
-                                                })}
+                                                {liveLeads.map((l, i) => (
+                                                    <TableRow key={i}>
+                                                        <td className="font-medium text-t-primary">
+                                                            {l.name}
+                                                        </td>
+                                                        <td className="text-t-secondary td-num">
+                                                            {l.num}
+                                                        </td>
+                                                        <td className="text-right">
+                                                            <StatusBadge
+                                                                status={l.status}
+                                                            />
+                                                        </td>
+                                                    </TableRow>
+                                                ))}
                                             </Table>
                                         </div>
                                     )}
                                 </div>
-                            </div>
-                        </Card>
-                    )}
-
-                    {/* 4 ── Temperature filter (source = By temperature) ── */}
-                    {showTemperature && (
-                        <Card title="Temperature">
-                            <div className="px-5 pb-5 max-lg:px-3 space-y-4">
-                                <div className="flex flex-wrap gap-2">
-                                    {TEMP_DEFS.map((t) => {
-                                        const on = temps.has(t.key);
-                                        return (
-                                            <button
-                                                key={t.key}
-                                                onClick={() => toggleTemp(t.key)}
-                                                className={`group flex items-center gap-2 h-10 px-4 rounded-full border text-button transition-colors ${
-                                                    on
-                                                        ? "border-s-stroke2 text-t-primary bg-b-surface1 dark:bg-shade-04/50"
-                                                        : "border-transparent text-t-secondary hover:text-t-primary bg-b-surface1/60 dark:bg-shade-04/30"
-                                                }`}
-                                            >
-                                                <span
-                                                    className={`size-2 rounded-full ${
-                                                        t.key === "hot"
-                                                            ? "bg-primary-02"
-                                                            : t.key === "warm"
-                                                            ? "bg-primary-05"
-                                                            : "bg-t-tertiary"
-                                                    }`}
-                                                />
-                                                {t.label}
-                                                <Badge
-                                                    variant={
-                                                        on ? "info" : "neutral"
-                                                    }
-                                                >
-                                                    {tempCounts[t.key]}
-                                                </Badge>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                                <p className="text-caption text-t-tertiary">
-                                    Hot 70+ · Warm 40–69 · Cold under 40 /
-                                    unscored. Pick one or more.
-                                </p>
-
-                                <div className="pt-2 border-t border-s-subtle">
-                                    <label className="flex items-center justify-between cursor-pointer mb-3">
-                                        <span className="text-button">
-                                            Custom score band
-                                        </span>
-                                        <input
-                                            type="checkbox"
-                                            className="size-4 rounded"
-                                            checked={useBand}
-                                            onChange={(e) => {
-                                                setManualSelected(new Set());
-                                                setUseBand(e.target.checked);
-                                            }}
-                                        />
-                                    </label>
-                                    {useBand && (
-                                        <Range
-                                            values={band}
-                                            setValues={(v) => {
-                                                setManualSelected(new Set());
-                                                setBand([v[0], v[1]]);
-                                            }}
-                                            min={0}
-                                            max={100}
-                                            step={1}
-                                        />
-                                    )}
-                                </div>
-                            </div>
-                        </Card>
-                    )}
-
-                    {/* 5 ── Manual lead picker (source = Pick manually) ── */}
-                    {showManual && (
-                        <Card
-                            title="Pick leads"
-                            headContent={
-                                <Search
-                                    className="w-44 max-md:w-32"
-                                    classInput="!h-9"
-                                    isGray
-                                    value={query}
-                                    onChange={(e) => setQuery(e.target.value)}
-                                    placeholder="Search"
-                                />
-                            }
-                        >
-                            <div className="px-2 pb-4 max-lg:px-1">
-                                {loadingLeads ? (
-                                    <div className="px-3 py-8 text-center text-caption text-t-tertiary">
-                                        Loading leads…
-                                    </div>
-                                ) : pickerRows.length === 0 ? (
-                                    <div className="px-3 py-8 text-center text-caption text-t-tertiary">
-                                        {query
-                                            ? `Nothing matches “${query}”.`
-                                            : "No leads in the current pool."}
-                                    </div>
-                                ) : (
-                                    <div className="max-h-80 overflow-y-auto scrollbar scrollbar-thumb-t-tertiary/40 scrollbar-track-transparent">
-                                        <Table
-                                            selectAll={allPickerSelected}
-                                            onSelectAll={
-                                                toggleSelectAllPicker
-                                            }
-                                            cellsThead={
-                                                <>
-                                                    <th>Lead</th>
-                                                    <th className="text-right">
-                                                        Score
-                                                    </th>
-                                                </>
-                                            }
-                                        >
-                                            {pickerRows.map((l) => (
-                                                <TableRow
-                                                    key={l.id}
-                                                    selectedRows={manualSelected.has(
-                                                        l.id
-                                                    )}
-                                                    onRowSelect={(on) =>
-                                                        toggleRow(l.id, on)
-                                                    }
-                                                >
-                                                    <td>
-                                                        <div className="flex items-center gap-2.5">
-                                                            <span
-                                                                className={`grid place-items-center size-8 shrink-0 rounded-full text-caption font-semibold ${
-                                                                    (l.score ??
-                                                                        0) >= 70
-                                                                        ? "bg-primary-02/12 text-primary-02"
-                                                                        : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
-                                                                }`}
-                                                            >
-                                                                {initials(
-                                                                    l.name
-                                                                )}
-                                                            </span>
-                                                            <div className="min-w-0">
-                                                                <div className="font-medium text-t-primary truncate max-w-36">
-                                                                    {l.name}
-                                                                </div>
-                                                                <div className="text-caption text-t-tertiary td-num truncate max-w-36">
-                                                                    {l.phone}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="text-right">
-                                                        <ScoreBadge
-                                                            score={l.score}
-                                                        />
-                                                    </td>
-                                                </TableRow>
-                                            ))}
-                                        </Table>
-                                    </div>
-                                )}
-                                <p className="px-3 pt-3 text-caption text-t-tertiary">
-                                    {manualSelected.size > 0
-                                        ? `${manualSelected.size} hand-picked — these exact leads will be dialed.`
-                                        : "Tick rows to dial an exact subset, or leave empty to call everything that passed the filters."}
-                                </p>
-                            </div>
-                        </Card>
-                    )}
-
-                    {/* 6 ── Pacing & caps ── */}
-                    <Card title="Pacing & caps">
-                        <div className="px-5 pb-5 max-lg:px-3 grid grid-cols-3 gap-3">
-                            <Field
-                                label="Concurrency"
-                                type="number"
-                                min={1}
-                                value={concurrency || ""}
-                                onChange={(e) =>
-                                    setConcurrency(
-                                        parseInt(e.target.value) || 0
-                                    )
-                                }
-                            />
-                            <Field
-                                label="Hourly cap"
-                                type="number"
-                                min={0}
-                                value={hourlyCap || ""}
-                                onChange={(e) =>
-                                    setHourlyCap(parseInt(e.target.value) || 0)
-                                }
-                            />
-                            <Field
-                                label="Daily cap"
-                                type="number"
-                                min={0}
-                                value={dailyCap || ""}
-                                onChange={(e) =>
-                                    setDailyCap(parseInt(e.target.value) || 0)
-                                }
-                            />
+                            </Card>
                         </div>
-                    </Card>
+                    )}
 
-                    {/* 6.5 ── Voice & Providers (PVS Phase-1: tier slider + cost meter + voice) ──
-                        Per-campaign quality/cost control. Writes the campaign `tier` + voice + provider
-                        config via POST /campaigns/{cid}. Voice + tier config apply now; the live-call
-                        PROVIDER swap is Phase 2 (flagged in-card). Projected spend uses the same audience
-                        count the preview bar shows so the estimate matches what will be dialed. */}
-                    <VoiceProviders
-                        campaignId={campaignId}
-                        audienceCount={
-                            sourceTab.id === SOURCE_ID.all &&
-                            audience.length === 0
-                                ? storedLeads.length
-                                : breakdown.total
-                        }
-                        writable={writable}
-                    />
-
-                    {/* 7 ── Handoff team (review / add escalation people before launch) ──
-                        Reuses the SAME manager + /brain/handoff* calls as the dedicated
-                        Handoff Team view, so what's set here is what the AI dials when a
-                        caller asks for a human or a lead goes hot during this run. */}
-                    <HandoffTeam compact />
+                    {/* ── Step nav (Back / Next) — hidden on the launch step ── */}
+                    {step < 3 && (
+                        <div className="mt-4 flex items-center justify-between gap-3 max-lg:hidden">
+                            <button
+                                type="button"
+                                onClick={goBack}
+                                disabled={step === 0}
+                                className="inline-flex items-center gap-1.5 h-11 px-5 rounded-3xl border border-s-stroke2 text-button text-t-secondary transition-colors hover:text-t-primary hover:border-s-highlight disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                                <Icon
+                                    name="arrow"
+                                    className="size-4 fill-inherit rotate-180"
+                                />
+                                Back
+                            </button>
+                            <Button
+                                isBlack
+                                icon="arrow"
+                                onClick={goNext}
+                                disabled={step === 0 && !step0Valid}
+                            >
+                                {step === 2 ? "Review" : "Continue"}
+                            </Button>
+                        </div>
+                    )}
                 </div>
 
-                {/* ── RIGHT: preview bar + live status ── */}
-                <div className="flex-1 min-w-0 flex flex-col gap-4">
-                    {/* Sticky preview / launch bar */}
-                    <div className="sticky top-2 z-10 card p-5 max-lg:p-4 flex items-center gap-5 max-md:flex-col max-md:items-stretch">
-                        <div className="shrink-0">
-                            <div className="eyebrow mb-1">Audience preview</div>
-                            <div className="flex items-baseline gap-2">
+                {/* ── RIGHT: sticky Launch-summary rail (always visible) ── */}
+                <aside className="w-[20rem] max-lg:w-full shrink-0">
+                    <div className="sticky top-24 max-lg:static flex flex-col gap-4">
+                        <div className="surface p-5 max-lg:p-4">
+                            <div className="eyebrow mb-1">Launch summary</div>
+                            <div className="flex items-baseline gap-2 mb-4">
                                 <span className="text-h3 text-t-primary tabular-nums">
-                                    {sourceTab.id === SOURCE_ID.all &&
+                                    {loadingLeads &&
+                                    sourceTab.id === SOURCE_ID.all &&
                                     audience.length === 0
-                                        ? loadingLeads
-                                            ? "…"
-                                            : storedLeads.length
-                                        : breakdown.total}
+                                        ? "…"
+                                        : audienceCount}
                                 </span>
                                 <span className="text-body-2 text-t-secondary">
-                                    leads will be called
+                                    leads to call
                                 </span>
                             </div>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 grow">
-                            {breakdown.hot > 0 && (
-                                <Badge variant="success" dot>
-                                    {breakdown.hot} hot
-                                </Badge>
-                            )}
-                            {breakdown.warm > 0 && (
-                                <Badge variant="warning">
-                                    {breakdown.warm} warm
-                                </Badge>
-                            )}
-                            {breakdown.cold > 0 && (
-                                <Badge variant="neutral">
-                                    {breakdown.cold} cold
-                                </Badge>
-                            )}
-                            {manualSelected.size > 0 && (
-                                <Badge variant="info">hand-picked</Badge>
-                            )}
-                        </div>
-                        <Button
-                            isBlack
-                            className="shrink-0 max-md:w-full max-md:justify-center"
-                            icon="send"
-                            onClick={handleStart}
-                            disabled={starting || !writable || !campaignId}
-                        >
-                            {starting
-                                ? "Starting…"
-                                : !writable
-                                ? "Read-only"
-                                : "Start Calling"}
-                        </Button>
-                    </div>
 
-                    {/* Live status */}
-                    <Card
-                        title={
-                            jobId
-                                ? `Live Status — Job ${jobId} (${jobState})`
-                                : "Live Status"
-                        }
-                    >
-                        <div className="px-2 max-lg:px-1">
-                            {!jobId ? (
-                                <div className="state-block">
-                                    <span className="state-glyph">
-                                        <Icon
-                                            name="send"
-                                            className="fill-inherit"
-                                        />
-                                    </span>
-                                    <div className="state-title">
-                                        No active run
-                                    </div>
-                                    <div className="state-sub">
-                                        Build your audience on the left and each
-                                        lead&apos;s live status appears here.
-                                    </div>
-                                </div>
-                            ) : liveLeads.length === 0 ? (
-                                <div className="state-block">
-                                    <span className="state-glyph">
-                                        <Icon
-                                            name="clock"
-                                            className="fill-inherit"
-                                        />
-                                    </span>
-                                    <div className="state-title">
-                                        Waiting for updates…
-                                    </div>
-                                    <div className="state-sub">
-                                        The dialer is spinning up — statuses
-                                        refresh every few seconds.
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="overflow-x-auto">
-                                    <Table
-                                        cellsThead={
-                                            <>
-                                                <th>Name</th>
-                                                <th>Number</th>
-                                                <th className="text-right">
-                                                    Status
-                                                </th>
-                                            </>
-                                        }
-                                    >
-                                        {liveLeads.map((l, i) => (
-                                            <TableRow key={i}>
-                                                <td className="font-medium text-t-primary">
-                                                    {l.name}
-                                                </td>
-                                                <td className="text-t-secondary td-num">
-                                                    {l.num}
-                                                </td>
-                                                <td className="text-right">
-                                                    <StatusBadge
-                                                        status={l.status}
-                                                    />
-                                                </td>
-                                            </TableRow>
-                                        ))}
-                                    </Table>
-                                </div>
+                            {/* breakdown badges */}
+                            <div className="flex flex-wrap items-center gap-2 mb-4">
+                                {breakdown.hot > 0 && (
+                                    <Badge variant="success" dot>
+                                        {breakdown.hot} hot
+                                    </Badge>
+                                )}
+                                {breakdown.warm > 0 && (
+                                    <Badge variant="warning">
+                                        {breakdown.warm} warm
+                                    </Badge>
+                                )}
+                                {breakdown.cold > 0 && (
+                                    <Badge variant="neutral">
+                                        {breakdown.cold} cold
+                                    </Badge>
+                                )}
+                                {manualSelected.size > 0 && (
+                                    <Badge variant="info">hand-picked</Badge>
+                                )}
+                            </div>
+
+                            {/* compact spec list */}
+                            <dl className="space-y-2.5 pt-4 border-t border-s-subtle">
+                                <SummaryRow
+                                    label="Campaign"
+                                    value={campaign?.name || "—"}
+                                />
+                                <SummaryRow
+                                    label="Source"
+                                    value={sourceTab.name}
+                                />
+                                <SummaryRow
+                                    label="Pacing"
+                                    value={`${concurrency || 1} concurrent`}
+                                />
+                                <SummaryRow
+                                    label="Caps"
+                                    value={
+                                        [
+                                            hourlyCap ? `${hourlyCap}/hr` : "",
+                                            dailyCap ? `${dailyCap}/day` : "",
+                                        ]
+                                            .filter(Boolean)
+                                            .join(" · ") || "none"
+                                    }
+                                />
+                            </dl>
+
+                            <Button
+                                isBlack
+                                className="w-full justify-center mt-5"
+                                icon="send"
+                                onClick={handleStart}
+                                disabled={starting || !writable || !campaignId}
+                            >
+                                {starting
+                                    ? "Starting…"
+                                    : !writable
+                                    ? "Read-only"
+                                    : "Launch"}
+                            </Button>
+                            {!campaignId && (
+                                <p className="mt-2 text-caption text-t-tertiary text-center">
+                                    Choose a campaign to enable launch.
+                                </p>
                             )}
                         </div>
-                    </Card>
+                    </div>
+                </aside>
+            </div>
+
+            {/* ── MOBILE sticky bottom launch bar ── */}
+            <div className="lg:hidden fixed inset-x-0 bottom-0 z-30 p-3 bg-b-surface1/90 backdrop-blur border-t border-s-subtle">
+                <div className="flex items-center gap-3">
+                    <div className="min-w-0">
+                        <div className="text-caption text-t-tertiary leading-tight">
+                            {sourceTab.name}
+                        </div>
+                        <div className="text-button text-t-primary leading-tight tabular-nums">
+                            {audienceCount} leads
+                        </div>
+                    </div>
+                    <Button
+                        isBlack
+                        className="ml-auto shrink-0"
+                        icon="send"
+                        onClick={handleStart}
+                        disabled={starting || !writable || !campaignId}
+                    >
+                        {starting ? "Starting…" : "Launch"}
+                    </Button>
                 </div>
             </div>
+            {/* spacer so the mobile bottom bar never covers content */}
+            <div className="lg:hidden h-20" aria-hidden />
         </Layout>
+    );
+}
+
+// ── small summary-rail row ──
+function SummaryRow({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="flex items-center justify-between gap-3">
+            <dt className="text-caption text-t-tertiary shrink-0">{label}</dt>
+            <dd className="text-caption text-t-primary font-medium truncate text-right">
+                {value}
+            </dd>
+        </div>
+    );
+}
+
+// ── review-grid cell ──
+function ReviewCell({
+    label,
+    value,
+    sub,
+}: {
+    label: string;
+    value: string;
+    sub?: string;
+}) {
+    return (
+        <div className="bg-b-surface2 p-4">
+            <div className="eyebrow mb-1">{label}</div>
+            <div className="text-body-1 text-t-primary truncate">{value}</div>
+            {sub && (
+                <div className="mt-0.5 text-caption text-t-tertiary truncate">
+                    {sub}
+                </div>
+            )}
+        </div>
     );
 }
