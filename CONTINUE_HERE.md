@@ -2,6 +2,19 @@
 
 > Read this first, then `MASTER_BUILD_STATE.md` → `git log --oneline -15` → `AGENT_LEARNINGS.md`.
 
+## 2026-06-13 — 🟢 REC WAVE FINAL VERIFY (handoff-name + recordings + retention + earner) = ALL PASS
+
+Independent honest verification of the whole REC wave on the LIVE box. **4/4 acceptance items PASS** (item 3 retention was the only unbuilt piece — built + verified this pass).
+
+- **(1) HANDOFF caller-line — PASS.** Deployed `aim_voice_agent.py:740` says exactly `Ek second, main aapko {_dial_who} se connect kar rahi hoon.` where `_dial_who` = dialed person's `name` → `role` → `apni team`. NAMES the person and NOTHING else (no number/reason/AI-disclosure). `name` round-trips end-to-end LIVE: POST `/brain/handoff/add {"name":"VerifyRajesh"}` → GET `/brain/handoff` returns `"name":"VerifyRajesh"` in its OWN field (role empty); test entry removed, founder's original 2-entry list restored. `session.aclose()` AI-exit + same-room `create_sip_participant` bridge + `participant_disconnected` hangup all intact (18 refs).
+- **(2) RECORDINGS — PASS.** Outbound auto-egress (REC-B): fresh after-gate call `55181bfa77` → object `outbound-recordings/2026/06/13/55181bfa77.ogg` 57235 B landed + `recording_key`/`recording_status:recording` on its row. Inbound finalize-on-read (REC-A): session `vs_dee5eeef4141` → `uploaded`/`duration_s:117` + presigned. Unified API: `GET /calls/61a6bfeada/recording` → presigned (361ch) → full GET HTTP **200** audio/ogg 56916 B + range **206** 1024 B (play+seek); inbound presign → **200** 1.6MB + **206**. `GET /contacts/+918949906361/recordings` → 8 calls newest-first, `with_recording:1`, both directions unified. Tenant-scoped: `require_object(...not_found=True)`→404 (outbound BOLA) + RLS `_inbound_rec_items` (inbound). FE live on panel (BUILD_ID `4aXNPr1rvAfpK4ku5dNa7`): CRM Recordings card + `<audio>` player + Download, handoff name field.
+- **(3) RETENTION — BUILT + PASS.** Was the ONE missing item (no lifecycle existed). Created 2 Spaces lifecycle rules on `capsy-recordings` (Status=Enabled): `outbound-recordings/`→expire 90d, `aim-recordings/`→expire 90d (read back confirmed). Bucket PRIVATE (unauth GET → 403 on both URL styles); access ONLY via presign-on-read. Spaces config only — NO code/earner touched.
+- **(4) EARNER AFTER-GATE — PASS.** In-window outbound to `+917861019021` (job `cc09c4888b`, conc 1, now=1): livekit-sip INVITE via trunk `ST_fmtVmNJmpzKa`, `+918071583488`→`+917861019021`, sipCallID `XY5QFVaxg3O8G8CNaen0L9iqrcc`, returned **486 Busy Here / USER_REJECTED** = carrier RANG it (real ring). agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent MainPID `1477083` / ActiveEnter 2026-06-10 NEVER restarted; all 3 services active; `/health`=200; 0 5xx; 0 Traceback. Nothing restarted this pass.
+
+**FOUNDER RECIPE:** see AGENT_LEARNINGS.md (REC-FINAL VERIFY entry) — add a handoff person WITH a name → AI says "connecting you to <Name>"; open a lead in CRM → Recordings → play+download any call.
+
+**RESIDUAL:** caller-line + recordings proven over API/SIP/Spaces; the two-party AUDIBLE bridge + the spoken named line still need ONE real inbound call by the founder to fully accept (everything upstream proven). 90-day retention chosen as a sane default — change `Days` in the lifecycle rule if the founder wants a different window.
+
 ## 2026-06-13 — 🟢 HUMAN HANDOFF "says yes then silence" = FIXED + VERIFIED (earner intact)
 
 **Symptom (founder, live):** on an inbound call the caller says "mujhe insaan se baat karni hai" → AI says "haan/yes" → COMPLETE SILENCE, no hold music, the human number never rings. **Three identical-looking root causes, ALL now closed:**

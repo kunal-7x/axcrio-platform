@@ -127,6 +127,22 @@ Additive per-entry handoff CRUD on the working bridge: caller.py `POST /brain/ha
   Smoke PASS (hold tracks 0→2, fallback #1 busy→#2 bridged, 2 analytics rows). Earner gate before+after
   RANG (rooms 7a9076+be6afd), agent.py md5 9150fabe… UNCHANGED, only aim-voice-agent restarted.
 
+- 2026-06-13 REC WAVE FINAL VERIFY (honest, independent, live box :8209 + Spaces + panel edge): 4/4 PASS.
+  (1) HANDOFF caller-line `aim_voice_agent.py:740` = `Ek second, main aapko {_dial_who} se connect kar rahi
+  hoon.` (_dial_who = name→role→"apni team"); names person ONLY. `name` round-trips LIVE (add→GET returns it
+  in own field; test entry removed, founder 2-entry list restored); aclose/bridge/hangup intact.
+  (2) RECORDINGS: outbound auto-egress fresh call 55181bfa77 → .ogg 57235B landed; inbound finalize-on-read
+  vs_dee5eeef4141 → uploaded/117s; unified API `/calls/{id}/recording` + `/contacts/{phone}/recordings`
+  presign → GET 200 + range 206 (play+seek) both directions; tenant-scoped (require_object 404 + RLS); FE
+  live (panel BUILD_ID 4aXNPr1rvAfpK4ku5dNa7, CRM Recordings card+audio+download, handoff name field).
+  (3) RETENTION: was UNBUILT — created 2 Spaces lifecycle rules on capsy-recordings (outbound-recordings/
+  + aim-recordings/ → expire 90d, Enabled, read back); bucket PRIVATE (unauth 403); presign-on-read only.
+  (4) EARNER AFTER-GATE: outbound +917861019021 (job cc09c4888b) → livekit-sip INVITE trunk ST_fmtVmNJmpzKa
+  → 486 Busy/USER_REJECTED = RANG; agent.py md5 9150fabe… UNCHANGED, famit-agent PID 1477083 NEVER restarted,
+  0 5xx/0 Traceback, all 3 services active, nothing restarted this pass. RESIDUAL: two-party audible bridge
+  + spoken named line need ONE real founder inbound call; 90d retention = default (tunable). Box md5s now:
+  caller f05fdd2e…, aim 37750a77…, voice_tools 63c3f89b…, recorder 0d716d19…, endpoints 740a9aac….
+
 - 2026-06-12 HANDOFF BACKEND VERIFY (honest, independent, live box :8209): ALL 6 items PASS.
   (1) per-tenant CRUD: tenant 21d0a13603da isolated both ways, body tenant_id/org_id stripped (RT-5),
   invalid + non-+91 → 400, idempotent remove, 401 on no/bad token. (2) hold + NO side-room regression
