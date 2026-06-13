@@ -3930,7 +3930,12 @@ def _resolve_audience(t: dict, *, source_mode: str = "", lead_ids: str = "",
 
 
 @app.get("/leads")
-async def get_leads(request: Request, hot: str = "", sort: str = ""):
+async def get_leads(request: Request, hot: str = "", sort: str = "",
+                    limit: int = 0, offset: int = 0):
+    """Leads. Backward-compatible: with NO limit (the current FE) it returns ALL leads as
+    `{leads:[...]}` exactly as before. Pagination is opt-in via limit/offset, and the
+    response ALWAYS now also carries total/offset/limit/next so the FE can paginate.
+    Lead rows are already small (10 flat fields), so no payload trim is needed."""
     t = resolve_tenant(request)
     if not t:
         return need_auth()
@@ -3939,7 +3944,19 @@ async def get_leads(request: Request, hot: str = "", sort: str = ""):
         rows = [x for x in rows if (x.get("score", 0) or 0) >= 70]
     if sort == "score":
         rows = sorted(rows, key=lambda x: x.get("score", 0) or 0, reverse=True)
-    return JSONResponse({"leads": rows})
+    total = len(rows)
+    off = max(0, int(offset))
+    lim = int(limit)
+    if lim and lim > 0:                       # paginated request
+        lim = min(lim, 1000)
+        page = rows[off:off + lim]
+        nxt = off + lim if (off + lim) < total else None
+    else:                                     # legacy: all leads, single page
+        page = rows[off:] if off else rows
+        lim = total
+        nxt = None
+    return JSONResponse({"leads": page, "total": total, "offset": off,
+                         "limit": lim, "next": nxt})
 
 
 @app.post("/leads")
@@ -4190,8 +4207,53 @@ async def status(request: Request, job: str = ""):
                          "leads": [{"name": x["name"], "num": x["num"], "status": x["status"]} for x in j["leads"]]})
 
 
+# === PERF UNIT-1 ===
+# Slim list-row payload: the call-logs TABLE only renders these fields. Heavy/internal
+# bookkeeping (recording_key/bucket, sip_call_id, _reconciled, _wh_completed, room,
+# variant_*) is dropped from LIST rows — the full record still ships on GET /calls/{id}.
+_CALLS_LIST_FIELDS = (
+    "id", "name", "phone", "campaign_id", "campaign_name", "status",
+    "started_at", "ended_at", "duration_s", "interest", "outcome", "answered",
+)
+
+
+def _slim_call_row(c: dict) -> dict:
+    return {k: c.get(k) for k in _CALLS_LIST_FIELDS if k in c}
+
+
+def _call_outcome_cached(c: dict) -> str:
+    """Outcome for filtering WITHOUT an N+1 per-row transcript read. 254/263 rows already
+    carry `outcome`; for the rare row that doesn't, read its transcript ONCE and cache the
+    value back onto the in-RAM record so the next request is O(1). Never raises."""
+    o = c.get("outcome")
+    if o:
+        return o
+    room = c.get("room")
+    if not room:
+        return ""
+    try:
+        tr = _read(TRANSCRIPT_DIR / f"{room}.json", {}) or {}
+        o = tr.get("outcome") or ""
+    except Exception:
+        o = ""
+    if o:
+        c["outcome"] = o          # memoize onto the record (in-RAM CALLS list) -> no repeat read
+    return o
+
+
 @app.get("/calls")
-async def calls(request: Request, limit: int = 200, campaign_id: str = "", outcome: str = ""):
+async def calls(request: Request, limit: int = 200, offset: int = 0,
+                campaign_id: str = "", outcome: str = "", order: str = "",
+                slim: str = ""):
+    """Call logs. Backward-compatible: a bare `/calls` (or `/calls?limit=N`) returns the
+    SAME `{calls:[...]}` in storage order it always did. Pagination is opt-in:
+      - offset (int>=0): page start; presence implies the caller wants the paginated contract.
+      - order=desc: newest-first by started_at (recommended for the paginated list view).
+      - slim=1 (default behaviour for paginated callers; legacy bare call gets full rows for
+        strict back-compat): trim list rows to display fields.
+    Response ALWAYS now also carries total/offset/limit/next so the FE can paginate; the
+    legacy `calls` key is preserved. The N+1 transcript read on the `outcome` filter is gone
+    (outcome is read from the row, with a one-time cached fallback)."""
     t = resolve_tenant(request)
     if not t:
         return need_auth()
@@ -4199,14 +4261,28 @@ async def calls(request: Request, limit: int = 200, campaign_id: str = "", outco
     if campaign_id:
         rows = [c for c in rows if c.get("campaign_id") == campaign_id]
     if outcome:
-        # outcome may live on the call rec or in its transcript; match either.
-        def _match(c):
-            if c.get("outcome") == outcome:
-                return True
-            tr = _read(TRANSCRIPT_DIR / f"{c.get('room', '')}.json", {}) if c.get("room") else {}
-            return tr.get("outcome") == outcome
-        rows = [c for c in rows if _match(c)]
-    return JSONResponse({"calls": rows[:max(1, min(limit, 1000))]})
+        rows = [c for c in rows if _call_outcome_cached(c) == outcome]
+
+    paginated = bool(str(offset).strip()) and int(offset) > 0
+    paginated = paginated or order.lower() == "desc" or str(slim).strip().lower() in ("1", "true", "yes")
+
+    if order.lower() == "desc":
+        rows = sorted(rows, key=lambda c: c.get("started_at") or "", reverse=True)
+
+    total = len(rows)
+    off = max(0, int(offset))
+    lim = max(1, min(int(limit), 1000))
+    page = rows[off:off + lim]
+    nxt = off + lim if (off + lim) < total else None
+
+    # Trim list rows: always for paginated callers; the bare legacy call keeps full rows
+    # unless it explicitly asks slim=1, so the existing FE is byte-compatible.
+    want_slim = str(slim).strip().lower() in ("1", "true", "yes") or (paginated and str(slim).strip() == "")
+    out = [_slim_call_row(c) for c in page] if want_slim else page
+
+    return JSONResponse({"calls": out, "total": total, "offset": off,
+                         "limit": lim, "next": nxt})
+# === /PERF UNIT-1 ===
 
 
 @app.get("/calls/{call_id}")
