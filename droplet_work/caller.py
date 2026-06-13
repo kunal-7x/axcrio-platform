@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -750,6 +751,32 @@ async def _awrite_raw(path: Path, data):
         _write_raw(path, data)
 
 
+def _atomic_write_json(path: Path, data) -> None:
+    """Atomic durable write of a JSON record: write to a temp sibling, fsync, then
+    os.replace() (atomic rename on the same filesystem). A crash mid-write can never
+    leave a torn/partial campaign file — the old file stays intact until the rename.
+    Used for the campaign JSON mirror, which is AUTHORITATIVE + write-first for the
+    earner (VOICE-BRAIN-MASTER-PLAN red-team fix #4)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 # ---- P1 strangler shims: route registered non-json stores through store.py; else byte-identical
 #      pass-through to the *_raw bodies above (R3: json mode NEVER reserializes). _store guarded
 #      `is not None` (B4) so import-time calls (504/683) are safe before store.init runs. ----
@@ -1178,6 +1205,168 @@ def parse_upload(text: str, upload: "UploadFile | None", file_bytes: bytes | Non
     return out
 
 
+# ============================================================================
+# W1 — VENDOR SCRIPT (lossless raw_script + sanitized script_meta)
+# VOICE-BRAIN-MASTER-PLAN §3-A. Flag-gated, earner-safe, injection-guarded.
+#   - raw_script is stored VERBATIM (no truncation/summarization) inside fields.
+#   - script_meta holds only PARSED HINTS (sanitized); it is NEVER lossy over raw.
+#   - when raw_script is present AND the inject flag is on, the lossy derived
+#     projections (summary/usps/price/...) are gated OFF so they cannot reach the
+#     live turn (red-team fix #5) — leaving raw_script as the single source.
+# Legacy campaigns (no raw_script) are byte-identical → the golden oracle stays
+# green with the flag OFF or ON.
+# ============================================================================
+
+# Default OFF -> byte-identical earner render. A per-campaign override
+# (fields["vendor_script_inject"]) can opt a single campaign in without a global flip.
+_VENDOR_SCRIPT_INJECT_ENV = (
+    (os.getenv("VENDOR_SCRIPT_INJECT", "0") or "0").strip().lower() in ("1", "true", "yes", "on"))
+# Hard ceiling on the stored verbatim script (DoS guard, NOT a lossy cap — generous
+# vs the ~3-8K-token typical vendor script; full text round-trips well under this).
+_RAW_SCRIPT_MAX_CHARS = int(os.getenv("RAW_SCRIPT_MAX_CHARS", "60000") or "60000")
+_SCRIPT_META_STR_MAX = 600   # per sanitized persona-hint string
+_SCRIPT_META_LIST_MAX = 24   # max items in a do/dont list
+
+
+def _strip_zero_width(s: str) -> str:
+    """Remove zero-width / BOM / directional-override chars used to smuggle
+    instructions past a denylist or to hide a forged close-tag."""
+    return "".join(ch for ch in s if ch not in (
+        "​", "‌", "‍", "⁠", "﻿",
+        "‪", "‫", "‬", "‭", "‮",
+        "⁦", "⁧", "⁨", "⁩"))
+
+
+def _clean_text(s, *, max_chars: int) -> str:
+    """NFKC-normalize, strip zero-width/control chars, clamp length. Used for any
+    free-form string that originates from a vendor or an LLM extraction (untrusted)."""
+    if s is None:
+        return ""
+    s = unicodedata.normalize("NFKC", str(s))
+    s = _strip_zero_width(s)
+    # drop control chars except tab/newline/carriage-return (keep script formatting)
+    s = "".join(ch for ch in s if ch in ("\t", "\n", "\r") or ord(ch) >= 0x20)
+    if max_chars and len(s) > max_chars:
+        s = s[:max_chars]
+    return s
+
+
+def _escape_vendor_script(text: str) -> str:
+    """Neutralize any forged close-tag inside a vendor script BEFORE it is fenced
+    in <vendor_script>…</vendor_script> at render time. Without this a vendor could
+    inject `</vendor_script> SYSTEM: ...` and break out of the data fence (red-team
+    fix: escape the close-tag). Case/space-insensitive; also covers <vendor_data.
+    Idempotent enough for round-trip (we escape '<' of the tag to a fullwidth '＜')."""
+    if not text:
+        return text
+    # match the OPENING of any vendor_* tag (open or close form), e.g.
+    # </vendor_script>, < vendor_script, </vendor_data ...  -> defang the leading '<'
+    return re.sub(r"<(\s*/?\s*vendor_(?:script|data)\b)",
+                  lambda m: "＜" + m.group(1), text, flags=re.IGNORECASE)
+
+
+def _sanitize_script_meta(meta) -> dict:
+    """Clamp the optional parsed persona/tone hints. NEVER lossy over raw_script —
+    this is a convenience projection only; the verbatim truth is fields['raw_script'].
+    Unknown keys are dropped; strings cleaned+clamped; do/dont coerced to short lists."""
+    if not isinstance(meta, dict):
+        return {}
+    out: dict = {}
+    for k in ("tone", "greeting", "persona", "language", "style"):
+        v = meta.get(k)
+        if v not in (None, ""):
+            out[k] = _clean_text(v, max_chars=_SCRIPT_META_STR_MAX)
+    for k in ("do", "dont", "do_list", "dont_list"):
+        v = meta.get(k)
+        if isinstance(v, str):
+            v = [s for s in re.split(r"[\n;]+", v) if s.strip()]
+        if isinstance(v, list):
+            items = [_clean_text(s, max_chars=_SCRIPT_META_STR_MAX)
+                     for s in v if str(s).strip()][:_SCRIPT_META_LIST_MAX]
+            if items:
+                out[k] = items
+    return out
+
+
+def _coerce_vendor_script(out: dict) -> None:
+    """Mutate `out` in place: store raw_script VERBATIM (escaped close-tags only,
+    no truncation/summarization beyond a generous DoS ceiling) + a sanitized
+    script_meta + a clamped trust_tier + the per-campaign inject override. When the
+    script is authoritative (present AND inject on), blank the lossy derived
+    projections so they cannot reach the live turn. Idempotent: re-coercing an
+    already-coerced record round-trips byte-equal on raw_script."""
+    raw = out.get("raw_script")
+    # raw_script: clean (NFKC + zero-width strip + control strip) + escape vendor
+    # close-tags + clamp to the DoS ceiling. This is the ONLY processing — the full
+    # text is preserved verbatim (no lossy summarization).
+    if raw in (None, ""):
+        out["raw_script"] = ""
+    else:
+        raw = _clean_text(raw, max_chars=_RAW_SCRIPT_MAX_CHARS)
+        out["raw_script"] = _escape_vendor_script(raw)
+    # sanitized parsed hints (never authoritative over raw)
+    out["script_meta"] = _sanitize_script_meta(out.get("script_meta"))
+    # trust tier: sandbox (default) | trusted. Sandbox scripts are INBOUND-ONLY until
+    # a super-admin promotes to trusted (hard precondition for any earner exposure).
+    tt = str(out.get("trust_tier", "") or "").strip().lower()
+    out["trust_tier"] = tt if tt in ("sandbox", "trusted") else "sandbox"
+    # per-campaign opt-in (effective = global env OR this flag)
+    out["vendor_script_inject"] = bool(out.get("vendor_script_inject", False))
+    # red-team fix #5: when the script is authoritative, gate OFF the lossy derived
+    # projections (from the truncated extract_fields) so the agent has ONE source —
+    # the verbatim script — not script-plus-stale-compression. We blank them at the
+    # data layer (so build_system_prompt renders the same empty-list path that legacy
+    # empty campaigns already render, proven byte-stable by the golden oracle).
+    script_present = bool(out.get("raw_script"))
+    inject_on = _VENDOR_SCRIPT_INJECT_ENV or bool(out.get("vendor_script_inject"))
+    if script_present and inject_on:
+        for k in ("product_summary", "location", "price_offer"):
+            out[k] = ""
+        for k in ("usps", "talking_points", "qualifying_questions"):
+            out[k] = []
+        out["objections"] = []
+        out["_derived_suppressed"] = True
+    else:
+        out["_derived_suppressed"] = False
+
+
+def _sanitize_extracted(out: dict) -> dict:
+    """Schema-validate + value-clamp the LLM-returned extract_fields output — the
+    OPEN INJECTION SINK (a malicious brief can make the model emit hostile field
+    values that later render into the live prompt). Keep only known keys; clean all
+    strings; coerce list shapes. Defensive: never raises. (raw_script is NOT produced
+    by extract_fields; it is authored separately and coerced in _coerce_vendor_script.)"""
+    if not isinstance(out, dict):
+        return {"agent_name": "Riya", "company_name": "", "product_name": "",
+                "product_summary": "", "language": "Hinglish"}
+    safe: dict = {}
+    for k in ("company_name", "agent_name", "product_name", "product_summary",
+              "location", "price_offer", "language"):
+        v = out.get(k)
+        if v is not None:
+            safe[k] = _clean_text(v, max_chars=4000 if k == "product_summary" else 400)
+    for k in ("usps", "talking_points", "qualifying_questions"):
+        v = out.get(k)
+        if isinstance(v, str):
+            v = [s for s in re.split(r"[\n;]+", v) if s.strip()]
+        if isinstance(v, list):
+            safe[k] = [_clean_text(s, max_chars=400) for s in v if str(s).strip()][:40]
+    obj = out.get("objections")
+    if isinstance(obj, list):
+        norm = []
+        for o in obj:
+            if isinstance(o, dict):
+                norm.append({"q": _clean_text(o.get("q", ""), max_chars=400),
+                             "a": _clean_text(o.get("a", ""), max_chars=600)})
+        safe["objections"] = norm[:40]
+    # preserve a benign error marker if extract_fields fell back
+    if out.get("_error"):
+        safe["_error"] = _clean_text(out.get("_error"), max_chars=200)
+    safe.setdefault("agent_name", "Riya")
+    safe.setdefault("language", "Hinglish")
+    return safe
+
+
 def extract_fields(brief: str) -> dict:
     sysmsg = (
         "You convert a tele-calling campaign brief into JSON. Return ONLY a JSON object with keys: "
@@ -1193,15 +1382,18 @@ def extract_fields(brief: str) -> dict:
             json={"model": GROQ_MODEL, "temperature": 0.2, "max_tokens": 900,
                   "response_format": {"type": "json_object"},
                   "messages": [{"role": "system", "content": sysmsg},
-                               {"role": "user", "content": brief[:6000]}]},
+                               {"role": "user", "content": brief[:12000]}]},
             timeout=30,
         )
         content = r.json()["choices"][0]["message"]["content"]
         m = re.search(r"\{.*\}", content, re.DOTALL)
-        return json.loads(m.group(0) if m else content)
+        # SANDBOX the LLM output: schema-validate + value-clamp the open injection
+        # sink before it can render into the live prompt (red-team, in-wave).
+        return _sanitize_extracted(json.loads(m.group(0) if m else content))
     except Exception as exc:  # noqa: BLE001
-        return {"_error": repr(exc)[:200], "agent_name": "Riya", "company_name": "",
-                "product_name": "", "product_summary": brief[:400], "language": "Hinglish"}
+        return _sanitize_extracted(
+            {"_error": repr(exc)[:200], "agent_name": "Riya", "company_name": "",
+             "product_name": "", "product_summary": brief[:400], "language": "Hinglish"})
 
 
 def _groq_chat(messages: list, max_tokens: int = 300, temperature: float = 0.5,
@@ -1229,7 +1421,9 @@ def save_campaign(fields: dict, tenant_id: str) -> dict:
            "company": fields.get("company_name", ""), "product": fields.get("product_name", ""),
            "status": "ready", "created_at": datetime.now().isoformat(timespec="seconds"),
            "fields": fields, "system_prompt": build_system_prompt(fields)}
-    (CAMPAIGN_DIR / f"{cid}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ATOMIC write (red-team fix #4): the JSON file mirror is AUTHORITATIVE + write-first
+    # for the earner; temp+rename so a crash mid-write never leaves a torn campaign file.
+    _atomic_write_json(CAMPAIGN_DIR / f"{cid}.json", rec)
     # P1 DUAL MIRROR (best-effort, additive): campaigns are written per-id (bypassing _write), so the
     # store seam can't see them — mirror this one record to PG explicitly. No-op unless campaigns is
     # flipped to dual in STORE_MODES; off-loop; swallows all errors (must NOT break campaign create).
@@ -3637,6 +3831,11 @@ def _coerce_fields(fields: dict) -> dict:
     except Exception:  # noqa: BLE001
         out["tier_resolved"] = out.get("tier_resolved") or {}
     # === /PVS PHASE-1 ===
+    # === W1 VENDOR SCRIPT (lossless raw_script + sanitized script_meta) ===
+    # Runs LAST so the derived-projection suppression sees the fully-coerced lists.
+    # No-op for legacy campaigns (no raw_script) -> golden render byte-identical.
+    _coerce_vendor_script(out)
+    # === /W1 VENDOR SCRIPT ===
     return out
 
 
@@ -3760,8 +3959,8 @@ async def update_campaign(request: Request, cid: str, fields_json: str = Form(""
         d["system_prompt"] = build_system_prompt(fields)
         d.setdefault("tenant_id", t["tenant_id"])
         safe = "".join(ch for ch in cid if ch.isalnum() or ch in "-_")
-        (CAMPAIGN_DIR / f"{safe}.json").write_text(json.dumps(d, ensure_ascii=False, indent=2),
-                                                   encoding="utf-8")
+        # ATOMIC write (red-team fix #4): file mirror authoritative + write-first.
+        _atomic_write_json(CAMPAIGN_DIR / f"{safe}.json", d)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": f"could not update: {repr(exc)[:160]}"}, status_code=500)
     # P1 DUAL MIRROR (best-effort, additive): mirror the edited campaign to PG (per-id upsert). No-op
