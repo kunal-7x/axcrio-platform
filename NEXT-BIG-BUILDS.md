@@ -8,7 +8,7 @@
 0b. **FIXES-2** (folded into the perf wave): ✅ (a) recordings HEAD-gate SHIPPED in UNIT-2 (`40caf3c`, `playable:bool` + URL only when verified non-empty/audio); ✅ (b) CALL-LOGS transcript L/R SHIPPED in UNIT-5 (`d48ed46`, ai→LEFT / customer-lead→RIGHT, deployed LIVE). Original notes: (a) CRM recordings TIMER-but-NO-AUDIO — NOT a missing URL; OUTBOUND auto-egress items whose OGG is near-empty/486-busy (duration shows, bytes don't decode) → backend HEAD-verify object non-zero before presigning outbound items, render `<audio>` only when verified. (b) CALL-LOGS transcript "anonymous" — `calls/page.tsx:283` keys on `role==="agent"` but backend normalizes to `ai`/`customer` → never matches → all-right same-avatar; fix: ai/assistant/agent→LEFT("AI"), customer/user/caller/lead→RIGHT, keep the window, mirror CRM ChatBubble. (✅ deploy key verified working — SSH_OK famit-livekit.)
 1. **Campaign-run fix** [agent a06ee231 RUNNING] — can't run campaigns; prime suspect = my recordings auto-egress blocking `run_job` dial (make recording best-effort, never block the call); + window/Vobiz/suppression. Proof = a real ring.
 2. ~~**FIXES wave**~~ ✅ **DONE + VERIFIED LIVE 2026-06-13** — (a) image preview/asset-click-empty FIXED (asset-detail folds the current-version PRESIGNED url; live GET 200 image/jpeg ~50–63KB on founder+admin tenants); (b) CRM transcript chat-view SHIPPED (customer RIGHT / AI LEFT; `GET /calls/{room}/transcript` → 200/94 turns/roles {ai,customer}, tenant-scoped 404 cross-tenant). Deployed FORTRESS BUILD_ID `tuuIjqN7fCf_iEL-obLon`; commits `d9daa86`+`6940742`; earner untouched (agent.py md5 `9150fabe…` unchanged, famit-agent never restarted). 3/3 PASS.
-3. **Multilingual adaptive voice + greeting glitch** — per-turn Sarvam language-detect + LLM mirrors the caller (Hindi↔English↔Hinglish); fix the "Hello/Haan" opening. INBOUND `aim_voice_agent.py` SAFE; OUTBOUND `agent.py` GATED.
+3. ✅ **Multilingual adaptive voice + greeting glitch — DONE (2026-06-14, MLV wave).** Root cause = the "CASUAL HINGLISH … default to easy Hinglish" PIN in `_build_sales_instructions:1480-1485` (inside the HIGHEST-PRIORITY override) anchored Hindi. Replaced with an ADAPTIVE "MIRROR THE CALLER, EVERY TURN — switch WITH them mid-call, no default, never announce the language" rule; STT was already auto (`SARVAM_STT_LANG` default `unknown` = Sarvam auto-detect, not pinned); cleaned the greeting (`:2645-2655`, no "Hello"+Hindi jolt). INBOUND only, earner UNTOUCHED. Integrated mirror smoke 3/3 PASS (Hindi→Hindi, switch-to-English→English, switch-back→Hindi via real Groq chain). Earner gate before+after PASS (agent.py md5 `9150fabe…` unchanged, famit-agent not restarted, /health 200). Backup `aim_voice_agent.py.MLVbak.20260614-020515`; build log `memory/build_log/wave-build-MLV-multilingual-adaptive-voice.md`. FINAL ACCEPTANCE = founder's real inbound Hindi→English mid-call switch. (OUTBOUND `agent.py` mirror still GATED — separate founder-approved item.)
 4. **Two-party inbound handoff** — PROVEN by parts; needs ONE real founder inbound call to confirm (60-sec test).
 
 ## P1 — big builds (sequential, back-to-back)
@@ -41,3 +41,31 @@
 
 ## 🔴 FOUNDER ACTIONS (unblock whole pipelines)
 - **BIND ModelScope↔Alibaba Cloud** → image gen (`FOUNDER-MODELSCOPE-BIND.md`). · **Fix Meta WhatsApp** payment+verify+webhook → delivery (`FOUNDER-META-WHATSAPP-FIX.md`). · Video-gen API key → Vault. · Razorpay (when Credits un-holds). · Ads OAuth (Meta/Google). · SambaNova Developer tier. · FE-box root for the nginx /api/assets proxy.
+
+## 🪙 NET-NEW from gold-mine sweep (2026-06-14 — full detail in `MASTER_PLAN.md` §GOLD-MINE SWEEP)
+> Deep read-only sweep of all docs + code-marker grep + LIVE-box flag/route verification. NET-NEW only (de-duped vs the queue above). ALL earner-safe (agent.py untouched). P-keys: P0 quick · P1 big-clear · P2 lower · ⛔ gated.
+26. **ADS ENGINE (dormant)** — built router `ads_engine/endpoints.py` + FE `app/ads/page.tsx` exist but `FEATURE_ADS` OFF (`/ads/*`→404 on box); flip-on the propose/approve flow [P1 SAFE], live spend ⛔ Ads OAuth.
+27. **MEDIA-GEN router (dormant)** — `media_gen/router.py` `FEATURE_MEDIA` OFF (`/media/*`→404); needs body-tenant→token `build_router` fix then flag-on; fold VIDEO path into Video Studio [P2].
+28. **PAYMENTS (dormant)** — `payments/router.py` + FE `app/payments/page.tsx` shipped, `FEATURE_PAYMENTS` OFF (`/payments/*`→404); needs `wire()`+keys ⛔ Razorpay.
+29. **Inbound never-silent apology guard** — try/except in inbound entrypoint, speak a line on any error (no dead air) [P0 SAFE, inbound only].
+30. **Inbound recording Egress** — inbound audio→DO Spaces presigned `recording_url` (outbound already does this; inbound doesn't) [P1 SAFE].
+31. **Inbound spend metering** — meter inbound minutes/handoff/template/RAG into wallet (only outbound metered today) [P1 SAFE].
+32. **Compliant recording posture** — consent line + PIN-span pause + region/retention [consent line P1 SAFE; rest ⛔ policy].
+33. **DPDP delete-my-data endpoint** — per-person purge + purpose-limit docs (legal exposure) [P1 SAFE].
+34. **Inbound business analytics dashboard** — containment/booking/transfer/hot/sentiment/language-mix per call [P1 SAFE, FE+queries].
+35. **Mid-call `lead_is_hot` LLM tool** — buy-intent detect mid-call → mark hot live [P1 SAFE, inbound].
+36. **Warm-transfer no-answer fallback ladder** — ring next by strategy + voicemail-detect + logged callback [P1 SAFE].
+37. **Post-call workflow event emission** — emit `call.completed` into workflow DSL [P1 SAFE, pairs w/ Workflow wave].
+38. **Customer-mode "sales-in" inbound worker (Mode A)** — inbound SALES brain over voice_core (`sales_flow.py`), distinct from AIM command brain [P1 SAFE].
+39. **Knowledge-gap + objection learning loop** — mine transcripts→draft KB→curator→re-ingest (self-improving) [P2, after RAG].
+40. **External CRM sync adapters** — Salesforce/HubSpot/Zoho push+webhook [⛔ founder API keys].
+41. **Ads flywheel promote-winner-to-ad** — top creative-test template→auto Meta/Google ad [⛔ ads creds, pairs w/ #26].
+42. **LiveKit semantic turn-detector** — add `turn-detector` plugin w/ Silero VAD (Hindi ~99.4% endpointing) [P1 SAFE, inbound first].
+43. **Structured per-stage flow layer** — greet/pitch/qualify/close LiveKit agents w/ handoffs [P2, inbound first].
+44. **Eval/replay harness + per-call QA score** — persona scenarios + LLM-judge to gate every voice change + score real calls (`design/eval-harness.md`) [P1 SAFE, offline]. **Highest leverage — makes voice changes provable.**
+45. **In-memory grounding bank** — per-campaign objection/fact sheet in FAISS/prompt (lighter than full RAG) [P2, overlaps RAG].
+46. **LoRA/QLoRA fine-tune on telecaller transcripts** [⛔ DEFERRED — after eval harness + self-host latency decision].
+47. **Inbound voice warm-cache + pooled HTTP client** — Redis hot-cache + reused clients to STT/LLM/TTS (cuts inbound first-token) [P1 SAFE]; + endpointing tune [P2].
+48. **growth-os Integration Hub** — 12-op connector lifecycle + Origin bridge; `connections` table exists, zero module mounted [⛔ Phase-0 contracts-first].
+49. **growth-os Billing money-path + Gateway OIDC + Kafka SSE** — consumption stub only, no ledger-debit write; dev-JWT stub; in-memory SSE only [⛔ Phase 1/3 infra].
+50. **WhatsApp builder residuals (fine)** — WB-2 `status=partial` fallback cards [P0]; WB-3 banner via Spaces `header_url` [P1]; WB-4 Submit-to-Meta + webhook [⛔ Meta].
