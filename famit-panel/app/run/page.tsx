@@ -33,6 +33,7 @@ import { useMe, canWrite } from "@/lib/auth";
 import { type SelectOption } from "@/types/select";
 import { type TabsOption } from "@/types/tabs";
 import HandoffTeam from "@/app/ai-manager/_handoff";
+import VoiceProviders from "./_voice-providers";
 import { SOURCE_TABS, SOURCE_ID, TEMP_DEFS, type Temp } from "./_lib/types";
 import {
     type AudienceFilter,
@@ -788,6 +789,22 @@ export default function RunPage() {
                             />
                         </div>
                     </Card>
+
+                    {/* 6.5 ── Voice & Providers (PVS Phase-1: tier slider + cost meter + voice) ──
+                        Per-campaign quality/cost control. Writes the campaign `tier` + voice + provider
+                        config via POST /campaigns/{cid}. Voice + tier config apply now; the live-call
+                        PROVIDER swap is Phase 2 (flagged in-card). Projected spend uses the same audience
+                        count the preview bar shows so the estimate matches what will be dialed. */}
+                    <VoiceProviders
+                        campaignId={campaignId}
+                        audienceCount={
+                            sourceTab.id === SOURCE_ID.all &&
+                            audience.length === 0
+                                ? storedLeads.length
+                                : breakdown.total
+                        }
+                        writable={writable}
+                    />
 
                     {/* 7 ── Handoff team (review / add escalation people before launch) ──
                         Reuses the SAME manager + /brain/handoff* calls as the dedicated

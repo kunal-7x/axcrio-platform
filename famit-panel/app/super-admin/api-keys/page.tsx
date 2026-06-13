@@ -44,6 +44,7 @@ import {
     type Toast,
     ghostBtnCls,
 } from "../_shared";
+import CustomProvidersCard from "./_custom-providers";
 
 // ---- provider catalogue (display only; the backend allow-lists the same set) ----
 const PROVIDERS: { id: ProviderName; name: string; blurb: string; prefix: string }[] = [
@@ -183,6 +184,9 @@ function ApiKeysBody() {
                             onDelete={onDelete}
                         />
                     ))}
+                    {/* PVS Phase-1: register custom OpenAI-compatible STT/LLM/TTS providers
+                        (isolated encrypted store; surfaced in the per-campaign Advanced picker). */}
+                    <CustomProvidersCard flash={flash} />
                 </div>
             )}
 

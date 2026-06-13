@@ -30,6 +30,29 @@ export type Campaign = {
     product: string;
     status: string;
     created_at: string;
+    // present on GET /campaigns/{cid} (nested under {campaign:{...}}); the audience-builder reads
+    // `fields` to hydrate the Voice & Providers card with the campaign's saved tier / voice / providers.
+    fields?: CampaignFields;
+};
+
+// PVS Phase-1 per-campaign provider+voice config (a subset of the full campaign `fields` object).
+// Persisted via POST /campaigns/{cid}. `tier` drives the slider; the *_provider + voice_id are the
+// resolved/Advanced overrides; est_avg_call_min + budget_cap_inr feed the cost meter.
+export type CampaignTier = "lean" | "standard" | "premium" | "custom";
+export type CampaignFields = {
+    tier?: CampaignTier;
+    voice_id?: string;
+    voice_provider?: string;
+    stt_provider?: string;
+    llm_provider?: string;
+    tts_provider?: string;
+    custom_provider_id?: string;
+    est_avg_call_min?: number;
+    budget_cap_inr?: number | string;
+    // the backend snapshots the resolved triple so a later tiers.py edit never rewrites in-flight runs.
+    tier_resolved?: Record<string, unknown>;
+    // catch-all: a campaign carries many other fields we don't touch here (preserve on save).
+    [key: string]: unknown;
 };
 
 export type Lead = {
@@ -469,6 +492,42 @@ export async function deleteCampaign(id: string): Promise<{ deleted: boolean }> 
     return res.json();
 }
 
+// Single campaign detail. The backend envelope is NESTED: {campaign:{...,fields:{...}}}.
+// Dormant-safe: 404/offline -> null so the audience builder just shows defaults.
+export async function getCampaign(cid: string): Promise<Campaign | null> {
+    try {
+        const res = await fetch(`${BASE}/campaigns/${encodeURIComponent(cid)}`, {
+            headers: authHeaders(),
+        });
+        await handle401(res);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data?.campaign ?? null) as Campaign | null;
+    } catch {
+        return null;
+    }
+}
+
+// Update an existing campaign's fields (incl. PVS tier/voice/provider) via POST /campaigns/{cid}.
+// The backend merges these into the full `fields` object + rebuilds the system prompt. Callers MUST
+// pass the FULL fields object (merge their delta onto the campaign's existing fields first) — the
+// backend replaces `fields` wholesale, it does not patch.
+export async function updateCampaign(
+    cid: string,
+    fields: Record<string, unknown>
+): Promise<{ id: string; name: string }> {
+    const fd = new FormData();
+    fd.append("fields_json", JSON.stringify(fields));
+    const res = await fetch(`${BASE}/campaigns/${encodeURIComponent(cid)}`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to update campaign");
+    return res.json();
+}
+
 // ---- Extract ----
 export async function extract(brief: string): Promise<ExtractedFields> {
     const fd = new FormData();
@@ -659,17 +718,208 @@ export async function getCallDetail(id: string): Promise<CallDetail> {
 }
 
 // ---- Voices ----
+// PVS Phase-1: the backend now un-strips ElevenLabs' free public `preview_url` and adds
+// accent/gender/language + a `sample_url` (the /voice-preview proxy path). Sarvam returns a
+// fixed speaker catalogue with the same shape. All additive + back-compat (legacy callers that
+// only read voice_id/name still work).
 export type Voice = {
     voice_id: string;
     name: string;
+    preview_url?: string;
+    accent?: string;
+    gender?: string;
+    language?: string;
+    sample_url?: string;
 };
 
-export async function getVoices(): Promise<{ voices: Voice[] }> {
-    const res = await fetch(`${BASE}/voices`, {
+export type VoiceProvider = "elevenlabs" | "sarvam";
+
+// getVoices(provider?) — omit for ElevenLabs (default), pass "sarvam" for the Bulbul speakers.
+// Dormant-safe: any failure resolves to an empty list so the UI degrades, never an error wall.
+export async function getVoices(
+    provider?: VoiceProvider
+): Promise<{ provider: string; voices: Voice[] }> {
+    try {
+        const qs = provider ? `?provider=${encodeURIComponent(provider)}` : "";
+        const res = await fetch(`${BASE}/voices${qs}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { provider: provider || "elevenlabs", voices: [] };
+        return res.json();
+    } catch {
+        return { provider: provider || "elevenlabs", voices: [] };
+    }
+}
+
+// FREE play-preview URL for the shared <audio>. ElevenLabs -> 307 to the public GCS clip (no key,
+// no synth, zero burn); Sarvam -> the pre-hosted one-time sample. The token is appended as a query
+// param because an <audio src> cannot send the X-Auth header. NOTE: /voice-preview is behind
+// authed() which reads X-Auth; the panel proxies /api/* through Next so same-origin <audio> works
+// when the token is in the header path — for the <audio> we rely on the existing /api proxy auth.
+export function voicePreviewUrl(provider: VoiceProvider, id: string): string {
+    const params = new URLSearchParams({ provider, id });
+    const tok = getToken();
+    if (tok) params.set("t", tok); // backend ignores unknown params; harmless if proxy injects auth
+    return `${BASE}/voice-preview?${params.toString()}`;
+}
+
+// ---- Providers (built-in + custom) per role ----
+export type ProviderInfo = {
+    id: string;
+    name: string;
+    builtin: boolean;
+    kinds: string[];
+    available: boolean;
+    // custom-only extras
+    kind?: string;
+    model?: string;
+    base_url?: string;
+    enabled?: boolean;
+    masked?: string;
+};
+
+export type ProvidersByRole = {
+    stt: { id: string; name: string; builtin: boolean; available: boolean }[];
+    llm: { id: string; name: string; builtin: boolean; available: boolean }[];
+    tts: { id: string; name: string; builtin: boolean; available: boolean }[];
+};
+
+const EMPTY_BY_ROLE: ProvidersByRole = { stt: [], llm: [], tts: [] };
+
+// Dormant-safe: 404/offline -> empty so the Voice & Providers card simply shows no providers.
+export async function getProviders(): Promise<{ providers: ProviderInfo[]; by_role: ProvidersByRole }> {
+    try {
+        const res = await fetch(`${BASE}/providers`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { providers: [], by_role: { ...EMPTY_BY_ROLE } };
+        return res.json();
+    } catch {
+        return { providers: [], by_role: { ...EMPTY_BY_ROLE } };
+    }
+}
+
+// ---- Tiers (single source of truth for the slider mapping + cost-meter math) ----
+export type TierRole = { provider: string; model: string; rate_key: string };
+export type TierVoice = { provider: string; voice_id: string };
+export type Tier = {
+    key: "lean" | "standard" | "premium";
+    name: string;
+    quality: string;
+    blurb: string;
+    est_inr_per_min: number;
+    stt: TierRole;
+    llm: TierRole;
+    tts: TierRole;
+    voice: TierVoice;
+};
+export type RateCard = {
+    assumptions: {
+        tts_chars_per_min: number;
+        llm_tokens_per_min: number;
+        default_avg_call_min: number;
+    };
+    stt: Record<string, { label: string; inr_per_min: number }>;
+    llm: Record<string, { label: string; inr_per_mtok: number }>;
+    tts: Record<string, { label: string; inr_per_1k: number }>;
+    telephony_inr_per_min: number;
+};
+export type TiersPayload = {
+    tiers: Tier[];
+    order: string[];
+    default: string;
+    rate_card: RateCard;
+    cost_formula?: Record<string, string>;
+    phase_note?: string;
+    ob_prov_pending?: boolean;
+};
+
+// Dormant-safe: returns null on any failure so the card hides the slider gracefully.
+export async function getTiers(): Promise<TiersPayload | null> {
+    try {
+        const res = await fetch(`${BASE}/tiers`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return null;
+        return res.json();
+    } catch {
+        return null;
+    }
+}
+
+// ---- Custom providers (super-admin; isolated Fernet store, NOT the live key pool) ----
+export type CustomProvider = {
+    id: string;
+    name: string;
+    kind: "stt" | "llm" | "tts";
+    base_url: string;
+    model: string;
+    enabled: boolean;
+    added_at?: string;
+    masked: string;
+    available: boolean;
+};
+
+export async function getCustomProviders(): Promise<{ custom_providers: CustomProvider[] }> {
+    try {
+        const res = await fetch(`${BASE}/admin/custom-providers`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { custom_providers: [] };
+        return res.json();
+    } catch {
+        return { custom_providers: [] };
+    }
+}
+
+export async function addCustomProvider(data: {
+    name: string;
+    kind: "stt" | "llm" | "tts";
+    base_url: string;
+    model: string;
+    key: string;
+}): Promise<{ ok: boolean; id: string; name: string; kind: string; model: string; masked: string }> {
+    const fd = new FormData();
+    fd.append("name", data.name);
+    fd.append("kind", data.kind);
+    fd.append("base_url", data.base_url);
+    fd.append("model", data.model);
+    if (data.key) fd.append("key", data.key);
+    const res = await fetch(`${BASE}/admin/custom-providers`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to add custom provider");
+    return res.json();
+}
+
+export async function updateCustomProvider(
+    id: string,
+    body: { enabled?: boolean; name?: string; base_url?: string; model?: string; key?: string }
+): Promise<{ ok: boolean; id: string }> {
+    const fd = new FormData();
+    if (body.enabled != null) fd.append("enabled", body.enabled ? "1" : "0");
+    if (body.name != null) fd.append("name", body.name);
+    if (body.base_url != null) fd.append("base_url", body.base_url);
+    if (body.model != null) fd.append("model", body.model);
+    if (body.key != null) fd.append("key", body.key);
+    const res = await fetch(`${BASE}/admin/custom-providers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update custom provider");
+    return res.json();
+}
+
+export async function deleteCustomProvider(
+    id: string
+): Promise<{ ok: boolean; deleted: boolean; id: string }> {
+    const res = await fetch(`${BASE}/admin/custom-providers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
         headers: authHeaders(),
     });
     await handle401(res);
-    if (!res.ok) throw new Error("Failed to fetch voices");
+    if (!res.ok) return throwForStatus(res, "Failed to delete custom provider");
     return res.json();
 }
 
