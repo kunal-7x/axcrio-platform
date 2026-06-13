@@ -94,7 +94,19 @@ const AssetDetail = ({ asset, open, onClose, onChanged }: AssetDetailProps) => {
 
     if (!asset) return null;
     const a = full || asset;
-    const src = a.thumb_url || a.url || assetRawUrl(a.id, a.current_version_id);
+    // Prefer a presigned, browser-loadable URL: the asset's own url/thumb_url (now
+    // folded from the current version server-side), else the current/newest version's
+    // presigned url. Only fall back to the auth-gated /raw proxy as a last resort —
+    // an <img src> can't send X-Auth so /raw 401s and the preview goes blank.
+    const currentVersion =
+        a.versions?.find((v) => v.is_current || v.id === a.current_version_id) ||
+        a.versions?.[0];
+    const src =
+        a.thumb_url ||
+        a.url ||
+        currentVersion?.thumb_url ||
+        currentVersion?.url ||
+        assetRawUrl(a.id, a.current_version_id);
     const isApproved = (a.status || "").toLowerCase() === "approved";
 
     const refetch = async () => {
