@@ -8,15 +8,19 @@ import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
+import Modal from "@/components/Modal";
+import Spinner from "@/components/Spinner";
 import {
     getContact,
     getContactTimeline,
     getContactRecordings,
+    getCallTranscript,
     CrmDormantError,
     CrmNotFoundError,
     type ContactDetailResponse,
     type TimelineRow,
     type Recording,
+    type CallTranscript,
 } from "../client";
 import {
     StageBadge,
@@ -52,6 +56,35 @@ export default function ContactProfilePage() {
     const [error, setError] = useState("");
     const [kindTab, setKindTab] = useState(KIND_FILTERS[0]);
     const kind = kindTab.key;
+
+    // Call transcript chat-view: clicking a "call" timeline row opens the full
+    // ordered transcript in a right slide-over (customer RIGHT, AI LEFT).
+    const [transcriptCall, setTranscriptCall] = useState<{
+        callId: string;
+        title: string;
+        at: string;
+    } | null>(null);
+    const [transcript, setTranscript] = useState<CallTranscript | null>(null);
+    const [transcriptLoading, setTranscriptLoading] = useState(false);
+
+    const openTranscript = (row: TimelineRow) => {
+        // Timeline "call" rows carry source_id = call.id || room — exactly what
+        // GET /calls/{call_id}/transcript accepts. Bail if there's no id to query.
+        const callId = (row.source_id || "").trim();
+        if (!callId) return;
+        setTranscriptCall({ callId, title: row.title || "Call", at: row.at });
+        setTranscript(null);
+        setTranscriptLoading(true);
+        getCallTranscript(callId)
+            .then((t) => setTranscript(t))
+            .catch(() => setTranscript(null))
+            .finally(() => setTranscriptLoading(false));
+    };
+    const closeTranscript = () => {
+        setTranscriptCall(null);
+        setTranscript(null);
+        setTranscriptLoading(false);
+    };
 
     // Load the contact (+ embedded timeline + nba). Dormant (module/PG down) ->
     // "coming soon"; not-found (bad id) -> "not found"; else error.
@@ -388,7 +421,12 @@ export default function ContactProfilePage() {
                                             aria-hidden
                                         />
                                         {timeline.map((row, i) => (
-                                            <TimelineItem key={`${row.at}-${i}`} row={row} index={i} />
+                                            <TimelineItem
+                                                key={`${row.at}-${i}`}
+                                                row={row}
+                                                index={i}
+                                                onOpenTranscript={openTranscript}
+                                            />
                                         ))}
                                     </ol>
                                 )}
@@ -397,6 +435,16 @@ export default function ContactProfilePage() {
                     </div>
                 </div>
             )}
+
+            {/* Call transcript chat-view (right slide-over) */}
+            <CallTranscriptModal
+                open={!!transcriptCall}
+                onClose={closeTranscript}
+                title={transcriptCall?.title || "Call"}
+                at={transcriptCall?.at || ""}
+                loading={transcriptLoading}
+                transcript={transcript}
+            />
         </Layout>
     );
 }
@@ -595,16 +643,153 @@ function RecordingRow({ r }: { r: Recording }) {
     );
 }
 
+// ── Call transcript chat-view (right slide-over) ─────────────────────────────
+//
+// The full ordered transcript for ONE call, rendered as a chat: the CUSTOMER's
+// turns are bubbles on the RIGHT (primary tint), the AI's turns on the LEFT
+// (neutral surface) — exactly the messaging-app convention the founder asked for.
+// The backend already normalizes each turn's `role` to "customer"/"ai", so we
+// only switch the side + skin here. Dormant-safe: a call with no stored turns
+// shows a calm note rather than an empty void.
+
+function CallTranscriptModal({
+    open,
+    onClose,
+    title,
+    at,
+    loading,
+    transcript,
+}: {
+    open: boolean;
+    onClose: () => void;
+    title: string;
+    at: string;
+    loading: boolean;
+    transcript: CallTranscript | null;
+}) {
+    const turns = transcript?.turns ?? [];
+    const dir = transcript?.direction || "";
+    return (
+        <Modal open={open} onClose={onClose} isSlidePanel>
+            <div className="flex flex-col h-svh">
+                {/* header */}
+                <div className="shrink-0 px-6 pt-6 pb-4 border-b border-s-subtle max-md:px-4">
+                    <div className="flex items-center gap-2.5">
+                        <span className="grid place-items-center size-9 shrink-0 rounded-full bg-primary-01/12">
+                            <Icon name="chat-think" className="size-4.5 fill-primary-01" />
+                        </span>
+                        <div className="min-w-0">
+                            <div className="text-sub-title-1 text-t-primary truncate">
+                                {title || "Call transcript"}
+                            </div>
+                            <div className="flex items-center gap-2 text-caption text-t-tertiary">
+                                {dir && (
+                                    <span className="capitalize">
+                                        {dir === "inbound" ? "Inbound call" : "Outbound call"}
+                                    </span>
+                                )}
+                                {at && (
+                                    <span className="td-num" title={fmtDateTime(at)}>
+                                        {dir ? "· " : ""}
+                                        {fmtRelative(at)}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* chat body */}
+                <div className="grow overflow-y-auto px-5 py-5 scrollbar-none max-md:px-4">
+                    {loading ? (
+                        <div className="grid place-items-center h-full">
+                            <Spinner className="!size-10" />
+                        </div>
+                    ) : turns.length === 0 ? (
+                        <div className="grid place-items-center h-full text-center px-4">
+                            <div>
+                                <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1 dark:bg-shade-04/60">
+                                    <Icon name="chat" className="fill-t-tertiary" />
+                                </span>
+                                <div className="text-body-1-str font-semibold text-t-primary mb-1">
+                                    No transcript for this call
+                                </div>
+                                <div className="max-w-xs mx-auto text-body-2 text-t-secondary">
+                                    This call has no saved conversation yet. Transcripts appear here
+                                    once a call is answered and the conversation is captured.
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {turns.map((turn) => (
+                                <ChatBubble key={turn.seq} turn={turn} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* footer legend */}
+                {!loading && turns.length > 0 && (
+                    <div className="shrink-0 flex items-center justify-center gap-5 px-6 py-3 border-t border-s-subtle text-caption text-t-tertiary max-md:px-4">
+                        <span className="inline-flex items-center gap-1.5">
+                            <span className="size-2.5 rounded-full bg-b-surface1 ring-1 ring-s-subtle dark:bg-shade-04/80" />
+                            AI agent
+                        </span>
+                        <span className="inline-flex items-center gap-1.5">
+                            <span className="size-2.5 rounded-full bg-primary-01" />
+                            Customer
+                        </span>
+                    </div>
+                )}
+            </div>
+        </Modal>
+    );
+}
+
+function ChatBubble({ turn }: { turn: CallTranscript["turns"][number] }) {
+    const isCustomer = turn.role === "customer";
+    return (
+        <div className={`flex ${isCustomer ? "justify-end" : "justify-start"}`}>
+            <div className="max-w-[82%]">
+                <div className={`mb-1 px-1 text-caption text-t-tertiary ${isCustomer ? "text-right" : ""}`}>
+                    {isCustomer ? "Customer" : "AI agent"}
+                </div>
+                <div
+                    className={`px-3.5 py-2.5 text-body-2 text-t-primary whitespace-pre-wrap break-words ${
+                        isCustomer
+                            ? "bg-primary-01/12 rounded-3xl rounded-br-lg"
+                            : "bg-b-surface2 ring-1 ring-s-subtle ring-inset rounded-3xl rounded-bl-lg dark:bg-shade-04/60"
+                    }`}
+                >
+                    {turn.text}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ── One timeline event ───────────────────────────────────────────────────────
-function TimelineItem({ row, index }: { row: TimelineRow; index: number }) {
+function TimelineItem({
+    row,
+    index,
+    onOpenTranscript,
+}: {
+    row: TimelineRow;
+    index: number;
+    onOpenTranscript: (row: TimelineRow) => void;
+}) {
     const meta = kindMeta(row.kind);
     const inbound = row.direction === "inbound";
     const hasAmount = row.amount != null && row.amount !== 0;
-    return (
-        <li
-            className="relative flex gap-4 pb-6 last:pb-1 rise-in"
-            style={{ animationDelay: `${Math.min(index * 30, 300)}ms` }}
-        >
+    // A "call" row with a backing id (source_id = call.id || room) opens its full
+    // transcript as a chat-view. Other kinds (and id-less call rows) stay static.
+    const isCall = (row.kind || "").toLowerCase() === "call";
+    const callId = (row.source_id || "").trim();
+    const clickable = isCall && !!callId;
+
+    const inner = (
+        <>
             <span
                 className="relative z-1 grid place-items-center size-9 shrink-0 rounded-full bg-b-surface2 ring-1 ring-s-subtle dark:bg-shade-04/80"
                 title={meta.label}
@@ -647,8 +832,34 @@ function TimelineItem({ row, index }: { row: TimelineRow; index: number }) {
                             {Number(row.amount).toLocaleString()}
                         </span>
                     )}
+                    {clickable && (
+                        <span className="inline-flex items-center gap-1 text-caption text-primary-01 transition-opacity opacity-0 group-hover/tl:opacity-100">
+                            <Icon name="chat-think" className="size-3.5 fill-primary-01" />
+                            View transcript
+                        </span>
+                    )}
                 </div>
             </div>
+        </>
+    );
+
+    return (
+        <li
+            className="relative flex gap-4 pb-6 last:pb-1 rise-in"
+            style={{ animationDelay: `${Math.min(index * 30, 300)}ms` }}
+        >
+            {clickable ? (
+                <button
+                    type="button"
+                    onClick={() => onOpenTranscript(row)}
+                    className="group/tl flex gap-4 w-full text-left -mx-2 px-2 py-1 -my-1 rounded-2xl transition-colors hover:bg-b-surface1 dark:hover:bg-shade-04/40 cursor-pointer"
+                    title="Open full transcript"
+                >
+                    {inner}
+                </button>
+            ) : (
+                <div className="flex gap-4 w-full">{inner}</div>
+            )}
         </li>
     );
 }

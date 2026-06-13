@@ -360,6 +360,100 @@ function toRecording(r: Record<string, unknown>, idx: number): Recording {
     };
 }
 
+// ── Transcript (call chat-view — full ordered turns for ONE call) ────────────
+//
+// GET /calls/{call_id}/transcript returns the FULL ordered transcript for one
+// call, UNIFIED across both directions (outbound transcripts/{room}.json +
+// inbound ai_manager_sessions turns). `call_id` accepts the call id, the room,
+// OR an inbound session_id — exactly the `source_id` a timeline "call" row
+// carries (crm/core.py records source_id = call.id || room). The backend
+// NORMALIZES each turn's role to the chat-bubble side:
+//   ai | assistant | agent  -> "ai"        (rendered on the LEFT)
+//   user | customer | caller -> "customer" (rendered on the RIGHT)
+// Tenant-scoped from the token (outbound = BOLA-guarded 404, inbound = RLS).
+
+export type TranscriptRole = "ai" | "customer";
+
+export type TranscriptTurn = {
+    role: TranscriptRole;
+    text: string;
+    ts: string; // ISO/string timestamp; "" for outbound (no per-turn ts)
+    seq: number;
+};
+
+export type CallTranscript = {
+    call_id: string;
+    direction: string; // inbound | outbound | ""
+    phone: string;
+    name: string;
+    turns: TranscriptTurn[];
+    total: number;
+};
+
+// Never throws — a dormant module / not-yet-mounted route / 404 / network error
+// all resolve to an empty transcript so the chat-view shows a calm "no transcript
+// for this call" note rather than an error wall. A genuine 401 bounces to /login.
+export async function getCallTranscript(callId: string): Promise<CallTranscript> {
+    const empty: CallTranscript = {
+        call_id: callId,
+        direction: "",
+        phone: "",
+        name: "",
+        turns: [],
+        total: 0,
+    };
+    if (!callId) return empty;
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/calls/${encodeURIComponent(callId)}/transcript`, {
+            headers: authHeaders(),
+        });
+    } catch {
+        return empty; // offline / route absent -> calm empty
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem("famit_token");
+        localStorage.removeItem("famit_me");
+        window.location.href = "/login";
+        return empty;
+    }
+    if (!res.ok) return empty; // 404 / 501 / 5xx -> dormant-safe empty
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const rawTurns: unknown = Array.isArray((data as { turns?: unknown }).turns)
+        ? (data as { turns: unknown[] }).turns
+        : [];
+    const turns = (rawTurns as Record<string, unknown>[])
+        .map(toTurn)
+        .filter((t): t is TranscriptTurn => !!t);
+    return {
+        call_id: String(data.call_id ?? callId),
+        direction: String(data.direction ?? "").trim(),
+        phone: String(data.phone ?? "").trim(),
+        name: String(data.name ?? "").trim(),
+        turns,
+        total: Number.isFinite(Number(data.total)) ? Number(data.total) : turns.length,
+    };
+}
+
+// Normalize one stored turn, tolerant of field drift. Drops empty-text turns.
+// Any non-customer role collapses to "ai" (system/tool lines sit on the agent side).
+function toTurn(t: Record<string, unknown>, idx: number): TranscriptTurn | null {
+    const text = String(t.text ?? t.content ?? "").trim();
+    if (!text) return null;
+    const r = String(t.role ?? "").trim().toLowerCase();
+    const role: TranscriptRole =
+        r === "customer" || r === "user" || r === "caller" || r === "human" || r === "lead"
+            ? "customer"
+            : "ai";
+    const seq = Number(t.seq);
+    return {
+        role,
+        text,
+        ts: String(t.ts ?? t.created_at ?? ""),
+        seq: Number.isFinite(seq) ? seq : idx,
+    };
+}
+
 export async function getSegments(): Promise<SegmentsResponse> {
     return crmFetch<SegmentsResponse>(`/segments`);
 }

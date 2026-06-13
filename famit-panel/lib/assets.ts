@@ -404,13 +404,36 @@ export async function listAssets(q: AssetQuery = {}): Promise<AssetListPage> {
     }
 }
 
-/** GET /assets/{id} — full record (owner-checked → 404 cross-tenant). */
+/** GET /assets/{id} — full record (owner-checked → 404 cross-tenant).
+ *
+ * The asset service returns the detail as a NESTED envelope `{asset:{...}, versions:[...]}`
+ * (not a flat Asset). We flatten it here so every `a.headline`/`a.angle`/`a.cta`/meta read in
+ * AssetDetail lights up. CRUCIAL for the preview: the `asset` object's own `url`/`thumb_url` are
+ * the RAW, UNSIGNED Spaces URLs (private bucket → 403 → blank on click), while the VERSION rows
+ * carry the freshly PRESIGNED url. So we OVERRIDE the asset's display url/thumb_url with the
+ * current (else newest) version's presigned url — the detail preview then renders the signed URL
+ * directly via <img> and never falls through to the X-Auth-gated /raw proxy. */
 export async function getAsset(id: string): Promise<Asset> {
     const res = await fetch(`${ASSET_BASE}/assets/${encodeURIComponent(id)}`, { headers: authHeaders() });
     await handle401(res);
     if (res.status === 503) throw new AssetDormantError();
     if (!res.ok) throw new Error("Failed to fetch asset");
-    return res.json();
+    const data = (await res.json()) as Record<string, unknown>;
+    // Tolerate both the nested envelope `{asset, versions}` and a (future) flat Asset.
+    const nested = data.asset && typeof data.asset === "object" ? (data.asset as Asset) : null;
+    const base: Asset = nested ? { ...nested } : (data as Asset);
+    const versions: AssetVersion[] = Array.isArray(data.versions)
+        ? (data.versions as AssetVersion[])
+        : Array.isArray(base.versions)
+        ? base.versions
+        : [];
+    base.versions = versions;
+    // Prefer the version's PRESIGNED url for display (the asset's own url is unsigned → 403).
+    const current =
+        versions.find((v) => v.is_current || v.id === base.current_version_id) || versions[0];
+    if (current?.url) base.url = current.url;
+    if (current?.thumb_url) base.thumb_url = current.thumb_url;
+    return base;
 }
 
 /** The raw-bytes URL for an asset/version preview (Image src). Never exposes local_path. */
