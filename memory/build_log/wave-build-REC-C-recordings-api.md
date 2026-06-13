@@ -66,3 +66,20 @@ ActiveEnter `2026-06-10 19:58:18` NEVER restarted; all 3 services active; only f
   `store`/`recorder.finalize` are sync (finalize opens its own loop).
 - pre-REC-B outbound rows have no `recording_key` -> `has_recording:false` (correct; they dialed unrecorded).
 - UNBUILT (same wave): CRM (`app/crm/[id]`) + AIM player UI to consume these routes; handoff-name e2e.
+
+## REC-UI FRONTEND — DEPLOYED LIVE (2026-06-13)
+The CRM/AIM/handoff UI was already COMMITTED (`68bbc63`) from the network-dropped `wimqqngha` wave but
+NEVER deployed (box at old LPR `BUILD_ID WwBfbgcnCuH-Rzi9--YvE`; box `_handoff.tsx`/`crm/client.ts`
+lacked `name`/`getContactRecordings`; no `*.RECUIbak.*`). Re-run = the DEPLOY only.
+- Files (all in `68bbc63`): `app/ai-manager/_handoff.tsx` (required Name field + name-led rows),
+  `lib/api.ts` (HandoffMember.name wired through add/save), `app/crm/client.ts`
+  (`getContactRecordings` dormant-safe), `app/crm/[id]/page.tsx` (Recordings card + seekable player +
+  per-row Download mirroring the AIM player). AIM session player needed no change.
+- VERIFY: local `tsc --noEmit` EXIT 0 + `npm run build` EXIT 0.
+- DEPLOY (build-locally, ship artifacts to avoid on-box OOM, box ~1.4GB free): backup
+  `*.RECUIbak.20260613-195539` (.next/app/lib); md5-gated 56M tarball SCP (1st attempt truncated → re-sent
+  foreground, md5 local==box); extract→stage→verify→atomic mv-swap→`chown deployuser`; restart famit-panel
+  ONLY → PID 239673, new `BUILD_ID 4aXNPr1rvAfpK4ku5dNa7`. 200 + new BUILD_ID on loopback:3001 AND
+  panel.famit.in edge for `/ /login /crm /crm/[id] /ai-manager /ai-manager/sessions/[id]`. EARNER N/A
+  (FORTRESS box `143.110.247.249`, no agent dir; earner box `168.144.153.145` never touched).
+- ROLLBACK: restore the 3 RECUIbak dirs + restart. State: `famit-panel/REC_UI_STATE.md`.
