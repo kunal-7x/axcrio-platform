@@ -3047,13 +3047,21 @@ async def contacts_get(request: Request, phone: str):
         return JSONResponse({"contact": None, "note": "crm module unavailable"}, status_code=503)
     org = t["tenant_id"]
     adm = bool(t.get("is_admin"))
-    # project on read so stage/score/timeline reflect the latest lead truth (off the loop).
+    # PERF UNIT-2: project on read (FRESHNESS-GATED rebuild — at most once per contact / TTL, so a
+    # repeat open is a fast cached read, no full timeline rebuild + N+1 transcript disk reads). The
+    # projection ALSO hands back the timeline it just read (`_timeline`) so we DON'T issue a second
+    # get_timeline; next_best_action is pure rules (no DB) -> compute inline. Off the event loop.
     c = await asyncio.to_thread(lambda: _crm_mod.project_contact(org, phone, is_admin=adm))
     if c is None:
         c = await asyncio.to_thread(lambda: _crm_mod.get_contact(org, phone, is_admin=adm))
     if c is None:
         return JSONResponse({"error": "contact not found"}, status_code=404)
-    tl = await asyncio.to_thread(lambda: _crm_mod.get_timeline(org, c["id"], limit=50, is_admin=adm))
+    # reuse the timeline from the projection (newest-first, up to 500) when present; else one read.
+    tl_full = c.pop("_timeline", None)
+    if tl_full is None:
+        tl_full = await asyncio.to_thread(
+            lambda: _crm_mod.get_timeline(org, c["id"], limit=50, is_admin=adm))
+    tl = tl_full[:50]
     nba = await asyncio.to_thread(lambda: _crm_mod.next_best_action(org, c, timeline=tl, is_admin=adm))
     return JSONResponse({"contact": c, "timeline": tl, "nba": nba})
 
@@ -4329,6 +4337,35 @@ def _rec_presign(bucket: str, key: str, expires_s: int = 3600) -> str:
         return ""
 
 
+# PERF UNIT-2: a recording object must be non-trivially sized + audio before we call it PLAYABLE.
+# Outbound auto-egress can leave a near-empty / 486-busy OGG: duration_s is set but the bytes don't
+# decode, so the panel's <audio> runs a timer and plays nothing. We HEAD-verify the object FIRST and
+# only mark playable (and only presign) when a real audio file is present.
+_MIN_PLAYABLE_REC_BYTES = int(os.getenv("REC_MIN_PLAYABLE_BYTES", "2048") or 2048)
+
+
+def _rec_playable(bucket: str, key: str) -> dict:
+    """HEAD-verify a Spaces recording object. Returns {playable:bool, size_bytes:int}. A file counts
+    as playable when it EXISTS, is >= _MIN_PLAYABLE_REC_BYTES, and looks like audio (content-type
+    audio/* OR an .ogg/.mp3/.m4a/.wav key — Spaces sometimes returns a generic content-type). NEVER
+    raises -> {playable:False} on any error so the FE shows 'preparing', never a broken player."""
+    if not bucket or not key:
+        return {"playable": False, "size_bytes": 0}
+    try:
+        from ai_manager import recorder as _recorder
+        h = _recorder.head_object(bucket, key)
+    except Exception:  # noqa: BLE001
+        return {"playable": False, "size_bytes": 0}
+    if not h.get("exists"):
+        return {"playable": False, "size_bytes": 0}
+    size = int(h.get("size", 0) or 0)
+    ctype = str(h.get("content_type", "") or "").lower()
+    key_l = key.lower()
+    looks_audio = ctype.startswith("audio/") or key_l.endswith((".ogg", ".mp3", ".m4a", ".wav", ".webm"))
+    playable = bool(size >= _MIN_PLAYABLE_REC_BYTES and looks_audio)
+    return {"playable": playable, "size_bytes": size}
+
+
 def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
     """Shape ONE outbound call row (REC-B) into the unified recording item. The deterministic
     recording_key IS the authoritative handle (auto-egress returns no id at room-create)."""
@@ -4336,6 +4373,11 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
     key = (rec.get("recording_key", "") or "")
     rstatus = (rec.get("recording_status", "") or "")
     has_rec = bool(bucket and key and rstatus not in ("", "disabled"))
+    # PERF UNIT-2: HEAD-verify the object BEFORE presigning. An auto-egress 486-busy/near-empty OGG has
+    # has_recording=True (status uploaded) but won't decode -> only mark playable + presign when the
+    # object is a real non-trivial audio file. The HEAD is a single cheap call, only when has_rec.
+    pv = _rec_playable(bucket, key) if (presign and has_rec) else {"playable": False, "size_bytes": 0}
+    playable = bool(pv.get("playable"))
     item = {
         "call_id": rec.get("id", ""),
         "direction": "outbound",
@@ -4347,7 +4389,10 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
         "status": rec.get("status", ""),
         "recording_status": rstatus or ("disabled" if not key else ""),
         "has_recording": has_rec,
-        "recording_presigned_url": (_rec_presign(bucket, key) if (presign and has_rec) else ""),
+        "playable": playable,
+        "size_bytes": int(pv.get("size_bytes", 0) or 0),
+        # only hand the FE a URL for a VERIFIED playable object -> the FE renders <audio> iff this is set.
+        "recording_presigned_url": (_rec_presign(bucket, key) if playable else ""),
     }
     return item
 
@@ -4403,6 +4448,11 @@ def _inbound_rec_items(tid: str, phone_n: str, *, presign: bool = True) -> list[
                 except Exception:  # noqa: BLE001
                     pass
             has_rec = bool(bucket and key and rstatus not in ("", "disabled"))
+            # PERF UNIT-2: inbound is already finalize-gated, but HEAD-verify anyway so the playable
+            # contract is uniform across both directions (and a finalize race that wrote a 0-byte key
+            # still degrades to 'preparing' instead of a dead player).
+            pv = _rec_playable(bucket, key) if (presign and has_rec) else {"playable": False, "size_bytes": 0}
+            playable = bool(pv.get("playable"))
             out.append({
                 "call_id": sid,
                 "direction": "inbound",
@@ -4414,7 +4464,9 @@ def _inbound_rec_items(tid: str, phone_n: str, *, presign: bool = True) -> list[
                 "status": full.get("status", "") or "",
                 "recording_status": rstatus or ("disabled" if not key else ""),
                 "has_recording": has_rec,
-                "recording_presigned_url": (_rec_presign(bucket, key) if (presign and has_rec) else ""),
+                "playable": playable,
+                "size_bytes": int(pv.get("size_bytes", 0) or 0),
+                "recording_presigned_url": (_rec_presign(bucket, key) if playable else ""),
             })
     except Exception:  # noqa: BLE001
         return out
@@ -4467,8 +4519,9 @@ async def contact_recordings(request: Request, phone: str):
         pass
     items.sort(key=lambda x: (x.get("started_at", "") or ""), reverse=True)
     n_rec = sum(1 for x in items if x.get("has_recording"))
-    return JSONResponse({"phone": phone_n, "recordings": items,
-                         "total": len(items), "with_recording": n_rec})
+    n_play = sum(1 for x in items if x.get("playable"))
+    return JSONResponse({"phone": phone_n, "recordings": items, "total": len(items),
+                         "with_recording": n_rec, "with_playable": n_play})
 
 
 
