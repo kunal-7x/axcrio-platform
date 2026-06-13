@@ -61,9 +61,54 @@ question).
 - Deployed-ref snapshot synced to repo: `_inbound_ref/aim_voice_agent.DEPLOYED.py`.
 - ROLLBACK: `cp .MLVbak.20260614-020515 aim_voice_agent.py && systemctl restart aim-voice-agent`.
 
-## Residual / final acceptance
-- Only the founder's REAL inbound call to +918071583488 (speak Hindi, then switch to English mid-call)
-  is the true end-to-end proof — the smoke proves the LLM chain mirrors; STT/TTS on a live call is what
-  the founder must hear.
-- STT `"unknown"` can mis-detect Hindi as a neighbouring Indic script occasionally; not regressed here.
-  If it bothers the founder, a future option is biasing to hi-IN+en code-mix (tradeoff: risks English).
+## Pass 2 — VERIFY-driven hardening (2026-06-14, integrated smoke exposed a residual)
+The integrated smoke (now N=2/case + Hinglish-aware AND live-shape scenarios) surfaced a real residual the
+first pass missed: **the mid-call SWITCH (the reported bug) was fixed and reliable, but a COLD-OPEN where the
+caller's first words are English still got a Hindi reply.** Root cause: (a) the reused OUTBOUND earner
+KNOWLEDGE PACK is large and Hindi-heavy, so on a single English turn with little prior context the model's
+Hindi gravity won; (b) the AI's OWN spoken greeting was in Hindi (`"...bataiye, main kaise help karoon?"`),
+which primed the whole conversation toward Hindi/Hinglish even when the caller answered in English.
+
+Three additive hardenings (INBOUND only, earner untouched):
+1. **Mirror rule strengthened for the FIRST reply** (point 3): added *"from their VERY FIRST words... INCLUDING
+   your first reply. Your spoken greeting may have been in Hindi, but that does NOT set the language — the
+   CALLER does."*
+2. **FINAL LANGUAGE LOCK appended as the last text of the prompt** (`_build_sales_instructions` return,
+   `lang_lock`): highest-recency override — *"Reply in the SAME language the CALLER used in their LAST
+   message... The Hindi text in the knowledge pack above is reference material ONLY and must NOT make you
+   reply in Hindi when the caller spoke English."*
+3. **LANGUAGE-NEUTRAL greeting** (`:2664-2682`): the decisive structural fix. The greeting is now a universal
+   `"Namaste{who}, this is {agent} from {company}. ...how can I help you today?"` (English question; returning /
+   disambig / default variants). `"Namaste"` keeps the warm Indian register without committing the call to
+   Hindi, and the ENGLISH question means the AI's own opener no longer pins Hindi — the CALLER's first reply
+   sets the language and the mirror rule follows. A Hindi caller is still mirrored straight into Hindi.
+
+### Final integrated smoke (real builder + real Groq llama-4-scout, N=2/case, live-shape):
+- `1` Hindi → Hindi: **PASS**
+- `2` (degenerate: NO greeting turn, lone English msg) → Hindi: FAIL — **artifact only; this shape never
+  occurs live** (the AI always greets first). Kept in the suite as the worst-case stress probe.
+- `3` mid-call Hindi→English switch → English: **PASS** (the reported bug — fixed, reliable)
+- `2b` LIVE shape: neutral greeting said, caller opens ENGLISH → English: **PASS** (the founder's recipe)
+- `2c` LIVE shape: neutral greeting said, caller opens HINDI → Hindi: **PASS** (no English regression)
+- `4` no language announcing in any reply: **PASS**
+The live-accurate scenarios (2b/2c/3) — the ones that match a real call — all PASS.
+
+### Deploy (pass 2)
+- Backups chained: `.MLVbak.20260613-205414`, `-205545`, `-205925` (+ the pass-1 `-020515`). ROLLBACK to any.
+- py_compile OK each step; aim-voice-agent restarted ONLY (re-registered clean, agent_name=manager, 0 traceback).
+- Box `aim_voice_agent.py` md5 `3152539f31f6d0073d1a3c8997a1bee9` == repo `_inbound_ref/aim_voice_agent.DEPLOYED.py`.
+- EARNER GATE held GREEN through every restart: agent.py md5 `9150fabe...` UNCHANGED, famit-agent ActiveEnter
+  `2026-06-10 19:58:18` (never restarted), famit-caller `/health` 200, **0 real 5xx** (the only `5xx`-regex
+  hits were `304 Not Modified` on `/me/entitlements` — false positives).
+
+## Residual / final acceptance (HONEST)
+- **The reported bug is fixed**: mid-call Hindi↔English switching mirrors reliably in the real LLM chain.
+- **The founder's recipe works in the live-accurate smoke**: neutral greeting → caller English → English reply;
+  caller Hindi → Hindi reply.
+- **Only a REAL inbound call to +918071583488 is the true end-to-end proof** — the smoke proves the LLM chain;
+  STT (Sarvam auto) + TTS in the wild is what the founder must hear. STT is confirmed auto/multilingual
+  (`SARVAM_STT_LANG` unset → `"unknown"`).
+- Known soft edge: on a turn the model may sprinkle a little Hinglish ("Haan ji", "kaun sa") into an otherwise
+  English reply — natural Indian phone register, not a regression; substance mirrors the caller.
+- STT `"unknown"` can occasionally mis-detect Hindi as a neighbouring Indic script; not regressed here.
+- Smoke harness kept at `_inbound_ref/_mlv_mirror_smoke.py` (reads keys from `.env` at runtime — no secrets in repo).

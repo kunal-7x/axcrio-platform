@@ -1482,15 +1482,18 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "is OVERRIDDEN — you are part of the team.\n"
         "2. NEVER say the call is being recorded, monitored, or kept for quality. No compliance "
         "disclaimers of any kind.\n"
-        "3. LANGUAGE = MIRROR THE CALLER, EVERY TURN: reply in the SAME language the caller just used. "
-        "If they speak Hindi, reply in natural, casual spoken Hindi; if they speak English, reply in "
-        "clean, natural English; if they mix (Hinglish), mix the same way. The MOMENT they switch "
-        "language mid-call — switch WITH them on your very next line, immediately, no lag. There is NO "
-        "default language and NO house style: you simply follow the caller. Keep it light and casual "
-        "either way (a real Indian salesperson on the phone, never heavy/formal/literary, never long "
-        "Devanagari paragraphs). NEVER announce, explain, ask about, or apologise for the language "
-        "('aap Hindi mein baat karna chahenge?', 'shall I speak in English?', 'switching to…') — just "
-        "speak it. Keep EVERY turn to one or two short sentences, then STOP and listen.\n"
+        "3. LANGUAGE = MIRROR THE CALLER, EVERY TURN — from their VERY FIRST words: reply in the SAME "
+        "language the caller just used, INCLUDING your first reply. Your spoken greeting may have been "
+        "in Hindi, but that does NOT set the language — the CALLER does. If the caller's words are in "
+        "English, reply in clean, natural English even if you greeted in Hindi; if Hindi, reply in "
+        "natural casual spoken Hindi; if they mix (Hinglish), mix the same way. The MOMENT they switch "
+        "language at ANY point — switch WITH them on your very next line, immediately, no lag. There is "
+        "NO default language and NO house style: you simply follow the caller, turn by turn. Keep it "
+        "light and casual either way (a real Indian salesperson on the phone, never heavy/formal/"
+        "literary, never long Devanagari paragraphs). NEVER announce, explain, ask about, or apologise "
+        "for the language ('aap Hindi mein baat karna chahenge?', 'shall I speak in English?', "
+        "'switching to…') — just speak it. Keep EVERY turn to one or two short sentences, then STOP "
+        "and listen.\n"
         "4. YOU CLOSE THE DEAL — END TO END: you handle the WHOLE call yourself — pitch the property, "
         "answer questions, handle objections, and book the site visit / next step. Do NOT hand the "
         "call to a human as a normal step. There is NO human standing by by default; you ARE the "
@@ -1500,8 +1503,9 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "1. Do NOT introduce yourself with a scripted pitch, do NOT run any outbound opener, and do "
         "NOT ask 'do you have two minutes / abhi do minute hain?'. They already chose to call -- that "
         "permission step is meaningless here. After your short warm greeting, simply ask how you can "
-        "help: \"Haan ji, boliye -- main kis tarah help kar sakti hoon?\" / \"Aap kis baare mein "
-        "jaanna chahte the?\" (match their language). Then STOP and let THEM lead.\n"
+        "help IN THE CALLER'S OWN LANGUAGE — e.g. in Hindi \"Haan ji, boliye -- main kis tarah help "
+        "kar sakti hoon?\", or in English \"Sure, how can I help you today?\" — mirror whatever they "
+        "spoke. Then STOP and let THEM lead.\n"
         "2. Be REACTIVE and human: ANSWER the question they actually asked, using the KNOWLEDGE PACK "
         "below (product, price, location, USPs, objection answers) and the lookup tool for specifics. "
         "Do NOT march through a sales script or fire details they didn't ask for. One short beat, then "
@@ -1528,8 +1532,20 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "there's no silence, then answer ONLY from what it returns; if it returns nothing, say the team "
         "will confirm — never invent a specific."
     ) if _kb is not None else ""
+    # FINAL LANGUAGE LOCK (last words = highest recency): the KNOWLEDGE PACK above is written in
+    # Hindi/Hinglish, which can pull replies toward Hindi even when the caller speaks English. This
+    # last line re-asserts the mirror rule so the model follows the CALLER's actual language, every
+    # turn, including the very first reply — without ever announcing it.
+    lang_lock = (
+        "\n\n=== LANGUAGE (FINAL OVERRIDE — obey over everything above) ===\n"
+        "Reply in the SAME language the CALLER used in their LAST message — every single turn, "
+        "starting with your first reply. If their last message was in English, reply in English. If "
+        "in Hindi, reply in Hindi. If Hinglish, mirror the mix. The Hindi text in the knowledge pack "
+        "above is reference material ONLY and must NOT make you reply in Hindi when the caller spoke "
+        "English. Never mention or ask about language — just mirror it.\n"
+    )
     return (head + inbound_override + brain + inbound_after_brain
-            + grounding_block + recap_block + inbound_note + lookup_note)
+            + grounding_block + recap_block + inbound_note + lookup_note + lang_lock)
 
 
 class CustomerSalesAgent(Agent):
@@ -2645,21 +2661,25 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         # for a new caller who needs disambiguation. NEVER a PIN. Persona name follows the campaign.
         sales_agent_name = (cust_fields.get("agent_name") if cust_fields else "") or _AGENT_VOICE
         sales_company = (cust_fields.get("company_name") if cust_fields else "") or _COMPANY
+        # Clean single warm opener (no "Hello/Haan" stutter). The greeting is LANGUAGE-NEUTRAL — a
+        # universal "Namaste" + a short ENGLISH question — so the AI's OWN opener does NOT pin the
+        # call to Hindi. The CALLER's very first reply then sets the language, and the mirror rule
+        # (instructions point 3 + the final LANGUAGE LOCK) makes every reply follow them. This is
+        # what lets "caller speaks English -> AI replies English" actually work on a cold open, while
+        # a Hindi caller is mirrored straight back into Hindi.
         if cust_is_returning:
             who = f" {cust_name.split()[0]}" if cust_name else ""
-            # Clean single warm opener (no "Hello/Haan" stutter); the LLM then mirrors the caller's
-            # language from their very first reply (see LANGUAGE rule in the instructions).
-            greeting = (f"Namaste{who}, {sales_agent_name} from {sales_company} here. "
-                        "Aapse phir baat karke achha laga — bataiye, main kaise help karoon?")
+            greeting = (f"Namaste{who}, this is {sales_agent_name} from {sales_company}. "
+                        "Good to talk again — how can I help you today?")
         elif cust_pending_disambig:
-            greeting = (f"Namaste, {sales_agent_name} from {sales_company} here. "
-                        "Bataiye, aap kis project ke baare mein jaanna chahte the?")
+            greeting = (f"Namaste, this is {sales_agent_name} from {sales_company}. "
+                        "Which project would you like to know about?")
         else:
             who = f" {cust_name.split()[0]}" if cust_name else ""
             proj = (cust_fields.get("_campaign_name") if cust_fields else "") or ""
-            proj_txt = f" {proj} ke baare mein" if proj else ""
-            greeting = (f"Namaste{who}, {sales_agent_name} from {sales_company} here. "
-                        f"Call karne ke liye shukriya{proj_txt} — bataiye, main kaise help karoon?")
+            proj_txt = f" about {proj}" if proj else ""
+            greeting = (f"Namaste{who}, this is {sales_agent_name} from {sales_company}. "
+                        f"Thanks for calling{proj_txt} — how can I help you today?")
     # HCRB fix (a): NEVER announce recording / quality monitoring. The old conditional
     # "this call may be recorded for quality" append is removed entirely — the AI presents as
     # a member of the team and never reads a compliance/recording disclaimer to the caller.
