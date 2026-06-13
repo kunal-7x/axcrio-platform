@@ -348,6 +348,92 @@ export async function getControlAudit(opts?: { limit?: number; offset?: number; 
     return res.json();
 }
 
+// ============================================================================
+// LPR — PLATFORM PROVIDER KEYS (super-admin). Groq / Sarvam / SambaNova /
+// OpenRouter keys the founder adds in the panel; stored encrypted on the box;
+// the live AIM rotation HOT-RELOADS them (no redeploy). Raw key is NEVER
+// returned by the API — only a `masked` value. All routes are require_super_admin.
+// ============================================================================
+export type ProviderName = "groq" | "sarvam" | "sambanova" | "openrouter";
+
+export type ProviderKeyRow = {
+    id: string;
+    label: string;
+    enabled: boolean;
+    added_at: string;
+    last_ok_at: number;
+    masked: string;
+};
+
+export type ProviderKeyStatusRow = {
+    id: string;
+    label: string;
+    masked: string;
+    source: "env" | "store";
+    enabled: boolean;
+    available: boolean;
+    cooling: boolean;
+    cooling_until: number;
+    cooldown_remaining_s: number;
+    pick_count: number;
+    last_ok_at: number;
+    last_429_at: number;
+};
+
+const EMPTY_PROVIDERS = { groq: [], sarvam: [], sambanova: [], openrouter: [] };
+
+// List the founder-managed keys per provider (masked). 404/unavailable → empty.
+export async function getProviderKeys(): Promise<{ providers: Record<ProviderName, ProviderKeyRow[]> }> {
+    try {
+        const res = await fetch(`${BASE}/admin/provider-keys`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { providers: { ...EMPTY_PROVIDERS } as Record<ProviderName, ProviderKeyRow[]> };
+        return res.json();
+    } catch {
+        return { providers: { ...EMPTY_PROVIDERS } as Record<ProviderName, ProviderKeyRow[]> };
+    }
+}
+
+// Live pool view (cooling / pick_count / available) — polled by the page ~5s.
+export async function getProviderKeyStatus(): Promise<{ status: Record<ProviderName, ProviderKeyStatusRow[]> }> {
+    try {
+        const res = await fetch(`${BASE}/admin/provider-keys/status`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { status: { ...EMPTY_PROVIDERS } as Record<ProviderName, ProviderKeyStatusRow[]> };
+        return res.json();
+    } catch {
+        return { status: { ...EMPTY_PROVIDERS } as Record<ProviderName, ProviderKeyStatusRow[]> };
+    }
+}
+
+export async function addProviderKey(provider: ProviderName, key: string, label?: string): Promise<{ ok: boolean; id: string; provider: string; masked: string; deduped?: boolean }> {
+    const fd = new FormData();
+    fd.append("provider", provider);
+    fd.append("key", key);
+    if (label) fd.append("label", label);
+    const res = await fetch(`${BASE}/admin/provider-keys`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to add key");
+    return res.json();
+}
+
+export async function updateProviderKey(id: string, body: { enabled?: boolean; label?: string }): Promise<{ ok: boolean; id: string }> {
+    const fd = new FormData();
+    if (body.enabled != null) fd.append("enabled", body.enabled ? "1" : "0");
+    if (body.label != null) fd.append("label", body.label);
+    const res = await fetch(`${BASE}/admin/provider-keys/${encodeURIComponent(id)}`, { method: "PUT", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update key");
+    return res.json();
+}
+
+export async function deleteProviderKey(id: string): Promise<{ ok: boolean; deleted: boolean; id: string }> {
+    const res = await fetch(`${BASE}/admin/provider-keys/${encodeURIComponent(id)}`, { method: "DELETE", headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to delete key");
+    return res.json();
+}
+
 // ---- Campaigns ----
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {
     const res = await fetch(`${BASE}/campaigns`, {

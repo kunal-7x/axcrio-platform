@@ -108,6 +108,8 @@ const ADMIN_TABS = [
     { label: "Plans", href: "/super-admin/plans" },
     { label: "Usage", href: "/super-admin/usage" },
     { label: "Audit", href: "/super-admin/audit" },
+    // LPR — platform LLM/STT provider keys (Groq/Sarvam/SambaNova/OpenRouter).
+    { label: "API Keys", href: "/super-admin/api-keys" },
 ];
 
 export function AdminHeader({
