@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useCampaigns } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
+import ScriptStudio from "./_script-studio";
 
 function fmtDate(d: string) {
     if (!d) return "—";
@@ -85,6 +86,12 @@ export default function CampaignsPage() {
 
     // A/B results modal
     const [abCampaignId, setAbCampaignId] = useState<string | null>(null);
+
+    // Script Studio (vendor free-form script → adopted inbound persona)
+    const [studioCampaign, setStudioCampaign] = useState<{ id: string; name: string } | null>(null);
+
+    // Vendor script for the CREATE flow (optional — pasted with the new campaign)
+    const [rawScript, setRawScript] = useState("");
 
     // RBAC
     const { me } = useMe();
@@ -159,6 +166,9 @@ export default function CampaignsPage() {
             fields.wa_followup = waFollowup;
             if (waTemplateInterested.trim()) fields.wa_template_interested = waTemplateInterested.trim();
             if (waTemplateCallback.trim()) fields.wa_template_callback = waTemplateCallback.trim();
+            // Vendor script (optional) — stored losslessly; the inbound agent adopts it.
+            // Omit entirely when blank so a plain campaign renders byte-identical.
+            if (rawScript.trim()) fields.raw_script = rawScript;
             const result = await saveCampaign(fields);
             showToast(`Campaign "${result.name}" saved successfully!`, "success");
             setBrief("");
@@ -168,6 +178,7 @@ export default function CampaignsPage() {
             setWaFollowup(false);
             setWaTemplateInterested("");
             setWaTemplateCallback("");
+            setRawScript("");
             refreshCampaigns();
         } catch (e: unknown) {
             showToast(e instanceof Error ? e.message : "Save failed", "error");
@@ -322,6 +333,18 @@ export default function CampaignsPage() {
                                             </td>
                                             <td className="text-right">
                                                 <div className="flex items-center gap-2 justify-end">
+                                                    <Button
+                                                        isStroke
+                                                        className="!h-9 !px-4 max-md:!px-3"
+                                                        onClick={() =>
+                                                            setStudioCampaign({ id: c.id, name: c.name })
+                                                        }
+                                                    >
+                                                        <span className="inline-flex items-center gap-1.5">
+                                                            <Icon name="magic-pencil" className="size-4 fill-current" />
+                                                            <span className="max-md:hidden">Script</span>
+                                                        </span>
+                                                    </Button>
                                                     <Button
                                                         isStroke
                                                         className="!h-9 !px-4"
@@ -544,6 +567,23 @@ export default function CampaignsPage() {
                                         )}
                                     </div>
 
+                                    {/* Vendor script (optional) — adopted inbound persona */}
+                                    <div className="border-t border-s-subtle pt-4">
+                                        <label className="mb-2 flex items-center gap-2 text-button text-t-primary">
+                                            <Icon name="magic-pencil" className="size-4 fill-t-secondary" />
+                                            Vendor script (optional)
+                                        </label>
+                                        <p className="mb-3 text-caption text-t-tertiary">
+                                            Paste a free-form brief — how to greet, ask, behave, the tone &amp; language. The inbound agent adopts it losslessly. Refine &amp; dry-run it any time from <span className="text-t-secondary">Script Studio</span> on the campaign row.
+                                        </p>
+                                        <textarea
+                                            value={rawScript}
+                                            onChange={(e) => setRawScript(e.target.value)}
+                                            placeholder="“Greet warmly: ‘…mein aapka swaagat hai!’ Speak Hinglish, stay friendly. Always pitch our flagship first. Never quote a final price — book a visit instead.”"
+                                            className="h-28 w-full resize-none rounded-2xl border border-s-stroke2 bg-transparent px-4 py-3 text-body-2 text-t-primary outline-none transition-colors placeholder:text-t-secondary/45 hover:border-s-highlight focus:border-s-highlight"
+                                        />
+                                    </div>
+
                                     <div>
                                         <label className="block text-button mb-3 text-t-primary">
                                             Extracted Fields (editable JSON)
@@ -583,6 +623,16 @@ export default function CampaignsPage() {
 
             {abCampaignId && (
                 <ABResultsModal campaignId={abCampaignId} onClose={() => setAbCampaignId(null)} />
+            )}
+
+            {studioCampaign && (
+                <ScriptStudio
+                    campaignId={studioCampaign.id}
+                    campaignName={studioCampaign.name}
+                    writable={writable}
+                    onClose={() => setStudioCampaign(null)}
+                    onSaved={refreshCampaigns}
+                />
             )}
         </Layout>
     );

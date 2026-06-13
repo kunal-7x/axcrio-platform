@@ -1758,6 +1758,82 @@ export async function getCampaignAB(id: string): Promise<ABResults> {
     return res.json();
 }
 
+// ---- Script Studio (W1 vendor-script adopt-persona) ----
+// A vendor pastes a free-form SCRIPT (greeting / tone / behaviour) into a campaign's
+// `raw_script`; the inbound agent ADOPTS it losslessly. These two read-only endpoints
+// let the founder PREVIEW the rendered brain and DRY-RUN one turn (free Groq, no DID,
+// no real call). The backend forces the per-campaign persona ON for preview on a COPY
+// of fields — it never mutates the stored campaign and never touches the global flag.
+
+// GET /campaigns/{cid}/prompt-preview — the exact rendered system prompt the inbound
+// agent would adopt, with the vendor persona forced on for preview.
+export type PromptPreview = {
+    campaign_id: string;
+    name: string;
+    vendor_script_present: boolean;
+    vendor_script_active_in_preview: boolean;
+    system_prompt: string;
+    chars: number;
+};
+
+export async function getPromptPreview(cid: string): Promise<PromptPreview> {
+    const res = await fetch(
+        `${BASE}/campaigns/${encodeURIComponent(cid)}/prompt-preview`,
+        { headers: authHeaders() }
+    );
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to render prompt preview");
+    return res.json();
+}
+
+// POST /campaigns/{cid}/dry-run — run ONE sample caller line through the inbound brain
+// (free/cheap Groq turn) so the founder can SEE the adopted greeting/response. No DID,
+// no real call, no charge.
+export type DryRunResult = {
+    campaign_id: string;
+    name: string;
+    vendor_script_present: boolean;
+    vendor_script_active_in_preview: boolean;
+    sample_user: string;
+    agent_reply: string;
+    used_llm: boolean;
+    provider: string;
+    model: string;
+    note: string;
+};
+
+export async function dryRunCampaign(
+    cid: string,
+    message: string,
+    asReturning = false
+): Promise<DryRunResult> {
+    const fd = new FormData();
+    fd.append("message", message);
+    fd.append("as_returning", asReturning ? "1" : "");
+    const res = await fetch(
+        `${BASE}/campaigns/${encodeURIComponent(cid)}/dry-run`,
+        { method: "POST", headers: authHeaders(), body: fd }
+    );
+    await handle401(res);
+    if (!res.ok) throw new Error("Dry-run failed");
+    return res.json();
+}
+
+// Optional parsed persona hints the backend sanitizes from a script (never lossy over
+// raw_script — a convenience projection only). Shown read-only in the Studio.
+export type ScriptMeta = {
+    tone?: string;
+    greeting?: string;
+    persona?: string;
+    language?: string;
+    style?: string;
+    do?: string[];
+    dont?: string[];
+    do_list?: string[];
+    dont_list?: string[];
+    [k: string]: unknown;
+};
+
 // ---- Billing / Metering (Unit 4) ----
 export type Billing = {
     tenant_id: string;
