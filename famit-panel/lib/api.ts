@@ -543,11 +543,29 @@ export async function extract(brief: string): Promise<ExtractedFields> {
 }
 
 // ---- Leads ----
-export async function getLeads(opts?: { hot?: boolean; sort?: string; batch?: string }): Promise<{ leads: Lead[] }> {
+// PERF UNIT-3: opt-in server pagination (backend UNIT-1 contract). Legacy callers
+// (no limit/offset) get ALL leads exactly as before; `total`/`next` are additive
+// sibling keys so the response is backward-compatible. Pass `limit`/`offset` to page.
+export type LeadsPage = {
+    leads: Lead[];
+    total?: number;
+    offset?: number;
+    limit?: number;
+    next?: number | null;
+};
+export async function getLeads(opts?: {
+    hot?: boolean;
+    sort?: string;
+    batch?: string;
+    limit?: number;
+    offset?: number;
+}): Promise<LeadsPage> {
     const params = new URLSearchParams();
     if (opts?.hot) params.set("hot", "1");
     if (opts?.sort) params.set("sort", opts.sort);
     if (opts?.batch) params.set("batch", opts.batch);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null && opts.offset > 0) params.set("offset", String(opts.offset));
     const qs = params.toString();
     const res = await fetch(`${BASE}/leads${qs ? `?${qs}` : ""}`, {
         headers: authHeaders(),
@@ -681,8 +699,36 @@ export async function getStatus(job: string): Promise<JobStatus> {
 }
 
 // ---- Calls ----
-export async function getCalls(): Promise<{ calls: CallLog[] }> {
-    const res = await fetch(`${BASE}/calls?limit=200`, {
+// PERF UNIT-3: opt-in server pagination (backend UNIT-1 contract). A bare
+// getCalls() is byte-identical to the legacy call (`/calls?limit=200`, full rows,
+// storage order) so existing call sites keep working untouched. Pass opts to
+// paginate: `offset`/`order=desc`/`slim=1` trigger the SLIM newest-first paged
+// response `{calls, total, offset, limit, next}` (`next` = the offset to fetch the
+// next page, or null on the last page).
+export type CallsPage = {
+    calls: CallLog[];
+    total?: number;
+    offset?: number;
+    limit?: number;
+    next?: number | null;
+};
+export type GetCallsOpts = {
+    limit?: number;
+    offset?: number;
+    order?: "desc";
+    slim?: boolean;
+    campaign_id?: string;
+    outcome?: string;
+};
+export async function getCalls(opts?: GetCallsOpts): Promise<CallsPage> {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts?.limit ?? 200));
+    if (opts?.offset != null && opts.offset > 0) params.set("offset", String(opts.offset));
+    if (opts?.order === "desc") params.set("order", "desc");
+    if (opts?.slim) params.set("slim", "1");
+    if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
+    if (opts?.outcome) params.set("outcome", opts.outcome);
+    const res = await fetch(`${BASE}/calls?${params.toString()}`, {
         headers: authHeaders(),
     });
     await handle401(res);

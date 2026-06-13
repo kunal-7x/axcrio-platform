@@ -9,13 +9,10 @@ import TableRow from "@/components/TableRow";
 import Percentage from "@/components/Percentage";
 import Icon from "@/components/Icon";
 import { StatusBadge, ScoreBadge } from "@/lib/badges";
+import { useStats, useCalls, useLeads } from "@/lib/queries";
 import {
-    getCalls,
-    getStats,
-    getLeads,
     getUsage,
     type CallLog,
-    type Stats,
     type Lead,
     type UsageData,
 } from "@/lib/api";
@@ -56,26 +53,31 @@ function fmtCompact(dateStr: string) {
 }
 
 export default function DashboardPage() {
-    const [stats, setStats] = useState<Stats | null>(null);
-    const [calls, setCalls] = useState<CallLog[]>([]);
-    const [error, setError] = useState("");
-    const [hotLeads, setHotLeads] = useState<Lead[]>([]);
     const [usage, setUsage] = useState<UsageData | null>(null);
-    const [callsLoading, setCallsLoading] = useState(true);
-    const [statsLoading, setStatsLoading] = useState(true);
+
+    // PERF UNIT-3: cached reads — these share the SAME cache entries as the Calls,
+    // Leads and dashboard-stats reads elsewhere, so cross-tab navigation is instant.
+    const statsQuery = useStats();
+    const stats = statsQuery.data ?? null;
+    const statsLoading = statsQuery.isLoading && !stats;
+    const error =
+        statsQuery.error instanceof Error ? statsQuery.error.message : "";
+
+    const callsQuery = useCalls({ limit: 200, order: "desc", slim: true });
+    const allCalls: CallLog[] = useMemo(
+        () => callsQuery.data?.calls ?? [],
+        [callsQuery.data]
+    );
+    const calls: CallLog[] = useMemo(() => allCalls.slice(0, 8), [allCalls]);
+    const callsLoading = callsQuery.isLoading && allCalls.length === 0;
+
+    const hotLeadsQuery = useLeads({ hot: true });
+    const hotLeads: Lead[] = useMemo(
+        () => (hotLeadsQuery.data?.leads ?? []).slice(0, 5),
+        [hotLeadsQuery.data]
+    );
 
     useEffect(() => {
-        getStats()
-            .then(setStats)
-            .catch((e) => setError(e.message))
-            .finally(() => setStatsLoading(false));
-        getCalls()
-            .then((r) => setCalls(r.calls.slice(0, 8)))
-            .catch(() => {})
-            .finally(() => setCallsLoading(false));
-        getLeads({ hot: true })
-            .then((r) => setHotLeads(r.leads.slice(0, 5)))
-            .catch(() => {});
         getUsage()
             .then(setUsage)
             .catch(() => {});

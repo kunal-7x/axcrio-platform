@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
@@ -10,7 +11,6 @@ import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import { StatusBadge } from "@/lib/badges";
 import {
-    getCampaigns,
     extract,
     saveCampaign,
     deleteCampaign,
@@ -22,6 +22,7 @@ import {
     type CampaignVariant,
     type ABResults,
 } from "@/lib/api";
+import { useCampaigns } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
 
 function fmtDate(d: string) {
@@ -36,9 +37,22 @@ function fmtDate(d: string) {
 type Toast = { msg: string; type: "success" | "error" };
 
 export default function CampaignsPage() {
-    const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [loadError, setLoadError] = useState("");
+    const queryClient = useQueryClient();
+    // PERF UNIT-3: cached campaigns list — tab-back is instant. invalidate after
+    // a save/delete to refresh.
+    const { data: campaignsData, isLoading, error: campaignsErr } = useCampaigns();
+    const campaigns: Campaign[] = useMemo(
+        () => campaignsData?.campaigns ?? [],
+        [campaignsData]
+    );
+    const loadError = campaignsErr
+        ? campaignsErr instanceof Error
+            ? campaignsErr.message
+            : "Failed to load campaigns"
+        : "";
+    const loading = isLoading && campaigns.length === 0;
+    const refreshCampaigns = () =>
+        queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     const [query, setQuery] = useState("");
 
     // Create campaign state
@@ -81,24 +95,16 @@ export default function CampaignsPage() {
         setTimeout(() => setToast(null), 4000);
     };
 
-    const loadCampaigns = useCallback(() => {
-        setLoading(true);
-        setLoadError("");
-        getCampaigns()
-            .then((r) => setCampaigns(r.campaigns))
-            .catch((e) => setLoadError(e instanceof Error ? e.message : "Failed to load campaigns"))
-            .finally(() => setLoading(false));
-    }, []);
-
     useEffect(() => {
-        loadCampaigns();
+        // Voices feed the dropdown + default-select; keep this as a one-shot read
+        // (the cached campaigns list is handled by useCampaigns above).
         getVoices()
             .then((r) => {
                 setVoices(r.voices);
                 if (r.voices.length > 0) setSelectedVoice(r.voices[0].voice_id);
             })
             .catch(() => {});
-    }, [loadCampaigns]);
+    }, []);
 
     async function handleExtract() {
         if (!brief.trim()) return;
@@ -162,7 +168,7 @@ export default function CampaignsPage() {
             setWaFollowup(false);
             setWaTemplateInterested("");
             setWaTemplateCallback("");
-            loadCampaigns();
+            refreshCampaigns();
         } catch (e: unknown) {
             showToast(e instanceof Error ? e.message : "Save failed", "error");
         } finally {
@@ -175,7 +181,7 @@ export default function CampaignsPage() {
         try {
             await deleteCampaign(id);
             showToast("Campaign deleted", "success");
-            loadCampaigns();
+            refreshCampaigns();
         } catch (e: unknown) {
             showToast(e instanceof Error ? e.message : "Delete failed", "error");
         }

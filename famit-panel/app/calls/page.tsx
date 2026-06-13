@@ -8,8 +8,8 @@ import Search from "@/components/Search";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
+import { useCalls } from "@/lib/queries";
 import {
-    getCalls,
     getCallDetail,
     type CallLog,
     type CallDetail,
@@ -374,17 +374,16 @@ function StatChip({
 /* ================================================================== */
 
 export default function CallLogsPage() {
-    const [calls, setCalls] = useState<CallLog[]>([]);
-    const [loading, setLoading] = useState(true);
     const [query, setQuery] = useState("");
     const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
 
-    useEffect(() => {
-        getCalls()
-            .then((r) => setCalls(r.calls))
-            .catch(() => {})
-            .finally(() => setLoading(false));
-    }, []);
+    // PERF UNIT-3: cached newest-first slim page. Tab-back is instant (served from
+    // cache + revalidated in bg). The slim rows carry every column this table shows.
+    const { data, isLoading } = useCalls({ limit: 200, order: "desc", slim: true });
+    const calls: CallLog[] = useMemo(() => data?.calls ?? [], [data]);
+    // First load (no cached data yet) shows the skeleton; a background revalidate
+    // keeps the existing rows on screen.
+    const loading = isLoading && calls.length === 0;
 
     const liveCount = useMemo(
         () => calls.filter((c) => LIVE.has(c.status)).length,

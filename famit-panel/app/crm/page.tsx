@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import Link from "next/link";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
@@ -17,6 +18,7 @@ import {
     CrmDormantError,
     isDormantResponse,
     type ContactListItem,
+    type ContactsResponse,
     type Segment,
 } from "./client";
 import { StageBadge, initials, fmtRelative } from "./_ui";
@@ -41,12 +43,6 @@ const HOT_TABS = [
 const tableHead = ["Contact", "Stage", "Score", "Last Outcome", "Last Activity"];
 
 export default function CrmWorkspacePage() {
-    const [contacts, setContacts] = useState<ContactListItem[]>([]);
-    const [total, setTotal] = useState(0);
-    const [loading, setLoading] = useState(true);
-    const [dormant, setDormant] = useState(false);
-    const [error, setError] = useState("");
-
     // Filters (server-driven so they reflect the real read-model once mounted).
     const [stageTab, setStageTab] = useState(STAGE_TABS[0]);
     const [hotTab, setHotTab] = useState(HOT_TABS[0]);
@@ -63,46 +59,45 @@ export default function CrmWorkspacePage() {
     const segmentId =
         segment && segment.id > 0 ? segments[segment.id - 1]?.id : undefined;
 
-    const load = useCallback(() => {
-        setLoading(true);
-        setError("");
-        getContacts({
-            stage: stage !== "all" ? stage : undefined,
-            hot: hotOnly || undefined,
-            segment: segmentId,
-            sort: "last_activity_at",
-            limit: 500,
-        })
-            .then((r) => {
-                // The live API answers 200 with a `note` (not a 404) when the
-                // module / its PG is down — treat that as dormant, not empty.
-                if (isDormantResponse(r)) {
-                    setDormant(true);
-                    setContacts([]);
-                    setTotal(0);
-                    return;
-                }
-                setContacts(r.contacts || []);
-                setTotal(r.total ?? (r.contacts || []).length);
-                setDormant(false);
-            })
-            .catch((e: unknown) => {
+    // PERF UNIT-3: cached contacts list keyed by the active filters — switching
+    // stage/hot/segment tabs and tab-back are instant (cache + bg revalidate),
+    // and keepPreviousData keeps the current rows on screen while a new filter
+    // loads. The queryFn normalises a thrown CrmDormantError into a dormant-marked
+    // response so the existing dormant/empty rendering is preserved unchanged.
+    const contactsQuery = useQuery<ContactsResponse>({
+        queryKey: ["contacts", { stage, hotOnly, segmentId }],
+        queryFn: async () => {
+            try {
+                return await getContacts({
+                    stage: stage !== "all" ? stage : undefined,
+                    hot: hotOnly || undefined,
+                    segment: segmentId,
+                    sort: "last_activity_at",
+                    limit: 500,
+                });
+            } catch (e) {
                 if (e instanceof CrmDormantError) {
-                    setDormant(true);
-                    setContacts([]);
-                    setTotal(0);
-                } else {
-                    setError(
-                        e instanceof Error ? e.message : "Failed to load contacts"
-                    );
+                    return { contacts: [], total: 0, note: "dormant" } as ContactsResponse;
                 }
-            })
-            .finally(() => setLoading(false));
-    }, [stage, hotOnly, segmentId]);
+                throw e;
+            }
+        },
+        placeholderData: keepPreviousData,
+    });
 
-    useEffect(() => {
-        load();
-    }, [load]);
+    const resp = contactsQuery.data;
+    const dormant = !!resp && isDormantResponse(resp);
+    const contacts: ContactListItem[] = useMemo(
+        () => (dormant ? [] : resp?.contacts ?? []),
+        [resp, dormant]
+    );
+    const total = dormant ? 0 : resp?.total ?? contacts.length;
+    const error = contactsQuery.error
+        ? contactsQuery.error instanceof Error
+            ? contactsQuery.error.message
+            : "Failed to load contacts"
+        : "";
+    const loading = contactsQuery.isLoading && contacts.length === 0;
 
     // Segments are a nice-to-have filter; failure (incl. dormant) is silent.
     useEffect(() => {

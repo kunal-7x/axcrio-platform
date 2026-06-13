@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useRef, useState, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
@@ -10,7 +11,8 @@ import Tabs from "@/components/Tabs";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import { StatusBadge, ScoreBadge } from "@/lib/badges";
-import { getLeads, addLeads, type Lead } from "@/lib/api";
+import { addLeads, type Lead } from "@/lib/api";
+import { useLeads } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
 import { type TabsOption } from "@/types/tabs";
 
@@ -37,8 +39,6 @@ const VIEWS: TabsOption[] = [
 ];
 
 export default function LeadsPage() {
-    const [leads, setLeads] = useState<Lead[]>([]);
-    const [loading, setLoading] = useState(true);
     const [text, setText] = useState("");
     const [file, setFile] = useState<File | null>(null);
     const [adding, setAdding] = useState(false);
@@ -48,20 +48,17 @@ export default function LeadsPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const { me } = useMe();
     const writable = canWrite(me);
+    const queryClient = useQueryClient();
 
     const hotOnly = view.id === 2;
 
-    const loadLeads = useCallback(() => {
-        setLoading(true);
-        getLeads(hotOnly ? { hot: true } : undefined)
-            .then((r) => setLeads(r.leads))
-            .catch(() => {})
-            .finally(() => setLoading(false));
-    }, [hotOnly]);
-
-    useEffect(() => {
-        loadLeads();
-    }, [loadLeads]);
+    // PERF UNIT-3: cached read keyed by the hot filter — switching All<->Hot and
+    // tab-back are instant (cache + bg revalidate). keepPreviousData keeps the
+    // current rows visible while the other filter loads.
+    const leadsOpts = hotOnly ? { hot: true } : undefined;
+    const { data, isLoading } = useLeads(leadsOpts);
+    const leads: Lead[] = useMemo(() => data?.leads ?? [], [data]);
+    const loading = isLoading && leads.length === 0;
 
     async function handleAdd() {
         setAdding(true);
@@ -72,7 +69,8 @@ export default function LeadsPage() {
             setText("");
             setFile(null);
             if (fileInputRef.current) fileInputRef.current.value = "";
-            loadLeads();
+            // Refresh every cached leads view (All + Hot) after a write.
+            queryClient.invalidateQueries({ queryKey: ["leads"] });
         } catch (e: unknown) {
             setToast(e instanceof Error ? e.message : "Failed to add leads");
         } finally {

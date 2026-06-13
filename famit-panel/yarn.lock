@@ -337,6 +337,18 @@
     postcss "^8.4.41"
     tailwindcss "4.0.9"
 
+"@tanstack/query-core@5.101.0":
+  version "5.101.0"
+  resolved "https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.101.0.tgz"
+  integrity sha512-cQetA74EB+seWySv1TTKr828TnP0u39m6LykwDXIo84SNortpDkp30TMEjkqtYCNP9c40uT/iwl6MLiufEt0Ow==
+
+"@tanstack/react-query@^5.101.0":
+  version "5.101.0"
+  resolved "https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.101.0.tgz"
+  integrity sha512-rLlJXSpkqfizLWgkR5+eLeIk0MvTx/meEIR7LRjxic+qxiQP8zVjq7BqQkiCMNLQBlLfuOLqqr6KO5GtrDlmSg==
+  dependencies:
+    "@tanstack/query-core" "5.101.0"
+
 "@tanstack/react-virtual@^3.8.1":
   version "3.13.2"
   resolved "https://registry.npmjs.org/@tanstack/react-virtual/-/react-virtual-3.13.2.tgz"
