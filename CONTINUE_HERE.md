@@ -2,6 +2,19 @@
 
 > Read this first, then `MASTER_BUILD_STATE.md` → `git log --oneline -15` → `AGENT_LEARNINGS.md`.
 
+## 2026-06-14 — 🟢 PVS PHASE-1 INTEGRATED VERIFY = 6/6 PASS (provider+voice switcher + Lean/Std/Premium tiers)
+
+Honest end-to-end verify of the shipped PVS Phase-1 (backend + frontend). NO /run, NO ring (DID +918071583488 resting). **EARNER GATE PASS before+after (md5/process/health only):** agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED, famit-agent MainPID `1477083` / ActiveEnter 2026-06-10 NEVER restarted, /health 200, 0 5xx, 0 Traceback. Only famit-caller (prior wave) + famit-panel touched.
+
+- **(1) /tiers + cost math — PASS.** lean 0.75 (sarvam·groq-20b·bulbul:v2·anushka) / standard 1.3 (·llama-70b·bulbul:v3·manisha) / premium 1.6 (·llama-70b·EL flash·voice→UI keeps EL). ob_prov_pending=true. UI cost-meter uses headline `est_inr_per_min` (founder's source of truth).
+- **(2) FREE voice preview both providers — PASS.** EL `/voice-preview` → 307 redirect to free GCS clip (no key/synth); Sarvam → 200 audio/wav ~206KB FileResponse; bad id → 404. Zero burn.
+- **(3) Custom-provider CRUD secure — PASS.** legacy pw `FamitCall2026` → 403 (#1 finding respected); real admin JWT (`/auth/login`) full add→list→/providers→update→delete clean, key masked, separate Fernet store.
+- **(4) Persistence + voice honored — PASS.** POST `/campaigns/{cid}` (Form `fields_json`, merge delta): tier/voice_id/tts_provider/est_avg_call_min round-trip + `tier_resolved` snapshot (explicit voice overrides tier default); invalid tier→lean. Voice honored on outbound via agent.py:485 (no edit).
+- **(5) OB-PROV flagged Phase-2 — PASS.** /tiers.ob_prov_pending + UI honesty note; agent.py byte-identical.
+- **FE edge:** panel.famit.in `/ /login /run /super-admin/api-keys /crm` = 200; BUILD_ID `g2QcGqqd8YfBKyKVsKkXv`.
+
+RESIDUAL: cost-meter rate-card per-component sum (assumes 900 TTS chars/min) ≈ 1.86/3.27/4.35 — ~2.5× the headline 0.75/1.3/1.6; UI shows headline for presets (by design), rate-card only for Custom mix. Re-tune `tts_chars_per_min` ~330-360 (pure-data tiers.py edit) to align the Custom-mix number. Report: `memory/build_log/wave-build-PVS-phase1-VERIFY.md`. **PHASE-2 (OB-PROV) = founder decision:** make the live-call STT/LLM/TTS provider swap take effect (agent.py `_build_pipeline` edit, default-identical, founder sign-off + real ring-gate, own one-box wave when DID un-rested).
+
 ## 2026-06-13 — 🟢 REC WAVE FINAL VERIFY (handoff-name + recordings + retention + earner) = ALL PASS
 
 Independent honest verification of the whole REC wave on the LIVE box. **4/4 acceptance items PASS** (item 3 retention was the only unbuilt piece — built + verified this pass).
