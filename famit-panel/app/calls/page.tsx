@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Layout from "@/components/Layout";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Search from "@/components/Search";
 import Table from "@/components/Table";
-import TableRow from "@/components/TableRow";
+import VirtualRows from "@/components/VirtualRows";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
-import { useCalls } from "@/lib/queries";
+import { useCallsInfinite } from "@/lib/queries";
 import {
     getCallDetail,
     type CallLog,
@@ -376,12 +376,28 @@ function StatChip({
 export default function CallLogsPage() {
     const [query, setQuery] = useState("");
     const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+    // The bounded scroll box the table virtualizes against (sticky <thead> on top).
+    const scrollRef = useRef<HTMLDivElement>(null);
 
-    // PERF UNIT-3: cached newest-first slim page. Tab-back is instant (served from
-    // cache + revalidated in bg). The slim rows carry every column this table shows.
-    const { data, isLoading } = useCalls({ limit: 200, order: "desc", slim: true });
-    const calls: CallLog[] = useMemo(() => data?.calls ?? [], [data]);
-    // First load (no cached data yet) shows the skeleton; a background revalidate
+    // PERF UNIT-4: cursor-paged newest-first slim pages (backend UNIT-1 contract).
+    // Loads ONE page (~60 slim rows) at a time and fetches the next as you scroll
+    // near the end — the call-logs page no longer loads every row at once. Tab-back
+    // is instant (react-query keeps the fetched pages cached + revalidates in bg).
+    const {
+        data,
+        isLoading,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+    } = useCallsInfinite({ pageSize: 60 });
+
+    // Flatten the cursor pages into one row list for the virtualizer.
+    const calls: CallLog[] = useMemo(
+        () => (data?.pages ?? []).flatMap((p) => p.calls),
+        [data]
+    );
+    const total = data?.pages?.[0]?.total;
+    // First load (no cached page yet) shows the skeleton; a background revalidate
     // keeps the existing rows on screen.
     const loading = isLoading && calls.length === 0;
 
@@ -390,7 +406,10 @@ export default function CallLogsPage() {
         [calls]
     );
 
-    // Client-side search over the loaded set (no API change).
+    // Client-side search over the already-fetched pages (no API change). When a
+    // search is active we disable infinite-scroll fetching (the user is narrowing
+    // what's loaded, not paging further).
+    const searching = query.trim().length > 0;
     const visibleCalls = useMemo(() => {
         const q = query.trim().toLowerCase();
         if (!q) return calls;
@@ -445,17 +464,31 @@ export default function CallLogsPage() {
                     />
                 </div>
 
-                <div className="pt-3 overflow-x-auto">
+                {!loading && total != null && (
+                    <div className="pl-5 pt-3 text-caption text-t-tertiary tabular-nums max-lg:pl-3">
+                        {query
+                            ? `${visibleCalls.length} of ${calls.length} loaded`
+                            : `${calls.length} of ${total} call${total === 1 ? "" : "s"}`}
+                    </div>
+                )}
+
+                {/* PERF UNIT-4: bounded, sticky-header scroll box the virtualizer
+                    drives. Only the ~30 visible <tr>s mount; scrolling near the end
+                    fetches the next cursor page. */}
+                <div
+                    ref={scrollRef}
+                    className="mt-3 max-h-[calc(100vh-15rem)] overflow-auto scrollbar-thin"
+                >
                     {loading ? (
                         <Table cellsThead={tableHead}>
-                            {[...Array(6)].map((_, i) => (
-                                <TableRow key={i}>
+                            {[...Array(8)].map((_, i) => (
+                                <tr key={i}>
                                     {[...Array(6)].map((__, j) => (
                                         <td key={j}>
                                             <div className="skeleton h-4 w-20" />
                                         </td>
                                     ))}
-                                </TableRow>
+                                </tr>
                             ))}
                         </Table>
                     ) : visibleCalls.length === 0 ? (
@@ -473,78 +506,32 @@ export default function CallLogsPage() {
                             </div>
                         </div>
                     ) : (
-                        <Table cellsThead={tableHead}>
-                            {visibleCalls.map((c) => {
-                                const isLive = LIVE.has(c.status);
-                                return (
-                                    <TableRow
-                                        key={c.id}
-                                        className="cursor-pointer"
-                                        onClick={() => setSelectedCallId(c.id)}
-                                    >
-                                        <td className="text-sub-title-1">
-                                            <div className="flex items-center gap-3">
-                                                <span
-                                                    className={`flex items-center justify-center size-9 shrink-0 rounded-xl text-caption font-semibold ${
-                                                        isLive
-                                                            ? "bg-primary-02/12 text-primary-02"
-                                                            : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
-                                                    }`}
-                                                >
-                                                    {c.name
-                                                        ? c.name
-                                                              .trim()
-                                                              .charAt(0)
-                                                              .toUpperCase()
-                                                        : "?"}
-                                                </span>
-                                                <div className="min-w-0">
-                                                    <div className="truncate">
-                                                        {c.name || "Unknown"}
-                                                    </div>
-                                                    <div className="text-caption text-t-tertiary tabular-nums">
-                                                        {c.phone}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td className="text-t-secondary max-lg:hidden">
-                                            {c.campaign_name || "—"}
-                                        </td>
-                                        <td>
-                                            <StatusBadge status={c.status} />
-                                        </td>
-                                        <td>
-                                            <div className="text-t-secondary">
-                                                {c.started_at
-                                                    ? fmtShort(c.started_at)
-                                                    : "—"}
-                                            </div>
-                                            {c.started_at &&
-                                                fmtRelative(c.started_at) && (
-                                                    <div className="text-caption text-t-tertiary">
-                                                        {fmtRelative(
-                                                            c.started_at
-                                                        )}
-                                                    </div>
-                                                )}
-                                        </td>
-                                        <td className="text-t-secondary td-num text-right">
-                                            {fmtDuration(c.duration_s)}
-                                        </td>
-                                        <td className="text-right max-md:hidden">
-                                            {c.interest != null ? (
-                                                <ScorePill score={c.interest} />
-                                            ) : (
-                                                <span className="text-t-tertiary">
-                                                    —
-                                                </span>
-                                            )}
-                                        </td>
-                                    </TableRow>
-                                );
-                            })}
-                        </Table>
+                        <table className="w-full text-body-2 [&_th]:h-14 [&_th,&_td]:pl-5 [&_th,&_td]:py-4 [&_th,&_td]:first:pl-4 [&_th,&_td]:last:pr-4 [&_th]:align-middle [&_th]:text-left [&_th]:text-overline [&_th]:uppercase [&_th]:tracking-[0.06em] [&_th]:text-t-tertiary [&_th]:font-semibold [&_thead]:border-b [&_thead]:border-s-subtle max-lg:[&_th,&_td]:first:pl-3 max-md:[&_th,&_td]:p-3 max-md:[&_th]:h-13 max-md:[&_th]:border-b max-md:[&_th]:border-s-subtle">
+                            <thead className="sticky top-0 z-10 bg-b-surface2 max-md:hidden">
+                                <tr>{tableHead}</tr>
+                            </thead>
+                            <tbody>
+                                <VirtualRows
+                                    items={visibleCalls}
+                                    rowKey={(c) => c.id}
+                                    scrollRef={scrollRef}
+                                    colSpan={6}
+                                    estimateRowH={73}
+                                    onEndReached={
+                                        searching || !hasNextPage || isFetchingNextPage
+                                            ? undefined
+                                            : () => fetchNextPage()
+                                    }
+                                    renderRow={(c) => renderCallRow(c, setSelectedCallId)}
+                                />
+                            </tbody>
+                        </table>
+                    )}
+                    {isFetchingNextPage && (
+                        <div className="flex items-center justify-center gap-2 py-3 text-caption text-t-tertiary">
+                            <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
+                            Loading more…
+                        </div>
                     )}
                 </div>
             </div>
@@ -559,5 +546,65 @@ function ScorePill({ score }: { score: number }) {
         <Badge variant={variant} dot={score >= 70}>
             {score}
         </Badge>
+    );
+}
+
+// One call row as a plain <tr> (so the virtualizer can attach its measurement ref —
+// a native <tr> forwards refs; the <TableRow> wrapper does not). Classes mirror the
+// Core_2 <TableRow> + the shared <Table> cell rules so the look is unchanged.
+function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
+    const status = c.status ?? "";
+    const isLive = LIVE.has(status);
+    return (
+        <tr
+            className="group relative cursor-pointer [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3"
+            onClick={() => onOpen(c.id)}
+        >
+            <td className="text-sub-title-1">
+                <div className="flex items-center gap-3">
+                    <span
+                        className={`flex items-center justify-center size-9 shrink-0 rounded-xl text-caption font-semibold ${
+                            isLive
+                                ? "bg-primary-02/12 text-primary-02"
+                                : "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
+                        }`}
+                    >
+                        {c.name ? c.name.trim().charAt(0).toUpperCase() : "?"}
+                    </span>
+                    <div className="min-w-0">
+                        <div className="truncate">{c.name || "Unknown"}</div>
+                        <div className="text-caption text-t-tertiary tabular-nums">
+                            {c.phone}
+                        </div>
+                    </div>
+                </div>
+            </td>
+            <td className="text-t-secondary max-lg:hidden">
+                {c.campaign_name || "—"}
+            </td>
+            <td>
+                <StatusBadge status={status} />
+            </td>
+            <td>
+                <div className="text-t-secondary">
+                    {c.started_at ? fmtShort(c.started_at) : "—"}
+                </div>
+                {c.started_at && fmtRelative(c.started_at) && (
+                    <div className="text-caption text-t-tertiary">
+                        {fmtRelative(c.started_at)}
+                    </div>
+                )}
+            </td>
+            <td className="text-t-secondary td-num text-right">
+                {fmtDuration(c.duration_s)}
+            </td>
+            <td className="text-right max-md:hidden">
+                {c.interest != null ? (
+                    <ScorePill score={c.interest} />
+                ) : (
+                    <span className="text-t-tertiary">—</span>
+                )}
+            </td>
+        </tr>
     );
 }

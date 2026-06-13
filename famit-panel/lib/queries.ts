@@ -18,6 +18,7 @@
 
 import {
     useQuery,
+    useInfiniteQuery,
     keepPreviousData,
     type UseQueryOptions,
 } from "@tanstack/react-query";
@@ -50,6 +51,10 @@ import {
 export const qk = {
     calls: (opts?: GetCallsOpts): unknown[] => ["calls", opts ?? {}],
     leads: (opts?: Record<string, unknown>): unknown[] => ["leads", opts ?? {}],
+    // Infinite (paged) variants — keyed separately from the one-shot reads so a
+    // page consuming the cursor never collides with a flat-list cache entry.
+    callsInfinite: (opts?: GetCallsOpts): unknown[] => ["calls-infinite", opts ?? {}],
+    leadsInfinite: (opts?: Record<string, unknown>): unknown[] => ["leads-infinite", opts ?? {}],
     campaigns: (): unknown[] => ["campaigns"],
     stats: (): unknown[] => ["stats"],
     voices: (provider?: VoiceProvider): unknown[] => ["voices", provider ?? "elevenlabs"],
@@ -72,6 +77,39 @@ export function useCalls(opts?: GetCallsOpts, extra?: Extra<CallsPage>) {
     });
 }
 
+// ── Calls (infinite / paged) ─────────────────────────────────────────────────
+// PERF UNIT-4: consume the backend UNIT-1 cursor contract. Each page is a slim
+// newest-first `{calls,total,offset,limit,next}`; `next` = the offset to fetch the
+// next page (or null on the last page). The page list virtualizes the flattened
+// rows and calls `fetchNextPage()` as the viewport nears the end, so the call-logs
+// page loads ONE page at a time instead of every row at once.
+//
+// `pageSize` becomes the `limit` per page; `order`/`slim` are forced on so the
+// response is the trimmed paged shape. `campaign_id`/`outcome` filters re-key the
+// query (a new filter starts a fresh page-0 fetch).
+export function useCallsInfinite(opts?: {
+    pageSize?: number;
+    campaign_id?: string;
+    outcome?: string;
+}) {
+    const pageSize = opts?.pageSize ?? 60;
+    const base: GetCallsOpts = {
+        limit: pageSize,
+        order: "desc",
+        slim: true,
+        campaign_id: opts?.campaign_id,
+        outcome: opts?.outcome,
+    };
+    return useInfiniteQuery<CallsPage, Error>({
+        queryKey: qk.callsInfinite(base),
+        queryFn: ({ pageParam }) =>
+            getCalls({ ...base, offset: (pageParam as number) ?? 0 }),
+        initialPageParam: 0,
+        // `next` is the absolute offset for the next page, or null on the last page.
+        getNextPageParam: (last) => (last.next == null ? undefined : last.next),
+    });
+}
+
 // ── Leads ───────────────────────────────────────────────────────────────────
 export function useLeads(
     opts?: { hot?: boolean; sort?: string; batch?: string; limit?: number; offset?: number },
@@ -82,6 +120,22 @@ export function useLeads(
         queryFn: () => getLeads(opts),
         placeholderData: keepPreviousData,
         ...extra,
+    });
+}
+
+// ── Leads (infinite / paged) ─────────────────────────────────────────────────
+// PERF UNIT-4: consume the backend UNIT-1 `{leads,total,offset,limit,next}` cursor.
+// The leads page virtualizes the flattened rows and fetches the next page as the
+// viewport nears the end. `hot` re-keys the query (All<->Hot starts a fresh fetch).
+export function useLeadsInfinite(opts?: { pageSize?: number; hot?: boolean; sort?: string }) {
+    const pageSize = opts?.pageSize ?? 60;
+    const base = { limit: pageSize, hot: opts?.hot, sort: opts?.sort };
+    return useInfiniteQuery<LeadsPage, Error>({
+        queryKey: qk.leadsInfinite(base),
+        queryFn: ({ pageParam }) =>
+            getLeads({ ...base, offset: (pageParam as number) ?? 0 }),
+        initialPageParam: 0,
+        getNextPageParam: (last) => (last.next == null ? undefined : last.next),
     });
 }
 

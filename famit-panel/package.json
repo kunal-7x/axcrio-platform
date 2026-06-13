@@ -12,6 +12,7 @@
     "@headlessui/react": "^2.2.0",
     "@tailwindcss/postcss": "^4.0.9",
     "@tanstack/react-query": "^5.101.0",
+    "@tanstack/react-virtual": "^3.14.2",
     "@tiptap/extension-link": "^2.11.5",
     "@tiptap/extension-text-align": "^2.11.5",
     "@tiptap/extension-underline": "^2.11.5",
