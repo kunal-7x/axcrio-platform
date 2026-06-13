@@ -3389,8 +3389,22 @@ async def voice_preview(request: Request, provider: str = "", id: str = ""):
     """FREE play-preview proxy. ElevenLabs -> redirect to the voice's public preview_url (no key, no
     synthesis, no burn). Sarvam -> stream the pre-hosted one-time sample clip from
     var/voice_samples/sarvam/<id>.mp3. Used by the panel <audio> Play button."""
+    # Auth: standard header auth OR t= query-param token (needed because <audio src> cannot
+    # send headers; the FE already appends ?t=<jwt> for voice preview).
+    _t_param = request.query_params.get("t", "")
     if not authed(request):
-        return need_auth()
+        if not _t_param:
+            return need_auth()
+        # Validate the t= param through the same resolve_tenant path by synthesising a
+        # Bearer-like fake request object (scoped to this no-spend, no-PII route only).
+        class _FakeReq:
+            def __init__(self, token):
+                self._token = token
+                self.headers = {"authorization": "Bearer " + token, "x-auth": ""}
+            @property
+            def query_params(self): return {}
+        if resolve_tenant(_FakeReq(_t_param)) is None:
+            return need_auth()
     from fastapi.responses import RedirectResponse, FileResponse
     p = (provider or "").strip().lower()
     vid = (id or "").strip()
