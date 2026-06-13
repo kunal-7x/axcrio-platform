@@ -21,3 +21,14 @@ description = "p0-foundation design doc contains a documented FAKE test secret, 
 paths = [
   '''design/p0-foundation\.md$''',
 ]
+
+# The PVS tier config (llm_router/tiers.py) uses literal MODEL-NAME identifiers as
+# rate-card keys (e.g. "groq-llama-3.3-70b", "groq-gpt-oss-20b"). gitleaks' generic
+# high-entropy rule flags these hyphenated model labels as if they were secrets —
+# they are NOT credentials, just public model identifiers. Allow these exact
+# regex-matched strings (scoped to the literal model labels, not a path exemption).
+[[allowlists]]
+description = "tiers.py rate-keys are public model-name labels, not secrets"
+regexes = [
+  '''groq-(llama-3\.3-70b|gpt-oss-20b)''',
+]
