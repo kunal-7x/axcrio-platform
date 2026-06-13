@@ -276,6 +276,90 @@ export async function getContactNba(id: string): Promise<Nba> {
     return crmFetch<Nba>(`/contacts/${encodeURIComponent(id)}/nba`);
 }
 
+// ── Recordings (Part 2 unit D — call audio for one lead) ─────────────────────
+//
+// GET /contacts/{phone}/recordings unifies INBOUND (ai_manager_sessions) +
+// OUTBOUND (calls) audio for the lead, each with a freshly-minted PRESIGNED,
+// range-streamable + downloadable URL (1h TTL) and metadata. Tenant-scoped (RLS,
+// tenant from token) exactly like /contacts. The bucket is PRIVATE, so the URL is
+// minted per-read; a row with no playable URL yet (still uploading / finalize
+// pending) surfaces a calm "preparing" state rather than a broken player.
+
+export type Recording = {
+    call_id: string;
+    direction: string; // inbound | outbound | ""
+    phone: string;
+    started_at: string | null;
+    duration_s?: number | null;
+    status: string; // uploaded | recording | pending | failed | ""
+    // freshly-minted presigned URL (preferred). `recording_url` is a legacy/static
+    // fallback if a build ever persisted one.
+    url?: string;
+    presigned_url?: string;
+    recording_url?: string;
+};
+
+export type RecordingsResponse = {
+    recordings: Recording[];
+    // dormant/degraded markers, mirroring ContactsResponse.
+    note?: string;
+    error?: string;
+};
+
+// Never throws — a dormant module / not-yet-mounted route / network error all
+// resolve to an empty list so the profile renders a calm empty state, never an
+// error wall. A genuine 401 still bounces to /login.
+export async function getContactRecordings(phone: string): Promise<RecordingsResponse> {
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/contacts/${encodeURIComponent(phone)}/recordings`, {
+            headers: authHeaders(),
+        });
+    } catch {
+        return { recordings: [] }; // offline / route absent -> calm empty
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem("famit_token");
+        localStorage.removeItem("famit_me");
+        window.location.href = "/login";
+        return { recordings: [] };
+    }
+    if (!res.ok) return { recordings: [] }; // 404 / 501 / 5xx -> dormant-safe empty
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const raw: unknown = Array.isArray(data)
+        ? data
+        : Array.isArray((data as { recordings?: unknown }).recordings)
+        ? (data as { recordings: unknown[] }).recordings
+        : [];
+    const recordings = (raw as Record<string, unknown>[])
+        .map(toRecording)
+        // newest first (matches the timeline feed); rows with no timestamp sink last.
+        .sort((a, b) => (b.started_at || "").localeCompare(a.started_at || ""));
+    return { recordings, note: typeof data.note === "string" ? data.note : undefined };
+}
+
+// Normalize one backend row, tolerant of field-name drift so a partial payload
+// never crashes the section.
+function toRecording(r: Record<string, unknown>, idx: number): Recording {
+    const dur = Number(r.duration_s);
+    const firstUrl = (...keys: string[]): string | undefined => {
+        for (const k of keys) {
+            const v = r[k];
+            if (typeof v === "string" && v.trim()) return v;
+        }
+        return undefined;
+    };
+    return {
+        call_id: String(r.call_id ?? r.id ?? r.room ?? `rec-${idx}`),
+        direction: String(r.direction ?? "").trim(),
+        phone: String(r.phone ?? "").trim(),
+        started_at: r.started_at ? String(r.started_at) : r.created_at ? String(r.created_at) : null,
+        duration_s: Number.isFinite(dur) && dur > 0 ? dur : null,
+        status: String(r.status ?? "").trim().toLowerCase(),
+        url: firstUrl("url", "presigned_url", "recording_presigned_url", "recording_url"),
+    };
+}
+
 export async function getSegments(): Promise<SegmentsResponse> {
     return crmFetch<SegmentsResponse>(`/segments`);
 }

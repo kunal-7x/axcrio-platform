@@ -1753,6 +1753,7 @@ export async function getWhatsAppLog(): Promise<{ log: WhatsAppLogEntry[] }> {
 // gates whether the AI dials it. `hours` is a free-form availability window
 // ("24x7" / "09:00-20:00" — the backend parses it). All but phone are optional.
 export type HandoffMember = {
+    name?: string; // the person's display name — spoken to the caller on handoff
     phone: string;
     whatsapp?: string;
     role?: string;
@@ -1804,6 +1805,7 @@ async function throwHandoff(res: Response): Promise<never> {
 function toHandoffMember(r: Record<string, unknown>, idx: number): HandoffMember {
     const prio = Number(r.priority);
     return {
+        name: r.name ? String(r.name).trim() : undefined,
         phone: String(r.phone ?? "").trim(),
         whatsapp: r.whatsapp ? String(r.whatsapp).trim() : undefined,
         role: r.role ? String(r.role).trim() : undefined,
@@ -1845,6 +1847,7 @@ export async function getHandoffTeam(): Promise<{ team: HandoffMember[] }> {
 // Add OR update one member (idempotent by phone). Omit priority to auto-append
 // (backend sets max+1). Throws a readable HandoffError on 400/403/etc.
 export async function addHandoffMember(member: {
+    name?: string;
     phone: string;
     whatsapp?: string;
     role?: string;
@@ -1853,6 +1856,7 @@ export async function addHandoffMember(member: {
     enabled?: boolean;
 }): Promise<{ ok: boolean }> {
     const fd = new FormData();
+    if (member.name) fd.append("name", member.name);
     fd.append("phone", member.phone);
     if (member.whatsapp) fd.append("whatsapp", member.whatsapp);
     if (member.role) fd.append("role", member.role);
@@ -1885,6 +1889,7 @@ export async function removeHandoffMember(phone: string): Promise<{ removed: boo
 // the sent order is authoritative. Sent as JSON per the PUT contract.
 export async function saveHandoffOrder(list: HandoffMember[]): Promise<{ ok: boolean }> {
     const handoff = list.map((m, i) => ({
+        name: m.name || undefined,
         phone: m.phone,
         whatsapp: m.whatsapp || undefined,
         role: m.role || undefined,

@@ -54,7 +54,7 @@ function isValidIndianMobile(phone: string): boolean {
     return /^\+91[6-9]\d{9}$/.test(phone);
 }
 
-const EMPTY_FORM = { phone: "", whatsapp: "", role: "", hours: "" };
+const EMPTY_FORM = { name: "", phone: "", whatsapp: "", role: "", hours: "" };
 
 /* ============================================================ the component */
 
@@ -148,6 +148,11 @@ export default function HandoffTeam({ compact = false }: { compact?: boolean }) 
     };
 
     const submitAdd = async () => {
+        const name = form.name.trim();
+        if (!name) {
+            setFormErr("Add the person's name — the AI speaks it to the caller on handoff.");
+            return;
+        }
         const phone = normalizePhone(form.phone);
         if (!isValidIndianMobile(phone)) {
             setFormErr("Enter a valid Indian mobile number (it must start with +91).");
@@ -158,6 +163,7 @@ export default function HandoffTeam({ compact = false }: { compact?: boolean }) 
         setFormErr("");
         try {
             await addHandoffMember({
+                name,
                 phone,
                 whatsapp: wa || undefined,
                 role: form.role.trim() || undefined,
@@ -268,17 +274,21 @@ export default function HandoffTeam({ compact = false }: { compact?: boolean }) 
                                     {i + 1}
                                 </span>
 
-                                {/* identity */}
+                                {/* identity — name leads (the AI speaks it on handoff), phone + role follow */}
                                 <div className="min-w-0 flex-1">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="text-body-2 text-t-primary font-medium td-num truncate">
-                                            {m.phone}
+                                        <span className="text-body-2 text-t-primary font-medium truncate">
+                                            {m.name || m.phone}
                                         </span>
                                         {m.role && (
                                             <span className="text-caption text-t-tertiary truncate">{m.role}</span>
                                         )}
                                     </div>
                                     <div className="mt-0.5 flex items-center gap-x-3 gap-y-0.5 flex-wrap text-caption text-t-tertiary">
+                                        <span className="inline-flex items-center gap-1">
+                                            <Icon name="mobile" className="size-3.5 fill-t-tertiary" />
+                                            <span className="td-num">{m.phone}</span>
+                                        </span>
                                         {m.whatsapp && (
                                             <span className="inline-flex items-center gap-1">
                                                 <Icon name="chat" className="size-3.5 fill-t-tertiary" />
@@ -339,6 +349,14 @@ export default function HandoffTeam({ compact = false }: { compact?: boolean }) 
 
             <div className="space-y-4">
                 <ModalField
+                    label="Name"
+                    required
+                    placeholder="e.g. Rajesh Sharma"
+                    value={form.name}
+                    onChange={(v) => setForm((f) => ({ ...f, name: v }))}
+                    hint="The AI names this person to the caller on handoff — “connecting you to Rajesh”."
+                />
+                <ModalField
                     label="Phone number"
                     required
                     placeholder="+91 98765 43210"
@@ -380,7 +398,12 @@ export default function HandoffTeam({ compact = false }: { compact?: boolean }) 
                 <Button isStroke onClick={() => setAddOpen(false)} disabled={saving}>
                     Cancel
                 </Button>
-                <Button isBlack icon="plus" onClick={submitAdd} disabled={saving || !form.phone.trim()}>
+                <Button
+                    isBlack
+                    icon="plus"
+                    onClick={submitAdd}
+                    disabled={saving || !form.name.trim() || !form.phone.trim()}
+                >
                     {saving ? "Adding…" : "Add to team"}
                 </Button>
             </div>

@@ -11,10 +11,12 @@ import Tabs from "@/components/Tabs";
 import {
     getContact,
     getContactTimeline,
+    getContactRecordings,
     CrmDormantError,
     CrmNotFoundError,
     type ContactDetailResponse,
     type TimelineRow,
+    type Recording,
 } from "../client";
 import {
     StageBadge,
@@ -41,6 +43,8 @@ export default function ContactProfilePage() {
 
     const [detail, setDetail] = useState<ContactDetailResponse | null>(null);
     const [timeline, setTimeline] = useState<TimelineRow[]>([]);
+    const [recordings, setRecordings] = useState<Recording[]>([]);
+    const [recLoading, setRecLoading] = useState(true);
     const [loading, setLoading] = useState(true);
     const [tlLoading, setTlLoading] = useState(true);
     const [dormant, setDormant] = useState(false);
@@ -93,6 +97,24 @@ export default function ContactProfilePage() {
             .catch(() => setTimeline([]))
             .finally(() => setTlLoading(false));
     }, [id, kind, detail]);
+
+    // Load the lead's call recordings (inbound + outbound), keyed by phone. The
+    // backend joins by phone/call_id/room and mints presigned URLs per-read.
+    // Dormant-safe: the client resolves any failure to [] -> calm empty state.
+    useEffect(() => {
+        const c = detail?.contact;
+        if (!c) return;
+        const phone = c.phone_key || c.phone_display || id;
+        if (!phone) {
+            setRecLoading(false);
+            return;
+        }
+        setRecLoading(true);
+        getContactRecordings(phone)
+            .then((r) => setRecordings(r.recordings || []))
+            .catch(() => setRecordings([]))
+            .finally(() => setRecLoading(false));
+    }, [detail, id]);
 
     const contact = detail?.contact;
     // Live API projects lead truth INTO `contact` (no separate top-level lead);
@@ -306,6 +328,11 @@ export default function ContactProfilePage() {
                                 </div>
                             </Card>
                         )}
+
+                        {/* Recordings — call audio for this lead (inbound + outbound) */}
+                        {!loading && (
+                            <RecordingsCard loading={recLoading} recordings={recordings} />
+                        )}
                     </div>
 
                     {/* ── Right: unified timeline feed ─────────────────── */}
@@ -442,6 +469,129 @@ function NbaCard({ nba }: { nba: ContactDetailResponse["nba"] }) {
                 )}
             </div>
         </Card>
+    );
+}
+
+// ── Recordings card ──────────────────────────────────────────────────────────
+//
+// Mirrors the proven AI-Manager session player (app/ai-manager/sessions/[id]):
+// a native <audio controls preload="none"> (so the OGG only fetches on play +
+// supports seeking via HTTP range) plus a Download link per row. The bucket is
+// private, so each row's `url` is a freshly-minted presigned URL from the backend;
+// a row that hasn't finished uploading shows a calm "preparing" line, never a
+// broken player. Dormant-safe: no recordings -> a quiet empty state.
+
+function fmtClock(sec?: number | null): string {
+    if (sec == null || !Number.isFinite(sec) || sec <= 0) return "";
+    const s = Math.round(sec);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function RecordingsCard({
+    loading,
+    recordings,
+}: {
+    loading: boolean;
+    recordings: Recording[];
+}) {
+    return (
+        <Card
+            title="Recordings"
+            headContent={
+                !loading && recordings.length > 0 ? (
+                    <span className="ml-auto text-caption text-t-tertiary td-num">
+                        {recordings.length}
+                    </span>
+                ) : undefined
+            }
+        >
+            <div className="px-5 pb-5 max-lg:px-3">
+                {loading ? (
+                    <div className="space-y-2.5 pt-1">
+                        {[...Array(2)].map((_, i) => (
+                            <div key={i} className="skeleton h-14 w-full rounded-2xl" />
+                        ))}
+                    </div>
+                ) : recordings.length === 0 ? (
+                    <div className="py-8 text-center">
+                        <span className="inline-grid place-items-center size-12 mb-3 rounded-full bg-b-surface1 dark:bg-shade-04/60">
+                            <Icon name="camera-video" className="fill-t-tertiary" />
+                        </span>
+                        <div className="text-body-2 font-medium text-t-primary mb-0.5">
+                            No recordings yet
+                        </div>
+                        <div className="max-w-xs mx-auto text-caption text-t-secondary">
+                            Every call with this person is recorded — inbound and outbound.
+                            The audio appears here the moment a call ends and uploads.
+                        </div>
+                    </div>
+                ) : (
+                    <div className="space-y-2.5 pt-1">
+                        {recordings.map((r) => (
+                            <RecordingRow key={r.call_id} r={r} />
+                        ))}
+                    </div>
+                )}
+            </div>
+        </Card>
+    );
+}
+
+function RecordingRow({ r }: { r: Recording }) {
+    const inbound = r.direction === "inbound";
+    const clock = fmtClock(r.duration_s);
+    const preparing = !r.url && /recording|pending|uploading/.test(r.status);
+    return (
+        <div className="rounded-2xl bg-b-surface2 ring-1 ring-s-subtle ring-inset p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="inline-flex items-center gap-1.5 text-caption text-t-secondary">
+                    <Icon
+                        name="camera-video"
+                        className="size-3.5 fill-primary-01 shrink-0"
+                    />
+                    {r.direction ? (inbound ? "Inbound call" : "Outbound call") : "Call"}
+                    {clock && (
+                        <span className="text-t-tertiary tabular-nums">· {clock}</span>
+                    )}
+                </span>
+                {r.started_at && (
+                    <span
+                        className="shrink-0 text-caption text-t-tertiary td-num whitespace-nowrap"
+                        title={fmtDateTime(r.started_at)}
+                    >
+                        {fmtRelative(r.started_at)}
+                    </span>
+                )}
+            </div>
+
+            {r.url ? (
+                <div className="flex items-center gap-2 max-sm:flex-col max-sm:items-stretch">
+                    <audio
+                        controls
+                        preload="none"
+                        src={r.url}
+                        className="h-9 w-full min-w-0"
+                    >
+                        Your browser does not support the audio element.
+                    </audio>
+                    <a
+                        href={r.url}
+                        download
+                        className="shrink-0 inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
+                    >
+                        <Icon name="download" className="size-3.5 fill-current" />
+                        <span className="max-sm:hidden">Download</span>
+                    </a>
+                </div>
+            ) : (
+                <div className="flex items-center gap-2 text-caption text-t-tertiary">
+                    <Icon name="clock" className="size-3.5 fill-t-tertiary shrink-0" />
+                    {preparing
+                        ? "Recording in progress — the audio appears once the call ends and uploads."
+                        : "This call was recorded — the playback link is being prepared."}
+                </div>
+            )}
+        </div>
     );
 }
 
