@@ -31,6 +31,12 @@ from google.protobuf.duration_pb2 import Duration
 from livekit import api
 
 from prompt import build_system_prompt
+try:
+    # W1: vendor-script-aware renderer (used for prompt-preview + dry-run). On an
+    # older box prompt.py without v2, fall back to v1 so caller.py still imports.
+    from prompt import build_system_prompt_v2 as _build_system_prompt_v2
+except Exception:  # noqa: BLE001
+    _build_system_prompt_v2 = build_system_prompt
 
 try:
     import whatsapp as wa_mod  # WAVE3 Unit5: provider-agnostic WhatsApp sender
@@ -4074,6 +4080,135 @@ async def delete_campaign(request: Request, cid: str):
         pass
     _audit(request, t, "campaign.delete", "campaign", cid)
     return JSONResponse({"deleted": cid})
+
+
+# ===========================================================================
+# W1 — SCRIPT STUDIO: prompt-preview + dry-run (vendor-script adopt-persona)
+# ---------------------------------------------------------------------------
+# Two read-only-ish helper endpoints for the Script Studio UI so a vendor can
+# AUTHOR a campaign script and SEE the brain it produces + a sample turn BEFORE
+# any real call. Both are tenant-scoped + auth'd via the same resolve_tenant
+# pattern as every campaign route. Neither mutates the stored campaign, the
+# global VENDOR_SCRIPT_INJECT env flag, or places any paid/outbound call.
+#
+# EARNER-SAFE: these only READ a campaign + render through build_system_prompt_v2
+# (which is byte-identical to build_system_prompt when no raw_script is present)
+# and, for dry-run, call the SAME free/cheap Groq extract model (_groq_chat) the
+# WhatsApp drafts already use — never the outbound dial path, never the DID.
+# The preview forces the vendor-script render ON for PREVIEW ONLY by setting the
+# per-campaign opt-in flag on an in-memory COPY of fields (vendor_script_inject),
+# so the founder can see the adopted persona even while the global env flag is
+# still OFF in production. The stored campaign is never written.
+# ===========================================================================
+def _preview_fields(d: dict) -> dict:
+    """A COPY of the campaign fields with the per-campaign vendor-script opt-in
+    forced ON so build_system_prompt_v2 splices the persona for PREVIEW. Never
+    mutates the stored campaign. No raw_script => identical to the base render."""
+    f = dict((d or {}).get("fields") or {})
+    if isinstance(f.get("raw_script"), str) and f.get("raw_script").strip():
+        f["vendor_script_inject"] = True
+    return f
+
+
+@app.get("/campaigns/{cid}/prompt-preview")
+async def campaign_prompt_preview(request: Request, cid: str):
+    """Return the FULLY-RENDERED system prompt for this campaign — the exact brain
+    the live inbound agent would adopt — with the vendor-script persona FORCED ON
+    for preview (per-campaign opt-in on a copy; global env flag untouched). Tenant-
+    scoped + auth'd. Read-only: never writes the campaign, never calls an LLM."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    f = _preview_fields(d)
+    try:
+        rendered = _build_system_prompt_v2(f)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"could not render prompt: {repr(exc)[:160]}"},
+                            status_code=500)
+    raw = f.get("raw_script")
+    return JSONResponse({
+        "campaign_id": cid,
+        "name": d.get("name", cid),
+        "vendor_script_present": bool(isinstance(raw, str) and raw.strip()),
+        "vendor_script_active_in_preview": bool(f.get("vendor_script_inject")),
+        "system_prompt": rendered,
+        "chars": len(rendered),
+    })
+
+
+@app.post("/campaigns/{cid}/dry-run")
+async def campaign_dry_run(request: Request, cid: str,
+                           message: str = Form(""), as_returning: str = Form("")):
+    """Dry-run ONE sample caller line through the inbound brain so the founder can
+    SEE how the agent would greet/respond with the vendor's adopted persona —
+    WITHOUT placing a real call. Renders the persona via build_system_prompt_v2
+    (vendor-script forced on for preview) + reframes it for INBOUND, then runs a
+    SINGLE turn through the FREE/cheap Groq extract model (_groq_chat) — the same
+    model the WhatsApp drafts use, NEVER a paid outbound call / the DID. Tenant-
+    scoped + auth'd. Reads the campaign; never writes it."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    sample = (message or "").strip() or "Hello"
+    if len(sample) > 1000:
+        sample = sample[:1000]
+    f = _preview_fields(d)
+    company = (f.get("company_name") or "").strip() or "the company"
+    agent = (f.get("agent_name") or "").strip() or "Riya"
+    raw_present = bool(isinstance(f.get("raw_script"), str) and f.get("raw_script").strip())
+    # Inbound brain: disclosure OFF (mirrors aim_voice_agent _build_sales_instructions),
+    # vendor persona ON for preview.
+    try:
+        inb = dict(f)
+        inb["disclose_ai"] = False
+        brain = _build_system_prompt_v2(inb)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"could not render brain: {repr(exc)[:160]}"},
+                            status_code=500)
+    # INBOUND reframe header — same spirit as the live inbound agent: the caller
+    # dialled US; short human beats; mirror the caller's language; adopt the vendor
+    # persona; never sound robotic; never ask for a PIN.
+    inbound_head = (
+        f"You are {agent}, a warm, real human salesperson for {company} on a LIVE INBOUND phone "
+        "call — the CALLER dialled US because they're interested. Speak in short, natural beats "
+        "(one or two sentences, then STOP), in the SAME language/code-mix the caller uses "
+        "(Hinglish/Hindi/English). This is INBOUND: do NOT do the outbound permission opener — "
+        "get straight to warmly helping them. NEVER sound robotic, NEVER ask for any PIN. "
+        "Reply with ONLY what you would SAY out loud on this turn — no stage directions, no labels.\n\n"
+    )
+    system = inbound_head + (brain or "")
+    if (as_returning or "").strip().lower() in ("1", "true", "yes", "on"):
+        system += ("\n\n(NOTE: this caller has spoken to us before — continue warmly, don't "
+                   "restart introductions.)\n")
+    reply = _groq_chat(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": sample}],
+        max_tokens=220, temperature=0.6)
+    used_llm = bool(reply)
+    if not reply:
+        # Never 500 / never silent — make the dry-run still useful if Groq is down.
+        reply = ("(LLM unavailable right now — preview the rendered persona via "
+                 "GET /campaigns/{cid}/prompt-preview to verify the adopted greeting.)")
+    _audit(request, t, "campaign.dry_run", "campaign", cid,
+           meta={"name": d.get("name"), "vendor_script": raw_present})
+    return JSONResponse({
+        "campaign_id": cid,
+        "name": d.get("name", cid),
+        "vendor_script_present": raw_present,
+        "vendor_script_active_in_preview": bool(f.get("vendor_script_inject")),
+        "sample_user": sample,
+        "agent_reply": reply,
+        "used_llm": used_llm,
+        "provider": "groq",
+        "model": GROQ_MODEL,
+        "note": "dry-run only — no real call, no DID, free/cheap Groq turn",
+    })
 
 
 def _leads_for(tenant: dict) -> list[dict]:
