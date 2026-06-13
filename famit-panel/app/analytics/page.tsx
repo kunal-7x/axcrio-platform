@@ -63,10 +63,20 @@ export default function AnalyticsPage() {
 
     useEffect(() => { load(); }, [load]);
 
-    // Auto-refresh every 30s
+    // Auto-refresh every 30s — PERF (R6): gate on tab visibility.
+    // Don't poll while the tab is hidden (background drain); refresh once on re-show.
     useEffect(() => {
-        const t = setInterval(load, 30000);
-        return () => clearInterval(t);
+        const t = setInterval(() => {
+            if (typeof document === "undefined" || document.visibilityState === "visible") load();
+        }, 30000);
+        const onVis = () => {
+            if (document.visibilityState === "visible") load();
+        };
+        document.addEventListener("visibilitychange", onVis);
+        return () => {
+            clearInterval(t);
+            document.removeEventListener("visibilitychange", onVis);
+        };
     }, [load]);
 
     const funnelData = data?.funnel ?? [];
