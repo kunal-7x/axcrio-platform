@@ -75,6 +75,28 @@ try:
 except Exception:  # noqa: BLE001
     _SessionConnectOptions = None
 from livekit.plugins import elevenlabs, groq, sarvam, silero
+# EMERG-FIX (Groq daily-TPD exhaustion restore): pull in the OpenAI-compatible plugin so AIM can
+# fall back to an INDEPENDENT free LLM pool (OpenRouter) when Groq's shared 500k/day bucket is dead.
+# Import-guarded: if either is absent, AIM degrades to pure-Groq (no behaviour change).
+try:
+    from livekit.plugins import openai as _openai  # type: ignore
+except Exception:  # noqa: BLE001
+    _openai = None  # type: ignore
+try:
+    from livekit.agents import llm as _lk_llm  # type: ignore
+except Exception:  # noqa: BLE001
+    _lk_llm = None  # type: ignore
+# LPR-POOL: smart provider key pool (least-used + skip-cooling + instant re-pick on 429) +
+# SambaNova final fallback + hot-reloadable key-store. Import-guarded: absent -> legacy rotation.
+try:
+    from llm_router import GROQ_POOL as _GROQ_POOL, SARVAM_POOL as _SARVAM_POOL, \
+        SAMBANOVA_POOL as _SAMBA_POOL, OPENROUTER_POOL as _OR_POOL  # type: ignore
+    from llm_router.pool_llm import PoolLLM as _PoolLLM  # type: ignore
+    _LPR_OK = True
+except Exception as _lpr_exc:  # noqa: BLE001
+    _GROQ_POOL = _SARVAM_POOL = _SAMBA_POOL = _OR_POOL = None  # type: ignore
+    _PoolLLM = None  # type: ignore
+    _LPR_OK = False
 from livekit.plugins.elevenlabs import VoiceSettings
 
 # Semantic end-of-turn model (guarded; Silero VAD is the fallback) — identical guard to agent.py.
@@ -337,9 +359,24 @@ def _resolve_turn_detection():
 def _build_stt():
     """Plain Sarvam STT — IDENTICAL to the outbound earner (agent.py:510). No subclass, no forced
     conn_options. The earner proves this exact construction connects fast + transcribes on real calls.
-    language="unknown" = auto-detect code-mix Hinglish (forcing hi-IN garbles English)."""
+    MULTILINGUAL/ADAPTIVE STT: language="unknown" is Sarvam saarika's AUTO-DETECT mode — it transcribes
+    whatever language the caller actually speaks turn-by-turn (English stays English, Hindi stays Hindi,
+    code-mixed Hinglish is handled). This is what lets the caller switch language mid-call and still be
+    heard correctly. It is deliberately NOT pinned to a fixed language: pinning hi-IN garbles English
+    words (verified on live calls — under auto, an English "Hello" is captured verbatim). Override via
+    SARVAM_STT_LANG only if a single tenant genuinely needs a forced language."""
+    # LPR-POOL: pick the least-used, not-cooling Sarvam key (a rate-limited key is skipped
+    # instantly instead of a linear walk). Falls back to the legacy round-robin if the pool
+    # is unavailable. A 429 cooldown is best-effort marked by the resilient STT subclass below.
+    _sk = None
+    try:
+        if _SARVAM_POOL is not None:
+            _picked = _SARVAM_POOL.pick()
+            _sk = _picked["key"] if _picked else None
+    except Exception:  # noqa: BLE001
+        _sk = None
     return sarvam.STT(
-        api_key=_next_sarvam_key(),
+        api_key=_sk or _next_sarvam_key(),
         language=os.getenv("SARVAM_STT_LANG", "unknown"),
         model=os.getenv("SARVAM_STT_MODEL", "saarika:v2.5"),
     )
@@ -517,10 +554,13 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
             "they clearly say yes. Do NOT tell the caller you are dialing until run_campaign actually "
             "returns its result — speak the real outcome it gives you (e.g. how many leads are dialing). "
             "Never claim a call went out unless the tool confirmed it.\n\n"
-            "• `transfer_to_human(reason)` — connect the manager to a REAL person on the team (warm "
-            "transfer). Call this ONLY if they explicitly ask to talk to a human/person, or you "
-            "genuinely cannot handle what they need. It dials a team member into the call; once it "
-            "hands off, stop talking and let the human take over.\n\n"
+            "• `transfer_to_human(reason)` — connect to a REAL person on the team (warm transfer). The "
+            "MOMENT they ask to talk to a human/person/insaan, call this tool IMMEDIATELY in the SAME "
+            "turn — do NOT ask 'shall I transfer you' first and do NOT just SAY you're connecting them "
+            "and then wait; calling the tool is what actually connects them, merely talking about it "
+            "leaves the caller in silence. Call it only when they explicitly ask for a human or you "
+            "genuinely cannot handle what they need. It dials a team member into the call; once it hands "
+            "off, stop talking and let the human take over.\n\n"
             "• `list_handoff()` / `add_handoff(phone,name,priority)` / `remove_handoff(phone)` — manage "
             "the manager's HUMAN HANDOFF TEAM (the people you warm-transfer and send hot-lead alerts "
             "to). When they say things like 'add Rajesh +91… to my handoff team', 'list my handoff "
@@ -537,17 +577,15 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
 
 # ── HUMAN WARM TRANSFER helper (shared by BOTH agents) ─────────────────────────
 def _transfer_whisper(reason: str, name: str, phone: str, summary: str) -> str:
-    """The one-line private brief the AI speaks to the human as they join (rides chat_ctx too)."""
-    who = (name or "the caller").strip() or "the caller"
-    bits = [f"Connecting you to {who}"]
-    if phone:
-        bits.append(f"on {phone}")
-    if (reason or "").strip():
-        bits.append(f"— reason: {reason.strip()}")
-    if (summary or "").strip():
-        bits.append(f". Context: {summary.strip()[:200]}")
-    bits.append(". Over to you — please take it from here.")
-    return " ".join(bits)
+    """ULTRA-BRIEF in-room hand-off line spoken once as the human joins, then the AI exits (aclose).
+    NOTE: per-participant private audio isn't possible in a shared SIP room, so the CALLER hears this
+    too — so it must stay clean: no phone number, no reason, no AI-disclosure, no summary dump. Just a
+    one-line nudge to the human to take over. (reason/phone/summary kept in the signature for callers
+    and chat_ctx but intentionally NOT spoken into the shared room.)"""
+    who = (name or "").strip()
+    if who:
+        return f"{who} aapse baat karna chahte hain — aap baat kar sakte hain."
+    return "Aap dono ab baat kar sakte hain."
 
 
 # ── HANDOFF VOICE-UX HELPERS (hold audio · availability gate · per-attempt analytics) ───────────
@@ -691,11 +729,20 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
         eligible.append(h)
     dialable = [h for h in eligible if _within_hours(str(h.get("hours", "") or ""))]
 
-    # 2) REASSURANCE — speak ONE calm line to the caller immediately (off-loop so it overlaps the dial;
+    # 2) REASSURANCE — speak ONE clean line to the caller immediately (off-loop so it overlaps the dial;
     #    the caller is NEVER in dead air). The hold AUDIO is started below, just before the first ring.
+    #    The line NAMES the person we're connecting them to and NOTHING ELSE — no phone number, no
+    #    reason, no AI-disclosure (the dialed person = the first eligible handoff entry, priority order;
+    #    fallback "apni team" when no name/role is on the entry). Caller-language Hinglish.
+    _dial_who = "apni team"
+    if dialable:
+        _d0 = dialable[0]
+        _dn = str(_d0.get("name", "") or "").strip() or str(_d0.get("role", "") or "").strip()
+        if _dn:
+            _dial_who = _dn
     await _say_filler(
         context,
-        "Ek minute, main aapko hamari team se connect kar rahi hoon, line par baney rahiye…")
+        f"Ek second, main aapko {_dial_who} se connect kar rahi hoon.")
 
     # 3) fire the hot-lead WhatsApp SIMULTANEOUSLY (belt-and-braces; lands the lead in the team's chat).
     if _vt is not None and team:
@@ -746,6 +793,10 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
                 "confirm their number, and close politely — never leave them hanging.")
 
     _live_set_handoff(room_name, "Requested")
+    # HCRB fix (h): journal the handoff REQUEST so the lifecycle (requested -> dialing #N -> bridged ->
+    # ai-exited -> human-hangup) is fully traceable in journalctl for a real call.
+    logger.info("AIM handoff lifecycle: REQUESTED (tenant=%s caller=%s reason=%r eligible=%d) room %s",
+                tenant_id, _mask(caller_id), (reason or "")[:80], len(dialable), room_name)
 
     # 5c) HOLD AUDIO — start calm music to the CALLER, in the CALLER's room, played by US. It loops
     #     under the whole ring sequence and is STOPPED the instant a human answers (step 6). If the
@@ -822,9 +873,23 @@ async def _do_warm_transfer(agent, context, reason: str) -> str:
                     await session.say(whisper, allow_interruptions=False, add_to_chat_ctx=False)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AIM transfer whisper failed (non-fatal): %r", exc)
-            return ("handed_off: a team member is now LIVE on the line with the caller in the same call. "
-                    "You have ALREADY spoken the one-line context to the team. Now STOP talking "
-                    "completely and let the human take over — do not speak again.")
+            # HCRB fix (e) — AI EXIT (CORE). The soft return-string "now stop talking" was the
+            # documented root cause: it leaves the AgentSession ALIVE (still consuming STT/LLM), so
+            # the AI keeps reacting over the human. Mute alone is NOT enough (the session stays alive).
+            # The real exit = aclose() the AgentSession AFTER the human is bridged + the one short
+            # whisper has played out: the AI's STT/LLM/TTS stop and it disconnects, while the ROOM,
+            # the CALLER and the bridged HUMAN all persist (the human and caller keep talking). The
+            # room-disconnect shutdown hooks (memory/lead persist, _slog.finish, _live_remove) still
+            # run as normal. We log the lifecycle for observability (fix h).
+            logger.info("AIM transfer_to_human: AI-EXITED (session.aclose) after bridge -> %s room %s",
+                        _mask(bridged_num), room_name)
+            _live_set_handoff(room_name, "AI exited (human live)", target=bridged_num)
+            if session is not None:
+                try:
+                    await session.aclose()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("AIM session.aclose after bridge failed (non-fatal): %r", exc)
+            return ("handed_off")
     finally:
         # belt-and-braces: never leave hold music playing on any exit path.
         await _stop_hold_audio(hold_player, hold_handle)
@@ -1177,11 +1242,15 @@ class ManagerAgent(Agent):
 
     @function_tool
     async def transfer_to_human(self, context: RunContext, reason: str = "") -> str:
-        """Connect the caller to a REAL human team member NOW (warm transfer). Use ONLY when the
-        manager explicitly asks to talk to a person, or you genuinely cannot handle their request.
-        Dials the next available human from the handoff list INTO this call (a warm bridge) and steps
-        you back; if no one answers, the team is alerted on WhatsApp and will call back. Speak the
-        result it returns; once handed off, stop talking and let the human take over.
+        """Connect the caller to a REAL human team member (warm transfer). DEFAULT = handle it yourself;
+        do NOT offer or jump to a human. Call this ONLY when the manager EXPLICITLY asks to talk to a
+        person/human/insaan, OR you genuinely cannot handle their request. When one of those is true,
+        call it IMMEDIATELY, in the same turn, the moment it applies (do not first ask 'shall I transfer
+        you' or merely say you're connecting them and then wait — calling this tool is the ONLY thing
+        that actually connects them). Dials the next available human from the handoff list INTO this call
+        (a warm bridge) and steps you back; if no one answers, the team is alerted on WhatsApp and will
+        call back. Speak the result it returns; once handed off, stop talking and let the human take
+        over.
 
         Args:
             reason: a short reason for the transfer (e.g. "wants to speak to a person", "billing
@@ -1214,7 +1283,7 @@ class ManagerAgent(Agent):
                     "member — ask for their name and mobile number.")
         lines = []
         for h in team:
-            who = (h.get("role") or "Team").strip() or "Team"
+            who = (h.get("name") or h.get("role") or "Team").strip() or "Team"
             num = h.get("phone") or h.get("whatsapp") or ""
             state = "" if h.get("enabled", True) else " (paused)"
             lines.append(f"{who} on {num}{state}")
@@ -1335,8 +1404,9 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
             "\nIf after a couple of tries you genuinely can't tell which project they mean, call "
             "`capture_interest` with their name and what they're looking for so the team can follow "
             "up — never leave them with the wrong details and never go silent.\n"
-            "If the caller explicitly asks to talk to a human/person/agent, call the "
-            "`transfer_to_human(reason)` tool to connect a real team member into the call."
+            "If the caller asks to talk to a human/person/agent/insaan, call the `transfer_to_human"
+            "(reason)` tool IMMEDIATELY in that same turn (do NOT ask 'shall I transfer' or just say "
+            "you're connecting them and wait — calling the tool is what actually connects them)."
         )
 
     # Campaign resolved. We REUSE the outbound earner brain (prompt.build_system_prompt) ONLY for its
@@ -1348,7 +1418,20 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
     brain = ""
     if _prompt is not None and fields:
         try:
-            brain = _prompt.build_system_prompt(fields)
+            # HCRB fix (b): build the INBOUND brain with AI-disclosure OFF. We do NOT change
+            # prompt.py defaults (the OUTBOUND earner reuses build_system_prompt with its own
+            # disclose_ai=True default — untouched). We pass a per-call override dict that sets
+            # disclose_ai=False, so the disclosure clause is NOT injected into this inbound brain.
+            # The override does not mutate the caller's fields dict.
+            _inb_fields = dict(fields)
+            _inb_fields["disclose_ai"] = False
+            # W1: build via the vendor-script-aware v2 renderer. v2 is byte-identical
+            # to build_system_prompt when the VENDOR_SCRIPT_INJECT feature is OFF or
+            # the campaign has no raw_script (proven by the golden oracle), so legacy
+            # inbound calls are unchanged; when a vendor pasted a script + the feature
+            # is on, the agent ADOPTS that persona. Fall back to v1 on an older prompt.py.
+            _bsp = getattr(_prompt, "build_system_prompt_v2", None) or _prompt.build_system_prompt
+            brain = _bsp(_inb_fields)
         except Exception as exc:  # noqa: BLE001
             logger.warning("build_system_prompt failed (sales fallback): %r", exc)
             brain = ""
@@ -1378,21 +1461,57 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "warmly help. When the moment is right, move toward a concrete next step (site visit OR a "
         "callback / sharing details on WhatsApp) and confirm it. Keep every turn to one or two short "
         "sentences, then listen.\n\n"
-        "HANDOFF TO A HUMAN: if the caller explicitly asks to talk to a person/human/agent, OR they're "
-        "clearly a HOT, ready-to-buy lead who'd close better with a human, call the `transfer_to_human"
-        "(reason)` tool — it connects a real team member into the call. Once it hands off, stop talking "
-        "and let the human take over. Don't offer a human for ordinary questions you can answer yourself."
+        "HANDOFF TO A HUMAN — RARE, NOT A DEFAULT: your job is to handle the WHOLE call yourself and "
+        "book the deal. Do NOT offer a human, do NOT suggest connecting them to someone, and do NOT jump "
+        "to a human for ordinary questions, prices, objections, or a ready-to-buy lead — YOU close those "
+        "yourself. Call the `transfer_to_human(reason)` tool ONLY in two cases: (1) the caller EXPLICITLY "
+        "asks to talk to a person/human/agent/insaan/aadmi/banda (in ANY language), or (2) the caller is "
+        "genuinely very hot or frustrated AND you truly cannot resolve or close it yourself. When one of "
+        "those is true, ACT — DON'T ANNOUNCE: call transfer_to_human(reason) IMMEDIATELY, in the SAME "
+        "turn, as your VERY NEXT action. Do NOT first ask 'shall I transfer you / kya main aapko transfer "
+        "karoon', do NOT say 'main aapko connect kar rahi hoon' and then wait, and do NOT keep talking — "
+        "calling the tool is what actually connects them; if you only SPEAK about transferring without "
+        "calling the tool, the caller hears nothing and no one is connected. So, only when warranted: "
+        "call transfer_to_human(reason) right now → THEN speak only the line it returns and stop talking."
     )
     # RAG: append the prefetched grounding block (verified, campaign-scoped facts) AFTER the persona/
     # flow brain so the proven telecaller flow still dominates; '' when KB is empty/down (= today).
     inbound_override = (
+        "=== WHO YOU ARE + HOW YOU SPEAK (HIGHEST PRIORITY — this OVERRIDES anything below) ===\n"
+        f"You are {agent} from the {company} team — a real, warm member of the team handling this call "
+        "end-to-end. You are NOT a bot and NOT an assistant.\n"
+        "1. IDENTITY: NEVER say you are an AI, a bot, an assistant, automated, or virtual. If the caller "
+        "asks 'are you a human / kya aap insaan ho / robot ho / AI ho', do NOT admit to being an AI — "
+        f"warmly stay in character as {agent} from {company} and steer straight back to helping them "
+        "(e.g. 'Main " + agent + " bol rahi hoon " + company + " ki team se — bataiye, main kaise help "
+        "karoon?'). Anything in the knowledge pack below that says to 'admit you are an AI assistant' "
+        "is OVERRIDDEN — you are part of the team.\n"
+        "2. NEVER say the call is being recorded, monitored, or kept for quality. No compliance "
+        "disclaimers of any kind.\n"
+        "3. LANGUAGE = MIRROR THE CALLER, EVERY TURN — from their VERY FIRST words: reply in the SAME "
+        "language the caller just used, INCLUDING your first reply. Your spoken greeting may have been "
+        "in Hindi, but that does NOT set the language — the CALLER does. If the caller's words are in "
+        "English, reply in clean, natural English even if you greeted in Hindi; if Hindi, reply in "
+        "natural casual spoken Hindi; if they mix (Hinglish), mix the same way. The MOMENT they switch "
+        "language at ANY point — switch WITH them on your very next line, immediately, no lag. There is "
+        "NO default language and NO house style: you simply follow the caller, turn by turn. Keep it "
+        "light and casual either way (a real Indian salesperson on the phone, never heavy/formal/"
+        "literary, never long Devanagari paragraphs). NEVER announce, explain, ask about, or apologise "
+        "for the language ('aap Hindi mein baat karna chahenge?', 'shall I speak in English?', "
+        "'switching to…') — just speak it. Keep EVERY turn to one or two short sentences, then STOP "
+        "and listen.\n"
+        "4. YOU CLOSE THE DEAL — END TO END: you handle the WHOLE call yourself — pitch the property, "
+        "answer questions, handle objections, and book the site visit / next step. Do NOT hand the "
+        "call to a human as a normal step. There is NO human standing by by default; you ARE the "
+        "person who helps and closes. Lead the conversation gently toward a booking yourself.\n\n"
         "=== INBOUND CALL -- HOW YOU BEHAVE (this OVERRIDES everything in the KNOWLEDGE PACK below) ===\n"
         "The customer phoned YOU. You did NOT call them. So:\n"
         "1. Do NOT introduce yourself with a scripted pitch, do NOT run any outbound opener, and do "
         "NOT ask 'do you have two minutes / abhi do minute hain?'. They already chose to call -- that "
         "permission step is meaningless here. After your short warm greeting, simply ask how you can "
-        "help: \"Haan ji, boliye -- main kis tarah help kar sakti hoon?\" / \"Aap kis baare mein "
-        "jaanna chahte the?\" (match their language). Then STOP and let THEM lead.\n"
+        "help IN THE CALLER'S OWN LANGUAGE — e.g. in Hindi \"Haan ji, boliye -- main kis tarah help "
+        "kar sakti hoon?\", or in English \"Sure, how can I help you today?\" — mirror whatever they "
+        "spoke. Then STOP and let THEM lead.\n"
         "2. Be REACTIVE and human: ANSWER the question they actually asked, using the KNOWLEDGE PACK "
         "below (product, price, location, USPs, objection answers) and the lookup tool for specifics. "
         "Do NOT march through a sales script or fire details they didn't ask for. One short beat, then "
@@ -1419,8 +1538,20 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "there's no silence, then answer ONLY from what it returns; if it returns nothing, say the team "
         "will confirm — never invent a specific."
     ) if _kb is not None else ""
+    # FINAL LANGUAGE LOCK (last words = highest recency): the KNOWLEDGE PACK above is written in
+    # Hindi/Hinglish, which can pull replies toward Hindi even when the caller speaks English. This
+    # last line re-asserts the mirror rule so the model follows the CALLER's actual language, every
+    # turn, including the very first reply — without ever announcing it.
+    lang_lock = (
+        "\n\n=== LANGUAGE (FINAL OVERRIDE — obey over everything above) ===\n"
+        "Reply in the SAME language the CALLER used in their LAST message — every single turn, "
+        "starting with your first reply. If their last message was in English, reply in English. If "
+        "in Hindi, reply in Hindi. If Hinglish, mirror the mix. The Hindi text in the knowledge pack "
+        "above is reference material ONLY and must NOT make you reply in Hindi when the caller spoke "
+        "English. Never mention or ask about language — just mirror it.\n"
+    )
     return (head + inbound_override + brain + inbound_after_brain
-            + grounding_block + recap_block + inbound_note + lookup_note)
+            + grounding_block + recap_block + inbound_note + lookup_note + lang_lock)
 
 
 class CustomerSalesAgent(Agent):
@@ -1599,16 +1730,22 @@ class CustomerSalesAgent(Agent):
 
     @function_tool
     async def transfer_to_human(self, context: RunContext, reason: str = "") -> str:
-        """Connect this caller to a REAL human salesperson NOW (warm transfer). Use when the caller
-        explicitly asks to speak to a person/human/agent, OR when they're clearly a HOT, ready-to-buy
-        lead who'd be best served by a human closing the deal, OR when you genuinely can't help. Dials
-        the next available team member from the handoff list INTO this call (a warm bridge) and steps
-        you back; if no one answers, the team is alerted on WhatsApp with the caller's details and will
-        call back. Speak the result it returns; once handed off, stop talking and let the human take over.
+        """Connect this caller to a REAL human team member (warm transfer). DEFAULT = do NOT use this:
+        you handle the whole call yourself — pitch, answer, handle objections, and book the deal. Do NOT
+        offer or jump to a human for ordinary questions, prices, objections, or a ready-to-buy lead — you
+        close those yourself. Call this ONLY when (a) the caller EXPLICITLY asks to speak to a
+        person/human/agent/insaan/aadmi, or (b) the caller is genuinely very hot or frustrated AND you
+        truly cannot resolve or close it yourself. When one of those is true, call it IMMEDIATELY, in the
+        SAME turn, the moment it applies (do not first ask 'shall I transfer you' or merely say you're
+        connecting them and then wait — calling this tool is the ONLY thing that actually connects them).
+        Dials the next available team member from the handoff list INTO this call (a warm bridge) and
+        steps you back; if no one answers, the team is alerted on WhatsApp with the caller's details and
+        will call back. Speak the result it returns; once handed off, stop talking and let the human take
+        over.
 
         Args:
-            reason: a short reason (e.g. "asked for a human", "hot lead ready to book", "needs the
-                    builder directly"). Pass as a plain string.
+            reason: a short reason (e.g. "asked for a human", "very hot lead I couldn't close"). Pass as
+                    a plain string.
         """
         logger.info("AIM transfer_to_human (customer) reason=%r tenant=%s", (reason or "")[:80],
                     getattr(self, "_tenant_id", ""))
@@ -1950,10 +2087,15 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         if contact.get("tenant_id"):
             tenant_id = contact.get("tenant_id") or tenant_id
         # 2) per-person cross-call memory recap (so we CONTINUE the conversation)
+        # P0-LEAK: scope the memory read to THIS call's tenant so an inbound caller can
+        # never read another tenant's cross-call memory (the legacy flat {phone}.json was
+        # shared across tenants). load_memory() namespaces by tenant and only falls back
+        # to a legacy file attributable to the SAME tenant. Label assistant turns with the
+        # configured agent voice name, not a hardcoded "Riya".
         if _memory is not None and cust_phone_digits:
             try:
-                mem = _memory.load_memory(cust_phone_digits)
-                cust_recap = (_memory.build_recap(mem) or "")[:600]
+                mem = _memory.load_memory(cust_phone_digits, tenant_id)
+                cust_recap = (_memory.build_recap(mem, _AGENT_VOICE) or "")[:600]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AIM memory load failed: %r", exc)
         # 3) resolve which campaign brain to load
@@ -2024,14 +2166,128 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     # `_strict_tool_schema` kwarg, so we flip the attribute on the instance AFTER construction. With
     # strict OFF, Groq tolerates missing/loose-typed args and the body's _to_int/_to_bool coercion +
     # optional-arg defaults make every tool call ALWAYS valid -> never a rejected call, never dead air.
-    _aim_llm = groq.LLM(
-        model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-        api_key=_next_groq_key(),
-        temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
-        max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "160")),
-    )
+    # ── EMERG-FIX (2026-06-12): Groq DAILY-TOKEN (TPD) exhaustion restore ─────────────
+    # ROOT CAUSE of "greets then filler every turn": ALL Groq keys share ONE org's 500k/day TPD
+    # pool; a day of AIM testing drained it -> every real turn 429s -> @session.on("error") ->
+    # _speak_recovery() filler. Reverting code does NOTHING for a depleted bucket. FIX = give AIM an
+    # INDEPENDENT quota pool via a FallbackAdapter: try Groq FIRST (fast/cheap; auto-recovers when the
+    # daily bucket refills), and on 429/connection-error fail over to a FREE OpenRouter model (separate
+    # daily pool, $0). strict_tool_schema is forced OFF on EVERY member so neither path schema-rejects.
+    def _mk_groq_llm():
+        g = groq.LLM(
+            model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            api_key=_next_groq_key(),
+            temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+            max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "160")),
+        )
+        try:
+            g._strict_tool_schema = False  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+        return g
+
+    def _mk_openrouter_llm():
+        # FREE model only (zero real-money burn). gpt-oss-120b:free is tool-capable + responsive.
+        key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+        if not key or _openai is None:
+            return None
+        model = os.getenv("AIM_FALLBACK_OR_MODEL", "openai/gpt-oss-120b:free")
+        try:
+            if hasattr(_openai.LLM, "with_openrouter"):
+                o = _openai.LLM.with_openrouter(
+                    model=model, api_key=key,
+                    temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+                )
+            else:
+                o = _openai.LLM(
+                    model=model, api_key=key,
+                    base_url="https://openrouter.ai/api/v1",
+                    temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+                )
+            try:
+                o._strict_tool_schema = False  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
+            return o
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM OpenRouter fallback LLM build failed (pure-Groq): %r", exc)
+            return None
+
+    # ── LPR-POOL: build a SambaNova delegate (OpenAI-compatible; final real fallback) ───────
+    def _mk_samba_delegate():
+        if _openai is None:
+            return None
+        # need at least one Samba key (env seed or store)
+        try:
+            if _SAMBA_POOL is None or _SAMBA_POOL.available_count() == 0:
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            d = _openai.LLM(
+                model=os.getenv("SAMBANOVA_MODEL", "Meta-Llama-3.3-70B-Instruct"),
+                api_key="placeholder",  # PoolLLM swaps the real key per request
+                base_url=os.getenv("SAMBANOVA_BASE_URL", "https://api.sambanova.ai/v1"),
+                temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+            )
+            try:
+                d._strict_tool_schema = False  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
+            return d
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM SambaNova delegate build failed: %r", exc)
+            return None
+
+    # Wrap each provider delegate in a PoolLLM so a 429 on one key INSTANTLY re-picks the
+    # least-used, not-cooling key (no linear walk of dead keys). Chain order = fastest first:
+    #   Groq(9-15 keys, multi-account) -> SambaNova(final real fallback) -> OpenRouter(free).
+    _members = []
+    _groq_member = _mk_groq_llm()
+    if _LPR_OK and _PoolLLM is not None and _GROQ_POOL is not None:
+        try:
+            _members.append(_PoolLLM(pool=_GROQ_POOL, delegate=_groq_member, label="groq"))
+            logger.info("AIM LLM: Groq PoolLLM (%s keys)", _GROQ_POOL.available_count())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM Groq PoolLLM wrap failed -> raw groq member: %r", exc)
+            _members.append(_groq_member)
+    else:
+        _members.append(_groq_member)
+    # SambaNova final real fallback (pool-rotated)
+    if _LPR_OK and _PoolLLM is not None and _SAMBA_POOL is not None:
+        _sd = _mk_samba_delegate()
+        if _sd is not None:
+            try:
+                _members.append(_PoolLLM(pool=_SAMBA_POOL, delegate=_sd, label="sambanova"))
+                logger.info("AIM LLM: SambaNova PoolLLM (%s keys, model=%s)",
+                            _SAMBA_POOL.available_count(), os.getenv("SAMBANOVA_MODEL", "Meta-Llama-3.3-70B-Instruct"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AIM SambaNova PoolLLM wrap failed: %r", exc)
+    # OpenRouter FREE emergency fallback, last (existing patch)
+    _or_member = _mk_openrouter_llm() if os.getenv("AIM_LLM_FALLBACK", "1") == "1" else None
+    if _or_member is not None:
+        if _LPR_OK and _PoolLLM is not None and _OR_POOL is not None and _OR_POOL.available_count() > 0:
+            try:
+                _members.append(_PoolLLM(pool=_OR_POOL, delegate=_or_member, label="openrouter"))
+            except Exception:  # noqa: BLE001
+                _members.append(_or_member)
+        else:
+            _members.append(_or_member)
+
+    if len(_members) > 1 and _lk_llm is not None and hasattr(_lk_llm, "FallbackAdapter"):
+        try:
+            _aim_llm = _lk_llm.FallbackAdapter(_members)
+            logger.info("AIM LLM = FallbackAdapter[%s] (smart key pools + SambaNova fallback)",
+                        " -> ".join(getattr(m, "_pool_label", type(m).__name__) for m in _members))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM FallbackAdapter build failed -> first member only: %r", exc)
+            _aim_llm = _members[0]
+    else:
+        _aim_llm = _members[0]
+        logger.info("AIM LLM = single member %s (no fallback chain)",
+                    getattr(_aim_llm, "_pool_label", type(_aim_llm).__name__))
     try:
-        _aim_llm._strict_tool_schema = False  # noqa: SLF001 — intentional, isolated to THIS agent
+        _aim_llm._strict_tool_schema = False  # noqa: SLF001 — adapter-level too (harmless if no-op)
         logger.info("AIM LLM strict_tool_schema DISABLED (forgiving tool calls; no schema-reject storm)")
     except Exception as exc:  # noqa: BLE001
         logger.warning("AIM could not disable strict_tool_schema (relying on body coercion): %r", exc)
@@ -2194,6 +2450,45 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     _dtmf_buf: list[str] = []
     _loop = asyncio.get_running_loop()
 
+    # ---- HCRB fix (h): OBSERVABILITY — log the STT FINAL transcript + each assistant turn to the
+    #      JOURNAL (journalctl -u aim-voice-agent), so a real inbound call is traceable end-to-end
+    #      WITHOUT having to read PG. The diagnosis found ZERO transcript logging (and an empty
+    #      ai_manager_session_turns table), so a "real call" was half-blind. The existing
+    #      conversation_item_added handlers feed the PG transcript via _slog.add_turn; THIS adds the
+    #      live journal trace. Universal (manager + customer). Best-effort; never affects the call.
+    #      Manager turns can carry a spoken PIN, so we scrub any 4+ digit run before logging.
+    def _scrub_pin(t: str) -> str:
+        try:
+            return re.sub(r"\d{4,}", "****", t)
+        except Exception:  # noqa: BLE001
+            return t
+
+    @session.on("user_input_transcribed")
+    def _on_stt_final(ev) -> None:  # noqa: ANN001
+        try:
+            if not getattr(ev, "is_final", True):
+                return
+            txt = (getattr(ev, "transcript", "") or "").strip()
+            if not txt:
+                return
+            logger.info("AIM STT-final [%s caller=%s]: %s",
+                        ("mgr" if is_manager else "cust"), _mask(caller_id),
+                        _scrub_pin(txt)[:300])
+        except Exception:  # noqa: BLE001
+            pass
+
+    @session.on("conversation_item_added")
+    def _on_item_journal(ev) -> None:  # noqa: ANN001
+        try:
+            item = getattr(ev, "item", None)
+            role = getattr(item, "role", "") if item is not None else ""
+            text = (getattr(item, "text_content", "") or "") if item is not None else ""
+            if text and role in ("user", "assistant"):
+                logger.info("AIM turn [%s] %s: %s", ("mgr" if is_manager else "cust"),
+                            role, _scrub_pin(text)[:300])
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _submit_keyed_pin(digits: str) -> None:
         try:
             logger.info("AIM DTMF PIN received (len=%d) -> injecting for verify_pin", len(digits))
@@ -2258,13 +2553,19 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             # (a) merge with prior memory + save so the thread continues next time
             try:
                 if _memory is not None and cust_phone_digits and _cust_turns:
-                    prior = _memory.load_memory(cust_phone_digits) or {}
+                    # P0-LEAK: read+write this lead's memory TENANT-SCOPED so the inbound
+                    # thread can never merge into or read another tenant's memory. Same
+                    # tenant_id resolved for this call (closure local). The tenant-checked
+                    # legacy fallback still picks up this tenant's earner-written file.
+                    prior = _memory.load_memory(cust_phone_digits, tenant_id) or {}
                     prior_hist = list(prior.get("history") or [])
                     merged = prior_hist + _cust_turns
                     _memory.save_memory(cust_phone_digits, merged,
-                                        summary=str(prior.get("summary") or ""))
-                    logger.info("AIM customer memory saved phone-digits=%s turns=%d",
-                                cust_phone_digits[-4:] if cust_phone_digits else "", len(merged))
+                                        summary=str(prior.get("summary") or ""),
+                                        tenant_id=tenant_id)
+                    logger.info("AIM customer memory saved phone-digits=%s tenant=%s turns=%d",
+                                cust_phone_digits[-4:] if cust_phone_digits else "",
+                                tenant_id, len(merged))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AIM customer memory save failed: %r", exc)
             # (b) create/update the lead so the inbound sale is visible (caller-id + name from the call)
@@ -2302,6 +2603,47 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- HCRB fix (f): HUMAN-HANGUP — end the caller call gracefully when the bridged human leaves ----
+    # After a warm transfer the AI has aclose()'d (fix e), so the room contains only the CALLER and the
+    # bridged HUMAN (identity "human-handoff-<num>", set at the create_sip_participant call). When THAT
+    # human disconnects, the caller would otherwise be left alone on a dead leg (hang / awkward silence).
+    # So: detect the human-handoff participant leaving, speak ONE brief goodbye to the caller if the AI
+    # session somehow still exists (best-effort — usually it's already gone), log the lifecycle (fix h),
+    # then delete the room so the caller's call ends cleanly. Keyed STRICTLY on the human-handoff-* id so
+    # a normal caller/agent disconnect never triggers this.
+    _human_hangup_done = {"done": False}
+
+    async def _end_after_human_left(human_id: str) -> None:
+        if _human_hangup_done["done"]:
+            return
+        _human_hangup_done["done"] = True
+        logger.info("AIM handoff lifecycle: HUMAN-HANGUP (%s left) room %s -> ending caller call",
+                    human_id, room_name)
+        _live_set_handoff(room_name, "Human hung up", target="")
+        # best-effort goodbye to the caller (only fires if the AI session is still live; after a warm
+        # transfer it has aclose()'d so this is usually a no-op — guarded so it never raises).
+        try:
+            if session is not None:
+                await session.say(
+                    "Thank you so much for calling — have a wonderful day!",
+                    allow_interruptions=True, add_to_chat_ctx=False)
+                await asyncio.sleep(2.5)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await _hangup(ctx, room_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AIM human-hangup _hangup failed (non-fatal): %r", exc)
+
+    @ctx.room.on("participant_disconnected")
+    def _on_participant_disconnected(participant) -> None:  # noqa: ANN001
+        try:
+            ident = str(getattr(participant, "identity", "") or "")
+            if ident.startswith("human-handoff-"):
+                asyncio.run_coroutine_threadsafe(_end_after_human_left(ident), _loop)
+        except Exception:  # noqa: BLE001
+            pass
+
     @ctx.room.on("disconnected")
     def _on_room_disconnected_log(*_a) -> None:  # noqa: ANN002
         try:
@@ -2336,22 +2678,28 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         # for a new caller who needs disambiguation. NEVER a PIN. Persona name follows the campaign.
         sales_agent_name = (cust_fields.get("agent_name") if cust_fields else "") or _AGENT_VOICE
         sales_company = (cust_fields.get("company_name") if cust_fields else "") or _COMPANY
+        # Clean single warm opener (no "Hello/Haan" stutter). The greeting is LANGUAGE-NEUTRAL — a
+        # universal "Namaste" + a short ENGLISH question — so the AI's OWN opener does NOT pin the
+        # call to Hindi. The CALLER's very first reply then sets the language, and the mirror rule
+        # (instructions point 3 + the final LANGUAGE LOCK) makes every reply follow them. This is
+        # what lets "caller speaks English -> AI replies English" actually work on a cold open, while
+        # a Hindi caller is mirrored straight back into Hindi.
         if cust_is_returning:
             who = f" {cust_name.split()[0]}" if cust_name else ""
-            greeting = (f"Hi{who}! This is {sales_agent_name} from {sales_company}. "
-                        "Good to hear from you again — picking up from where we left off, "
-                        "how can I help you today?")
+            greeting = (f"Namaste{who}, this is {sales_agent_name} from {sales_company}. "
+                        "Good to talk again — how can I help you today?")
         elif cust_pending_disambig:
-            greeting = (f"Hello! This is {sales_agent_name} from {sales_company}. "
-                        "Aap kis project ke baare mein jaanna chahte hain?")
+            greeting = (f"Namaste, this is {sales_agent_name} from {sales_company}. "
+                        "Which project would you like to know about?")
         else:
             who = f" {cust_name.split()[0]}" if cust_name else ""
             proj = (cust_fields.get("_campaign_name") if cust_fields else "") or ""
             proj_txt = f" about {proj}" if proj else ""
-            greeting = (f"Hello{who}! This is {sales_agent_name} from {sales_company}. "
+            greeting = (f"Namaste{who}, this is {sales_agent_name} from {sales_company}. "
                         f"Thanks for calling{proj_txt} — how can I help you today?")
-    if (os.getenv("AIM_DISCLOSE_RECORDING", "0").strip().lower() not in ("", "0", "false", "no", "off")):
-        greeting += " Just so you know, this call may be recorded for quality."
+    # HCRB fix (a): NEVER announce recording / quality monitoring. The old conditional
+    # "this call may be recorded for quality" append is removed entirely — the AI presents as
+    # a member of the team and never reads a compliance/recording disclaimer to the caller.
     logger.info("AIM greeting (manager=%s): %s", is_manager, greeting[:120])
     try:
         await session.say(greeting, allow_interruptions=True)

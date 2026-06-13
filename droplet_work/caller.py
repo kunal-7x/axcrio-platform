@@ -242,6 +242,7 @@ SUPPRESSION_FILE = VAR / "suppression.json"   # P0.2 DND/suppression store
 RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
 WA_LOG_FILE = VAR / "wa_log.json"             # P1.A whatsapp send log
 WA_THREADS_DIR = VAR / "wa_threads"           # WAVE A2 per-contact WhatsApp conversation state
+WA_UNROUTED_TENANT = "_unrouted"              # P0-LEAK: quarantine bucket for unknown inbound numbers (never ADMIN_ID)
 WEBHOOK_FILE = VAR / "webhooks.json"          # P1.C registered webhooks
 WEBHOOK_LOG_FILE = VAR / "webhook_log.json"   # P1.C delivery log
 BILLING_FILE = VAR / "billing.json"           # WAVE3 Unit4 per-tenant billing plans
@@ -1995,22 +1996,91 @@ _WA_HANDOFF_WORDS = ("talk to human", "human agent", "real person", "call me",
                      "agent se baat", "complaint", "manager")
 
 
-def _wa_thread_path(phone: str) -> Path:
+def _wa_safe_tenant(tenant_id: str | None) -> str:
+    """Filesystem-safe single path segment for a tenant id (no '/', '..', dots).
+    Empty/None -> '' (caller falls back to the legacy flat path)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(tenant_id or "")).strip("-_")
+
+
+def _wa_thread_path(phone: str, tenant_id: str | None = None) -> Path:
+    """WhatsApp thread file path. P0-LEAK: when a tenant_id is supplied the file
+    is namespaced under a per-tenant subdir ``{tenant}/{phone}.json`` so tenant A
+    cannot read tenant B's thread. With no tenant_id it stays the LEGACY flat
+    ``{phone}.json`` (additive — the path the un-restarted earner still writes)."""
     safe = re.sub(r"[^0-9]", "", phone or "")
+    tdir = _wa_safe_tenant(tenant_id)
+    if tdir:
+        return WA_THREADS_DIR / tdir / f"{safe}.json"
     return WA_THREADS_DIR / f"{safe}.json"
 
 
-def _wa_thread_read(phone: str) -> dict:
-    return _read(_wa_thread_path(phone), {}) or {}
+def _wa_thread_read(phone: str, tenant_id: str | None = None) -> dict:
+    """Read a WhatsApp thread, tenant-scoped with a TENANT-CHECKED legacy fallback
+    + migrate-on-read. Prefer ``{tenant}/{phone}.json``; if absent fall back to the
+    legacy flat ``{phone}.json`` (which the un-restarted earner still writes) ONLY
+    IF it is attributable to THIS tenant — its stored ``tenant_id`` matches OR is
+    empty (we claim it). A legacy thread owned by a DIFFERENT tenant is NEVER
+    returned (that would re-open the cross-tenant leak). With no tenant_id this is
+    the legacy flat read, unchanged."""
+    tdir = _wa_safe_tenant(tenant_id)
+    if not tdir:
+        return _read(_wa_thread_path(phone), {}) or {}
+    tp = _wa_thread_path(phone, tenant_id)
+    th = _read(tp, {}) or {}
+    if th:
+        return th
+    legacy = _read(_wa_thread_path(phone), {}) or {}
+    if not legacy:
+        return {}
+    owner = _wa_safe_tenant(legacy.get("tenant_id"))
+    if owner and owner != tdir:
+        return {}  # legacy thread belongs to a different tenant -> not returned
+    # same tenant or unowned -> claim + migrate into the tenant path (best-effort)
+    legacy["tenant_id"] = tenant_id
+    try:
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        _write(tp, legacy)
+    except Exception:  # noqa: BLE001
+        pass
+    return legacy
 
 
-async def _wa_thread_write(phone: str, thread: dict):
+def _wa_thread_find_any(phone: str) -> dict:
+    """ADMIN-ONLY: locate a contact's thread regardless of which tenant subdir it
+    lives in (or the legacy flat path). Returns the most-recently-updated match, or
+    {}. Callers MUST gate this on is_admin — it deliberately ignores tenant scope."""
+    safe = re.sub(r"[^0-9]", "", phone or "")
+    if not safe:
+        return {}
+    # Legacy flat path first (cheap), then any per-tenant subdir copy.
+    flat = _read(WA_THREADS_DIR / f"{safe}.json", {}) or {}
+    best, best_mt = flat, 0.0
+    try:
+        for p in WA_THREADS_DIR.glob(f"**/{safe}.json"):
+            if p.name.startswith("."):
+                continue
+            try:
+                mt = p.stat().st_mtime
+            except OSError:
+                continue
+            if mt >= best_mt:
+                th = _read(p, {}) or {}
+                if th:
+                    best, best_mt = th, mt
+    except Exception:  # noqa: BLE001
+        pass
+    return best
+
+
+async def _wa_thread_write(phone: str, thread: dict, tenant_id: str | None = None):
+    tid = tenant_id or (thread.get("tenant_id") if isinstance(thread, dict) else None)
     async with _STORE_LOCK:
+        p = _wa_thread_path(phone, tid)
         try:
-            WA_THREADS_DIR.mkdir(parents=True, exist_ok=True)
+            p.parent.mkdir(parents=True, exist_ok=True)
         except Exception:  # noqa: BLE001
             pass
-        _write(_wa_thread_path(phone), thread)
+        _write(p, thread)
 
 
 def _resolve_contact_by_phone(phone: str) -> dict:
@@ -2032,11 +2102,17 @@ def _resolve_contact_by_phone(phone: str) -> dict:
     if not out["tenant_id"] or not out["name"]:
         for x in _read(LEADS_FILE, []):
             if norm(x.get("phone", "")) == p:
-                out["tenant_id"] = out["tenant_id"] or x.get("tenant_id", ADMIN_ID)
+                # Only adopt the lead's tenant if the lead actually carries one;
+                # never default an unknown number to ADMIN_ID (that poisons the
+                # admin tenant's thread + memory — P0-LEAK red-team break #1).
+                out["tenant_id"] = out["tenant_id"] or x.get("tenant_id", "")
                 out["name"] = out["name"] or x.get("name", "")
                 break
     if not out["tenant_id"]:
-        out["tenant_id"] = ADMIN_ID
+        # Unknown inbound number with no attributable tenant -> route to a quarantine
+        # bucket, NEVER the ADMIN_ID default. Keeps unrouted traffic out of every
+        # real tenant's data until a human/link resolves it.
+        out["tenant_id"] = WA_UNROUTED_TENANT
     return out
 
 
@@ -2066,14 +2142,21 @@ def _wa_draft_followup_text(rec: dict, outcome: str, camp_fields: dict, tr: dict
                        {"role": "user", "content": ctx}], max_tokens=220, temperature=0.6)
 
 
-def _wa_memory_recap(phone: str) -> str:
+def _wa_memory_recap(phone: str, tenant_id: str | None = None,
+                     agent_name: str | None = None) -> str:
     """Per-person prior-call recap from memory.py (the voice agent's cross-call store).
-    Read-only, import-safe; returns "" when memory is absent/unreadable. Never raises."""
+    Read-only, import-safe; returns "" when memory is absent/unreadable. Never raises.
+
+    P0-LEAK: the memory read is TENANT-SCOPED — without the tenant_id this would read
+    the legacy flat ``{phone}.json`` which is shared across tenants (a live
+    cross-tenant read). load_memory() now namespaces by tenant and only falls back to
+    a legacy file attributable to the SAME tenant, so passing tenant_id closes the leak
+    while still finding the earner-written legacy file for that tenant."""
     try:
         if _mem_mod is None or not phone:
             return ""
-        rec = _mem_mod.load_memory(re.sub(r"[^0-9]", "", phone or ""))
-        return (_mem_mod.build_recap(rec) or "")[:500]
+        rec = _mem_mod.load_memory(re.sub(r"[^0-9]", "", phone or ""), tenant_id)
+        return (_mem_mod.build_recap(rec, agent_name) or "")[:500]
     except Exception:  # noqa: BLE001
         return ""
 
@@ -2092,7 +2175,11 @@ def _wa_reply_text(thread: dict, camp_fields: dict, incoming: str) -> str:
     next_action = (thread.get("next_action") or "").strip()
     call_outcome = (thread.get("call_outcome") or "").strip()
     interest = thread.get("interest", 0)
-    mem_recap = _wa_memory_recap(thread.get("phone", ""))
+    # P0-LEAK: scope the cross-call memory read to THIS thread's tenant (else it reads
+    # the shared legacy file across tenants). Label assistant turns with the campaign
+    # agent name, not a hardcoded "Riya".
+    mem_recap = _wa_memory_recap(thread.get("phone", ""),
+                                 thread.get("tenant_id"), agent)
     grounding = ""
     if call_summary:
         grounding += f"What happened on the phone call: {call_summary[:400]}. "
@@ -2129,8 +2216,10 @@ async def _wa_handle_inbound(phone: str, text: str) -> dict:
     Returns a small dict for logging. Safe + dormant when WA env missing."""
     phone_n = norm(phone) or (phone or "")
     link = _resolve_contact_by_phone(phone_n)
-    tenant_id = link["tenant_id"] or ADMIN_ID
-    thread = _wa_thread_read(phone_n)
+    # P0-LEAK: never default an unknown inbound number to ADMIN_ID; _resolve_contact_by_phone
+    # already returns WA_UNROUTED_TENANT when nothing attributes the number to a real tenant.
+    tenant_id = link["tenant_id"] or WA_UNROUTED_TENANT
+    thread = _wa_thread_read(phone_n, tenant_id)
     if not thread:
         thread = {"phone": phone_n, "tenant_id": tenant_id, "name": link["name"],
                   "campaign_id": link["campaign_id"], "campaign_name": link["campaign_name"],
@@ -2176,7 +2265,7 @@ async def _wa_handle_inbound(phone: str, text: str) -> dict:
     thread["updated_at"] = datetime.now().isoformat(timespec="seconds")
     if len(thread["turns"]) > 200:        # keep the thread file bounded
         thread["turns"] = thread["turns"][-200:]
-    await _wa_thread_write(phone_n, thread)
+    await _wa_thread_write(phone_n, thread, tenant_id)
     return {"phone": phone_n, "action": action, "status": thread["status"]}
 
 
@@ -2295,7 +2384,7 @@ async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: 
         # Is the 24h CS window already open? Only true if the lead has sent us an inbound
         # WhatsApp recently (their inbound seeds a 'user' turn). A fresh OUTBOUND call does
         # NOT open it -> cold path MUST use the approved template, never free-form text.
-        existing = _wa_thread_read(phone_n)
+        existing = _wa_thread_read(phone_n, tenant_id)
         window_open = any(t.get("role") == "user" for t in (existing.get("turns") or []))
 
         sent_text = ""
@@ -2342,7 +2431,7 @@ async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: 
         # Seed / update the conversation thread, persisting the CALL CONTEXT so the inbound
         # reply brain (_wa_reply_text) can ground every later turn in what happened on the call.
         if sent_text:
-            thread = existing or _wa_thread_read(phone_n)
+            thread = existing or _wa_thread_read(phone_n, tenant_id)
             if not thread:
                 thread = {"phone": phone_n, "tenant_id": tenant_id,
                           "name": rec.get("name", ""), "campaign_id": rec.get("campaign_id", ""),
@@ -2363,7 +2452,7 @@ async def _wa_ai_followup(tenant_id: str, rec: dict, outcome: str, camp_fields: 
                  "at": datetime.now().isoformat(timespec="seconds")})
             thread["updated_at"] = datetime.now().isoformat(timespec="seconds")
             thread["status"] = thread.get("status") or "active"
-            await _wa_thread_write(phone_n, thread)
+            await _wa_thread_write(phone_n, thread, tenant_id)
     except Exception:  # noqa: BLE001
         pass
 
@@ -6237,8 +6326,14 @@ async def whatsapp_threads(request: Request):
     out = []
     try:
         if WA_THREADS_DIR.exists():
-            for p in sorted(WA_THREADS_DIR.glob("*.json"),
+            # P0-LEAK: threads now live under per-tenant subdirs ({tenant}/{phone}.json)
+            # plus the legacy flat files -> glob RECURSIVELY so tenant-scoped threads are
+            # listed. Skip atomic-write temp siblings. The tenant filter below is still the
+            # authoritative isolation gate (a thread with no tenant_id is shown to admin only).
+            for p in sorted(WA_THREADS_DIR.glob("**/*.json"),
                             key=lambda x: x.stat().st_mtime, reverse=True):
+                if p.name.startswith("."):
+                    continue
                 th = _read(p, {}) or {}
                 tid = th.get("tenant_id", ADMIN_ID)
                 if not t.get("is_admin") and tid != t["tenant_id"]:
@@ -6260,7 +6355,13 @@ async def whatsapp_thread_detail(phone: str, request: Request):
     t = resolve_tenant(request)
     if not t:
         return need_auth()
-    th = _wa_thread_read(norm(phone) or phone)
+    phone_q = norm(phone) or phone
+    if t.get("is_admin"):
+        # Admin may view any tenant's thread: locate the file across tenant subdirs
+        # (+ the legacy flat path) without tenant-scoping the read.
+        th = _wa_thread_find_any(phone_q)
+    else:
+        th = _wa_thread_read(phone_q, t.get("tenant_id"))
     guard = require_object(t, th)  # 404 if missing or not owned (BOLA)
     if guard is not None:
         return guard
