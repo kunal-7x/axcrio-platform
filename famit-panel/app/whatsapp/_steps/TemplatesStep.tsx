@@ -18,7 +18,13 @@ import { useCallback, useEffect, useState } from "react";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
-import GenerationLoader, { type GenerationLoaderState } from "@/components/GenerationLoader";
+import dynamic from "next/dynamic";
+import { type GenerationLoaderState } from "@/components/GenerationLoader";
+// Code-split the WebGL/framer-motion "Signal Aurora" loader (ssr:false) — its own
+// chunk, loaded only while a generation runs; keeps it out of the global bundle.
+const GenerationLoader = dynamic(() => import("@/components/GenerationLoader"), {
+    ssr: false,
+});
 import AiSuggestionCard from "../_components/AiSuggestionCard";
 import ComingSoon from "../_components/ComingSoon";
 import NoInventNote from "../_components/NoInventNote";

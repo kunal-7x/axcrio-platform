@@ -280,32 +280,64 @@ function CallDetailModal({
                                     </div>
                                     <div className="relative space-y-3 pl-1">
                                         {t.turns.map((turn, i) => {
-                                            const isAgent =
-                                                turn.role === "agent";
+                                            // Backend normalises roles to `ai`/`customer`
+                                            // (also accept agent/assistant + user/caller/lead).
+                                            // AI → LEFT, customer/lead → RIGHT (mirrors the
+                                            // CRM ChatBubble convention).
+                                            const role = (
+                                                turn.role || ""
+                                            ).toLowerCase();
+                                            const isCustomer =
+                                                role === "customer" ||
+                                                role === "user" ||
+                                                role === "caller" ||
+                                                role === "lead";
+                                            const isAI = !isCustomer;
+                                            const custLabel =
+                                                call?.name || "Customer";
                                             return (
                                                 <div
                                                     key={i}
                                                     className={`flex gap-2.5 ${
-                                                        isAgent
+                                                        isAI
                                                             ? "flex-row"
                                                             : "flex-row-reverse"
                                                     }`}
                                                 >
                                                     <span
                                                         className={`shrink-0 flex items-center justify-center size-7 rounded-full text-caption font-semibold ${
-                                                            isAgent
-                                                                ? "bg-b-surface1 text-t-secondary dark:bg-shade-04/60"
+                                                            isAI
+                                                                ? "bg-b-surface2 ring-1 ring-s-subtle text-t-secondary dark:bg-shade-04/60"
                                                                 : "bg-primary-01/12 text-primary-01"
                                                         }`}
+                                                        title={
+                                                            isAI
+                                                                ? "AI"
+                                                                : custLabel
+                                                        }
                                                     >
-                                                        {isAgent ? "AI" : "L"}
+                                                        {isAI
+                                                            ? "AI"
+                                                            : (custLabel[0] ||
+                                                                  "C").toUpperCase()}
                                                     </span>
-                                                    <div className="flex flex-col gap-1 max-w-[80%]">
+                                                    <div
+                                                        className={`flex flex-col gap-1 max-w-[80%] ${
+                                                            isAI
+                                                                ? "items-start"
+                                                                : "items-end"
+                                                        }`}
+                                                    >
+                                                        <div className="px-1 text-caption text-t-tertiary">
+                                                            {isAI
+                                                                ? "AI agent"
+                                                                : custLabel}
+                                                        </div>
                                                         <div
-                                                            className={`px-3.5 py-2.5 rounded-2xl text-body-2 leading-relaxed ${
-                                                                isAgent
-                                                                    ? "bg-b-surface1 text-t-primary rounded-tl-md dark:bg-shade-04/40"
-                                                                    : "bg-primary-01/10 text-t-primary rounded-tr-md"
+                                                            className={`px-3.5 py-2.5 text-body-2 text-t-primary leading-relaxed whitespace-pre-wrap break-words ${
+                                                                isAI
+                                                                    ? "bg-b-surface2 ring-1 ring-s-subtle ring-inset rounded-3xl rounded-bl-lg dark:bg-shade-04/60"
+                                                                    : "bg-primary-01/12 rounded-3xl rounded-br-lg"
                                                             }`}
                                                         >
                                                             {turn.content}

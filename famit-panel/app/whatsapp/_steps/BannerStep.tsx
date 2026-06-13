@@ -15,7 +15,14 @@ import Select from "@/components/Select";
 import Modal from "@/components/Modal";
 import Image from "@/components/Image";
 import Icon from "@/components/Icon";
-import GenerationLoader, { type GenerationLoaderState } from "@/components/GenerationLoader";
+import dynamic from "next/dynamic";
+import { type GenerationLoaderState } from "@/components/GenerationLoader";
+// The "Signal Aurora" loader bundles framer-motion + a WebGL field. Code-split it
+// (ssr:false) so the WebGL/animation cost never lands in the global bundle — it
+// loads its own chunk only while a generation is actually running.
+const GenerationLoader = dynamic(() => import("@/components/GenerationLoader"), {
+    ssr: false,
+});
 import { type SelectOption } from "@/types/select";
 import ComingSoon from "../_components/ComingSoon";
 import NoInventNote from "../_components/NoInventNote";

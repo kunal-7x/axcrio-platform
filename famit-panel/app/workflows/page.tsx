@@ -18,14 +18,30 @@
 // globals.css utilities. Edits only this route's own files.
 
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import { useMe, canWrite } from "@/lib/auth";
-import WorkflowEditor from "./_editor";
-import WorkflowMiniMap from "./_preview";
+
+// The React-Flow canvas (@xyflow/react) is the single heaviest dep in the panel.
+// Code-split it (ssr:false) so it never bloats the global/first-paint bundle —
+// it loads its own chunk only when the Studio tab actually mounts the editor.
+// A dimension-matched skeleton fills the slot while the chunk streams in.
+const WorkflowEditor = dynamic(() => import("./_editor"), {
+    ssr: false,
+    loading: () => (
+        <div className="skeleton h-[440px] w-full rounded-2xl max-sm:h-[320px]" />
+    ),
+});
+const WorkflowMiniMap = dynamic(() => import("./_preview"), {
+    ssr: false,
+    loading: () => (
+        <div className="skeleton h-[440px] w-full rounded-2xl max-sm:h-[320px]" />
+    ),
+});
 import {
     getWfStatus,
     getWorkflows,

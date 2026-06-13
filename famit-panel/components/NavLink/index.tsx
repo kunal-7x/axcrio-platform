@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
 
 type NavLinkProps = {
@@ -15,6 +15,21 @@ type NavLinkProps = {
 
 const NavLink = ({ value, onClick }: NavLinkProps) => {
     const pathname = usePathname();
+    const router = useRouter();
+
+    // Prefetch the destination route (JS chunk + RSC payload) the instant the
+    // cursor/focus lands on the link, so the click feels instant. Guarded to
+    // fire at most once per mount; never on the active link (already here).
+    const prefetched = useRef(false);
+    const warm = useCallback(() => {
+        if (prefetched.current || value.href === pathname) return;
+        prefetched.current = true;
+        try {
+            router.prefetch(value.href);
+        } catch {
+            /* prefetch is best-effort; never throw on hover */
+        }
+    }, [router, value.href, pathname]);
 
     // Active when the path equals the href OR is nested under it
     // (segment-boundary match so "/billing" never lights "/" and
@@ -35,6 +50,8 @@ const NavLink = ({ value, onClick }: NavLinkProps) => {
             href={value.href}
             key={value.title}
             onClick={onClick}
+            onMouseEnter={warm}
+            onFocus={warm}
         >
             {isActive && (
                 <>

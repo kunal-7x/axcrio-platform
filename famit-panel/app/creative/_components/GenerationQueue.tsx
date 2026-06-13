@@ -16,7 +16,12 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import GenerationLoader from "@/components/GenerationLoader";
+import dynamic from "next/dynamic";
+// Code-split the WebGL/framer-motion "Signal Aurora" loader (ssr:false) — its own
+// chunk, loaded only while a generation runs; keeps it out of the global bundle.
+const GenerationLoader = dynamic(() => import("@/components/GenerationLoader"), {
+    ssr: false,
+});
 import Card from "@/components/Card";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/Button";
