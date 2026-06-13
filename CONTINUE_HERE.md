@@ -2,6 +2,61 @@
 
 > Read this first, then `MASTER_BUILD_STATE.md` → `git log --oneline -15` → `AGENT_LEARNINGS.md`.
 
+## 2026-06-13 — 🟢 HUMAN HANDOFF "says yes then silence" = FIXED + VERIFIED (earner intact)
+
+**Symptom (founder, live):** on an inbound call the caller says "mujhe insaan se baat karni hai" → AI says "haan/yes" → COMPLETE SILENCE, no hold music, the human number never rings. **Three identical-looking root causes, ALL now closed:**
+1. **Tool never fired (PROMPT bug — the real code fix).** On the HINDI phrasing the small Groq primary (llama-4-scout) ANNOUNCED ("kya main aapko transfer karoon?") and fired NO tool that turn — it asked permission / narrated instead of invoking `transfer_to_human`. Fix = made the handoff instruction IMPERATIVE same-turn in 5 places of `aim_voice_agent.py` (customer inbound_note, customer disambiguation note, customer + manager `transfer_to_human` docstrings, manager prompt bullet): "the MOMENT the caller asks for a person (ANY language) you MUST call `transfer_to_human(reason)` IMMEDIATELY as your VERY NEXT action — do NOT ask 'kya main transfer karoon' / do NOT just say you're connecting them and wait; calling the tool is the ONLY thing that connects them; talking ≠ doing." No logic change.
+2. **Dial leg 402'd (Vobiz empty).** FIXED by founder recharge — Vobiz funded (~₹495); the exact trunk/target rings now (proven below).
+3. **LLM turn 429'd (Groq daily TPD).** FIXED by the `FallbackAdapter[Groq pool → SambaNova → OpenRouter-free]` from the prior wave (independent quota pools).
+
+**`_do_warm_transfer` itself was already robust** — `_say_filler` / `_start_hold_audio` / the dial are all try/except-guarded with a finally-stop on the hold music, so any audio/asyncio failure degrades to spoken-only + STILL dials, never aborting into silence. Kept the proven same-room DIRECT `create_sip_participant(room_name=<caller room>, trunk ST_fmtVmNJmpzKa)` bridge — did NOT reintroduce the beta side-room.
+
+### VERIFICATION (this session — honest, all PASS except the one residual)
+- **Tool FIRES now (was the bug):** 3/3 healthy-Groq integrated turn-loop smoke runs fire `transfer_to_human` on BOTH Hindi AND English handoff turns (was 0 on Hindi pre-fix). Force-fail run (bad Groq key) logs `groq failed → switching` then `openrouter failed → switching` and the tool STILL fires via SambaNova = fails over, fires regardless. ✅
+- **Dial leg RINGS (live SIP proof):** the EXACT primitive `create_sip_participant(trunk ST_fmtVmNJmpzKa, +916375548830)` → livekit-sip callID `SCL_xi94NuKM2tAQ`: `inviteToRingingMs:1302` (180 RANG) + `inviteToAcceptMs:5047` (200 OK ANSWERED) + RTP + `result:success`. The opposite of the empty-Vobiz 402 era. ✅
+- **Deployed on box:** `aim_voice_agent.py` md5 `61f2e0e642727eacfa54367e683048bc` (backup `*.HORTbak.20260613-093052`), py_compile OK on `/opt/capsy-agent/.venv`, worker re-registered clean `agent_name:manager` `AW_hGPByd3DAg74`, **0 ImportError/Traceback**, **0 5xx** since restart. ✅
+- **EARNER GATE before+after PASS** — agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent MainPID 1477083 / ActiveEnter 2026-06-10 19:58 NEVER restarted; in-window REAL outbound to founder `+917861019021` (callID `SCL_BYbA8zxAK4Qr`, trunk `ST_fmtVmNJmpzKa`): `Outbound SIP call established` + `accepting RTP stream` + agent↔phone track + `inviteToRingingMs:1570`/`inviteToAcceptMs:12209` + ~70s live media + clean BYE = RANG + ANSWERED. Only famit-caller (09:37) + aim-voice-agent (09:38) restarted. ✅
+
+**HONEST RESIDUAL:** no real INBOUND call was placed this pass (the inbound DID +918071583488 needs the FOUNDER to dial in). So the live hold-music PUBLISH + the actual two-party audible bridge on a real inbound handoff are the ONE thing still unproven end-to-end. Everything upstream is proven: tool fires reliably (small-model Hindi included), the chain fails over, the dial leg rings/answers on the exact trunk/target, the bridge code is the proven same-room path. The 30-second founder test below is the final proof.
+
+### FOUNDER TEST RECIPE — "does human handoff work now?" (60 seconds)
+1. From your phone, call **+918071583488**.
+2. Riya greets you. Say (in Hindi or English): **"Mujhe kisi insaan se baat karni hai"** (or "I want to talk to a human / person / banda / aadmi").
+3. ✅ EXPECT: she says she's connecting you, then you hear **hold music** (NOT silence).
+4. ✅ Within a few seconds, **+916375548830 RINGS**. Answer it.
+5. ✅ You (the human) hear a one-line whisper of context, then you and the original caller are on the **SAME call** — talk freely.
+6. If the human number does NOT answer → Riya apologises, fires a **hot-lead WhatsApp** to the team, and logs a callback — you should NEVER get dead silence.
+**If you EVER get "yes then silence" again:** check (a) Vobiz balance (must be funded — empty = no ring), and (b) whether every turn says "thoda sa system slow" = Groq daily quota exhausted (top up Groq, don't change code). The tool-firing prompt fix is permanent.
+
+### Backups / rollback (box)
+`aim_voice_agent.py.HORTbak.20260613-093052`. Rollback = restore it + `systemctl restart aim-voice-agent` (reverts to the announce-don't-act prompt → Hindi handoff may narrate instead of dialing; do NOT roll back unless directed). NEVER touch agent.py / trunk / firewall / SIP container.
+
+---
+
+## 2026-06-13 — 🟢 INBOUND AI MANAGER = RESTORED + VERIFIED WORKING (the production incident is CLOSED)
+
+**Incident:** AIM greeted fine then repeated the filler "thoda sa system slow hua hai" on EVERY turn; inbound customer also dead. **Root cause (NOT a code regression):** Groq **daily-token (TPD) exhaustion** — all keys share ONE org's 500k/day pool, drained by a day of stacked AIM voice-wave testing → every real LLM turn 429'd → error handler spoke the filler. **Fix (already applied, entry below in AGENT_LEARNINGS):** wrapped AIM's LLM in `llm.FallbackAdapter([groq, openrouter-free])` — Groq stays primary (auto-heals when the bucket refills), fails over to a FREE OpenRouter model (`openai/gpt-oss-120b:free`, independent daily pool, $0). Only `/opt/famit-agent/aim_voice_agent.py` changed (backup `*.EMERGbak.20260612-182751`); NOT a revert.
+
+### VERIFICATION (this session — integrated, honest, all PASS)
+- **(1) Manager turn loop WORKS** — drove the real `_aim_llm` + 15 real tools inside `http_context` while Groq was STILL 429ing (so OpenRouter failover was actually exercised): greeting answered, **PIN 4827 → verified=true**, "kitne hot leads hain" → `check_leads` → **REAL DATA** "5 hot, 1 warm, 1 cold", "campaigns list karo" → **8 real campaigns**. NO filler. ✅
+- **(2) Customer path responds reactively** — CustomerSalesAgent (same `_aim_llm`) answered an open question + a "3 BHK price?" via the `lookup` RAG tool with a **real ₹1.32cr price**. No silence/filler. ✅
+- **(3) EARNER GATE before+after** — agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent active PID 1477083 NEVER restarted; a FRESH out-of-window outbound **RANG** (+917861019021, SIP room `famit-917861019021-3f2db7`, participant joined); core 401-alive, 0 5xx; only famit-caller+aim-voice-agent restarted. ✅
+
+**HONEST RESIDUAL:** only a real founder phone call fully proves the audio leg end-to-end (STT→LLM→TTS over the live SIP room). The harness proves the LLM+tools+data leg (the part that was broken) conclusively. ⚠️ The earner's agent.py shares the SAME Groq org TPD pool — heavy AIM test-burn can still starve the live earner's LLM on a busy outbound day. **Founder action (not blocking):** give the earner its own fallback too OR add a second Groq org, and gate AIM test volume.
+
+### FOUNDER TEST RECIPE — "is my AI Manager fixed?" (30 seconds)
+1. Call **+918071583488** from your phone.
+2. It greets you. When it asks, say your PIN: **"four eight two seven"** (4827).
+3. Say: **"Kitne hot leads hain?"**
+4. ✅ EXPECT: a real answer like *"Aapke paas 5 hot leads hain"* — **NOT** "thoda sa system slow hua hai".
+5. (Optional) Say **"Mere campaigns list karo"** → it names your real campaigns.
+If you EVER hear "thoda sa system slow" on every turn again → Groq's daily quota is exhausted again; the fix is to top up Groq capacity (Dev Tier / second org), not to change code.
+
+### Backups / rollback (box)
+`aim_voice_agent.py.EMERGbak.20260612-182751`. Rollback = restore it + `systemctl restart aim-voice-agent` (loses the FallbackAdapter → back to pure-Groq, which fillers again until the bucket refills — so do NOT roll back unless directed). NEVER touch agent.py / trunk / firewall / SIP.
+
+---
+
 ## 2026-06-12 — PER-TENANT HUMAN HANDOFF BACKEND = DONE + VERIFIED (earner intact)
 
 **Branch:** `feat/premium-ui` · **Commits:** `7934783` (CRUD config layer) + `36d1afa` (voice UX).

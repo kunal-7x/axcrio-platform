@@ -193,3 +193,27 @@ Edited `aim_voice_agent.py` + `ai_manager/voice_tools.py` ONLY. Bridge primitive
   ROLLBACK: restore the 2 + restart aim-voice-agent.
 - Temp campaign `b99746b013` deleted; founder suppression cleared; admin seed intact (+916375548830 p1,
   +917861019021 p2, both enabled). Smoke scripts removed from box.
+
+---
+
+## 2026-06-13 — HORT: "says yes then silence" ROOT-CAUSE FIX + VERIFY (handoff finally fires)
+
+**Founder symptom (live):** inbound caller says "mujhe insaan se baat karni hai" → AI says haan → COMPLETE SILENCE, no hold music, +916375548830 never rings.
+
+**Diagnosis (read-only, hard evidence):** THREE identical-looking causes:
+1. **PROMPT bug (the real code fix).** Integrated turn-loop smoke (`aim_handoff_fire_smoke.py`, stubs `_do_warm_transfer` so no real dial, drives the REAL CustomerSalesAgent tools + REAL system prompt through the EXACT `_aim_llm` chain [Groq pool → SambaNova → OpenRouter-free] inside `http_context`): on the HINDI phrasing the small Groq primary (llama-4-scout) SPOKE "kya main aapko transfer karoon?" with `tools_fired=[]` — announced/asked-permission instead of invoking `transfer_to_human`. English fired; SambaNova/70B fired on both → the weak link was specifically the Groq-primary Hindi path. THIS IS the founder's exact symptom.
+2. Dial leg 402 (empty-Vobiz era) → fixed by founder recharge (~₹495).
+3. LLM turn 429 (Groq daily TPD) → fixed by the prior FallbackAdapter wave.
+
+**Fix = prompt hardening ONLY (no logic change).** `_do_warm_transfer` (lines 693-869) was already robust — `_say_filler`/`_start_hold_audio`/the dial are all try/except-guarded with a finally-stop on the hold music → any audio/asyncio failure degrades to spoken-only + STILL dials, never aborts into silence. Rewrote the handoff instruction IMPERATIVE same-turn in 5 places of `aim_voice_agent.py`: customer `inbound_note`, customer disambiguation note, customer + manager `transfer_to_human` docstrings, manager prompt bullet — all now: "the MOMENT the caller asks for a person/human/insaan/aadmi/banda (ANY language) you MUST call `transfer_to_human(reason)` IMMEDIATELY in the SAME turn as your VERY NEXT action; do NOT first ask 'kya main transfer karoon' and do NOT just say 'main connect kar rahi hoon' then wait — calling the tool is the ONLY thing that connects them; merely talking about it leaves the caller in silence." Kept the proven same-room DIRECT `create_sip_participant(room_name=<caller room>, trunk ST_fmtVmNJmpzKa READ-ONLY)` bridge — did NOT reintroduce the beta WarmTransferTask side-room.
+
+**PROOF the path now executes end-to-end (as far as provable without a live inbound call):**
+- Tool FIRES: 3/3 healthy-Groq smoke runs fire `transfer_to_human` on BOTH Hindi AND English (was 0 on Hindi pre-fix).
+- Fails over + still fires: force-fail run (bad Groq key) logs `groq failed → switching` then `openrouter failed → switching`, tool STILL fires via SambaNova.
+- Dial leg RINGS: `create_sip_participant(ST_fmtVmNJmpzKa, +916375548830)` → livekit-sip callID `SCL_xi94NuKM2tAQ`: `inviteToRingingMs:1302` (180 RANG) + `inviteToAcceptMs:5047` (200 OK ANSWERED) + RTP + `result:success` (the opposite of the empty-Vobiz 402 era).
+
+**DEPLOY:** backup `aim_voice_agent.py.HORTbak.20260613-093052`; py_compile OK on `/opt/capsy-agent/.venv`; new md5 `61f2e0e642727eacfa54367e683048bc`; restarted famit-caller (09:37:11) + aim-voice-agent (09:38:41) ONLY; worker re-registered clean `agent_name:manager` `AW_hGPByd3DAg74`, 0 ImportError/Traceback, 0 5xx.
+
+**EARNER GATE before+after PASS:** agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent MainPID 1477083 / ActiveEnter 2026-06-10 19:58 NEVER restarted; in-window real outbound `/run` to +917861019021 (callID `SCL_BYbA8zxAK4Qr`, trunk `ST_fmtVmNJmpzKa`): `Outbound SIP call established` + `accepting RTP stream` + agent↔phone track + `inviteToRingingMs:1570`/`inviteToAcceptMs:12209` + ~70s media + clean BYE = RANG + ANSWERED. Only famit-caller + aim-voice-agent restarted.
+
+**HONEST RESIDUAL:** no real INBOUND call placed this pass (DID +918071583488 needs the founder to dial in) → live hold-music publish + two-party audible bridge on a real inbound handoff is the ONE unproven leg. Everything upstream proven. Founder 60s recipe in CONTINUE_HERE. Smoke harness local copy `.wf/hort/aim_handoff_fire_smoke.py`; LESSON (cause iii: small model narrates instead of acting → make tool instruction imperative + prove with integrated turn-loop on the non-English phrasing) in AGENT_LEARNINGS. git `53bb31a`.
