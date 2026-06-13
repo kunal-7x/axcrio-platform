@@ -80,3 +80,16 @@ Do the deploy in ONE SSH session; verify with sparse single connections.
 
 ## Rollback
 On the FORTRESS box: `cd /opt/famit-panel && systemctl stop famit-panel && mv .next .next.bad && mv .next.FIXUIbak.20260613-172953 .next && mv app app.bad && mv app.FIXUIbak.20260613-172953 app && mv lib lib.bad && mv lib.FIXUIbak.20260613-172953 lib && chown -R deployuser:deployuser .next app lib && systemctl start famit-panel`
+
+---
+
+## INTEGRATED RE-VERIFY (2026-06-13, read-only, real HTTP, NO outbound call) — 3/3 PASS
+
+Independent honest verification against the LIVE boxes. Token minted on-box: `tid + '.' + hmac_sha256(tid, /opt/famit-agent/var/secret).hexdigest()` (tenants from `/opt/famit-agent/var/tenants.json`). Asset svc binds the VPC IP `10.122.0.4:8310` (NOT loopback — an empty `.probe_token` 401s; mint the hmac token).
+
+- **PASS — BUG-1 asset-click image.** Founder tenant `21d0a13603da` (axcrio), asset `ca_43a127f9a6f1412b`: `GET /assets/{id}` is the NESTED `{asset,versions}` envelope; FE-folded current-version PRESIGNED url HTTP-GET = **200 image/jpeg 50813B**. Admin tenant (46 assets) sample folded url = **200 image/jpeg 63436B**. List url carries `X-Amz-Signature`. Blank-on-click bug GONE.
+- **PASS — BUG-2 transcript chat-view + tenant isolation.** `GET /calls/famit-916375548830-ad08ff/transcript` on the owning (admin) tenant = **200, total=94, direction=outbound, distinct roles {ai,customer}** (ai→LEFT, customer→RIGHT, alternating correctly). SAME room on the founder tenant = **404** (BOLA-guarded, no cross-tenant leak). FE `ChatBubble`: customer `justify-end`+`bg-primary-01/12`, AI `justify-start`+`bg-b-surface2` — token-pure.
+- **PASS — FORTRESS deploy live.** `/opt/famit-panel/.next/BUILD_ID` = `tuuIjqN7fCf_iEL-obLon`, famit-panel `active` PID `248200`, `/crm/[id]` in build manifest; 200 on `/ /login /crm /creative/library` on loopback:3001 AND panel.famit.in edge.
+- **EARNER GATE PASS (before+after, md5+process+health ONLY — DID resting per HARD RULE, NO /run, NO ring):** `/opt/famit-agent/agent.py` md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED; famit-agent MainPID `1477083` / ActiveEnter `2026-06-10 19:58:18` NEVER restarted; caller `/health`=200; famit-aiasset `active` (not restarted this pass). Nothing edited or restarted on any box during this verify.
+
+Commits in history: `d9daa86` (code), `6940742` (docs). This re-verify pass touched only docs/ledgers locally.

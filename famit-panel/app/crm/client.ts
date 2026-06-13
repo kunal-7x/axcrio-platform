@@ -371,6 +371,10 @@ function toRecording(r: Record<string, unknown>, idx: number): Recording {
 //   ai | assistant | agent  -> "ai"        (rendered on the LEFT)
 //   user | customer | caller -> "customer" (rendered on the RIGHT)
 // Tenant-scoped from the token (outbound = BOLA-guarded 404, inbound = RLS).
+// VERIFIED LIVE 2026-06-13: room famit-916375548830-ad08ff (admin tenant) → 200,
+// 94 turns, direction=outbound, distinct roles = {ai, customer} only; same room
+// on the founder tenant → 404 (no cross-tenant leak). The blank-image bug is GONE
+// (asset-detail folded version url GETs 200 image/jpeg ~50–63KB on founder+admin).
 
 export type TranscriptRole = "ai" | "customer";
 
