@@ -200,6 +200,54 @@ async def derive_founder_chat_id(
         return ""
 
 
+async def set_telegram_webhook(
+    tenant_id: str,
+    webhook_url: str,
+    *,
+    provider_def_id: str = "",
+    slug: str = "telegram-founder",
+    named_provider: str = "telegram",
+) -> Tuple[bool, str, str]:
+    """Register the inbound webhook with Telegram (setWebhook), binding the per-tenant
+    secret_token (comm.webhook.derive_secret_token) so every delivery carries it in the
+    X-Telegram-Bot-Api-Secret-Token header. Returns (ok, provider_def_id, error). NEVER raises.
+
+    This is the channel-setup wiring: the panel "Connect webhook" button calls it once; thereafter
+    Telegram posts updates to webhook_url with the secret header the fail-closed handler checks."""
+    adapter, pdid = resolve_telegram_adapter(
+        tenant_id, provider_def_id=provider_def_id, slug=slug, named_provider=named_provider
+    )
+    if adapter is None or not pdid:
+        return False, pdid, "no_channel_or_token"
+    if not (webhook_url or "").strip().lower().startswith("https://"):
+        # Telegram requires an https webhook URL.
+        return False, pdid, "webhook_url_must_be_https"
+    try:
+        from .webhook import derive_secret_token  # local import (avoid import cycle at module load)
+        secret_token = derive_secret_token(tenant_id, pdid)
+    except Exception:  # noqa: BLE001
+        secret_token = ""
+    if not secret_token:
+        return False, pdid, "no_signing_secret"
+    payload = {
+        "url": webhook_url.strip(),
+        "secret_token": secret_token,
+        "allowed_updates": ["message", "edited_message"],
+        "drop_pending_updates": True,
+    }
+    try:
+        from .channels.telegram import _api_call  # the token-redacting Bot API client
+        ok, _result, err = await asyncio.wait_for(
+            _api_call(adapter._token, "setWebhook", payload, timeout=config.http_timeout_s()),
+            timeout=config.send_timeout_s(),
+        )
+        return bool(ok), pdid, ("" if ok else (err or "setWebhook_failed"))
+    except asyncio.TimeoutError:
+        return False, pdid, "setWebhook_timeout"
+    except Exception as exc:  # noqa: BLE001
+        return False, pdid, f"setWebhook_{type(exc).__name__}"
+
+
 def status() -> dict:
     """Diagnostic — never a secret. Reflects the flags + datastore reachability."""
     return {
