@@ -236,6 +236,20 @@ load_dotenv(".env")
 logger = logging.getLogger("aim-voice")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Truthy env flag. Off-values {0,false,no,off,""}; everything else on. Never raises."""
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# Provider-lock default triple (mirrors prompt.resolve_providers's default): the LIVE inbound
+# stack today — Sarvam STT, Groq LLM, ElevenLabs TTS. Used as the byte-identical fallback when
+# INBOUND_PROV_LOCK is off, the resolver is unavailable, or it raises.
+_DEFAULT_PROV_TRIPLE = {"stt": "sarvam", "llm": "groq", "tts": "elevenlabs", "voice": ""}
+
+
 # ── firewall init (LOAD-BEARING for the PIN tool) ──────────────────────────────
 # Separate worker process -> nothing has init'd firewall -> an un-init'd firewall fail-CLOSES
 # (check_pin False for everything). Replicate caller.py's init once at startup against the SAME
@@ -382,8 +396,8 @@ def _build_stt():
     )
 
 
-def _build_tts():
-    """ElevenLabs flash TTS with agent.py's realtime-warm voice settings."""
+def _build_tts_elevenlabs():
+    """ElevenLabs flash TTS with agent.py's realtime-warm voice settings (today's default)."""
     return elevenlabs.TTS(
         api_key=os.environ["ELEVENLABS_API_KEY"],
         voice_id=os.getenv("ELEVENLABS_VOICE_ID", "QTKSa2Iyv0yoxvXY2V8a"),
@@ -398,6 +412,43 @@ def _build_tts():
         ),
         auto_mode=True,
     )
+
+
+def _build_tts_sarvam():
+    """Sarvam Bulbul TTS (Lean/Standard tiers). Constructed ONLY when the provider-lock
+    resolves tts=='sarvam'. Defensive: any signature mismatch raises -> the caller falls
+    back to ElevenLabs (fail-visible, never silent). Earner is untouched (inbound only)."""
+    _sk = None
+    try:
+        _picked = _pick_sarvam_key() if "_pick_sarvam_key" in globals() else None
+        _sk = _picked["key"] if _picked else None
+    except Exception:  # noqa: BLE001
+        _sk = None
+    return sarvam.TTS(
+        api_key=_sk or _next_sarvam_key(),
+        target_language_code=os.getenv("SARVAM_TTS_LANG", "hi-IN"),
+        speaker=os.getenv("SARVAM_TTS_SPEAKER", "anushka"),
+        model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
+    )
+
+
+# Provider-lock dispatch: build the TTS plugin for the RESOLVED provider. Default ('' or
+# 'elevenlabs') => today's ElevenLabs path, BYTE-IDENTICAL to the legacy _build_tts(). Only
+# when INBOUND_PROV_LOCK is on AND the campaign resolves to Sarvam do we build Bulbul; if that
+# construction raises we log + fall back to EL so a call NEVER goes silent (RUN-PLATFORM §3
+# fail-visible). A bare _build_tts() (no arg) is preserved == EL == today, so any other caller
+# is unchanged.
+def _build_tts(provider: str = "elevenlabs"):
+    prov = (provider or "elevenlabs").strip().lower()
+    if prov == "sarvam":
+        try:
+            tts = _build_tts_sarvam()
+            logger.info("AIM provider-lock: TTS=sarvam (Bulbul) constructed")
+            return tts
+        except Exception as exc:  # noqa: BLE001 — fail VISIBLE, then fall back to EL (never silent)
+            logger.warning("AIM provider-lock: sarvam TTS construct FAILED, falling back to EL: %r", exc)
+            return _build_tts_elevenlabs()
+    return _build_tts_elevenlabs()
 
 
 # ── FIX (C): FILLER SPEECH around any tool fetch that may take >~300ms ──────────
@@ -2312,10 +2363,30 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             logger.warning("AIM could not set fail-fast llm_conn_options (using defaults): %r", exc)
             _conn_opts = None
 
+    # ---- PROVIDER-LOCK (INBOUND, RUN-PLATFORM §3) — resolve the {stt,llm,tts} triple to
+    #      CONSTRUCT and BILL from the campaign fields, behind INBOUND_PROV_LOCK (default 0).
+    #      Flag OFF  -> _prov is the default EL/Sarvam/Groq triple AND we pass tts="elevenlabs"
+    #                   to _build_tts -> BYTE-IDENTICAL to today's _build_tts(). No behaviour change.
+    #      Flag ON   -> the resolved tts provider (e.g. Sarvam Bulbul on Lean/Standard) is the one
+    #                   constructed; the SAME _prov drives the _slog.start metering vendor label
+    #                   below, so "selected -> invoked -> billed (cost-ledger)" can't diverge.
+    #      The resolver is a PURE leaf in prompt.py (no I/O); a None/manager call -> {} -> EL.
+    _prov = dict(_DEFAULT_PROV_TRIPLE)
+    _prov_lock_on = _env_flag("INBOUND_PROV_LOCK", False)
+    if _prov_lock_on and _prompt is not None and hasattr(_prompt, "resolve_providers"):
+        try:
+            _prov = _prompt.resolve_providers(cust_fields or {})
+            logger.info("AIM provider-lock ON: resolved stt=%s llm=%s tts=%s",
+                        _prov.get("stt"), _prov.get("llm"), _prov.get("tts"))
+        except Exception as exc:  # noqa: BLE001 — never break a call; keep the EL default
+            logger.warning("AIM resolve_providers failed, using default triple: %r", exc)
+            _prov = dict(_DEFAULT_PROV_TRIPLE)
+    _tts_provider = _prov.get("tts") if _prov_lock_on else "elevenlabs"
+
     _sess_kwargs = dict(
         stt=_build_stt(),
         llm=_aim_llm,
-        tts=_build_tts(),
+        tts=_build_tts(_tts_provider),
         vad=_vad,
         preemptive_generation=True,
         min_endpointing_delay=float(os.getenv("MIN_EP_DELAY", "0.25")),
@@ -2666,7 +2737,17 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     # #8: now the room is connected -> create the PG session row + arm the recorder (Egress attaches
     # to a live room). Deferred to here so recording captures the greeting onward. Never blocks/raises.
     try:
-        await _slog.start(llm_provider="groq", stt_provider="sarvam", tts_provider="elevenlabs")
+        # Metering vendor label = the SAME resolved triple the plugins were built from, so the
+        # session-log/cost-ledger records the provider that actually RAN. Flag OFF -> _prov is the
+        # default triple AND _tts_provider=="elevenlabs" -> these args are identical to the legacy
+        # literals (groq/sarvam/elevenlabs) -> byte-identical session row. (RUN-PLATFORM §3 F2/F10:
+        # this makes the inbound session-LABEL truthful now; a metered inbound usage_event with a
+        # real cost is a separate deferred unit — there is no inbound bill today.)
+        await _slog.start(
+            llm_provider=_prov.get("llm", "groq"),
+            stt_provider=_prov.get("stt", "sarvam"),
+            tts_provider=(_tts_provider if _prov_lock_on else "elevenlabs"),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("AIM session logger start failed (call continues unlogged): %r", exc)
 
