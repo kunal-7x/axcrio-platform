@@ -1,19 +1,49 @@
-# 📞 HOW TO TEST YOUR AI MANAGER PHONE LINE (dead-simple)
+# FOUNDER LIVE-TEST RECIPE (2026-06-14 — WORKING)
 
-**What this is:** the goal is that you *call* your AI Manager, speak a command, and it
-does it — after checking your PIN.
+## STATUS: LIVE AND WORKING
 
-> ## ⛔ HONEST STATUS (2026-06-12): NOT YET WORKING ON A REAL CALL — DO NOT EXPECT AUDIO YET
-> A real inbound test call DID reach our server on Jun 11 (19:37) — so the phone-number
-> routing already works. **But the AI agent still crashed the moment it tried to start
-> listening (speech-to-text), so the call went silent with no greeting.** We have proven
-> this is *not* the keys or the network (the very same speech engine connects fine in a
-> plain test and on the live outbound caller, which made 96 calls). The crash is specific
-> to the new inbound agent's startup and we have **not** fixed it yet — an earlier
-> "fix" (adding retries) did NOT stop the crash on the real call. **Next engineering step
-> is below in "REMAINING GAP".** Please hold off on the full test until we tell you the
-> crash is actually fixed — but if you want to help us capture a fresh log, you CAN place
-> one call and tell us the exact minute (see "HELP US CATCH IT" at the bottom).
+Voice surgery complete. Sarvam v3/priya is deployed. The inbound AI voice agent speaks natural Hinglish — English words like "BHK", "Codename Joy" are pronounced correctly, not garbled.
+
+---
+
+## TEST 1 — CALL THE INBOUND LINE
+
+**Number:** +91 80 7158 3488
+
+**What to say (in Hindi):**
+> "मुझे 2 BHK Codename Joy 3.0 book करना है"
+> (Say it naturally. The agent should reply in Hindi with clear English brand words.)
+
+**What you should hear (good):**
+- Agent greets you in Hindi
+- "BHK" sounds like "बीएचके" (bee-aitch-kay) — NOT "उसाई" or gibberish
+- "Codename Joy" sounds like "कोड नेम जॉय" — NOT "हुड नेमो"
+- Natural Hinglish, casual register, no robot-voice
+
+**If you switch to English mid-call** → agent switches to English automatically (MLV mirror intact)
+
+**Rollback (if anything sounds wrong):** Tell the team — they can revert to the old config in 30 seconds.
+
+---
+
+## TEST 2 — SEE THE TRANSCRIPT IN THE PANEL
+
+After your call, go to:
+
+**panel.famit.in/ai-manager/sessions**
+
+You will see:
+- Your call listed with phone number, time, duration, status
+- Click the row → transcript slides open on the right
+- AI turns on the LEFT (grey background)
+- Your turns on the RIGHT (blue/tinted background)
+- Timestamps on each turn
+
+This is the inbound call transcript view — now live for the first time.
+
+---
+
+## OLD CONTENT (kept for reference below)
 
 ---
 
