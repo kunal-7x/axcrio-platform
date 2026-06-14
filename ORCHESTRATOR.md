@@ -2,6 +2,17 @@
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
 
+## ✅ 2026-06-14 — RAG W0 DEPLOY = DONE (kill-switch live on box, grounding still ON)
+**PLAN:** Deploy W0-built `RAG_INJECT_ENABLED` kill-switch to box; set flag=1 (preserve today's RAG grounding); restart aim-voice-agent only; full earner gate.
+**OUTPUT/STATUS = ALL PASS. EARNER GATE PASS.**
+- SCP: local `8335d4ba` → `/opt/famit-agent/aim_voice_agent.py` (backup `*.W0deploy.bak.20260614-*`). py_compile OK on box venv.
+- `.env` `RAG_INJECT_ENABLED=1` added. Kill-switch: set 0 + restart aim-voice-agent → instant RAG disable.
+- aim-voice-agent restarted (new PID `2660527`); `starting worker` + all plugins registered + Postgres OK in journal.
+- **Earner gate:** agent.py `9150fabe` UNCHANGED · famit-agent PID `1477083` NOT restarted · caller /health 200 · 0 real 5xx · NO ring.
+- **Proofs on box:** golden 5/5 byte-identical PASS; flag-gate A (kill→no retrieval) + B (flag-off==no-RAG render, 18938 chars) + C (grounding injects EXACTLY) = 3/3 PASS. `RAG_INJECT_ENABLED=True` confirmed from live module.
+- **RECOVERY-STATE.md + RAG-MASTER-PLAN.md updated.** Wave log + WORKFLOW_LEDGER updated.
+- **OPEN:** W1 next (core.py dense=gate + _global UNION + RLS clause). CTX_CACHE (W2 feature) + INBOUND_PROV_LOCK default-off are both absent from .env but code defaults are safe (no restart needed).
+
 ## ✅ 2026-06-14 — REPO-RECOVERY-AUDIT (P1 drift-map + P2 reconcile + P3 RECOVERY-STATE) = DONE
 **PLAN:** Full local↔box consistency check; recover all drift; write authoritative source map + live flag state + open follow-ups; bank rules; no box write, no flag flip, no earner restart.
 **OUTPUT/STATUS = CONSISTENT. EARNER GATE PASS throughout.**

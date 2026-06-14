@@ -62,7 +62,7 @@
 | `MEMORY_TENANT_SCOPED` | `1` | ✅ YES | |
 | `STORE_MODES` | `dual` | ✅ YES | PG strangler pattern |
 | `EMBED_API_KEY` | NOT SET | ✅ GOOD | Dense embedder off; FTS-only (C-3 constraint satisfied) |
-| **`RAG_INJECT_ENABLED`** | **NOT SET (flag does not exist in code or .env)** | 🔴 NO — RAG is LIVE+UNGATED right now | **W0 must build this kill-switch before any RAG changes** |
+| **`RAG_INJECT_ENABLED`** | **`1` (in .env since 2026-06-14)** | ✅ YES — W0 DONE: kill-switch built + deployed `8335d4ba`; flag-gate A/B/C PASS; golden 5/5 PASS; set 0 to kill RAG | Kill-switch now live; set `RAG_INJECT_ENABLED=0` for emergency RAG disable |
 | **`CTX_CACHE`** | **NOT IN .env** | ⚠️ VERIFY — W2 was deployed; code may default off | Add `CTX_CACHE=1` on next famit-caller-only restart if missing |
 | **`INBOUND_PROV_LOCK`** | **NOT IN .env** | ⚠️ VERIFY — wave A committed `flip to 1` but absent from live .env | Verify code default; add if needed on next restart |
 | `AIM_KB_GROUNDING_CHARS` / `PREFETCH_K` / `LOOKUP_K` | NOT SET | ✅ OK | Code defaults: 1400/5/3 — safe |
@@ -71,14 +71,10 @@
 
 ## 3. OPEN FOLLOW-UPS (earner-safe, prioritized)
 
-### P0 — Build before any RAG wave
-**W0: Build `RAG_INJECT_ENABLED` kill-switch into live `aim_voice_agent.py`**
-- Start from box-pulled `018c20a7` (`droplet_work/aim_voice_agent.LIVEBOX.py`)
-- Add `RAG_INJECT_ENABLED` env check at the 3 injection sites (:504-516, :1695-1709, :2520-2545)
-- Test: with flag=0 the grounding string must be byte-identical to `""` (no content change)
-- Deploy to aim-voice-agent ONLY (NOT famit-agent/earner)
-- Set `RAG_INJECT_ENABLED=1` in `.env` so behavior stays live but kill-switch exists
-- This closes the "no kill-switch" risk for the live RAG mutation
+### P0 — ✅ DONE (2026-06-14): W0 RAG_INJECT_ENABLED kill-switch
+**W0 DEPLOYED:** `8335d4ba` live on box; `RAG_INJECT_ENABLED=1` in `.env`; flag-gate A/B/C PASS; golden 5/5 PASS; famit-agent PID 1477083 UNCHANGED; agent.py md5 `9150fabe` UNCHANGED; caller /health 200; 0 real 5xx.
+- Kill-switch: set `RAG_INJECT_ENABLED=0` in `.env` + `sudo systemctl restart aim-voice-agent` → instant RAG disable (byte-identical render)
+- Next: W1 (core.py dense=gate + _global UNION + RLS clause)
 
 ### P1 — Flag verify (next famit-caller restart, zero-cost)
 - Verify `CTX_CACHE=1` present in box `.env` — add if missing
