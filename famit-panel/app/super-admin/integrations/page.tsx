@@ -12,7 +12,7 @@
 
 import Layout from "@/components/Layout";
 import { SuperAdminGuard, SuperAdminHeaderF3 } from "../_shared";
-import { IntegrationsBody } from "../../integrations/page";
+import { IntegrationsBody } from "../../integrations/_body";
 
 export default function SuperAdminIntegrationsPage() {
     return (
