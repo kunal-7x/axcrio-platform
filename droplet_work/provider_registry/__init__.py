@@ -64,7 +64,23 @@ try:  # pragma: no cover - all-or-nothing W2 surface
 except Exception:  # noqa: BLE001 — never let a W2 import failure break the W1 shell
     _W2_LOADED = False
 
-__version__ = "0.2.0-w2" if _W2_LOADED else "0.1.0-w1"
+# --- W3 behavioural surface: store + admin_store + registry + health (resolve/fallback/breaker).
+# Import-guarded like W2 — these modules import db.engine lazily (never at module import) and
+# NEVER do network I/O on import, so an empty-env box loads them cleanly (resting byte-identical).
+# Not mounted until W4. registry.get_provider is the single capability-keyed resolution point.
+try:  # pragma: no cover - all-or-nothing W3 surface
+    from . import store, admin_store, registry, health  # noqa: F401
+    from .registry import get_provider, ProviderClient, resolve_status  # noqa: F401
+    _W3_LOADED = True
+except Exception:  # noqa: BLE001 — never let a W3 import failure break the W1/W2 shell
+    _W3_LOADED = False
+
+if _W3_LOADED:
+    __version__ = "0.3.0-w3"
+elif _W2_LOADED:
+    __version__ = "0.2.0-w2"
+else:
+    __version__ = "0.1.0-w1"
 
 __all__ = [
     # config
@@ -90,5 +106,9 @@ __all__ = [
     "decrypt_credential",
     "compute_aad",
     "CredentialError",
+    # W3 behavioural surface
+    "get_provider",
+    "ProviderClient",
+    "resolve_status",
     "__version__",
 ]

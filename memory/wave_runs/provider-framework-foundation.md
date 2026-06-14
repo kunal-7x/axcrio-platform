@@ -105,6 +105,78 @@ on `env -i` → version `0.1.0-w1`, `is_enabled()`=False; flag flip `=1`/`=true`
 
 **Verify:** `python -m pytest provider_registry/tests/ -q` → `2 passed`; py_compile OK on all
 W2 files. gitleaks staged = 0. Earner UNTOUCHED (no box write; agent.py never imported).
+Commit `8f9464c` on `fe/unify-run-wavec`.
+
+## W3 — resolve + health + reveal (offline)
+
+**Status:** ✅ DONE (local + offline tests green). Local-only; NO mount, NO box write, NO service
+restart, NO deploy, flag `PROVIDER_REGISTRY_ENABLED` OFF. The firewall reveal scope is built
+LOCALLY only — it deploys with the W4 mount (box firewall.py stays `cd1ac5d1`).
+
+**Deliverables (all `droplet_work/`):**
+- `provider_registry/store.py` — tenant reads, `is_admin=False` HARDCODED (RLS surface). Lazy
+  `db.engine` import + `available()` guard + `_query` under `engine.session(tenant_id, is_admin=
+  False)` (GUC-in-txn, mirrors ai_manager/store.py). `list_definitions(capability, enabled_only)`
+  ordered priority-asc (the fallback chain) using `capabilities @> jsonb` containment;
+  `get_definition`/`get_definition_by_slug` (tenant override beats `_global`);
+  `get_active_credential` (highest active key_version, rotation-aware) + `list_credentials_masked`.
+  NEVER decrypts; NEVER returns plaintext; degrade-to-empty on PG-down (strangler).
+- `provider_registry/admin_store.py` — super-admin reads, `is_admin=True` (the `app.is_admin='1'`
+  RLS leg), mounted ONLY under require_super_admin (W4). `list_all_definitions` /
+  `get_any_definition` / `get_any_credential` (the audited reveal-path ciphertext fetch). Reuses
+  `store._engine`; never decrypts.
+- `provider_registry/registry.py` — **`get_provider(tenant_id, capability, routing_hint,
+  *, get_key, now_fn) -> ProviderClient`** = the single capability-keyed resolution point. Order:
+  flag-OFF→`registry_disabled` · PG-down→`not_configured` · list enabled defs (RLS own+`_global`,
+  priority asc) · routing_hint slug pinned first · SKIP circuit-open (`health.is_open`) · first
+  with a usable credential (decrypted ONLY via the `credentials.decrypt_credential` get_secret
+  seam, AAD-bound) wins · auth_scheme='none'→usable w/o cred · else `no_credential`/`not_configured`.
+  NEVER raises (a problem → ok=False, the consumer falls back). `ProviderClient` holds the plaintext
+  in-process only, repr-suppressed, never logged. `resolve_status` = non-secret UI diagnostic.
+- `provider_registry/health.py` — in-memory circuit breaker (§2f): per (tenant,def) state in a
+  process-local locked dict (NO PG on the hot path). 3 consecutive fails → OPEN; backoff doubles
+  60→120→240 (capped 1h); half-open trial after the window; a success closes + resets. Injectable
+  `now_fn` (deterministic offline). `run_probe(prober, log_writer)` orchestrator drives the breaker
+  from a (real W4 SSRF-guarded / fake offline) prober; best-effort health-log write never affects
+  the breaker.
+- `firewall.py` (DEPLOYED file — box md5 `cd1ac5d1` == local, confirmed byte-identical; **extended
+  ADDITIVELY, NOT deployed**) — NEW `provider.reveal` step-up pair, fully isolated from the generic
+  path: `mint_reveal_step_up(tenant, provider_def_id)` (60s TTL, `aud=provider_def_id`,
+  fresh 16-byte jti) + `consume_reveal_step_up(token, provider_def_id, expected_sub)` (verify
+  sig+exp+type+scope+F3-sub+aud, then **CONSUME the jti single-use** — replay→None). Single-use
+  state in its OWN file `var/provider_used_jti.json` (never touches pins.json/pin_lockout.json),
+  pruned at 2×TTL. **Fix found:** PyJWT auto-validates an `aud` claim and raises
+  `InvalidAudienceError` even without `audience=`; resolved by `options={"verify_aud": False}` +
+  explicit self-check (sig+exp still verified). This closes the live jti-replay gap for the reveal
+  path (the generic `verify_step_up_token` mints a jti but never consumes it — left UNCHANGED).
+- tests: `provider_registry/tests/test_reveal_stepup.py` (10/10) +
+  `provider_registry/tests/test_registry_offline.py` (10/10).
+
+**Offline proofs (the wave's required returns):**
+- **resolve RLS (A never gets B):** a fake `db.engine` ENFORCES the §5 RLS GUC in Python.
+  `get_provider(A,'video_gen')` → A's `a-fal` (priority 10); `client.tried` NEVER contains B's
+  `b-fal`. `store.list_definitions(A)` owners exclude B; `store.get_active_credential(A, DEF_B)`
+  → None (creds strictly tenant-private, no `_global` share).
+- **cross-tenant ciphertext copy → skipped:** B's sealed-under-B blob pasted into A's DEF_A row →
+  `decrypt_credential` recomputes AAD `A‖DEF_A‖1` ≠ seal AAD `B‖DEF_B‖1` → `InvalidTag` → that
+  provider is SKIPPED, A falls back to DEF_A2 (B's key is NEVER returned as A's).
+- **circuit-open fallback by priority:** 3 fails open DEF_A (priority 10) → resolve falls back to
+  DEF_A2 (priority 50); `a-fal` is in `client.tried` (tried + skipped).
+- **jti-replay → 403:** `consume_reveal_step_up` succeeds once, the SAME token (same jti) → None
+  (single-use). Plus aud-mismatch→None, F3 sub-mismatch→None, generic-token-can't-reveal,
+  reveal-token-can't-satisfy-generic, expired→None, no-jti→None.
+- **existing-firewall UNCHANGED golden:** `diff <box-golden cd1ac5d1> firewall.py` = a single
+  contiguous insertion `339a340,473`, **0 deletion/modification lines**; the generic
+  mint/verify/PIN/change/lockout/classify behavior tests = PASS (byte-identical behaviour).
+- `not_configured` (no provider) + `registry_disabled` (flag OFF) + PG-down degrade all return
+  ok=False without raising. Empty-env import = clean, version `0.3.0-w3`, flag default OFF.
+
+**Verify:** `python -m pytest provider_registry/tests/ -q` → **4 passed** (W2 + W3, ~36 assertions).
+py_compile OK on store/admin_store/registry/health/firewall. gitleaks staged = 0.
+
+**EARNER GATE (before + after, PASS):** agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED ·
+famit-agent PID `1477083` alive (python), NOT restarted · box firewall.py still `cd1ac5d1` (reveal
+scope NOT deployed — W4 mounts) · caller `/health` (8209) = 200 · NO ring (offline wave, no calls).
 
 ---
 
