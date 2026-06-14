@@ -3700,9 +3700,10 @@ async def voices(request: Request, provider: str = ""):
 
 @app.get("/voice-preview")
 async def voice_preview(request: Request, provider: str = "", id: str = ""):
-    """FREE play-preview proxy. ElevenLabs -> redirect to the voice's public preview_url (no key, no
-    synthesis, no burn). Sarvam -> stream the pre-hosted one-time sample clip from
-    var/voice_samples/sarvam/<id>.mp3. Used by the panel <audio> Play button."""
+    """FREE play-preview proxy. ElevenLabs -> full-buffer the voice's preview clip and return it
+    same-origin as audio/mpeg (no key for the clip fetch, no synthesis, no burn). Sarvam -> stream
+    the pre-hosted one-time sample clip from var/voice_samples/sarvam/<id>.wav. Used by the panel
+    <audio> Play button."""
     # Auth: standard header auth OR t= query-param token (needed because <audio src> cannot
     # send headers; the FE already appends ?t=<jwt> for voice preview).
     _t_param = request.query_params.get("t", "")
@@ -3730,17 +3731,37 @@ async def voice_preview(request: Request, provider: str = "", id: str = ""):
         if os.path.isfile(fp):
             return FileResponse(fp, media_type="audio/wav", filename=f"sarvam-{safe}.wav")
         return JSONResponse({"error": "sample not available", "voice_id": vid}, status_code=404)
-    # elevenlabs (default): look up the voice's public preview_url and 302 to it (FREE GCS MP3).
+    # elevenlabs (default): resolve the voice's preview_url, then FULL-BUFFER the upstream clip and
+    # return the bytes SAME-ORIGIN with content-type FORCED to audio/mpeg. We do NOT 307-redirect:
+    # the upstream EL preview bytes are served Content-Type: text/plain (both on the public
+    # storage.googleapis.com host AND the signed-expiring api.us.elevenlabs.io host), which Safari/
+    # iOS refuses for <audio src> -> silent MEDIA_ERR_SRC_NOT_SUPPORTED. Buffering same-origin and
+    # forcing audio/mpeg is the load-bearing fix. Both host shapes are handled identically (we GET
+    # whatever URL EL returns); no branch on "is it GCS". ≤32 KB cap, 5 s timeout, 502 on empty/fail.
+    _EL_PREVIEW_CAP = 32 * 1024  # tiny clip; cap guards against an HTML error page or a huge body
     try:
         r = httpx.get("https://api.elevenlabs.io/v1/voices",
                       headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]}, timeout=15)
+        pu = ""
         for v in r.json().get("voices", []):
             if v.get("voice_id") == vid:
                 pu = (v.get("preview_url") or "").strip()
-                if pu:
-                    return RedirectResponse(pu)
                 break
-        return JSONResponse({"error": "no preview for this voice", "voice_id": vid}, status_code=404)
+        if not pu:
+            return JSONResponse({"error": "no preview for this voice", "voice_id": vid}, status_code=404)
+        # Fetch the clip from whichever EL host the signed/public URL points at (GCS or api.us).
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as _cli:
+            up = await _cli.get(pu)
+        if up.status_code != 200:
+            return JSONResponse({"error": "upstream preview empty", "status": up.status_code},
+                                status_code=502)
+        body = up.content or b""
+        if not body:
+            return JSONResponse({"error": "upstream preview empty"}, status_code=502)
+        body = body[:_EL_PREVIEW_CAP]
+        # FORCE audio/mpeg; never echo the upstream text/plain. No Accept-Ranges (plain Response).
+        return Response(content=body, media_type="audio/mpeg",
+                        headers={"Cache-Control": "private, max-age=300"})
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": repr(exc)[:140]}, status_code=502)
 

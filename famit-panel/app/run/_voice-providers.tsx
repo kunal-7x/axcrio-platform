@@ -99,7 +99,11 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
     const [loaded, setLoaded] = useState(false);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
+    // last voice_id whose preview we attempted (so <audio onError> knows which row to flag)
+    const attemptedId = useRef<string>("");
     const [playingId, setPlayingId] = useState<string>("");
+    // voice_id whose preview failed (network / unsupported / 502) -> show an inline caption
+    const [previewError, setPreviewError] = useState<string>("");
 
     // ── load the tier catalogue + provider health once ──
     useEffect(() => {
@@ -224,10 +228,17 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                 setPlayingId("");
                 return;
             }
+            setPreviewError(""); // clear any prior failure on a fresh attempt
+            attemptedId.current = v.voice_id;
             el.src = voicePreviewUrl(voiceProvider, v.voice_id);
             el.play()
                 .then(() => setPlayingId(v.voice_id))
-                .catch(() => setPlayingId(""));
+                .catch((err) => {
+                    // Surface the failure instead of swallowing it: log + show an inline caption.
+                    console.error("voice preview failed", v.voice_id, voiceProvider, err);
+                    setPlayingId("");
+                    setPreviewError(v.voice_id);
+                });
         },
         [playingId, voiceProvider]
     );
@@ -329,6 +340,17 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                     ref={audioRef}
                     onEnded={() => setPlayingId("")}
                     onPause={() => setPlayingId("")}
+                    onError={() => {
+                        // unsupported content-type / network / 502 -> flag the attempted row
+                        console.error(
+                            "voice preview <audio> error",
+                            attemptedId.current,
+                            voiceProvider
+                        );
+                        setPlayingId("");
+                        if (attemptedId.current)
+                            setPreviewError(attemptedId.current);
+                    }}
                     className="hidden"
                 />
 
@@ -579,6 +601,13 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                                     {meta && (
                                                         <div className="text-caption text-t-tertiary truncate capitalize">
                                                             {meta}
+                                                        </div>
+                                                    )}
+                                                    {previewError ===
+                                                        v.voice_id && (
+                                                        <div className="text-caption text-primary-03 truncate">
+                                                            Preview unavailable —
+                                                            press ▶ to retry
                                                         </div>
                                                     )}
                                                 </button>
