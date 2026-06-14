@@ -219,6 +219,13 @@ except Exception as _memory_exc:  # noqa: BLE001
     _memory = None
     logging.getLogger("aim-voice").warning("memory import failed (cross-call recap degraded): %r", _memory_exc)
 
+# W3b: durable post-call memory extraction (flag LEAD_MEMORY_PG, default 0 => no-op).
+# Import-safe: missing module or broken PG is a clean no-op; call path never affected.
+try:
+    import lead_memory as _lead_memory  # enqueue_episode / enabled (W3b)
+except Exception:  # noqa: BLE001
+    _lead_memory = None
+
 # READ-ONLY reuse of the hybrid RAG engine (kb/core.py: FTS sparse leg keyless today + pgvector dense
 # when an embedder is configured). Used for (a) a fire-and-forget GROUNDING prefetch at call connect,
 # folded into the sales instructions, and (b) a mid-call `lookup` tool for deep/edge questions. STRICTLY
@@ -234,6 +241,20 @@ load_dotenv("/opt/famit-agent/.env")
 load_dotenv(".env")
 
 logger = logging.getLogger("aim-voice")
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Truthy env flag. Off-values {0,false,no,off,""}; everything else on. Never raises."""
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+# Provider-lock default triple (mirrors prompt.resolve_providers's default): the LIVE inbound
+# stack today — Sarvam STT, Groq LLM, ElevenLabs TTS. Used as the byte-identical fallback when
+# INBOUND_PROV_LOCK is off, the resolver is unavailable, or it raises.
+_DEFAULT_PROV_TRIPLE = {"stt": "sarvam", "llm": "groq", "tts": "elevenlabs", "voice": ""}
 
 
 # ── firewall init (LOAD-BEARING for the PIN tool) ──────────────────────────────
@@ -382,8 +403,8 @@ def _build_stt():
     )
 
 
-def _build_tts():
-    """ElevenLabs flash TTS with agent.py's realtime-warm voice settings."""
+def _build_tts_elevenlabs():
+    """ElevenLabs flash TTS with agent.py's realtime-warm voice settings (today's default)."""
     return elevenlabs.TTS(
         api_key=os.environ["ELEVENLABS_API_KEY"],
         voice_id=os.getenv("ELEVENLABS_VOICE_ID", "QTKSa2Iyv0yoxvXY2V8a"),
@@ -398,6 +419,43 @@ def _build_tts():
         ),
         auto_mode=True,
     )
+
+
+def _build_tts_sarvam():
+    """Sarvam Bulbul TTS (Lean/Standard tiers). Constructed ONLY when the provider-lock
+    resolves tts=='sarvam'. Defensive: any signature mismatch raises -> the caller falls
+    back to ElevenLabs (fail-visible, never silent). Earner is untouched (inbound only)."""
+    _sk = None
+    try:
+        _picked = _pick_sarvam_key() if "_pick_sarvam_key" in globals() else None
+        _sk = _picked["key"] if _picked else None
+    except Exception:  # noqa: BLE001
+        _sk = None
+    return sarvam.TTS(
+        api_key=_sk or _next_sarvam_key(),
+        target_language_code=os.getenv("SARVAM_TTS_LANG", "hi-IN"),
+        speaker=os.getenv("SARVAM_TTS_SPEAKER", "anushka"),
+        model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
+    )
+
+
+# Provider-lock dispatch: build the TTS plugin for the RESOLVED provider. Default ('' or
+# 'elevenlabs') => today's ElevenLabs path, BYTE-IDENTICAL to the legacy _build_tts(). Only
+# when INBOUND_PROV_LOCK is on AND the campaign resolves to Sarvam do we build Bulbul; if that
+# construction raises we log + fall back to EL so a call NEVER goes silent (RUN-PLATFORM §3
+# fail-visible). A bare _build_tts() (no arg) is preserved == EL == today, so any other caller
+# is unchanged.
+def _build_tts(provider: str = "elevenlabs"):
+    prov = (provider or "elevenlabs").strip().lower()
+    if prov == "sarvam":
+        try:
+            tts = _build_tts_sarvam()
+            logger.info("AIM provider-lock: TTS=sarvam (Bulbul) constructed")
+            return tts
+        except Exception as exc:  # noqa: BLE001 — fail VISIBLE, then fall back to EL (never silent)
+            logger.warning("AIM provider-lock: sarvam TTS construct FAILED, falling back to EL: %r", exc)
+            return _build_tts_elevenlabs()
+    return _build_tts_elevenlabs()
 
 
 # ── FIX (C): FILLER SPEECH around any tool fetch that may take >~300ms ──────────
@@ -1363,7 +1421,7 @@ class ManagerAgent(Agent):
 def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
                               is_returning: bool, pending_disambig: bool,
                               campaign_options: list[dict] | None,
-                              grounding: str = "") -> str:
+                              grounding: str = "", pg_memory: str = "") -> str:
     """Render the inbound CUSTOMER persona. Body REUSES the outbound earner brain verbatim
     (prompt.build_system_prompt(fields)) when a campaign is resolved, so an inbound prospect gets the
     SAME proven Hinglish human-telecaller flow as an outbound call — but reframed for INBOUND (they
@@ -1381,6 +1439,12 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "NOT do the outbound 'is this a good time / do you have two minutes' permission opener — they "
         "called you, so get straight to warmly helping them.\n\n"
     )
+
+    # W4b: the PG CALLER-MEMORY block (cross-call + WhatsApp relationship memory from the W3 store).
+    # FENCED as BUSINESS CONTEXT and placed ABOVE the knowledge pack & flow ("Lost in the Middle":
+    # memory before the long flow block) so the model greets warmly with history. "" when flag off /
+    # no history / the connect read timed out — then the brain is byte-identical to today (pure no-op).
+    pg_mem_block = pg_memory if isinstance(pg_memory, str) else ""
 
     # Disambiguation mode (new caller, no campaign resolved yet): ONE open question, then match.
     if pending_disambig:
@@ -1400,7 +1464,7 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
                     "describe one, call pick_campaign with it. If they're unsure or just exploring, "
                     "you may briefly mention one or two by name and ask which interests them — then "
                     "call pick_campaign.\n")
-        return head + ask + (
+        return head + pg_mem_block + ask + (
             "\nIf after a couple of tries you genuinely can't tell which project they mean, call "
             "`capture_interest` with their name and what they're looking for so the team can follow "
             "up — never leave them with the wrong details and never go silent.\n"
@@ -1425,7 +1489,13 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
             # The override does not mutate the caller's fields dict.
             _inb_fields = dict(fields)
             _inb_fields["disclose_ai"] = False
-            brain = _prompt.build_system_prompt(_inb_fields)
+            # W1: build via the vendor-script-aware v2 renderer. v2 is byte-identical
+            # to build_system_prompt when the VENDOR_SCRIPT_INJECT feature is OFF or
+            # the campaign has no raw_script (proven by the golden oracle), so legacy
+            # inbound calls are unchanged; when a vendor pasted a script + the feature
+            # is on, the agent ADOPTS that persona. Fall back to v1 on an older prompt.py.
+            _bsp = getattr(_prompt, "build_system_prompt_v2", None) or _prompt.build_system_prompt
+            brain = _bsp(_inb_fields)
         except Exception as exc:  # noqa: BLE001
             logger.warning("build_system_prompt failed (sales fallback): %r", exc)
             brain = ""
@@ -1544,7 +1614,7 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "above is reference material ONLY and must NOT make you reply in Hindi when the caller spoke "
         "English. Never mention or ask about language — just mirror it.\n"
     )
-    return (head + inbound_override + brain + inbound_after_brain
+    return (head + pg_mem_block + inbound_override + brain + inbound_after_brain
             + grounding_block + recap_block + inbound_note + lookup_note + lang_lock)
 
 
@@ -1562,10 +1632,11 @@ class CustomerSalesAgent(Agent):
     def __init__(self, *, caller_id: str, tenant_id: str, session_id: str,
                  fields: dict | None, recap: str, caller_name: str,
                  is_returning: bool, pending_disambig: bool,
-                 campaign_options: list[dict] | None, grounding: str = "") -> None:
+                 campaign_options: list[dict] | None, grounding: str = "",
+                 pg_memory: str = "") -> None:
         super().__init__(instructions=_build_sales_instructions(
             fields or {}, recap, caller_name, is_returning, pending_disambig, campaign_options,
-            grounding=grounding))
+            grounding=grounding, pg_memory=pg_memory))
         self._caller_id = caller_id
         self._tenant_id = tenant_id or ADMIN_TENANT
         self._session_id = session_id
@@ -1576,6 +1647,7 @@ class CustomerSalesAgent(Agent):
         self._campaign_options = campaign_options or []
         self._recap = recap or ""
         self._grounding = grounding or ""  # RAG grounding block (prefetched or per-campaign); '' = none
+        self._pg_memory = pg_memory or ""  # W4b PG caller-memory block (cross-call/WA); '' = flag off / none
         # the resolved campaign id/name drive the lead-attach + returning-caller link on the next call
         self._campaign_id = str((fields or {}).get("_campaign_id", "")) if fields else ""
         self._campaign_name = str((fields or {}).get("_campaign_name", "")) if fields else ""
@@ -1636,7 +1708,7 @@ class CustomerSalesAgent(Agent):
         try:
             await self.update_instructions(_build_sales_instructions(
                 self._fields, "", self._caller_name, False, False, None,
-                grounding=self._grounding))
+                grounding=self._grounding, pg_memory=self._pg_memory))
         except Exception as exc:  # noqa: BLE001
             logger.warning("pick_campaign update_instructions failed: %r", exc)
         logger.info("AIM pick_campaign matched -> %s (%s)", self._campaign_name, self._campaign_id)
@@ -2062,6 +2134,7 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     # All resolution is read-only-over-HTTP (voice_tools) + read-only memory.py; never raises.
     cust_fields: dict | None = None
     cust_recap = ""
+    cust_pg_memory = ""   # W4b: PG cross-call/WhatsApp memory block (flag LEAD_MEMORY_PG; "" = off/none)
     cust_name = ""
     cust_is_returning = False
     cust_pending_disambig = False
@@ -2081,12 +2154,39 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         if contact.get("tenant_id"):
             tenant_id = contact.get("tenant_id") or tenant_id
         # 2) per-person cross-call memory recap (so we CONTINUE the conversation)
+        # P0-LEAK: scope the memory read to THIS call's tenant so an inbound caller can
+        # never read another tenant's cross-call memory (the legacy flat {phone}.json was
+        # shared across tenants). load_memory() namespaces by tenant and only falls back
+        # to a legacy file attributable to the SAME tenant. Label assistant turns with the
+        # configured agent voice name, not a hardcoded "Riya".
         if _memory is not None and cust_phone_digits:
             try:
-                mem = _memory.load_memory(cust_phone_digits)
-                cust_recap = (_memory.build_recap(mem) or "")[:600]
+                mem = _memory.load_memory(cust_phone_digits, tenant_id)
+                cust_recap = (_memory.build_recap(mem, _AGENT_VOICE) or "")[:600]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AIM memory load failed: %r", exc)
+        # 2b) W4b: ADDITIVE PG cross-call/WhatsApp memory (the W3 lead_memory/lead_episodes store),
+        # injected ALONGSIDE the authoritative file recap above (NEVER replaces it — split-brain-safe).
+        # FAST + FALLBACK-SAFE: runs in the connect window (off the per-turn hot path), HARD-TIMEOUT
+        # ~50ms via asyncio.wait_for over a worker thread, and on flag-off / db-down / no-history /
+        # SLOW / ANY error => "" => the brain renders exactly as today (proceed with NO memory, never
+        # block or break the call). Flag LEAD_MEMORY_PG (default 0) makes load_lead_brief a {} -> "" no-op.
+        if _lead_memory is not None and cust_phone_digits:
+            try:
+                cust_pg_memory = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _lead_memory.load_lead_brief, tenant_id, cust_phone_digits, 3),
+                    timeout=float(os.getenv("LEAD_MEMORY_READ_TIMEOUT_S", "0.05")),
+                ) or ""
+                if cust_pg_memory:
+                    logger.info("AIM PG caller-memory injected (%d chars) for %s",
+                                len(cust_pg_memory), _mask(caller_id))
+            except asyncio.TimeoutError:
+                cust_pg_memory = ""  # slow PG read => greet with NO memory, never block the call
+                logger.info("AIM PG caller-memory read timed out -> proceeding with no memory")
+            except Exception as exc:  # noqa: BLE001 — a memory read can NEVER break the connect
+                cust_pg_memory = ""
+                logger.warning("AIM PG caller-memory read failed (-> no memory): %r", exc)
         # 3) resolve which campaign brain to load
         if ret_cid and _vt is not None:
             # returning lead -> load THAT campaign's brain, greet recognising them, continue the sale
@@ -2301,10 +2401,30 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             logger.warning("AIM could not set fail-fast llm_conn_options (using defaults): %r", exc)
             _conn_opts = None
 
+    # ---- PROVIDER-LOCK (INBOUND, RUN-PLATFORM §3) — resolve the {stt,llm,tts} triple to
+    #      CONSTRUCT and BILL from the campaign fields, behind INBOUND_PROV_LOCK (default 0).
+    #      Flag OFF  -> _prov is the default EL/Sarvam/Groq triple AND we pass tts="elevenlabs"
+    #                   to _build_tts -> BYTE-IDENTICAL to today's _build_tts(). No behaviour change.
+    #      Flag ON   -> the resolved tts provider (e.g. Sarvam Bulbul on Lean/Standard) is the one
+    #                   constructed; the SAME _prov drives the _slog.start metering vendor label
+    #                   below, so "selected -> invoked -> billed (cost-ledger)" can't diverge.
+    #      The resolver is a PURE leaf in prompt.py (no I/O); a None/manager call -> {} -> EL.
+    _prov = dict(_DEFAULT_PROV_TRIPLE)
+    _prov_lock_on = _env_flag("INBOUND_PROV_LOCK", False)
+    if _prov_lock_on and _prompt is not None and hasattr(_prompt, "resolve_providers"):
+        try:
+            _prov = _prompt.resolve_providers(cust_fields or {})
+            logger.info("AIM provider-lock ON: resolved stt=%s llm=%s tts=%s",
+                        _prov.get("stt"), _prov.get("llm"), _prov.get("tts"))
+        except Exception as exc:  # noqa: BLE001 — never break a call; keep the EL default
+            logger.warning("AIM resolve_providers failed, using default triple: %r", exc)
+            _prov = dict(_DEFAULT_PROV_TRIPLE)
+    _tts_provider = _prov.get("tts") if _prov_lock_on else "elevenlabs"
+
     _sess_kwargs = dict(
         stt=_build_stt(),
         llm=_aim_llm,
-        tts=_build_tts(),
+        tts=_build_tts(_tts_provider),
         vad=_vad,
         preemptive_generation=True,
         min_endpointing_delay=float(os.getenv("MIN_EP_DELAY", "0.25")),
@@ -2395,7 +2515,7 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             caller_id=caller_id, tenant_id=tenant_id, session_id=session_id,
             fields=cust_fields, recap=cust_recap, caller_name=cust_name,
             is_returning=cust_is_returning, pending_disambig=cust_pending_disambig,
-            campaign_options=cust_campaign_options)
+            campaign_options=cust_campaign_options, pg_memory=cust_pg_memory)
 
         # ── RAG GROUNDING PREFETCH (VoiceAgentRAG, design/latency-research.md §6) ────
         # Fire-and-forget at connect: if a campaign is already resolved, retrieve its top KB chunks
@@ -2542,13 +2662,19 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
             # (a) merge with prior memory + save so the thread continues next time
             try:
                 if _memory is not None and cust_phone_digits and _cust_turns:
-                    prior = _memory.load_memory(cust_phone_digits) or {}
+                    # P0-LEAK: read+write this lead's memory TENANT-SCOPED so the inbound
+                    # thread can never merge into or read another tenant's memory. Same
+                    # tenant_id resolved for this call (closure local). The tenant-checked
+                    # legacy fallback still picks up this tenant's earner-written file.
+                    prior = _memory.load_memory(cust_phone_digits, tenant_id) or {}
                     prior_hist = list(prior.get("history") or [])
                     merged = prior_hist + _cust_turns
                     _memory.save_memory(cust_phone_digits, merged,
-                                        summary=str(prior.get("summary") or ""))
-                    logger.info("AIM customer memory saved phone-digits=%s turns=%d",
-                                cust_phone_digits[-4:] if cust_phone_digits else "", len(merged))
+                                        summary=str(prior.get("summary") or ""),
+                                        tenant_id=tenant_id)
+                    logger.info("AIM customer memory saved phone-digits=%s tenant=%s turns=%d",
+                                cust_phone_digits[-4:] if cust_phone_digits else "",
+                                tenant_id, len(merged))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("AIM customer memory save failed: %r", exc)
             # (b) create/update the lead so the inbound sale is visible (caller-id + name from the call)
@@ -2634,6 +2760,28 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
                 _slog.finish(outcome="completed", status="completed"), _loop)
         except Exception:  # noqa: BLE001
             pass
+        # W3b: durable memory enqueue — ONE tiny PG INSERT into lead_memory_outbox.
+        # Flag LEAD_MEMORY_PG (default 0) => instant no-op. NEVER raises (guarded below).
+        # Uses _slog._turns (already captured) so no file re-read; session_id is the transcript_ref
+        # (matches the ai_manager_sessions PK that the worker will reference).
+        if _lead_memory is not None and caller_id:
+            try:
+                turns = list(getattr(_slog, "_turns", []))
+                eq_result = _lead_memory.enqueue_episode(
+                    tenant_id=tenant_id or ADMIN_TENANT,
+                    phone=caller_id,
+                    channel="call",
+                    transcript_ref=session_id,
+                    turns=turns,
+                    duration_s=0,   # not available at this hook; pre-gate uses turn count
+                    outcome="",     # outcome resolved by scheduler_loop reconciliation pass
+                    meta={"room": room_name, "is_manager": is_manager},
+                )
+                if eq_result.get("enqueued"):
+                    logger.info("AIM lead_memory enqueued session=%s id=%s",
+                                session_id, eq_result.get("id"))
+            except Exception:  # noqa: BLE001 — memory enqueue must NEVER break the call-end path
+                pass
         # HOFX: drop the live-call record so GET /ai-manager/live stops showing a dead call.
         _live_remove(room_name)
 
@@ -2649,7 +2797,17 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
     # #8: now the room is connected -> create the PG session row + arm the recorder (Egress attaches
     # to a live room). Deferred to here so recording captures the greeting onward. Never blocks/raises.
     try:
-        await _slog.start(llm_provider="groq", stt_provider="sarvam", tts_provider="elevenlabs")
+        # Metering vendor label = the SAME resolved triple the plugins were built from, so the
+        # session-log/cost-ledger records the provider that actually RAN. Flag OFF -> _prov is the
+        # default triple AND _tts_provider=="elevenlabs" -> these args are identical to the legacy
+        # literals (groq/sarvam/elevenlabs) -> byte-identical session row. (RUN-PLATFORM §3 F2/F10:
+        # this makes the inbound session-LABEL truthful now; a metered inbound usage_event with a
+        # real cost is a separate deferred unit — there is no inbound bill today.)
+        await _slog.start(
+            llm_provider=_prov.get("llm", "groq"),
+            stt_provider=_prov.get("stt", "sarvam"),
+            tts_provider=(_tts_provider if _prov_lock_on else "elevenlabs"),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("AIM session logger start failed (call continues unlogged): %r", exc)
 

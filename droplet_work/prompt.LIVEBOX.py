@@ -100,6 +100,82 @@ def _opener_verbs(gender: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# PROVIDER RESOLVER — pure leaf (WAVE A, RUN-PLATFORM §3).
+#
+# resolve_providers(fields) -> {"stt","llm","tts","voice"} : the {stt, llm, tts}
+# triple (+ voice_id) that should actually be CONSTRUCTED and BILLED for a call,
+# derived from the campaign tier / explicit per-component fields.
+#
+# 🟥 EARNER-SAFETY (the load-bearing contract): this is a SIDE-EFFECT-FREE leaf
+# that reads ONLY `fields` and module-level constants — NO os.getenv, NO I/O, NO
+# import of caller.py/agent.py/aim_voice_agent.py. `build_system_prompt` does NOT
+# call it, so adding it cannot perturb the earner's prompt render. The DEFAULT for
+# an empty/legacy campaign is EXACTLY today's live triple — ElevenLabs Flash TTS,
+# Sarvam Saarika STT, Groq LLM — so `resolve_providers({}) == _DEFAULT_PROVIDERS`
+# and a flag-off caller reconstructs byte-identical behaviour.
+#
+# This resolver is OBSERVABILITY-truthful only: the dict drives BOTH plugin
+# construction AND the metering vendor label, so "selected -> invoked -> billed
+# (in the cost-ledger)" can never diverge. It does NOT change the wallet invoice
+# (_charge_call is flat-rate per minute, ignores vendor — that is F4-wallet, GATED).
+# ---------------------------------------------------------------------------
+
+# The live default triple (today's outbound earner + inbound customer agent).
+_DEFAULT_PROVIDERS = {
+    "stt": "sarvam",       # Sarvam Saarika v2.5 (STT)
+    "llm": "groq",         # Groq Llama (LLM)
+    "tts": "elevenlabs",   # ElevenLabs Flash v2.5 (TTS)
+    "voice": "",           # "" => the TTS plugin's configured default voice_id
+}
+
+# Tier -> TTS provider. Lean/Standard => Sarvam Bulbul; Premium => ElevenLabs.
+# STT + LLM are HARDWIRED today (Sarvam STT + Groq LLM for every tier); only TTS
+# varies by tier. (RUN-PLATFORM §3 F3/F4: STT/LLM are not selectable yet — do not
+# pretend they are.) Unknown / absent tier => the default (EL) => byte-identical.
+_TIER_TTS = {
+    "lean": "sarvam",
+    "standard": "sarvam",
+    "std": "sarvam",
+    "premium": "elevenlabs",
+    "prem": "elevenlabs",
+}
+
+# Accepted TTS provider tokens (an explicit `tts_provider` field overrides tier).
+_TTS_PROVIDERS = {"elevenlabs", "sarvam"}
+
+
+def resolve_providers(f: dict) -> dict:
+    """Pure leaf: return the {stt, llm, tts, voice} provider triple to construct + bill.
+
+    Resolution order for TTS: explicit `tts_provider` field > `tier` mapping > default
+    (ElevenLabs). STT + LLM are fixed today (Sarvam / Groq). `voice` is the requested
+    voice_id ("" => the plugin default). NEVER raises; any malformed input falls back
+    to the live default. `resolve_providers({})` is exactly `_DEFAULT_PROVIDERS`.
+    """
+    out = dict(_DEFAULT_PROVIDERS)
+    try:
+        f = f or {}
+        # --- TTS: explicit field wins, else tier, else default EL ---
+        tts = str(f.get("tts_provider") or "").strip().lower()
+        if tts not in _TTS_PROVIDERS:
+            tier = str(f.get("tier") or f.get("plan_tier") or "").strip().lower()
+            tts = _TIER_TTS.get(tier, _DEFAULT_PROVIDERS["tts"])
+        out["tts"] = tts
+        # --- STT / LLM: hardwired today (kept overridable for the GATED outbound wave) ---
+        stt = str(f.get("stt_provider") or "").strip().lower()
+        if stt in ("sarvam",):
+            out["stt"] = stt
+        llm = str(f.get("llm_provider") or "").strip().lower()
+        if llm in ("groq",):
+            out["llm"] = llm
+        # --- voice id (optional; "" => plugin default) ---
+        out["voice"] = str(f.get("voice_id") or "").strip()
+    except Exception:  # noqa: BLE001 — a resolver must NEVER break a call; fall back to default.
+        return dict(_DEFAULT_PROVIDERS)
+    return out
+
+
 SHARED_RULES = """\
 === बोलने का अंदाज़ — असली इंसान की तरह, situation के हिसाब से adapt करो ===
 यह फ़ोन call है, भाषण नहीं। असली trained telecaller थोड़ा बोलता है, फिर सामने वाले को react करने \
