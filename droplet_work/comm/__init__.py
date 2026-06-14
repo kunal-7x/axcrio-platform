@@ -45,6 +45,7 @@ try:  # pragma: no cover - all-or-nothing behavioural surface
     )
     from .channels.telegram import TelegramAdapter  # noqa: F401
     from . import vault_read, send_log, engine, sessions, webhook  # noqa: F401
+    from . import consent, founder_alert, post_call  # noqa: F401
     _BEHAVIOURAL_LOADED = True
 except Exception:  # noqa: BLE001 — never let an optional-dep import break the config shell
     _BEHAVIOURAL_LOADED = False
