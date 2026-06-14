@@ -867,6 +867,15 @@ export type RateCard = {
     llm: Record<string, { label: string; inr_per_mtok: number }>;
     tts: Record<string, { label: string; inr_per_1k: number }>;
     telephony_inr_per_min: number;
+    // ── WAVE C honesty fields (all OPTIONAL → dormant-safe) ──
+    // Telephony (Vobiz SIP) has NO published per-min rate. When `telephony_verified`
+    // is falsy the cost meter renders an "est. — pending your real Vobiz CDR" caption
+    // and NEVER a hard fabricated ₹. Set true only once a real CDR rate is wired.
+    telephony_verified?: boolean;
+    telephony_note?: string;
+    // Source attribution per row (URL + date) for the ⓘ tooltips in the breakdown.
+    sources?: Record<string, string>;
+    fx_usd_inr?: number;
 };
 export type TiersPayload = {
     tiers: Tier[];
@@ -876,7 +885,81 @@ export type TiersPayload = {
     cost_formula?: Record<string, string>;
     phase_note?: string;
     ob_prov_pending?: boolean;
+    // ── WAVE C: provider-lock live state ──
+    // false / undefined → CONFIG-ONLY (today's truth: engine still honours its
+    // configured outbound provider; the per-campaign override is saved but the
+    // OUTBOUND honoring is gated). true → LIVE (selected provider runs + is billed).
+    ob_prov_live?: boolean;
+    // Inbound provider-lock label is truthful NOW (session-log); outbound gated.
+    inbound_prov_lock?: boolean;
 };
+
+// Dormant-safe: returns the set of lead IDs already called in this campaign so the
+// audience step can offer an "exclude already-called" toggle. Reuses GET /calls
+// filtered by campaign — no new backend route. Any failure / 404 → empty set
+// (toggle silently excludes nothing). Matches on call.id AND phone so it works
+// whether the run payload is keyed by lead id or number.
+export async function getCalledLeadKeys(campaignId: string): Promise<Set<string>> {
+    const keys = new Set<string>();
+    if (!campaignId) return keys;
+    try {
+        const page = await getCalls({ campaign_id: campaignId, limit: 1000 });
+        for (const c of page.calls || []) {
+            if (c.id) keys.add(String(c.id));
+            if (c.phone) keys.add(String(c.phone));
+        }
+    } catch {
+        /* dormant-safe: no rows → exclude nothing */
+    }
+    return keys;
+}
+
+// Dormant-safe campaign-level Cost-Per-Lead summary. Joins the billing cost
+// explorer total ÷ qualified-call count (reuses GET /billing/explorer — no new
+// route). Returns nulls on any failure so the CPL line simply hides.
+export type CampaignCPL = {
+    totalCost: number | null;
+    calls: number;
+    qualified: number;
+    cpl: number | null; // total ÷ qualified
+    cpc: number | null; // total ÷ calls
+    currency: string;
+};
+export async function getCampaignCPL(campaignId: string): Promise<CampaignCPL> {
+    const empty: CampaignCPL = {
+        totalCost: null,
+        calls: 0,
+        qualified: 0,
+        cpl: null,
+        cpc: null,
+        currency: "INR",
+    };
+    if (!campaignId) return empty;
+    try {
+        const ex = await getBillingExplorer({ campaign_id: campaignId });
+        const rows = ex.rows || [];
+        const calls = rows.length;
+        // "qualified" = a connected outcome that progressed (heuristic, no new field):
+        // any outcome that isn't a plain no-answer / failed / voicemail.
+        const isQualified = (o?: string) => {
+            const s = (o || "").toLowerCase();
+            if (!s) return false;
+            return !/no[\s_-]?answer|failed|busy|voicemail|declined|missed/.test(s);
+        };
+        const qualified = rows.filter((r) => isQualified(r.outcome)).length;
+        const total = typeof ex.total === "number" ? ex.total : null;
+        return {
+            totalCost: total,
+            calls,
+            qualified,
+            cpl: total != null && qualified > 0 ? total / qualified : null,
+            cpc: total != null && calls > 0 ? total / calls : null,
+            currency: ex.currency || "INR",
+        };
+    } catch {
+        return empty;
+    }
+}
 
 // Dormant-safe: returns null on any failure so the card hides the slider gracefully.
 export async function getTiers(): Promise<TiersPayload | null> {

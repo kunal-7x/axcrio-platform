@@ -360,6 +360,139 @@ function toRecording(r: Record<string, unknown>, idx: number): Recording {
     };
 }
 
+// ── Relationship memory (VOICE-BRAIN W4) ────────────────────────────────────
+// The durable, cross-channel lead_memory profile + lead_episodes history, served
+// by GET /leads/{phone}/memory and /leads/{phone}/episodes (tenant-scoped, RLS).
+// Both endpoints are DORMANT-SAFE on the backend (LEAD_MEMORY_PG flag off / no
+// rows => memory:null / episodes:[]); the client mirrors that — it NEVER throws,
+// resolving every degraded state (route absent, PG down, network) to the empty
+// shape so the panel renders a calm "no memory yet" state instead of an error.
+
+// The lead_memory profile row (durable cross-channel relationship facts).
+export type LeadMemory = {
+    profile: Record<string, unknown>;
+    durable_facts: Record<string, unknown>;
+    preferences: Record<string, unknown>;
+    last_outcome: Record<string, unknown>;
+    next_best_action: Record<string, unknown>;
+    episode_count: number;
+    version: number;
+    last_channel: string;
+    last_seen_at: string;
+    updated_at: string;
+};
+
+export type LeadMemoryResponse = {
+    phone: string;
+    memory: LeadMemory | null;
+};
+
+// One lead_episodes row (a single call or WhatsApp conversation, summarised).
+export type LeadEpisode = {
+    id: number;
+    channel: string; // 'call' | 'whatsapp'
+    summary: string;
+    objections: string[];
+    sentiment: string; // positive | neutral | negative | mixed
+    outcome: string; // booked | interested | callback | not_interested | …
+    transcript_ref: string;
+    meta: Record<string, unknown>;
+    created_at: string;
+};
+
+export type LeadEpisodesResponse = {
+    phone: string;
+    episodes: LeadEpisode[];
+    total: number;
+    offset: number;
+    limit: number;
+    next: number | null;
+};
+
+// Never throws: any degraded state -> {memory:null}. A genuine 401 still logs out.
+export async function getLeadMemory(phone: string): Promise<LeadMemoryResponse> {
+    const empty: LeadMemoryResponse = { phone, memory: null };
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/leads/${encodeURIComponent(phone)}/memory`, {
+            headers: authHeaders(),
+        });
+    } catch {
+        return empty; // offline / route absent
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem("famit_token");
+        localStorage.removeItem("famit_me");
+        window.location.href = "/login";
+        return empty;
+    }
+    if (!res.ok) return empty; // 404 / 501 / 5xx -> dormant-safe
+    const data = (await res.json().catch(() => ({}))) as Partial<LeadMemoryResponse>;
+    return {
+        phone: typeof data.phone === "string" ? data.phone : phone,
+        memory: (data.memory as LeadMemory | null) ?? null,
+    };
+}
+
+// Never throws: any degraded state -> {episodes:[]}. Newest-first, paginated.
+export async function getLeadEpisodes(
+    phone: string,
+    opts?: { limit?: number; offset?: number }
+): Promise<LeadEpisodesResponse> {
+    const off = Math.max(0, opts?.offset ?? 0);
+    const lim = Math.min(Math.max(1, opts?.limit ?? 50), 200);
+    const empty: LeadEpisodesResponse = {
+        phone,
+        episodes: [],
+        total: 0,
+        offset: off,
+        limit: lim,
+        next: null,
+    };
+    const qs = new URLSearchParams({ limit: String(lim), offset: String(off) });
+    let res: Response;
+    try {
+        res = await fetch(
+            `${BASE}/leads/${encodeURIComponent(phone)}/episodes?${qs.toString()}`,
+            { headers: authHeaders() }
+        );
+    } catch {
+        return empty;
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem("famit_token");
+        localStorage.removeItem("famit_me");
+        window.location.href = "/login";
+        return empty;
+    }
+    if (!res.ok) return empty;
+    const data = (await res.json().catch(() => ({}))) as Partial<LeadEpisodesResponse>;
+    const rawEps = Array.isArray(data.episodes) ? data.episodes : [];
+    const episodes: LeadEpisode[] = rawEps.map((e) => {
+        const r = (e ?? {}) as Record<string, unknown>;
+        const objs = r.objections;
+        return {
+            id: Number(r.id ?? 0),
+            channel: String(r.channel ?? "").trim(),
+            summary: String(r.summary ?? ""),
+            objections: Array.isArray(objs) ? objs.map((o) => String(o)) : [],
+            sentiment: String(r.sentiment ?? "").trim(),
+            outcome: String(r.outcome ?? "").trim(),
+            transcript_ref: String(r.transcript_ref ?? ""),
+            meta: (r.meta as Record<string, unknown>) ?? {},
+            created_at: String(r.created_at ?? ""),
+        };
+    });
+    return {
+        phone: typeof data.phone === "string" ? data.phone : phone,
+        episodes,
+        total: Number(data.total ?? episodes.length),
+        offset: Number(data.offset ?? off),
+        limit: Number(data.limit ?? lim),
+        next: typeof data.next === "number" ? data.next : null,
+    };
+}
+
 // ── Transcript (call chat-view — full ordered turns for ONE call) ────────────
 //
 // GET /calls/{call_id}/transcript returns the FULL ordered transcript for one

@@ -22,6 +22,7 @@ import {
     addLeads,
     run,
     getStatus,
+    getCalledLeadKeys,
     RunError,
     type Campaign,
     type Lead,
@@ -29,6 +30,13 @@ import {
     type StatusLead,
     type RunResult,
 } from "@/lib/api";
+import {
+    planFromTier,
+    suggestPacing,
+    pacingLabel,
+    pacingReason,
+    type Pacing,
+} from "./_pacing-defaults";
 import { useMe, canWrite } from "@/lib/auth";
 import { type SelectOption } from "@/types/select";
 import { type TabsOption } from "@/types/tabs";
@@ -93,6 +101,10 @@ export default function RunPage() {
 
     // ── Manual override (empty ⇒ all-filtered) ──
     const [manualSelected, setManualSelected] = useState<Set<string>>(new Set());
+
+    // ── WAVE C: exclude leads already called in THIS campaign ──
+    const [excludeCalled, setExcludeCalled] = useState(false);
+    const [calledKeys, setCalledKeys] = useState<Set<string>>(new Set());
 
     // ── Upload ──
     const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -194,6 +206,22 @@ export default function RunPage() {
         return c?.id ?? "";
     }, [campaign, campaigns]);
 
+    // ── WAVE C: load the set of lead keys already called in this campaign ──
+    // (dormant-safe: 404/empty → exclude nothing; the toggle simply does nothing).
+    useEffect(() => {
+        if (!campaignId) {
+            setCalledKeys(new Set());
+            return;
+        }
+        let cancelled = false;
+        getCalledLeadKeys(campaignId)
+            .then((s) => !cancelled && setCalledKeys(s))
+            .catch(() => !cancelled && setCalledKeys(new Set()));
+        return () => {
+            cancelled = true;
+        };
+    }, [campaignId]);
+
     // Base pool depends on the source tab. "All stored" / "By temperature" /
     // "Pick manually" all draw from stored leads; "By upload" merges in the
     // selected batches' leads (stored is still included so filters compose).
@@ -222,12 +250,43 @@ export default function RunPage() {
         [filtered, query]
     );
 
-    const audience = useMemo(
-        () => resolveAudience(filtered, manualSelected),
-        [filtered, manualSelected]
-    );
+    const audience = useMemo(() => {
+        const resolved = resolveAudience(filtered, manualSelected);
+        if (!excludeCalled || calledKeys.size === 0) return resolved;
+        // Drop leads already dialed in this campaign (match on id OR phone).
+        return resolved.filter(
+            (l) => !calledKeys.has(l.id) && !(l.phone && calledKeys.has(l.phone))
+        );
+    }, [filtered, manualSelected, excludeCalled, calledKeys]);
+
+    // How many of the current filtered pool would be removed by the toggle —
+    // shown on the toggle so the founder sees its effect before flipping it.
+    const alreadyCalledInPool = useMemo(() => {
+        if (calledKeys.size === 0) return 0;
+        const resolved = resolveAudience(filtered, manualSelected);
+        return resolved.filter(
+            (l) => calledKeys.has(l.id) || (l.phone && calledKeys.has(l.phone))
+        ).length;
+    }, [filtered, manualSelected, calledKeys]);
 
     const breakdown = useMemo(() => breakdownOf(audience), [audience]);
+
+    // ── WAVE C: DID-protective pacing suggestion (audience-aware, override-able) ──
+    // Plan is inferred conservatively (Starter floor) since this page has no hard
+    // plan field; the Voice & Providers tier refines cost, not the DID-protective caps.
+    const suggestedPacing: Pacing = useMemo(
+        () => suggestPacing(planFromTier(), audience.length),
+        [audience.length]
+    );
+    const pacingMatchesSuggestion =
+        (concurrency || 1) === suggestedPacing.concurrency &&
+        hourlyCap === suggestedPacing.hourlyCap &&
+        dailyCap === suggestedPacing.dailyCap;
+    const applySuggestedPacing = () => {
+        setConcurrency(suggestedPacing.concurrency);
+        setHourlyCap(suggestedPacing.hourlyCap);
+        setDailyCap(suggestedPacing.dailyCap);
+    };
 
     // Live temperature counts over the base pool (for the chip badges).
     const tempCounts = useMemo(() => {
@@ -569,6 +628,47 @@ export default function RunPage() {
                                         who will be dialed.
                                     </p>
 
+                                    {/* WAVE C: exclude leads already called in this campaign */}
+                                    {campaignId && calledKeys.size > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setExcludeCalled((v) => !v)
+                                            }
+                                            className={`mt-3 flex items-center gap-3 w-full p-3 rounded-2xl border text-left transition-colors ${
+                                                excludeCalled
+                                                    ? "border-primary-01/40 bg-primary-01/8"
+                                                    : "border-s-subtle bg-b-surface1 hover:border-s-stroke2 dark:bg-shade-04/30"
+                                            }`}
+                                        >
+                                            <span
+                                                className={`relative shrink-0 w-9 h-5 rounded-full transition-colors ${
+                                                    excludeCalled
+                                                        ? "bg-primary-01"
+                                                        : "bg-s-stroke2"
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`absolute top-0.5 size-4 rounded-full bg-b-surface2 transition-transform ${
+                                                        excludeCalled
+                                                            ? "translate-x-4"
+                                                            : "translate-x-0.5"
+                                                    }`}
+                                                />
+                                            </span>
+                                            <span className="min-w-0">
+                                                <span className="block text-button text-t-primary">
+                                                    Skip already-called leads
+                                                </span>
+                                                <span className="block text-caption text-t-tertiary">
+                                                    {alreadyCalledInPool > 0
+                                                        ? `${alreadyCalledInPool} in this audience were already dialed in this campaign`
+                                                        : "No overlap with previously dialed leads"}
+                                                </span>
+                                            </span>
+                                        </button>
+                                    )}
+
                                     {/* Progressive disclosure: only the active
                                         source mode's controls render. */}
                                     {showUpload && (
@@ -883,6 +983,52 @@ export default function RunPage() {
                         <div key="step-2" className="step-reveal flex flex-col gap-4">
                             <Card title="Pacing & caps">
                                 <div className="px-5 pb-5 max-lg:px-3">
+                                    {/* WAVE C: smart pacing-defaults chip (one-click, DID-protective, override-able) */}
+                                    <div
+                                        className={`mb-4 flex items-center gap-3 p-3 rounded-2xl border ${
+                                            pacingMatchesSuggestion
+                                                ? "border-primary-02/30 bg-primary-02/8"
+                                                : "border-s-subtle bg-b-surface1 dark:bg-shade-04/30"
+                                        }`}
+                                    >
+                                        <span className="grid place-items-center size-8 shrink-0 rounded-full bg-b-surface2 text-t-secondary">
+                                            <Icon
+                                                name={
+                                                    pacingMatchesSuggestion
+                                                        ? "check-circle-fill"
+                                                        : "clock"
+                                                }
+                                                className={`size-4 ${
+                                                    pacingMatchesSuggestion
+                                                        ? "fill-primary-02"
+                                                        : "fill-t-secondary"
+                                                }`}
+                                            />
+                                        </span>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-button text-t-primary">
+                                                Smart pacing ·{" "}
+                                                {pacingLabel(suggestedPacing)}
+                                            </div>
+                                            <div className="text-caption text-t-tertiary truncate">
+                                                {pacingReason(audience.length)}
+                                            </div>
+                                        </div>
+                                        {pacingMatchesSuggestion ? (
+                                            <span className="shrink-0 text-caption text-primary-02 font-medium">
+                                                Applied
+                                            </span>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={applySuggestedPacing}
+                                                disabled={!writable}
+                                                className="shrink-0 px-3 h-8 inline-flex items-center rounded-full bg-b-surface2 border border-s-stroke2 text-caption font-medium text-t-primary transition-colors hover:border-s-highlight disabled:opacity-40 disabled:pointer-events-none"
+                                            >
+                                                Apply
+                                            </button>
+                                        )}
+                                    </div>
                                     <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
                                         <Field
                                             label="Concurrency"
