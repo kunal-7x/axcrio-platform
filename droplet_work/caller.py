@@ -3605,6 +3605,41 @@ async def firewall_set_pin(request: Request, pin: str = Form(...)):
     return JSONResponse(res, status_code=200 if res.get("ok") else 400)
 
 
+@app.post("/firewall/pin/change")
+async def firewall_change_pin(request: Request,
+                              old_pin: str = Form(...), new_pin: str = Form(...)):
+    """Rotate the caller's OWN Action-Firewall PIN. Verifies `old_pin` against the EXISTING salted hash
+    (firewall.check_pin — unchanged), then sets `new_pin` (firewall.set_pin — unchanged). Tenant/role
+    scoped (token-derived; never a body field). Brute-force protected: ~5 wrong old-PIN attempts inside a
+    rolling 15-min window -> time-boxed lockout (429). Every outcome is audited into the immutable events
+    leg. ADDITIVE — does not alter the existing PIN verify / step-up logic."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    # role scope: writing one's own security PIN requires write capability (same axis as /firewall/pin
+    # setters and the AIM numbers writers). Read-only roles cannot rotate the PIN.
+    if not can(t, "write"):
+        return _forbidden()
+    if _firewall_mod is None or not _firewall_mod.available():
+        return JSONResponse({"ok": False, "reason": "firewall unavailable"}, status_code=503)
+    tid = t["tenant_id"]
+    res = _firewall_mod.change_pin(tid, old_pin, new_pin)
+    if res.get("ok"):
+        _audit(request, t, "firewall.pin.change", "firewall", tid)
+        return JSONResponse({"ok": True}, status_code=200)
+    reason = res.get("reason", "")
+    if reason == "locked":
+        _audit(request, t, "firewall.pin.change.locked", "firewall", tid,
+               meta={"retry_after_s": res.get("retry_after_s", 0)})
+        return JSONResponse(res, status_code=429)
+    if reason == "invalid old PIN":
+        _audit(request, t, "firewall.pin.change.fail", "firewall", tid,
+               meta={"fails": res.get("fails", 0), "locked": res.get("locked", False)})
+        return JSONResponse(res, status_code=401)
+    # remaining reasons (no PIN set / new == old / pin length) are client validation -> 400
+    return JSONResponse(res, status_code=400)
+
+
 @app.post("/firewall/verify-pin")
 async def firewall_verify_pin(request: Request, pin: str = Form(...), scope: str = Form("spend")):
     """Verify the caller's PIN; on match mint a short-TTL step-up token (the client then replays the

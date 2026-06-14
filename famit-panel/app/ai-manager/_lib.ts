@@ -275,6 +275,22 @@ export const setAimGrants = (id: string, grants: string[]) =>
 export const revokeAimNumber = (id: string) =>
     write<AimNumber & { ok: boolean }>(`/ai-manager/numbers/${encodeURIComponent(id)}/revoke`, {});
 
+// Hard-delete a registered AIM phone number (DELETE /ai-manager/numbers/:id).
+// Requires step-up PIN for active numbers; the backend enforces this.
+export const deleteAimNumber = (id: string) =>
+    writeDelete<{ ok: boolean }>(`/ai-manager/numbers/${encodeURIComponent(id)}`);
+
+/* ============================================================================
+ * FIREWALL PIN CHANGE — POST /firewall/pin/change
+ * Lets an authorised user rotate their own step-up PIN. The request must carry
+ * old_pin + new_pin; the backend verifies old_pin (salted HS256), updates the
+ * hash, and resets the lockout counter. A 403 means wrong old PIN or locked.
+ * ========================================================================== */
+export type PinChangeResult = { ok: boolean; changed_at?: string };
+
+export const changeFirewallPin = (old_pin: string, new_pin: string) =>
+    write<PinChangeResult>("/firewall/pin/change", { old_pin, new_pin });
+
 /* ============================================================================
  * F2 — SETUP (ai_manager_profiles) + AUTHORIZED USERS (ai_manager_authorized_users)
  * Master spec §8 (DB), §10 (APIs), §6 (risk L0–L4). Raw PIN is NEVER sent in a

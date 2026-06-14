@@ -35,12 +35,17 @@ import {
     createAimUser,
     patchAimUser,
     setAimUserPin,
+    getAimNumbers,
+    registerAimNumber,
+    deleteAimNumber,
+    changeFirewallPin,
     AIM_PROFILE_DEFAULTS,
     AIM_RISK_LEVELS,
     AIM_LANGUAGES,
     AIM_VOICE_PROVIDERS,
     AIM_TIMEZONES,
     AIM_ROLES,
+    AIM_VERIFY_MODES,
     KNOWN_GRANTS,
     INTENT_CATALOG,
     BLOCKED_EXAMPLES,
@@ -50,6 +55,8 @@ import {
     type AimRiskLevel,
     type AimAuthUser,
     type AimRole,
+    type AimNumber,
+    type AimVerifyMode,
     type ReadResult,
 } from "./_lib";
 
@@ -61,6 +68,8 @@ const SECTIONS = [
     { id: "safety", label: "Confirmation & PIN", icon: "lock" },
     { id: "spend", label: "Spend limits", icon: "wallet" },
     { id: "hours", label: "Calling hours", icon: "clock" },
+    { id: "numbers", label: "Phone numbers", icon: "mobile" },
+    { id: "pin-change", label: "Change PIN", icon: "lock" },
     { id: "team", label: "Team", icon: "profile" },
     { id: "capabilities", label: "What it can do", icon: "grid" },
 ] as const;
@@ -105,6 +114,10 @@ export default function SetupTab() {
     const [editing, setEditing] = useState<AimAuthUser | null>(null);
     const [pinFor, setPinFor] = useState<AimAuthUser | null>(null);
 
+    // ---- numbers ----
+    const [numbers, setNumbers] = useState<ReadResult<{ numbers: AimNumber[] }> | null>(null);
+    const [numModalOpen, setNumModalOpen] = useState(false);
+
     const load = useCallback(() => {
         setLoading(true);
         Promise.all([
@@ -113,6 +126,7 @@ export default function SetupTab() {
                 if (r.kind === "ok") setForm({ ...AIM_PROFILE_DEFAULTS, ...stripNulls(r.data) });
             }),
             getAimUsers().then(setUsers),
+            getAimNumbers().then(setNumbers),
         ]).finally(() => setLoading(false));
     }, []);
 
@@ -433,6 +447,29 @@ export default function SetupTab() {
                                         </FormRow>
                                     </div>
                                 </Card>
+                            </section>
+
+                            {/* PHONE NUMBERS */}
+                            <section id="numbers" className="scroll-mt-24">
+                                <NumbersCard
+                                    numbers={numbers}
+                                    writable={writable}
+                                    dormant={dormant}
+                                    numModalOpen={numModalOpen}
+                                    onOpenAdd={() => setNumModalOpen(true)}
+                                    onCloseAdd={() => setNumModalOpen(false)}
+                                    onDeleted={(msg) => { showToast(msg); load(); }}
+                                    onError={(m) => showToast(m, "error")}
+                                    onAdded={(msg) => { showToast(msg); setNumModalOpen(false); load(); }}
+                                />
+                            </section>
+
+                            {/* CHANGE PIN */}
+                            <section id="pin-change" className="scroll-mt-24">
+                                <ChangePinCard
+                                    onSuccess={(msg) => showToast(msg)}
+                                    onError={(m) => showToast(m, "error")}
+                                />
                             </section>
 
                             {/* TEAM (authorized users) */}
@@ -1086,5 +1123,421 @@ function SetupSkeleton() {
                 </div>
             ))}
         </>
+    );
+}
+
+/* ================================================================= NUMBERS */
+
+// Status badge for a registered AIM phone number.
+function numStatusVariant(s: AimNumber["status"]) {
+    if (s === "active") return "success" as const;
+    if (s === "locked") return "warning" as const;
+    return "neutral" as const;
+}
+
+function AddNumberModal({
+    onClose,
+    onAdded,
+    onError,
+}: {
+    onClose: () => void;
+    onAdded: (msg: string) => void;
+    onError: (m: string) => void;
+}) {
+    const [phone, setPhone] = useState("");
+    const [label, setLabel] = useState("");
+    const [role, setRole] = useState<AimVerifyMode>("voice_pin");
+    const [grants, setGrants] = useState<string[]>(["analytics"]);
+    const [saving, setSaving] = useState(false);
+
+    function toggleGrant(g: string) {
+        setGrants((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
+    }
+
+    async function submit(e: React.FormEvent) {
+        e.preventDefault();
+        if (!phone.trim()) return;
+        setSaving(true);
+        try {
+            await registerAimNumber({
+                phone: phone.trim(),
+                label: label.trim() || undefined,
+                verify_mode: role,
+                grants,
+            });
+            onAdded(`${phone.trim()} registered — verify the OTP to activate it`);
+        } catch (err) {
+            onError(err instanceof Error ? err.message : "Registration failed");
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    return (
+        <ModalShell title="Add phone number" icon="mobile" onClose={onClose} wide>
+            <form onSubmit={submit} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4 max-sm:grid-cols-1">
+                    <FormRow label="Phone number" hint="Include country code e.g. +919876543210">
+                        <input
+                            type="text"
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            placeholder="+919876543210"
+                            className={inputCls}
+                            required
+                        />
+                    </FormRow>
+                    <FormRow label="Label" hint="Optional friendly name for this line">
+                        <input
+                            type="text"
+                            value={label}
+                            onChange={(e) => setLabel(e.target.value)}
+                            placeholder="Riya — sales line"
+                            className={inputCls}
+                        />
+                    </FormRow>
+                </div>
+
+                <FormRow label="Verification mode" hint="How this number authenticates commands — voice PIN (default) or OTP SMS.">
+                    <select
+                        value={role}
+                        onChange={(e) => setRole(e.target.value as AimVerifyMode)}
+                        className={selectCls}
+                    >
+                        {AIM_VERIFY_MODES.map((m) => (
+                            <option key={m} value={m}>
+                                {m === "voice_pin" ? "Voice PIN (4–6 digit, spoken)" : "OTP SMS"}
+                            </option>
+                        ))}
+                    </select>
+                </FormRow>
+
+                <FormRow label="Capability grants" hint="What the AI will allow from this number. Default-deny for anything not listed.">
+                    <div className="flex flex-wrap gap-2">
+                        {KNOWN_GRANTS.map((g) => {
+                            const on = grants.includes(g);
+                            return (
+                                <button
+                                    type="button"
+                                    key={g}
+                                    onClick={() => toggleGrant(g)}
+                                    className={`inline-flex items-center gap-1 h-8 px-3 rounded-full border text-button transition-colors ${
+                                        on
+                                            ? "border-transparent bg-primary-01/12 text-primary-01 fill-primary-01"
+                                            : "border-s-subtle text-t-secondary hover:border-s-highlight hover:text-t-primary"
+                                    }`}
+                                >
+                                    {on && <Icon name="check" className="size-3 fill-current" />}
+                                    {g}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </FormRow>
+
+                <div className="flex items-center justify-end gap-3 pt-1">
+                    <Button isStroke onClick={onClose} disabled={saving} type="button">Cancel</Button>
+                    <Button isBlack disabled={saving} type="submit">
+                        {saving ? "Registering…" : "Register number"}
+                    </Button>
+                </div>
+            </form>
+        </ModalShell>
+    );
+}
+
+function NumbersCard({
+    numbers,
+    writable,
+    dormant,
+    numModalOpen,
+    onOpenAdd,
+    onCloseAdd,
+    onDeleted,
+    onError,
+    onAdded,
+}: {
+    numbers: ReadResult<{ numbers: AimNumber[] }> | null;
+    writable: boolean;
+    dormant: boolean;
+    numModalOpen: boolean;
+    onOpenAdd: () => void;
+    onCloseAdd: () => void;
+    onDeleted: (msg: string) => void;
+    onError: (m: string) => void;
+    onAdded: (msg: string) => void;
+}) {
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
+    const rows = numbers?.kind === "ok" ? numbers.data.numbers : [];
+    const numsDormant = dormant || numbers?.kind === "dormant";
+
+    async function handleDelete(n: AimNumber) {
+        if (!confirm(`Remove ${n.phone} (${n.label || "unlabelled"})? This cannot be undone.`)) return;
+        setDeletingId(n.number_id);
+        try {
+            await deleteAimNumber(n.number_id);
+            onDeleted(`${n.phone} removed`);
+        } catch (err) {
+            onError(err instanceof Error ? err.message : "Remove failed");
+        } finally {
+            setDeletingId(null);
+        }
+    }
+
+    return (
+        <>
+            <Card
+                title="Phone numbers"
+                headContent={
+                    <div className="ml-auto flex items-center gap-2">
+                        <Badge variant="neutral">{rows.length} registered</Badge>
+                        {writable && (
+                            <button
+                                onClick={onOpenAdd}
+                                disabled={numsDormant}
+                                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-s-subtle text-button text-t-secondary fill-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary hover:fill-t-primary disabled:opacity-50"
+                            >
+                                <Icon name="plus" className="size-3.5 fill-current" />
+                                Add
+                            </button>
+                        )}
+                    </div>
+                }
+            >
+                <div className="overflow-x-auto">
+                    <table className="data-table">
+                        <thead>
+                            <tr>
+                                <th>Number</th>
+                                <th>Label</th>
+                                <th>Role</th>
+                                <th>Verify</th>
+                                <th>Status</th>
+                                <th>Added</th>
+                                {writable && <th className="text-right pr-5">Actions</th>}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {numsDormant || rows.length === 0 ? (
+                                <tr>
+                                    <td colSpan={writable ? 7 : 6}>
+                                        <div className="state-block">
+                                            <span className="state-glyph">
+                                                <Icon name="mobile" className="fill-inherit" />
+                                            </span>
+                                            <div className="state-title">
+                                                {numsDormant
+                                                    ? "Phone numbers appear once the AI Manager is live"
+                                                    : "No numbers registered yet"}
+                                            </div>
+                                            <div className="state-sub max-w-md mx-auto">
+                                                Register the phone numbers authorised to call the AI Manager and issue
+                                                commands. Each number gets a role and a capability grant list.
+                                            </div>
+                                            {!numsDormant && writable && (
+                                                <button
+                                                    onClick={onOpenAdd}
+                                                    className="mt-4 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-primary-01 text-white text-button hover:bg-primary-02 transition-colors"
+                                                >
+                                                    <Icon name="plus" className="size-3.5 fill-current" />
+                                                    Register first number
+                                                </button>
+                                            )}
+                                        </div>
+                                    </td>
+                                </tr>
+                            ) : (
+                                rows.map((n) => (
+                                    <tr key={n.number_id}>
+                                        <td>
+                                            <span className="font-mono text-body-2 text-t-primary">{n.phone}</span>
+                                        </td>
+                                        <td className="text-t-secondary">{n.label || <span className="text-t-tertiary">—</span>}</td>
+                                        <td><Badge variant={roleVariant(n.role)}>{n.role}</Badge></td>
+                                        <td>
+                                            <span className="text-caption text-t-secondary">
+                                                {n.verify_mode === "voice_pin" ? "Voice PIN" : "OTP"}
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <Badge variant={numStatusVariant(n.status)} dot>
+                                                {n.status}
+                                            </Badge>
+                                        </td>
+                                        <td className="text-t-secondary whitespace-nowrap">{fmt(n.registered_at)}</td>
+                                        {writable && (
+                                            <td className="text-right pr-5">
+                                                <RowBtn
+                                                    icon="delete"
+                                                    label={deletingId === n.number_id ? "Removing…" : "Remove"}
+                                                    danger
+                                                    onClick={() => handleDelete(n)}
+                                                />
+                                            </td>
+                                        )}
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </Card>
+
+            {numModalOpen && (
+                <AddNumberModal
+                    onClose={onCloseAdd}
+                    onAdded={onAdded}
+                    onError={onError}
+                />
+            )}
+        </>
+    );
+}
+
+/* ============================================================= CHANGE PIN */
+
+function ChangePinCard({
+    onSuccess,
+    onError,
+}: {
+    onSuccess: (msg: string) => void;
+    onError: (m: string) => void;
+}) {
+    const [oldPin, setOldPin] = useState("");
+    const [newPin, setNewPin] = useState("");
+    const [confirmPin, setConfirmPin] = useState("");
+    const [saving, setSaving] = useState(false);
+    const [localError, setLocalError] = useState("");
+
+    const mismatch = confirmPin.length > 0 && newPin !== confirmPin;
+    const newPinValid = /^\d{4}$|^\d{6}$/.test(newPin);
+    const canSubmit = oldPin.length >= 4 && newPinValid && newPin === confirmPin;
+
+    // Detect backend lockout in the error message
+    function isLockoutError(msg: string): boolean {
+        return /lock|attempt|too many/i.test(msg);
+    }
+
+    async function submit(e: React.FormEvent) {
+        e.preventDefault();
+        if (!canSubmit) return;
+        setLocalError("");
+        setSaving(true);
+        try {
+            await changeFirewallPin(oldPin, newPin);
+            // Clear sensitive fields on success
+            setOldPin("");
+            setNewPin("");
+            setConfirmPin("");
+            onSuccess("PIN changed successfully — your new PIN is active immediately");
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "PIN change failed";
+            setLocalError(msg);
+            onError(msg);
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    return (
+        <Card
+            title="Change step-up PIN"
+            headContent={
+                <span className="ml-3 inline-flex items-center gap-1.5 text-caption text-t-tertiary">
+                    <Icon name="lock" className="size-3.5 fill-t-tertiary" />
+                    Never stored in plain text
+                </span>
+            }
+        >
+            <div className="px-5 pb-5 max-lg:px-3">
+                <p className="text-body-2 text-t-secondary mb-5">
+                    Your step-up PIN guards high-risk AI Manager commands. Use a 4- or 6-digit PIN that is
+                    different from your previous one. After 5 wrong attempts the PIN locks for 15 minutes.
+                </p>
+
+                {localError && (
+                    <div className={`mb-4 flex items-start gap-2.5 p-3.5 rounded-2xl ring-1 ring-inset ${
+                        isLockoutError(localError)
+                            ? "bg-primary-05/8 ring-primary-05/20 text-primary-05"
+                            : "bg-primary-03/8 ring-primary-03/20 text-primary-03"
+                    } text-body-2`}>
+                        <Icon
+                            name={isLockoutError(localError) ? "clock" : "info"}
+                            className="size-4 fill-current shrink-0 mt-0.5"
+                        />
+                        <div>
+                            <div className="font-medium">
+                                {isLockoutError(localError) ? "PIN locked" : "PIN change failed"}
+                            </div>
+                            <div className="text-caption mt-0.5 opacity-80">{localError}</div>
+                            {isLockoutError(localError) && (
+                                <div className="text-caption mt-1 opacity-70">
+                                    Wait 15 minutes then try again, or ask an admin to reset your PIN from the Team section.
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                <form onSubmit={submit} className="space-y-4 max-w-sm">
+                    <FormRow label="Current PIN" hint="The PIN you use today for step-up confirmation.">
+                        <input
+                            type="password"
+                            inputMode="numeric"
+                            autoComplete="current-password"
+                            value={oldPin}
+                            onChange={(e) => { setOldPin(e.target.value.replace(/\D/g, "").slice(0, 6)); setLocalError(""); }}
+                            placeholder="••••"
+                            className={`${inputCls} tracking-[0.4em] font-mono`}
+                            required
+                        />
+                    </FormRow>
+
+                    <FormRow label="New PIN" hint="4 or 6 digits. Not the same as your current PIN.">
+                        <input
+                            type="password"
+                            inputMode="numeric"
+                            autoComplete="new-password"
+                            value={newPin}
+                            onChange={(e) => { setNewPin(e.target.value.replace(/\D/g, "").slice(0, 6)); setLocalError(""); }}
+                            placeholder="••••"
+                            className={`${inputCls} tracking-[0.4em] font-mono ${
+                                newPin.length > 0 && !newPinValid ? "!border-primary-03" : ""
+                            }`}
+                            required
+                        />
+                        {newPin.length > 0 && !newPinValid && (
+                            <p className="text-caption text-primary-03 mt-1.5">Must be exactly 4 or 6 digits.</p>
+                        )}
+                    </FormRow>
+
+                    <FormRow
+                        label="Confirm new PIN"
+                        hint={mismatch ? "PINs do not match." : "Re-enter your new PIN to confirm."}
+                    >
+                        <input
+                            type="password"
+                            inputMode="numeric"
+                            autoComplete="new-password"
+                            value={confirmPin}
+                            onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                            placeholder="••••"
+                            className={`${inputCls} tracking-[0.4em] font-mono ${mismatch ? "!border-primary-03" : ""}`}
+                            required
+                        />
+                    </FormRow>
+
+                    <div className="flex items-center gap-3 pt-1">
+                        <Button isBlack disabled={!canSubmit || saving} type="submit">
+                            {saving ? "Changing…" : "Change PIN"}
+                        </Button>
+                        <p className="text-caption text-t-tertiary">
+                            Effective immediately · hashed on the server
+                        </p>
+                    </div>
+                </form>
+            </div>
+        </Card>
     );
 }
