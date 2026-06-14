@@ -525,8 +525,15 @@ def _kb_retrieve(tenant_id: str, query: str, *, campaign_id: str, top_k: int) ->
     if _kb is None or not tenant_id or not (query or "").strip():
         return []
     try:
+        # dense=False FOREVER on this voice reply path (RAG plan C-3): the FTS-only default makes ZERO
+        # embed network calls, so an EMBED_API_KEY flip can never drop a 40-200ms RTT into the mid-call
+        # loop. All 3 grounding sites (connect-prefetch, pick_campaign re-ground, lookup) funnel through
+        # this single chokepoint, so they are all FTS-only. (Dense connect-prefetch is W4's separate,
+        # founder-signed grounding_cache path.) include_global=True UNIONs the shared `_global`
+        # telecaller corpus under this tenant's own is_admin=False GUC (RLS-gated; no `%`, no admin).
         return _kb.retrieve(tenant_id, query, top_k=top_k, scope="business",
-                            channel="voice", scope_campaign_id=campaign_id or "") or []
+                            channel="voice", scope_campaign_id=campaign_id or "",
+                            dense=False, include_global=True) or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("AIM kb.retrieve degrade (return []): %r", exc)
         return []
