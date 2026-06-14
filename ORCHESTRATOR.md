@@ -2,6 +2,17 @@
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
 
+## ✅ 2026-06-14 — PROVIDER FRAMEWORK W1-W3 INTEGRATED VERIFY = ALL GREEN (earner gate PASS)
+**PLAN:** Confirm all offline suites green + FORCE-RLS live on box + firewall diff additive-only + earner gate. Update PROVIDER-FRAMEWORK-PLAN.md W1-W3 as DONE. Mark W4 ready.
+**OUTPUT/STATUS = ALL GREEN. W4 (first caller.py mount) is the next wave — serialize vs RAG (LIVE) / Vault (deferred) / Video.**
+- Offline suites: 4/4 PASS (`test_adapter_fieldmap` 16 assertions · `test_ssrf_guard` 16 · `test_registry_offline` 10 · `test_reveal_stepup` 10). Cross-tenant ciphertext→`InvalidTag` PASS. Circuit-open priority-fallback PASS. jti single-use replay→None PASS.
+- FORCE-RLS: all 3 `provider_*` tables `relrowsecurity=t` + `relforcerowsecurity=t` on live box `168.144.153.145`.
+- `provider_health_log_append_only_trg` trigger present in `pg_trigger`.
+- firewall.py diff: `339a340,473` — 0 deletion/modification lines (purely additive; reveal scope NOT deployed on box, box still `cd1ac5d1`).
+- py_compile: OK all 12 provider_registry files + firewall.py. gitleaks staged: 0.
+- EARNER GATE: agent.py md5 `9150fabe…` UNCHANGED · famit-agent PID `1477083` active, NOT restarted · /health 200 · 0 5xx · NO ring.
+- `design/PROVIDER-FRAMEWORK-PLAN.md` W1/W2/W3 rows marked ✅ DONE. `NEXT-BIG-BUILDS.md` #8b updated. Wave log `memory/wave_runs/provider-framework-foundation.md` appended. WORKFLOW_LEDGER appended.
+
 ## ✅ 2026-06-14 — VIDEO-FLEX-FRAMEWORK SYNTHESIS = DONE (universal provider/connector framework + Video Studio on it + ONE unified roadmap) — DESIGN-ONLY
 **PLAN:** Synthesize the read-only design wave (provider-abstraction-have / keystore-security-have / video-plan-have HAVE + 4 RESEARCH + 3 DESIGN phases) into the universal-flexible-provider framing on `VIDEO-STUDIO-MASTER-PLAN.md` + the framework architecture `PROVIDER-FRAMEWORK-PLAN.md`, produce ONE phased earner-safe build roadmap (framework FIRST, Video on it, composite ships ZERO-paid-key, caller.py serialized), append pointers to NEXT-BIG-BUILDS + ORCHESTRATOR + the wave log + WORKFLOW_LEDGER. NO box/code/earner mutation.
 **OUTPUT/STATUS = DONE. DESIGN-ONLY (no box mutation, agent.py never touched/imported).**

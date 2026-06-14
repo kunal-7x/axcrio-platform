@@ -180,8 +180,45 @@ scope NOT deployed — W4 mounts) · caller `/health` (8209) = 200 · NO ring (o
 
 ---
 
-**Next:** W2 — `ssrf_guard.py` + `adapter.py` + `named_transforms.py` (register the existing
-`media_gen/video/providers.build_submit/parse_result` for fal/replicate/luma/higgsfield/
-selfhost/generic) + `credentials.py` (AAD-bound interim Fernet via the get_secret seam).
-Local + offline tests; no mount. Then W3 (resolve/health/reveal), then W4 (the caller.py mount,
-serialized against RAG/Vault/Video).
+## W1-W3 INTEGRATED VERIFY — 2026-06-14 ✅ ALL GREEN
+
+**Triggered by:** serialized handoff verification before W4 (caller.py mount).
+
+### Per-item PASS/FAIL
+
+| Item | Result |
+|---|---|
+| 3 tables FORCE-RLS live (`relrowsecurity=t` + `relforcerowsecurity=t`) | ✅ PASS — all 3 confirmed via `pg_class` on live box |
+| health-log append-only trigger exists | ✅ PASS — `provider_health_log_append_only_trg` present in `pg_trigger` |
+| cross-tenant SELECT = 0 (RLS iso) | ✅ PASS — proven W1 RLS probe 12/12 + W3 offline AAD-copy test |
+| SSRF full suite | ✅ PASS — `test_ssrf_guard.py` (16 assertions) in 4-suite run |
+| adapter 3-tier (openai_compat/named/custom_field_map) | ✅ PASS — `test_adapter_fieldmap.py` (16 assertions) |
+| named-builder byte-match (`providers.py` golden) | ✅ PASS — covered in adapter suite (webhook_url bug fixed W2) |
+| AAD cross-tenant → `InvalidTag` | ✅ PASS — `test_registry_offline.py` (10 assertions) |
+| get_provider RLS (A never gets B) | ✅ PASS — `test_registry_offline.py` |
+| circuit-open fallback by priority | ✅ PASS — `test_registry_offline.py` |
+| jti single-use (replay→None/403) | ✅ PASS — `test_reveal_stepup.py` (10 assertions) |
+| existing firewall PIN/step-up byte-identical golden | ✅ PASS — `diff box-golden local` = 0 deletion/modification lines (`339a340,473` only) |
+| **Total offline suites** | **4 passed / 0 failed** (run 2026-06-14) |
+| py_compile all provider_registry + firewall | ✅ OK |
+| gitleaks staged | ✅ 0 leaks |
+
+### Earner Gate (fresh, 2026-06-14)
+
+| Check | Result |
+|---|---|
+| agent.py md5 | `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED |
+| famit-agent MainPID | `1477083` active (python), NOT restarted |
+| box firewall.py md5 | `cd1ac5d1a57d26363d683ed2f11250ce` (reveal scope NOT deployed — W4 mounts) |
+| caller `/health` | 200 |
+| 5xx | 0 |
+| ring | NO ring (offline wave) |
+
+### W4 Readiness
+
+All W1-W3 offline proofs confirmed. W4 is the **first caller.py MOUNT** of the registry —
+additive, flag `PROVIDER_REGISTRY_ENABLED` default OFF, earner-gated. W4 MUST be serialized
+against RAG (currently LIVE+DEPLOYED), Vault (deferred), and Video waves (only ONE caller.py
+edit in flight at a time). W4 deliverable: `provider_registry/endpoints.py` + caller.py import
+block; resting state byte-identical (route table probe + golden exit 0); legacy-pw→403 on
+`/admin/providers/*`; earner gate PASS before + after.
