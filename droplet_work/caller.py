@@ -3347,6 +3347,303 @@ async def kb_seed_telecaller(request: Request):
 
 
 # ============================================================================
+# RAG W3 — KB MANAGEMENT (the founder-facing /knowledge control surface)
+# Token-derived tenant (resolve_tenant -> t["tenant_id"], NEVER a body/param). Every PG touch runs
+# under the caller's OWN GUC (engine.session(tenant_id=t["tenant_id"], is_admin=False)) so RLS gates
+# every other tenant out; the shared `_global` corpus is read-shared (kb_chunks RLS USING) and surfaced
+# explicitly. All heavy work (chunk/FTS/upsert, multi-roundtrip reads) runs OFF the uvicorn loop via
+# asyncio.to_thread. These are ADDITIVE + ISOLATED: nothing here imports the voice run-path, touches
+# agent.py, or restarts famit-agent. Degrade cleanly to empty shapes when kb/PG is absent.
+# ============================================================================
+
+# PDF text extraction — light, dependency-OPTIONAL. pypdf is a pure-Python wheel (no native deps);
+# when absent the upload still works for text and returns a clear reason for a PDF (never 500s).
+def _kb_extract_pdf_text(data: bytes) -> tuple[str, str]:
+    """Best-effort PDF -> plain text. Returns (text, reason). reason='' on success; a short code
+    otherwise ('pdf_parser_unavailable' | 'pdf_parse_failed' | 'pdf_empty'). NEVER raises."""
+    try:
+        from pypdf import PdfReader  # pure-python; optional
+    except Exception:  # noqa: BLE001
+        return "", "pdf_parser_unavailable"
+    try:
+        import io as _io
+        reader = PdfReader(_io.BytesIO(data))
+        parts: list[str] = []
+        for page in reader.pages[:300]:  # bound a malicious 10k-page PDF
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:  # noqa: BLE001
+                continue
+        text = "\n\n".join(p.strip() for p in parts if p and p.strip()).strip()
+        return (text, "") if text else ("", "pdf_empty")
+    except Exception:  # noqa: BLE001
+        return "", "pdf_parse_failed"
+
+
+@app.get("/kb/sources")
+async def kb_sources_list(request: Request, scope_campaign_id: str = ""):
+    """List THIS tenant's KB sources + the shared `_global` sources, each with chunk count + status.
+    Token-derived tenant; RLS-scoped (own GUC, is_admin=False) — the only rows returned are the
+    caller's own + `_global`. Read-only. {sources:[{id,title,kind,scope,channel_scope,status,
+    kb_version,chunks,is_shared,scope_campaign_id,created_at,updated_at}], total, global_count}."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    tid = t["tenant_id"]
+
+    def _q() -> dict:
+        try:
+            from db import engine as _eng
+            from sqlalchemy import text as _sql
+            if not _eng.available():
+                return {"sources": [], "total": 0, "global_count": 0, "reason": "pg_unavailable"}
+            # ensure the KB tables exist (idempotent; no-op when already applied)
+            if _kb_mod is not None:
+                try:
+                    _kb_mod.ensure_schema()
+                except Exception:  # noqa: BLE001
+                    pass
+            params: dict = {"tid": tid}
+            camp_sql = ""
+            if scope_campaign_id:
+                # match sources whose chunks are campaign-scoped (or business-wide)
+                camp_sql = (" AND (s.scope = 'business' OR s.scope = :cscope "
+                            "OR EXISTS (SELECT 1 FROM kb_chunks kc WHERE kc.source_id = s.id "
+                            "AND (kc.scope_campaign_id = :cid OR kc.scope_campaign_id = '')))")
+                params["cscope"] = f"campaign:{scope_campaign_id}"
+                params["cid"] = scope_campaign_id
+            # RLS USING already read-shares own-tenant + `_global`; the explicit predicate keeps the
+            # set to exactly those two (defence in depth; never a `%` wildcard, never is_admin=True).
+            with _eng.session(tenant_id=tid, is_admin=False) as s:
+                rows = s.execute(_sql(
+                    "SELECT s.id, s.title, s.kind, s.scope, s.channel_scope, s.status, "
+                    "s.kb_version, s.tenant_id, s.created_at, s.updated_at, "
+                    "(SELECT count(*) FROM kb_chunks c WHERE c.source_id = s.id) AS chunks "
+                    "FROM kb_sources s "
+                    "WHERE (s.tenant_id = :tid OR s.tenant_id = '_global')"
+                    + camp_sql +
+                    " ORDER BY (s.tenant_id = '_global'), s.created_at DESC LIMIT 500"),
+                    params).fetchall()
+            out = []
+            gcount = 0
+            for r in rows:
+                is_shared = (r[7] == "_global")
+                if is_shared:
+                    gcount += 1
+                out.append({
+                    "id": r[0], "title": r[1] or "(untitled)", "kind": r[2], "scope": r[3],
+                    "channel_scope": r[4], "status": r[5], "kb_version": int(r[6] or 1),
+                    "is_shared": is_shared, "chunks": int(r[10] or 0),
+                    "created_at": r[8].isoformat() if r[8] else "",
+                    "updated_at": r[9].isoformat() if r[9] else ""})
+            return {"sources": out, "total": len(out), "global_count": gcount}
+        except Exception as exc:  # noqa: BLE001
+            return {"sources": [], "total": 0, "global_count": 0,
+                    "reason": f"error:{type(exc).__name__}"}
+
+    return JSONResponse(await asyncio.to_thread(_q))
+
+
+@app.post("/kb/upload")
+async def kb_upload(request: Request,
+                    text: str = Form(""),
+                    title: str = Form(""),
+                    doc_type: str = Form("generic"),
+                    channel_scope: str = Form("all"),
+                    scope_campaign_id: str = Form(""),
+                    pdf: UploadFile | None = File(None)):
+    """Ingest collateral into THIS tenant's KB. Accepts a `text` field OR a `pdf` upload (parsed via
+    pypdf, graceful-degrade). Chunks + FTS-indexes + upserts via kb.ingest under the tenant's own GUC
+    (RLS-scoped). Optionally tagged to a campaign (scope_campaign_id) so retrieval can scope to it.
+    Token-derived tenant; write-gated. Heavy work runs OFF the loop. NEVER writes `_global`.
+
+    Returns {ok, source_id, document_id, chunks, embedded, reason, title}."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden("read-only role cannot add knowledge")
+    if _kb_mod is None:
+        return JSONResponse({"ok": False, "reason": "kb module unavailable"}, status_code=503)
+
+    body = (text or "").strip()
+    kind = "paste"
+    src_title = (title or "").strip()[:300]
+
+    # PDF branch (optional) — sniff, size-guard, extract.
+    if pdf is not None:
+        try:
+            data = await pdf.read()
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"ok": False, "reason": f"read_failed:{type(exc).__name__}"},
+                                status_code=400)
+        if not data:
+            return JSONResponse({"ok": False, "reason": "empty_file"}, status_code=400)
+        if len(data) > 20 * 1024 * 1024:  # keep the shared GIN index lean (quota: RAG plan §7-12)
+            return JSONResponse({"ok": False, "reason": "file_too_large_max_20mb"}, status_code=413)
+        if not (data[:5] == b"%PDF-" or (pdf.content_type or "").lower() == "application/pdf"):
+            return JSONResponse({"ok": False, "reason": "not_a_pdf"}, status_code=415)
+        ptext, preason = _kb_extract_pdf_text(data)
+        if preason:
+            code = 503 if preason == "pdf_parser_unavailable" else 422
+            return JSONResponse({"ok": False, "reason": preason}, status_code=code)
+        # PDF text augments / supplies the body; an explicit text field (if any) prepends.
+        body = (body + "\n\n" + ptext).strip() if body else ptext
+        kind = "file"
+        if not src_title:
+            fn = (pdf.filename or "document.pdf")
+            src_title = ("".join(ch for ch in fn if ch.isalnum() or ch in "-_. ").strip()
+                         or "document.pdf")[:300]
+
+    if not body:
+        return JSONResponse({"ok": False, "reason": "empty_content"}, status_code=400)
+    if len(body) > 200_000:  # per-doc max-size guard (RAG plan §7-12)
+        return JSONResponse({"ok": False, "reason": "content_too_large_max_200k_chars"},
+                            status_code=413)
+    if not src_title:
+        src_title = (body.strip().splitlines()[0] if body.strip() else "Knowledge")[:80]
+
+    scope = f"campaign:{scope_campaign_id}" if scope_campaign_id else "business"
+    dt = (doc_type or "generic").strip().lower()[:40] or "generic"
+    chan = (channel_scope or "all").strip().lower()
+    if chan not in ("all", "voice", "whatsapp", "support", "creative"):
+        chan = "all"
+
+    # ingest under the tenant's OWN GUC (is_admin=False) — RLS WITH CHECK pins the write to this
+    # tenant; a `_global` write is impossible from here. Off the uvicorn loop (embed may RTT).
+    res = await asyncio.to_thread(
+        _kb_mod.ingest, t["tenant_id"], body,
+        title=src_title, kind=kind, scope=scope, doc_type=dt, channel_scope=chan,
+        scope_campaign_id=scope_campaign_id, is_admin=False)
+    res = dict(res or {})
+    res["title"] = src_title
+    _audit(request, t, "kb.upload", "kb_source", res.get("source_id", ""),
+           meta={"chunks": res.get("chunks"), "kind": kind, "scope": scope})
+    status_code = 200 if res.get("ok") else 422
+    return JSONResponse(res, status_code=status_code)
+
+
+@app.post("/kb/test-retrieve")
+async def kb_test_retrieve(request: Request):
+    """THE differentiator: the founder types a question + (optional) channel/campaign and SEES exactly
+    which chunks ground the answer — the brain lighting up. Runs the SAME FTS-only (dense=False) path
+    the live voice `lookup` uses, under the tenant's OWN GUC (own tenant + `_global`, RLS-gated).
+    Logs the query to kb_query_log (grounded flag) so the gap loop learns from real probes too.
+
+    Body {query, channel?, campaign?, top_k?}. Returns
+    {query, grounded, count, chunks:[{id,source_id,document_id,section,snippet,score,leg,is_shared}]}."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _kb_mod is None:
+        return JSONResponse({"grounded": False, "chunks": [], "count": 0,
+                             "reason": "kb module unavailable"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    query = (str(body.get("query") or "")).strip()
+    if not query:
+        return JSONResponse({"error": "query is required"}, status_code=400)
+    channel = (str(body.get("channel") or "all")).strip().lower() or "all"
+    if channel not in ("all", "voice", "whatsapp", "support", "creative"):
+        channel = "all"
+    campaign = (str(body.get("campaign") or body.get("scope_campaign_id") or "")).strip()
+    try:
+        top_k = max(1, min(int(body.get("top_k") or 6), 12))
+    except Exception:  # noqa: BLE001
+        top_k = 6
+    tid = t["tenant_id"]
+
+    def _run() -> dict:
+        # FTS-only forever on this surface (dense=False) — mirrors the live `lookup` contract (C-3):
+        # ZERO embed RTT regardless of EMBED_API_KEY. include_global so the `_global` corpus is
+        # visible (what the live voice path actually retrieves).
+        hits = _kb_mod.retrieve(
+            tid, query, top_k=top_k, channel=channel, scope_campaign_id=campaign,
+            dense=False, include_global=True, is_admin=False)
+        out = []
+        for h in (hits or []):
+            content = h.get("content") or ""
+            out.append({
+                "id": h.get("source_id", ""),  # source_id for the UI to link to a source card
+                "source_id": h.get("source_id", ""),
+                "document_id": h.get("document_id", ""),
+                "section": h.get("section", ""),
+                "snippet": (content[:280] + ("…" if len(content) > 280 else "")),
+                "score": round(float(h.get("score") or 0.0), 5),
+                "leg": h.get("leg", ""),
+            })
+        grounded = bool(out)
+        # learn from the probe too (best-effort; off-loop already — we're inside to_thread).
+        try:
+            _kb_mod.log_query(tid, query, channel=channel, scope_campaign_id=campaign,
+                              grounded=grounded, leg=(out[0]["leg"] if out else ""),
+                              top_ids=[h.get("document_id", "") for h in (hits or [])],
+                              is_admin=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return {"query": query, "grounded": grounded, "count": len(out), "chunks": out}
+
+    return JSONResponse(await asyncio.to_thread(_run))
+
+
+@app.get("/kb/gaps")
+async def kb_gaps(request: Request, days: int = 30, limit: int = 50):
+    """Knowledge-gap loop: recent queries from kb_query_log that grounded NOTHING (grounded=false),
+    aggregated by normalized query — 'the questions your AI couldn't answer'. The most sellable
+    artifact (RAG plan §7-5). Token-derived tenant; STRICTLY per-tenant (kb_query_log has NO
+    `_global` read-share). Read-only. {gaps:[{query, count, last_seen, channels}], total, window_days}."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    tid = t["tenant_id"]
+    try:
+        win = max(1, min(int(days or 30), 365))
+    except Exception:  # noqa: BLE001
+        win = 30
+    try:
+        lim = max(1, min(int(limit or 50), 200))
+    except Exception:  # noqa: BLE001
+        lim = 50
+
+    def _q() -> dict:
+        try:
+            from db import engine as _eng
+            from sqlalchemy import text as _sql
+            if not _eng.available():
+                return {"gaps": [], "total": 0, "window_days": win, "reason": "pg_unavailable"}
+            if _kb_mod is not None:
+                try:
+                    _kb_mod.ensure_schema()
+                except Exception:  # noqa: BLE001
+                    pass
+            with _eng.session(tenant_id=tid, is_admin=False) as s:
+                rows = s.execute(_sql(
+                    "SELECT lower(btrim(query)) AS q, count(*) AS n, max(created_at) AS last_seen, "
+                    "array_agg(DISTINCT channel) AS channels "
+                    "FROM kb_query_log "
+                    "WHERE tenant_id = :tid AND grounded = false "
+                    "AND created_at >= now() - make_interval(days => :w) "
+                    "AND btrim(query) <> '' "
+                    "GROUP BY lower(btrim(query)) "
+                    "ORDER BY n DESC, last_seen DESC LIMIT :lim"),
+                    {"tid": tid, "w": win, "lim": lim}).fetchall()
+            gaps = [{
+                "query": r[0],
+                "count": int(r[1] or 0),
+                "last_seen": r[2].isoformat() if r[2] else "",
+                "channels": [c for c in (r[3] or []) if c],
+            } for r in rows]
+            return {"gaps": gaps, "total": len(gaps), "window_days": win}
+        except Exception as exc:  # noqa: BLE001
+            return {"gaps": [], "total": 0, "window_days": win,
+                    "reason": f"error:{type(exc).__name__}"}
+
+    return JSONResponse(await asyncio.to_thread(_q))
+
+
+# ============================================================================
 # CRM CORE — contact spine + unified timeline + next-best-action (additive; read-model).
 # All X-Auth, tenant-scoped (org_id == t["tenant_id"], NEVER a body/param), RBAC per can().
 # PG work runs OFF the uvicorn loop (asyncio.to_thread) — project/rebuild do several round-trips.
