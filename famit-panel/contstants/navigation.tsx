@@ -121,6 +121,10 @@ export const navigation = [
         icon: "magic-pencil",
         list: [
             { title: "Studio", href: "/creative" },
+            // Video Studio — the campaign-aware AI video engine (composite-cheap by
+            // default + AI-motion tiers). Dormant-safe behind the studio probe; the
+            // whole /creative/video surface 404s when FEATURE_VIDEO_STUDIO is OFF.
+            { title: "Video Studio", href: "/creative/video" },
             { title: "Library", href: "/creative/library" },
             { title: "Brand Kit", href: "/creative/brand" },
         ],

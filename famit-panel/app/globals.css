@@ -598,6 +598,23 @@
         }
     }
 
+    /* Play triangle — a CSS-only right-pointing glyph (the Icon set has no `play`).
+       Token-pure: inherits `currentColor` so the parent's text color drives it. */
+    .play-tri {
+        @apply block text-t-primary;
+        width: 0;
+        height: 0;
+        border-top: 7px solid transparent;
+        border-bottom: 7px solid transparent;
+        border-left: 11px solid currentColor;
+        margin-left: 3px; /* optical centre — the triangle's mass sits left */
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .skeleton {
+            animation: none;
+        }
+    }
+
     /* Thin progress meter (cap usage, etc.). */
     .meter {
         @apply w-full h-1.5 rounded-full bg-b-surface1 overflow-hidden dark:bg-shade-04/60;

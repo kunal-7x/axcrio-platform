@@ -59,6 +59,7 @@ export const KIND_OPTS: SelectOption[] = [
     { id: 5, name: "Poster" },
     { id: 6, name: "Product" },
     { id: 7, name: "Logo" },
+    { id: 8, name: "Video" },
 ];
 
 export const STATUS_OPTS: SelectOption[] = [

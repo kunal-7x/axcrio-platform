@@ -23,7 +23,7 @@ import Badge from "@/components/Badge";
 import Spinner from "@/components/Spinner";
 import Icon from "@/components/Icon";
 import type { TabsOption } from "@/types/tabs";
-import AssetImage from "./AssetImage";
+import AssetMedia from "./AssetMedia";
 import VersionTimeline from "./VersionTimeline";
 import UsePicker from "./UsePicker";
 import {
@@ -37,6 +37,8 @@ import {
     statusLabel,
     statusVariant,
     toCredits,
+    isVideoAsset,
+    fmtDuration,
     AssetDormantError,
     type Asset,
 } from "@/lib/assets";
@@ -101,12 +103,17 @@ const AssetDetail = ({ asset, open, onClose, onChanged }: AssetDetailProps) => {
     const currentVersion =
         a.versions?.find((v) => v.is_current || v.id === a.current_version_id) ||
         a.versions?.[0];
-    const src =
-        a.thumb_url ||
-        a.url ||
-        currentVersion?.thumb_url ||
-        currentVersion?.url ||
-        assetRawUrl(a.id, a.current_version_id);
+    const isVideo = isVideoAsset(a);
+    // For a video, prefer the clip url for the player + the presigned poster frame;
+    // for an image, the existing presigned-url preference order.
+    const src = isVideo
+        ? a.url || currentVersion?.url || assetRawUrl(a.id, a.current_version_id)
+        : a.thumb_url ||
+          a.url ||
+          currentVersion?.thumb_url ||
+          currentVersion?.url ||
+          assetRawUrl(a.id, a.current_version_id);
+    const poster = a.poster_url || currentVersion?.poster_url || a.thumb_url;
     const isApproved = (a.status || "").toLowerCase() === "approved";
 
     const refetch = async () => {
@@ -173,9 +180,17 @@ const AssetDetail = ({ asset, open, onClose, onChanged }: AssetDetailProps) => {
             <Modal open={open} onClose={onClose} isSlidePanel>
                 <div className="flex flex-col h-svh">
                     <div className="grow overflow-y-auto px-6 pt-6 pb-4 scrollbar-none max-md:px-4">
-                        {/* large preview */}
+                        {/* large preview — a real <video controls> for video assets */}
                         <div className="relative h-72 rounded-3xl overflow-hidden ring-1 ring-s-subtle ring-inset bg-b-surface1 dark:bg-shade-04/40">
-                            <AssetImage src={src} alt={a.headline || "asset"} rounded="rounded-3xl" />
+                            <AssetMedia
+                                src={src}
+                                poster={poster}
+                                isVideo={isVideo}
+                                mode={isVideo ? "player" : "grid"}
+                                controls={isVideo}
+                                alt={a.headline || "asset"}
+                                rounded="rounded-3xl"
+                            />
                         </div>
 
                         {/* headline + badges */}
@@ -234,6 +249,22 @@ const AssetDetail = ({ asset, open, onClose, onChanged }: AssetDetailProps) => {
                                     <Meta label="Model" value={a.model} />
                                     <Meta label="Cost" value={toCredits(a.cost_minor)} />
                                 </div>
+
+                                {/* VIDEO meta — duration / voiceover / captions / variant group */}
+                                {isVideo && (
+                                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4 pt-4 border-t border-s-subtle">
+                                        <Meta label="Duration" value={fmtDuration(a.duration_s) || "—"} />
+                                        <Meta
+                                            label="Voiceover"
+                                            value={a.with_audio === undefined ? "—" : a.with_audio ? "On" : "Silent"}
+                                        />
+                                        <Meta
+                                            label="Captions"
+                                            value={a.with_audio ? "Burned-in" : "—"}
+                                        />
+                                        <Meta label="Test group" value={a.ab_group} />
+                                    </div>
+                                )}
 
                                 {/* score block */}
                                 {a.score?.sub && a.score.sub.length > 0 && (

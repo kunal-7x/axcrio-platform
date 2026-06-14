@@ -51,7 +51,22 @@ type LibraryGalleryProps = {
     presetFilters?: AssetFilters;
     /** the gallery owns its own selection unless told otherwise. */
     showBulk?: boolean;
+    /** W9: seed + lock the Images↔Videos toggle. "all" shows the binary toggle;
+     *  "video"/"image" hides it (the Video Studio reuses this scoped to videos). */
+    defaultMediaType?: "all" | "image" | "video";
+    lockMediaType?: boolean;
 };
+
+// The one-library discriminator (the differentiator — images & videos in ONE wall).
+const MEDIA_TABS: TabsOption[] = [
+    { id: 1, name: "All" },
+    { id: 2, name: "Images" },
+    { id: 3, name: "Videos" },
+];
+const mediaTabToType = (t: TabsOption): "all" | "image" | "video" =>
+    t.id === 2 ? "image" : t.id === 3 ? "video" : "all";
+const typeToMediaTab = (m?: string): TabsOption =>
+    m === "image" ? MEDIA_TABS[1] : m === "video" ? MEDIA_TABS[2] : MEDIA_TABS[0];
 
 const STATUS_TABS: TabsOption[] = [
     { id: 1, name: "All" },
@@ -76,12 +91,16 @@ const LibraryGallery = ({
     campaignOptions,
     presetFilters,
     showBulk = true,
+    defaultMediaType = "all",
+    lockMediaType = false,
 }: LibraryGalleryProps) => {
     const [search, setSearch] = useState("");
     const [statusTab, setStatusTab] = useState<TabsOption>(STATUS_TABS[0]);
     const [view, setView] = useState<TabsOption>(VIEW_TABS[0]);
     const [filterOpen, setFilterOpen] = useState(false);
     const [filters, setFilters] = useState<AssetFilters>(presetFilters || { sort: SORT_OPTS[0] });
+    const [mediaTab, setMediaTab] = useState<TabsOption>(typeToMediaTab(defaultMediaType));
+    const mediaType = lockMediaType ? defaultMediaType : mediaTabToType(mediaTab);
 
     const [assets, setAssets] = useState<Asset[]>([]);
     const [total, setTotal] = useState(0);
@@ -108,8 +127,13 @@ const LibraryGallery = ({
     }, [statusTab]);
 
     const baseQuery = useMemo(
-        () => ({ ...filtersToQuery(filters), ...statusFromTab, q: search || undefined }),
-        [filters, statusFromTab, search]
+        () => ({
+            ...filtersToQuery(filters),
+            ...statusFromTab,
+            q: search || undefined,
+            media_type: mediaType === "all" ? undefined : mediaType,
+        }),
+        [filters, statusFromTab, search, mediaType]
     );
 
     // fetch page 0 on any query change
@@ -221,8 +245,17 @@ const LibraryGallery = ({
             ) : (
                 <div className="flex items-center gap-3 max-md:flex-wrap">
                     <div className="pl-5 text-h6 max-lg:pl-3 max-md:w-full">Assets</div>
+                    {/* the ONE-library Images↔Videos toggle (the differentiator) */}
+                    {!lockMediaType && (
+                        <Tabs
+                            className="max-md:w-full max-md:overflow-x-auto"
+                            items={MEDIA_TABS}
+                            value={mediaTab}
+                            setValue={setMediaTab}
+                        />
+                    )}
                     <Search
-                        className="w-64 max-md:w-full"
+                        className="w-56 max-md:w-full"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search assets"

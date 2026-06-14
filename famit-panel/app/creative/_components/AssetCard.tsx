@@ -15,7 +15,7 @@
  */
 
 import { useState } from "react";
-import AssetImage from "./AssetImage";
+import AssetMedia from "./AssetMedia";
 import Checkbox from "@/components/Checkbox";
 import Badge from "@/components/Badge";
 import Icon from "@/components/Icon";
@@ -24,6 +24,8 @@ import {
     angleLabel,
     statusLabel,
     statusVariant,
+    isVideoAsset,
+    fmtDuration,
     type Asset,
 } from "@/lib/assets";
 
@@ -58,7 +60,11 @@ const AssetCard = ({
 }: AssetCardProps) => {
     const [visible, setVisible] = useState(false);
 
-    const src = asset.thumb_url || asset.url || assetRawUrl(asset.id, asset.current_version_id);
+    const isVideo = isVideoAsset(asset);
+    // For a video the GRID shows the presigned POSTER (no clip bytes — egress-safe);
+    // the clip src is fetched only on hover-preview. For an image it's the usual src.
+    const src = asset.url || assetRawUrl(asset.id, asset.current_version_id);
+    const poster = asset.poster_url || asset.thumb_url || (isVideo ? undefined : src);
     const score = asset.score?.overall;
     const isApproved = (asset.status || "").toLowerCase() === "approved";
 
@@ -104,7 +110,16 @@ const AssetCard = ({
                     </Badge>
                 </div>
 
-                <AssetImage src={src} alt={asset.headline || "Creative asset"} rounded="rounded-3xl" />
+                <AssetMedia
+                    src={src}
+                    poster={poster}
+                    isVideo={isVideo}
+                    mode="grid"
+                    alt={asset.headline || "Creative asset"}
+                    rounded="rounded-3xl"
+                    durationLabel={isVideo ? fmtDuration(asset.duration_s) : undefined}
+                    withAudio={isVideo ? asset.with_audio : undefined}
+                />
             </div>
 
             {/* title + score */}

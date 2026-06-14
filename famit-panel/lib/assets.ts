@@ -161,14 +161,34 @@ export type AssetVersion = {
     cost_minor?: number;
     created_at?: string;
     is_current?: boolean;
+    // ---- VIDEO (W9): a version can be an MP4. poster_url presigns its thumb frame;
+    // outputs is the ABR ladder ([{rung,url}]) the player can step down to. ----
+    duration_s?: number;
+    with_audio?: boolean;
+    poster_url?: string;
+    outputs?: { rung?: string; url?: string; bitrate?: number }[];
 };
+
+/** A media-type discriminator — every asset is an image by default; videos carry
+ *  the video columns the live-library bridge (§5) lands. */
+export type AssetMediaType = "image" | "video";
 
 /** One asset row (card + detail). Optional-rich so a partial backend degrades. */
 export type Asset = {
     id: string;
     campaign_id?: string;
     campaign_name?: string;
-    kind?: string; // banner | image | social | offer | poster | product | logo
+    kind?: string; // banner | image | social | offer | poster | product | logo | video
+    // ---- VIDEO (W9, the live-library bridge §5): a first-class video Asset. ----
+    // `media_type` defaults to "image" server-side so every existing row + the
+    // resting image UI is byte-identical; a video row carries duration/audio/poster.
+    media_type?: AssetMediaType;
+    duration_s?: number; // seconds — drives the 0:06 duration pill
+    with_audio?: boolean; // voiceover present (Sarvam/EL) → speaker chip
+    poster_url?: string; // presigned thumbnail frame (grid stays poster-only, egress-safe)
+    outputs?: { rung?: string; url?: string; bitrate?: number }[]; // ABR ladder
+    ab_group?: string; // Signal-Loop variant lineage (the moat)
+    moderation_status?: string; // pending | approved | blocked (output-side gate H3)
     platform?: string; // meta | whatsapp | ig_story | google | carousel | hero
     size?: string;
     angle?: AssetAngle;
@@ -214,6 +234,8 @@ export type AssetQuery = {
     sort?: string; // newest | oldest | best_score | best_ctr | most_used | cheapest
     q?: string;
     winners?: boolean;
+    /** image | video | all (default all → back-compat: the bridge §5 filter). */
+    media_type?: AssetMediaType | "all" | string;
 };
 
 export type GenerateBody = {
@@ -379,6 +401,9 @@ export async function listAssets(q: AssetQuery = {}): Promise<AssetListPage> {
     if (q.sort) params.set("sort", q.sort);
     if (q.q) params.set("q", q.q);
     if (q.winners) params.set("winners", "1");
+    // media_type filter (the live-library bridge §5). "all" is the back-compat
+    // default → we only send the param when it narrows to image|video.
+    if (q.media_type && q.media_type !== "all") params.set("media_type", q.media_type);
     const qs = params.toString();
     const empty: AssetListPage = { assets: [], total: 0, limit: q.limit ?? 30, offset: q.offset ?? 0 };
     try {
@@ -433,7 +458,39 @@ export async function getAsset(id: string): Promise<Asset> {
         versions.find((v) => v.is_current || v.id === base.current_version_id) || versions[0];
     if (current?.url) base.url = current.url;
     if (current?.thumb_url) base.thumb_url = current.thumb_url;
+    // VIDEO (W9): carry the version's presigned poster + duration/audio/ABR onto the
+    // flattened asset so AssetMedia renders a <video poster> without a second fetch.
+    if (current?.poster_url) base.poster_url = current.poster_url;
+    if (current?.duration_s != null && base.duration_s == null) base.duration_s = current.duration_s;
+    if (current?.with_audio != null && base.with_audio == null) base.with_audio = current.with_audio;
+    if (current?.outputs && (!base.outputs || base.outputs.length === 0)) base.outputs = current.outputs;
+    // Infer media_type from the version url when the row didn't set it (defensive).
+    if (!base.media_type && isVideoUrl(current?.url || base.url)) base.media_type = "video";
     return base;
+}
+
+/** Heuristic: is this URL a video file? (defensive media_type inference when the
+ *  backend row predates the media_type column.) Strips any presign query first. */
+export function isVideoUrl(url?: string | null): boolean {
+    if (!url) return false;
+    const path = url.split("?")[0].toLowerCase();
+    return /\.(mp4|webm|mov|m3u8|m4v)$/.test(path);
+}
+
+/** Is this asset a video? media_type is authoritative; falls back to a URL sniff. */
+export function isVideoAsset(a: { media_type?: string; kind?: string; url?: string | null }): boolean {
+    if (a.media_type) return a.media_type === "video";
+    if ((a.kind || "").toLowerCase() === "video") return true;
+    return isVideoUrl(a.url);
+}
+
+/** A human "0:06" duration pill from seconds. */
+export function fmtDuration(s?: number): string {
+    if (s == null || !Number.isFinite(s) || s <= 0) return "";
+    const total = Math.round(s);
+    const m = Math.floor(total / 60);
+    const sec = total % 60;
+    return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 /** The raw-bytes URL for an asset/version preview (Image src). Never exposes local_path. */
