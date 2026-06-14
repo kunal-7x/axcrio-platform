@@ -112,3 +112,26 @@
 - **ai_manager.endpoints router is None when system Python is used** (FastAPI not installed system-wide); only the venv Python (`/opt/capsy-agent/.venv/bin/python3`) has FastAPI. Always test with the venv Python when debugging module imports on the box.
 - **famit-caller test pattern:** (1) use admin HMAC token (`admin.<sha256>`) not secondary tenant tokens for testing routes with entitlement gates; (2) test 401 with bad token → proves route mounted; (3) test with correct token → proves auth logic.
 - **Lockout fires on ~4th bad attempt** (LOCKOUT_MAX_FAILS=5 but fires on attempt 4 showing `locked:true` — the 5th fails on lock check before recording). The 429 is deterministic after the window closes. No issue; the UI copy says "after 5 wrong attempts" which is accurate enough.
+
+## 2026-06-14 — Funnel/Workflow EXECUTION was dead at the dialer hop (run_token not threaded)
+- SYMPTOM (founder: "workflow/funnel not working"): a saved funnel's POST /funnels/{id}/run
+  compiled + ran the workflow interpreter, but the call stage (leads.enqueue_calls) silently
+  failed to dial.
+- ROOT CAUSE: workflow/nodes.py `_tool_ctx(rctx)` built the tool ctx WITHOUT `run_token`.
+  The leads.enqueue_calls tool does `transport.call("POST","/run", run_token=_tok(ctx))`;
+  with an empty token caller.py resolve_tenant=None -> 401 -> dispatch NEVER reached run_job.
+  AIM works because workforce mints+threads run_token; the workflow/funnels path never did.
+- FIX (additive, reuse transport.mint_run_token — the proven AIM path):
+  RunCtx.run_token field + _tool_ctx includes it; run_workflow/engine/wf.run/funnels.run all
+  accept+thread run_token; funnels/endpoints authed /{id}/run mints it from the AUTHENTICATED
+  tenant (RT-3, never body). Also auto_publish a draft funnel on run so the builder's Run button
+  works without a separate publish click. Seeded a Trigger->Leads->Campaign->Run template
+  (starter_call_run).
+- LEARNING: when delegating a side-effecting loopback tool through a NEW caller (funnels), always
+  verify the per-run token is threaded the WHOLE way to the tool ctx — a missing token fails as
+  401 at the loopback, invisible unless you spy the loopback request. The interpreter applies the
+  run_token from RunCtx, not from deps; deps carry store/wallet/firewall/registry only.
+- NO-RING PROOF METHOD: run the funnel with an EMPTY audience (lead_ids=__none__,source_mode=upload)
+  -> _resolve_audience returns [] -> 0-lead job -> run_job loops over nothing -> no INVITE. Or spy
+  transport.call to assert POST /run carries a non-empty bearer + returns job_id count:0.
+- 2026-06-14 — ✅ #8 WORKFLOW/FUNNEL EXECUTION — VERIFY + DEPLOY. KEY LEARNINGS: (a) The caller.py port is 8209 (uvicorn pid 2618144 listening 0.0.0.0:8209), NOT 8000/8091/8310 — always find the real port via `ss -tlnp` before curling health/routes. The 8310 port is the ai_asset service (separate). The 8209 port is the famit-caller/main caller.py instance (the one with funnels). (b) FORTRESS panel runs on port :3001 (Next.js), NOT :3000 — the systemd journal shows `- Local: http://127.0.0.1:3001`. A curl to :3000 will always return 000. (c) FunnelStore on the box is InMemory (FUNNELS_STORE unset) — created funnels DON'T persist across restarts; the 3 proof funnels in-memory are from the PRIOR wave's smoke test. A real tenant needs to create their funnel from the UI or the PG-backed store (deferred wave). (d) The dispatch proof is in the journal: `POST /funnels/.../run HTTP 200` + `POST /run HTTP 400 (empty audience)` — the 400 is NOT an error; it means run_job was reached (it rejected the 0-lead job correctly). Watch for BOTH log lines to confirm the full dispatch chain. (e) SCP of 64MB tgz to FORTRESS takes ~3-5 minutes over the DO private network — don't assume it's done at 21M or 41M; poll `ls -l` until it reaches ~65MB then deploy. (f) Cross-tenant isolation proof requires a 2nd real tenant; with only "admin" registered, the RT-3 path (tenant from token, never body) is proven by code-review and the 401-without-token gate. Delegate full cross-tenant proof to the founder's first real tenant onboarding.
