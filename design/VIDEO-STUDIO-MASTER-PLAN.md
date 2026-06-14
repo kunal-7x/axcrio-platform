@@ -1,4 +1,14 @@
-# 🎬 VIDEO-STUDIO-MASTER-PLAN.md — the 100% design (READ-ONLY; verified on disk 2026-06-14; red-team-hardened)
+# 🎬 VIDEO-STUDIO-MASTER-PLAN.md — the 100% design (LIVE + USABLE 2026-06-15; red-team-hardened)
+
+> 🟢 **STATUS: LIVE + USABLE (2026-06-15).** The Video Studio renders a REAL, playable composite
+> MP4 end-to-end on the live box (COMPOSITE tier, $0 gen-API, Sarvam TTS): prompt → AI script →
+> Sarvam voiceover → FFmpeg composite + burned captions → 1080x1920 h264+aac MP4 → DO Spaces →
+> registered in the ai_asset library (`GET /assets?media_type=video`) with a presigned playable
+> URL. The FE studio renders (not the DormantCard) at panel.famit.in/creative/video, and a founder
+> "Generate" auto-renders via the detached `compose_worker`. Earner UNTOUCHED. See U5 + the wave log
+> `memory/wave_runs/video-studio-activate-real.md`. The remaining tail (U7-U10: Signal-Loop export,
+> reaper/moderation/lifecycle/alerts, BYO-key, soak) is additive hardening, not a blocker to usage.
+
 
 > FINAL SYNTHESIS: the cost/completeness/earner red-teams are folded in (§13b H1-H10 + the cost-truth meter §6
 > + the 1-paid-test choke-point + reaper/moderation/lifecycle/alerts + cross-product seam discipline).
@@ -679,7 +689,7 @@ gained `lang` + `tts_provider` (above). All additive, FORCE-RLS, INTEGER paise.
 2. **U2 — PG schema (additive, manual apply). ✅ DONE (W6, 2026-06-14)** `ai_asset_assets` +8 video cols (media_type default 'image'); `video_jobs`+`video_scripts` FORCE-RLS. Live in PG; cross-tenant isolation PASS.
 3. **U3 — Live-library bridge (§5). ✅ DONE (W6, 2026-06-14)** `register_video_asset` + `?media_type=` + `/poster` deployed to `:8310`; live probe PASS; `FEATURE_VIDEO_LIBRARY` (default OFF, resting byte-identical).
 4. **U4 — Mount the upper studio + the `submit_gate` choke-point (H1). ✅ DONE (W7+W8, 2026-06-14)** `creative.video_studio.endpoints` under `FEATURE_VIDEO_STUDIO=0` in caller.py (additive, 0-deletion); submit_gate gate(compose)=free_floor PASS; paid first-test forced size=1/dur6/no-approve; per-tenant cap isolation PASS. Dormant 404; flag-ON routes 401+campaigns 200. commit `ef95422`.
-5. **U5 — FFmpeg composite tier (§6) + cost-truth meter. ✅ DONE (W7+W8, 2026-06-14)** `media_gen/video/compose.py` (fixed-argv no-shell, 4-rung ABR/H.265, ASS captions, Sarvam $0.0023 vs EL $0.1523/clip 66x); `provider='compose'` branch in client.py (AUP+pre-fan-out wallet HOLD); `compose_worker.enqueue` seam for Hatchet execution. Deployed. REMAINING: the FFmpeg/TTS/Whisper render WORKER on famit-hatchet (the seam is wired; the worker is the other half). Flag `FEATURE_VIDEO_COMPOSE`.
+5. **U5 — FFmpeg composite tier (§6) + cost-truth meter. ✅ DONE + RENDER WORKER LIVE (W7+W8 + ACTIVATE-REAL, 2026-06-15)** `media_gen/video/compose.py` (fixed-argv no-shell, 4-rung ABR/H.265, ASS captions, Sarvam $0.0023 vs EL $0.1523/clip 66x); `provider='compose'` branch in client.py (AUP+pre-fan-out wallet HOLD). **THE RENDER WORKER IS NOW BUILT + PROVEN:** `media_gen/video/compose_worker.py` (deployed to the box) executes the saga — Sarvam-TTS voiceover → script-paced burned ASS captions → product/slate visual → `build_ffmpeg_argv` (no-shell) → poster → Spaces → `store.update(succeeded)` → library bridge. `enqueue(plan)` forks a FULLY-DETACHED out-of-band process (start_new_session, never inline, never touches agent.py) so a founder "Generate" auto-renders. **REAL MP4 PROVEN:** ffprobe = h264 1080x1920 + aac 22050Hz audio, exactly 12.0s, 242 KB, in the live library at `GET /assets?media_type=video` with a presigned playable URL (2 clips: Codename Joy 3.0, DLF The Crest). Earner-safe (only famit-caller restarted; agent.py 9150fabe untouched). Flags `FEATURE_VIDEO_COMPOSE` + `VIDEO_COMPOSE_SPAWN` (default ON). NOTE: the §6 design sites the worker on famit-hatchet; ACTIVATE-REAL runs it as a detached one-shot off caller's env (DO is 3/3 full) — identical render code; a Hatchet-step swap of `enqueue` is the only change for the durable-saga upgrade.
 6. **U6 — Frontend (§10). ✅ DONE + DEPLOYED (W9, 2026-06-14 → deployed 2026-06-15)** Asset type +6 video cols; `AssetMedia` `<video preload="none" poster>`; FilterRail +Video; LibraryGallery Images↔Videos toggle; `app/creative/video/page.tsx` + TierTabs (Composite=free default) + VideoCreatePanel + BatchProgress (approval gate) + ByoKeyPicker + UploadClip + lib/video.ts; nav. `npm run build` exit 0; gitleaks 0; zero hex. commit `2d26c98` on `fe/unify-run-wavec`. **LIVE on FORTRESS panel.famit.in**: `/creative/video` = 200, BUILD_ID `u6yKGIuhALhhzdzQcywXQ`; all 8 edge pages 200, 0 regression. Integrations UI also live (`/integrations` + `/super-admin/integrations` = 200).
 7. **U7 — Signal-Loop export (§9).** `ab_group`/`ai_generated`/disclosure on the row + the Ads handoff stub.
    (Real ad spend Ads-OAuth-gated.) *additive.*

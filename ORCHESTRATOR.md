@@ -320,3 +320,36 @@ Honest end-to-end verify of the shipped PVS Phase-1 (backend + frontend). NO /ru
 
 ## RESUME RUN-IDs
 resilience `wf_832cdc86-295` (done) · handoff-realtime-fix `wf_3dcb8fb6-bf3` (running). Others: `MASTER_BUILD_STATE.md`.
+
+---
+
+## WAVE: communication-omnichannel-megaplan (DESIGN) — DONE 2026-06-15
+**Plan/output:** `communication/COMMUNICATION-MASTER-PLAN.md` + `communication/README.md` (read-first index) + `communication/_RESEARCH-LOG.md` (6 arch phases + 7 red-teams + completeness critic).
+**Goal:** unified Communication tab (Telegram + Email + SMS) mirroring+exceeding WhatsApp — multi-step builder, banner/video/PDF, post-call auto-summary, founder hot-lead Telegram alert, multi-step LLM brain, per-tenant, earner-safe, sellable. Treat founder ask as 1%; designed the 99%.
+**Key decisions folded in:** channel registry = the LIVE provider registry (1 row + 1 adapter); MVP-first (3 tables + Telegram-only W1, NOT the 10-table cathedral/cost-router/Hatchet/tools/inbox); Telegram first (unblocked, 2-min BotFather token). Red-team corrections: `_finalize_call` is awaited in the live dial loop → `create_task`+snapshot+timeout never `await`; no `_wa_draft_followup_text` refactor in the channel wave; webhook fail-CLOSED + secret-bound-to-path-tenant; per-tenant DEK (HKDF); signed single-use deep-links; server-side compliance gates; consent = `channel×purpose` w/ `consent_basis` from `lead_source`; per-message metering (no `wallet.debit`) + per-tenant budget/frequency/anomaly guards; segment-accurate SMS pricing; per-bot token-bucket.
+**6 security probes gating ship:** T-WEBHOOK · T-INJECT · T-LEAK · T-VAULT · T-DEEPLINK · T-GATE.
+**Roadmap:** W1 Telegram alert+auto-summary+setup → W2 LLM brain reply-only+inbound webhook → W3 Email+cost-router+all cost guards+template builder → W4 unified inbox+book_slot+output-safety+DLQ → W5 SMS(DLT-gated)+automation/journey engine+war-room → W6+ CAPI signal closure(moat)+team inbox+public API+in-chat payments.
+**Founder credential actions:** Telegram=BotFather token (2 min, no verification, free, START the bot once) [W1]; Email=Resend key (+DNS) [W3]; SMS=MSG91 + DLT registration (5-10 day external gate) [W5].
+**Status:** READY TO BUILD — Wave 1, BE/Opus + FE/Sonnet, reuse Core_2, serialize caller.py edits via CALLER_EDIT_LOCK.md, deploy FE only when no other FE wave is mid-deploy. NO box mutated by the design waves.
+
+## VIDEO-STUDIO-ACTIVATE-REAL — Phase 3+4 (the real MP4) — DONE (2026-06-15)
+The Video Studio now renders a REAL, playable composite MP4 end-to-end and is LIVE + USABLE.
+- Built the missing executor `media_gen/video/compose_worker.py` (deployed to box, py_compile OK):
+  Sarvam-TTS VO → script-paced burned ASS captions → product/slate visual → FFmpeg composite
+  (no-shell) → poster → DO Spaces → store.update(succeeded) → ai_asset library bridge. `enqueue()`
+  forks a FULLY-DETACHED out-of-band render so the founder "Generate" auto-renders (never inline,
+  never touches agent.py).
+- REAL PROOF: 2 clips rendered (Codename Joy 3.0 12s / DLF The Crest 10s). ffprobe = h264 1080x1920
+  + aac 22050Hz audio, exact duration, 242 KB. In the live library at GET /assets?media_type=video
+  with presigned playable URLs. Auto-spawn flow (founder Generate) reaches succeeded in ~6s.
+- Edge: panel.famit.in/creative/video=200; /api/creative/video/campaigns=401 (mounted → real studio
+  renders, not the DormantCard). FE was already deployed (W9 2d26c98); the BE mount is what flips it.
+- EARNER GATE PASS: agent.py 9150fabe UNCHANGED, famit-agent PID 2808658 NRestarts=0 NOT restarted,
+  aim-voice-agent 2739156 untouched, caller/health 200, aiasset/status 200, 0 5xx, NO ring. Only
+  famit-caller restarted (allowed). Flag VIDEO_COMPOSE_SPAWN default ON. Rollback: rm compose_worker.py.
+- LESSON captured (AGENT_LEARNINGS y/z): never ship a dormant placeholder the founder cannot use; a
+  never-raises lazily-imported seam can hide a totally-missing implementation. Grep the tree for the
+  target module's definition before claiming the path works.
+- NEXT (additive hardening, not blockers): U7 Signal-Loop · U8 reaper/moderation/lifecycle/alerts ·
+  U9 BYO-key/Vault-seam/multilingual/music · U10 soak · durable Hatchet-saga upgrade of enqueue ·
+  full 4-rung ABR ladder.
