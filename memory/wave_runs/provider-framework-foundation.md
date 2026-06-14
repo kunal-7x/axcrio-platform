@@ -71,6 +71,43 @@ on `env -i` → version `0.1.0-w1`, `is_enabled()`=False; flag flip `=1`/`=true`
 
 **No caller.py edit. No service restart. Flag stays OFF.** gitleaks staged = 0.
 
+## W2 — guard + adapter + named-transforms + creds (offline)
+
+**Status:** ✅ DONE (local + offline tests green). Local-only; NO mount, NO box write, flag OFF.
+
+**Deliverables (all on disk, `droplet_work/provider_registry/`):**
+- `ssrf_guard.py` — `validate_endpoint(host,port,scheme)` HARD gate: host/port/scheme split,
+  DNS-resolve-ALL, RFC1918/loopback/link-local/metadata/reserved denylist, IP-literal
+  canonicalize (defeats hex/octal/dword/IPv6-mapped/NAT64), `revalidate_redirect_location`
+  (redirect-deny hook), injectable resolver, never raises.
+- `adapter.py` — 3-tier transform `build_request`/`parse_response`: Tier-1 openai_compat,
+  Tier-2 named_provider dispatch, Tier-3 custom_field_map with a TINY inline JSONPath subset
+  (`$.a.b` / `$[0]` / `$['k']`, depth≤5, ≤64 entries, NO eval/Jinja/wildcard/recursion);
+  `validate_field_map` is the ONLY write-time raiser.
+- `named_transforms.py` — REGISTERS the existing `media_gen/video/providers` builders verbatim
+  (fal/replicate/luma/higgsfield/selfhost/generic, import-guarded) + pure-local anthropic/gemini
+  text transforms. REUSE, never rewrite.
+- `credentials.py` — AAD-bound AES-256-GCM (`encrypt_credential`/`decrypt_credential`,
+  AAD=`tenant||def_id||version`, nonce-prepended), via an injectable `get_key` seam (interim
+  Fernet-era derives sha256 of the existing box keystore secret); InvalidTag propagates on a
+  cross-tenant ciphertext copy (no plaintext). `mask()` for the UI.
+- tests: `test_ssrf_guard.py` + `test_adapter_fieldmap.py`.
+
+**Two W2 correctness bugs found + fixed making the suite green (16/16 adapter + ssrf):**
+1. `_auth_headers` leaked the dataclass bearer-default `auth_value_tmpl="Bearer {key}"` into the
+   `api_key_header` scheme → `x-api-key: Bearer <key>` instead of the raw key. Fix: added
+   `_DEFAULT_BEARER_TMPL` sentinel; a non-bearer scheme treats that default as "unset" and uses
+   its own scheme-appropriate default; a genuinely custom template is still honored.
+2. `_envelope_to_video_brief` left `webhook_url` in `brief.extra`, which `_common_input`'s
+   `d.update(brief.extra)` then leaked into the fal/replicate body → drift from the
+   `providers.build_submit` golden (webhook is the explicit 5th arg + URL-appended). Fix: exclude
+   `webhook_url` from `extra`. Now the named-`fal`/`replicate`/`luma` builds BYTE-MATCH the golden.
+
+**Verify:** `python -m pytest provider_registry/tests/ -q` → `2 passed`; py_compile OK on all
+W2 files. gitleaks staged = 0. Earner UNTOUCHED (no box write; agent.py never imported).
+
+---
+
 **Next:** W2 — `ssrf_guard.py` + `adapter.py` + `named_transforms.py` (register the existing
 `media_gen/video/providers.build_submit/parse_result` for fal/replicate/luma/higgsfield/
 selfhost/generic) + `credentials.py` (AAD-bound interim Fernet via the get_secret seam).

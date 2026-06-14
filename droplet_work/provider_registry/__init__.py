@@ -41,7 +41,30 @@ from .schema import (  # noqa: F401
     ProviderCred,
 )
 
-__version__ = "0.1.0-w1"
+# --- W2 behavioural surface: guard + adapter + named-transforms + creds. ---
+# Import-guarded so a box that somehow lacks a W2 file (or `cryptography`) still imports the
+# W1 shell cleanly. These modules are PURE/local + empty-env safe; importing them does ZERO
+# network I/O and NEVER raises (the resting-byte-identical guarantee). Not mounted until W4.
+try:  # pragma: no cover - all-or-nothing W2 surface
+    from . import ssrf_guard, adapter, named_transforms, credentials  # noqa: F401
+    from .ssrf_guard import validate_endpoint, revalidate_redirect_location  # noqa: F401
+    from .adapter import (  # noqa: F401
+        build_request,
+        parse_response,
+        validate_field_map,
+        FieldMapError,
+    )
+    from .credentials import (  # noqa: F401
+        encrypt_credential,
+        decrypt_credential,
+        compute_aad,
+        CredentialError,
+    )
+    _W2_LOADED = True
+except Exception:  # noqa: BLE001 — never let a W2 import failure break the W1 shell
+    _W2_LOADED = False
+
+__version__ = "0.2.0-w2" if _W2_LOADED else "0.1.0-w1"
 
 __all__ = [
     # config
@@ -56,5 +79,16 @@ __all__ = [
     "CredentialScope",
     "ProviderDef",
     "ProviderCred",
+    # W2 behavioural surface
+    "validate_endpoint",
+    "revalidate_redirect_location",
+    "build_request",
+    "parse_response",
+    "validate_field_map",
+    "FieldMapError",
+    "encrypt_credential",
+    "decrypt_credential",
+    "compute_aad",
+    "CredentialError",
     "__version__",
 ]
