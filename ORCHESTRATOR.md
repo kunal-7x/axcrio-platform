@@ -2,6 +2,18 @@
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
 
+## ✅ 2026-06-14 — RAG W1 DEPLOY = DONE (retrieval hardening live — dense-gate + _global UNION + FORCE-RLS)
+**PLAN:** Deploy W1 kb/core.py + kb/schema.sql + kb/__init__.py + aim_voice_agent.py (dense=False default + _global UNION predicate + kb_query_log FORCE-RLS) to box; apply DDL via psql; restart aim-voice-agent only; full earner gate.
+**OUTPUT/STATUS = ALL PASS. EARNER GATE PASS.**
+- Backups: `kb/*.W1bak.20260614-171333`. SCP: core.py(7010a77e) + __init__.py(aa2b7c13) + schema.sql(42c14591) + aim_voice_agent.py(5c3936fa from LIVEBOX) — all box md5s match local W1.
+- **8/8 offline probes PASS** on box: T1 dense=False default, T1b retrieve embed guarded, T2 _global predicate, T3 no % wildcard, T4 aim_voice_agent call-site, T5 FORCE-RLS in DDL, T6 WITH CHECK excludes _global, T7 log_query exported.
+- **DDL applied (psql -f kb/schema.sql):** kb_sources/kb_documents/kb_chunks — policies updated (DROP+CREATE); kb_query_log NEW table + ENABLE+FORCE-RLS + policy + 2 indexes. No errors.
+- **DB FORCE-RLS verified:** all 4 kb_ tables `relforcerowsecurity=t` in `pg_class`.
+- aim-voice-agent restarted (new PID `2669239`); active/running.
+- **Earner gate:** agent.py `9150fabe` UNCHANGED · famit-agent PID `1477083` NOT restarted · caller /health 200 · NO ring.
+- **Flag truth (NOT flipped):** CTX_CACHE (W2) = DORMANT (absent from .env) · INBOUND_PROV_LOCK (Wave A) = DORMANT (absent from .env).
+- **OPEN:** W2 next (POST /kb/seed-telecaller + kb/seed_global.py corpus — seeding the _global shared knowledge base). design/RAG-MASTER-PLAN.md W1 row updated to DONE.
+
 ## ✅ 2026-06-14 — RAG W0 DEPLOY = DONE (kill-switch live on box, grounding still ON)
 **PLAN:** Deploy W0-built `RAG_INJECT_ENABLED` kill-switch to box; set flag=1 (preserve today's RAG grounding); restart aim-voice-agent only; full earner gate.
 **OUTPUT/STATUS = ALL PASS. EARNER GATE PASS.**

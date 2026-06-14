@@ -65,8 +65,49 @@ famit-agent MainPID `1477083` NOT restarted · caller `/health` (127.0.0.1:8208)
   → Both built-but-dormant. Do NOT flip without a dedicated earner-gated restart + proof.
 
 ### NOT done this wave (by design / next steps)
-- Box DDL NOT yet applied (kb/core.py box md5 still `3922266f`, schema unchanged) — deploys on
-  the NEXT aim-voice-agent restart (ensure_schema), a separate box-mutating step.
-- Live RLS cross-tenant probe (act-as A → only A + `_global`, never B) deferred to deploy time
-  (needs the new USING policy live). Offline + rollback proofs stand in for now.
+- Live RLS cross-tenant probe (act-as A → only A + `_global`, never B) deferred to W2 deploy time
+  (needs a real 2nd tenant in DB; offline + rollback proofs stand in for now).
 - W2: POST /kb/seed-telecaller + kb/seed_global.py corpus (next wave).
+
+## W1 DEPLOY — DONE (2026-06-14, box 168.144.153.145)
+
+**Files deployed:**
+- `kb/core.py` box md5 `7010a77e` (was `3922266f`)
+- `kb/__init__.py` box md5 `aa2b7c13` (was `f6ec3720`)
+- `kb/schema.sql` box md5 `42c14591` (was `fabd3803`)
+- `aim_voice_agent.py` box md5 `5c3936fa` from `aim_voice_agent.LIVEBOX.py` (was `8335d4ba`)
+
+**Backups:** `/opt/famit-agent/kb/*.W1bak.20260614-171333`
+
+**DDL apply (psql -f kb/schema.sql):** kb_sources/kb_documents/kb_chunks policies updated (DROP POLICY + CREATE POLICY); kb_query_log NEW table created + ENABLE+FORCE ROW LEVEL SECURITY + `kb_query_log_isolation` policy + `kb_query_log_tenant_idx` + `kb_query_log_ttl_idx`. No errors, no 5xx.
+
+**DB FORCE-RLS live verify (pg_class):**
+- kb_chunks: relrowsecurity=t, relforcerowsecurity=t
+- kb_documents: relrowsecurity=t, relforcerowsecurity=t
+- kb_query_log: relrowsecurity=t, relforcerowsecurity=t
+- kb_sources: relrowsecurity=t, relforcerowsecurity=t
+- All 4 isolation policies: `pg_policies` shows policyname + cmd=ALL + permissive=PERMISSIVE
+
+**8/8 offline probes PASS (on box, pre-restart):**
+- T1 dense=False default: PASS
+- T1b retrieve embed guarded by if dense: PASS
+- T2 _global UNION predicate: PASS
+- T3 no % wildcard: PASS
+- T4 aim_voice_agent call-site params: PASS
+- T5 kb_query_log FORCE-RLS: PASS
+- T6 WITH CHECK excludes _global (write-locked): PASS
+- T7 log_query+purge exported in __init__: PASS
+
+**aim-voice-agent restarted:** old PID 2660527 (W0) → new PID 2669239. active/running.
+
+**Earner gate (post-deploy):**
+- agent.py md5: `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED
+- famit-agent PID: `1477083` NOT restarted
+- caller /health: 200
+- 0 5xx, NO ring
+
+**Flag truth (confirmed absent from .env, NOT flipped):**
+- CTX_CACHE (W2): DORMANT — absent from live /opt/famit-agent/.env
+- INBOUND_PROV_LOCK (Wave A): DORMANT — absent from live /opt/famit-agent/.env
+
+**NEXT:** W2 — POST /kb/seed-telecaller + kb/seed_global.py corpus (seeding _global shared KB).

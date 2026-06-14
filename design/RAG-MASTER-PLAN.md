@@ -267,7 +267,7 @@ block — completeness A3). Files/contract: `rag-frontend` spec (this doc's sour
 | # | Wave | Scope | Box-mutating | Flag | Model |
 |---|---|---|---|---|---|
 | **W0** ✅ **DONE** | **RETRO-GATE** | golden-capture live `018c20a7`; build `RAG_INJECT_ENABLED`; wrap all 3 grounding sites; prove `grounding=""` byte-identical in CI; **DEPLOYED `8335d4ba` to box 2026-06-14; RAG_INJECT_ENABLED=1 in .env; golden 5/5 PASS; flag-gate A/B/C PASS; earner untouched** | aim_voice_agent.py | `RAG_INJECT_ENABLED=1` (ON; kill = set 0) | opus |
-| **W1** | `core.py` `dense=`-gate + `_global` UNION + RLS clause + `kb_query_log` FORCE-RLS; offline RLS+UNION+no-embed test | none / DDL via `ensure_schema` | `KB_INCLUDE_GLOBAL` | opus |
+| **W1** ✅ **DONE** | **RETRIEVAL HARDENING** | dense-gate (`dense=False` default, embed skipped on reply path), `_global` UNION predicate (RLS USING + explicit SQL, no `%`), `kb_query_log` FORCE-RLS + TTL; **DEPLOYED 2026-06-14: DDL applied (kb_query_log live, all 4 kb_ tables FORCE-RLS=t), kb/core.py+schema.sql+__init__.py+aim_voice_agent.py deployed, aim-voice-agent restarted (PID 2669239), 8/8 offline probes PASS, DB FORCE-RLS verified, earner UNTOUCHED** | kb/core.py + kb/schema.sql + aim_voice_agent.py | `KB_INCLUDE_GLOBAL` (default ON) | opus |
 | **W2** | `POST /kb/seed-telecaller` + `kb/seed_global.py` corpus (canary→promote) | caller.py + corpus | — | opus |
 | **W3** | campaign-save collateral ingest (raw_script-skip) + PII scrub + soft-delete versioning + per-tenant quota | caller.py save handlers | — | opus |
 | **W4** | `kb/grounding_cache.py` (W2-substrate) + wire connect-prefetch through it (`dense=True` here only); memory-seed thread; prompt-tax meter | aim_voice_agent.py | — | opus |
