@@ -53,10 +53,27 @@
   **priority lane**). 3 NEW FORCE-RLS tables (`ddl_comm_cost.sql`, additive). All permissive-on-fault;
   resting byte-identical (flags OFF). NO caller.py edit (guards live in the mounted `comm.engine.send`).
   10/10 comm suites PASS, gitleaks 0. Details: `_BUILD-LOG.md` (W3-COSTGUARDS).
-- **NEXT (LIVE)** — founder taps `@mr_kunal_bot` once → `setWebhook` + flip `COMM_BRAIN_ENABLED=1` →
-  earner gate under an induced Telegram outage → the FE goes live with the final panel deploy. The
-  cost-guard flags (`COMM_COST_GUARDS_ENABLED`/`COMM_METERING_ENABLED`/`COMM_TOKEN_BUCKET_ENABLED`) +
-  the `ddl_comm_cost.sql` apply flip ON for the founder tenant after the same earner gate.
+- **W2+W3 LIVE DEPLOY** ✅ **DEPLOYED + VERIFIED (2026-06-15)** — the W2 brain + the 6 W3 cost
+  guards are LIVE on the box for tenant `admin` (BE only; panel deploy still deferred to the single
+  final canonical deploy). 13 comm files deployed md5-verified; `ddl_comm_cost.sql` applied (3 NEW
+  FORCE-RLS tables → 7 comm tables FORCE-RLS); flags `COMM_BRAIN_ENABLED · COMM_COST_GUARDS_ENABLED ·
+  COMM_METERING_ENABLED · COMM_TOKEN_BUCKET_ENABLED` flipped ON; **famit-caller restarted ONLY** (no
+  caller.py edit — already mounted; box golden `ccf9715b` unchanged; NO agent.py touch). **LIVE PROOF:**
+  `GET /comm/channels` 200 `configured:true` all flags live; getMe `mr_kunal_bot`; webhook no-secret →
+  403 fail-closed. **REAL-MESSAGE pipeline LIVE** — `engine.send` reaches api.telegram.org for real
+  (`http_400 chat-not-found`); only the founder chat_id is missing (`getUpdates=0` — he hasn't tapped;
+  sentinel correctly absent, never faked; alert no-ops `no_founder_chat_id`, never blocks the loop). The
+  webhook is deliberately NOT set (caller firewalled to the panel box only → would deaf-bot; stays
+  getUpdates mode). **BRAIN PROVEN LIVE** — a real inbound through `/comm/webhook/telegram/admin`
+  (valid HMAC secret → 200 stored) → Groq grounded Hinglish reply (`action=replied`); cost-guard #5
+  deliverability proven live (`blocked_dead`). **EARNER GATE under an induced Telegram black-hole:**
+  hot-path 0.017 ms snapshot + 0.016 ms create_task; detached run bounded (fresh-dest 0.75 s ≪ 8 s cap);
+  agent.py `9150fabe` UNCHANGED, famit-agent PID 2808658 NRestarts=0 NOT restarted, /health 200, 0 5xx,
+  NO ring. Details: `_BUILD-LOG.md` (## W2+W3 LIVE DEPLOY).
+- **NEXT (the ONE founder action)** — founder taps `@mr_kunal_bot` once → the system auto-captures +
+  persists his chat_id forever → the next hot lead lands a real Telegram alert on his phone. The public
+  inbound webhook (for two-way contact replies) is a later infra task (panel proxy → no public ingress
+  to the caller today). The FE goes live with the single final canonical panel deploy.
 
 ## Build order (from the plan §8)
 | Wave | What | Channel | ~Effort |

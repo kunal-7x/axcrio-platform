@@ -512,3 +512,99 @@ additive (delete-safe). No caller.py / agent.py touched.
 **Status: BUILT + OFFLINE-GREEN (flags OFF, resting byte-identical), committed on `fe/unify-run-wavec`.
 All 6 cost guards implemented + PROVEN PASS (unit + engine-integration). NO caller.py edit (no lock).
 LIVE flip (DDL apply + flags ON + earner gate) is the founder-gated step, same recipe as W1-P2/P3.**
+
+---
+
+## W2+W3 LIVE DEPLOY + REAL-MESSAGE/BRAIN/EARNER VERIFY — 2026-06-15
+
+The W2 conversation brain + the 6 W3 cost guards were deployed LIVE to the voice box
+(`famit@168.144.153.145`, `/opt/famit-agent`) and the flags flipped ON for the founder
+tenant `admin`. **NO caller.py edit** (the W1-P2 mount + W1-P3 hook already route every
+send/inbound through the mounted `comm` package; box golden `caller.py` md5
+`ccf9715b…` UNCHANGED → no CALLER_EDIT_LOCK needed). **NO agent.py touch.**
+
+### What deployed (BE only — panel deploy still deferred per directive)
+- **13 comm files** scp'd → staged → md5-verified == local → atomically moved into
+  `/opt/famit-agent/comm/`: NEW `brain.py · cost_guards.py · deeplink.py · lang.py ·
+  metering.py · ratelimit.py · token_bucket.py`; CHANGED `__init__.py · config.py ·
+  endpoints.py · engine.py · founder_alert.py · webhook.py`. All 13 post-move md5 ==
+  local source. Box venv `py_compile` clean + isolated `import comm.*` OK.
+- **DDL** `ddl_comm_cost.sql` applied → 3 NEW tables `comm_daily_spend ·
+  comm_freq_counter · comm_deliverability`, all **FORCE RLS = true**. (The 4 W1 tables
+  already existed FORCE-RLS.) Total = 7 comm tables, all FORCE-RLS.
+- **Flags flipped ON** (founder tenant, appended to `.env`, backup
+  `.env.COMMW2W3bak.20260614-214442`): `COMM_BRAIN_ENABLED=1 ·
+  COMM_COST_GUARDS_ENABLED=1 · COMM_METERING_ENABLED=1 · COMM_TOKEN_BUCKET_ENABLED=1`
+  (on top of the already-ON `COMM_ENABLED · COMM_TELEGRAM_ENABLED ·
+  FEATURE_TELEGRAM_FOUNDER_ALERT · FEATURE_TELEGRAM_FOLLOWUP`).
+- **Restarted famit-caller ONLY** (new PID 2846741). Box comm backup
+  `comm.COMMW2W3bak.20260614-214207`.
+
+### Live surface proof (over real HTTP, minted admin JWT == panel path)
+- `GET /comm/channels` → 200, `configured:true`, **flags all live**:
+  `brain_enabled:true, cost_guards_enabled:true, metering_enabled:true,
+  token_bucket_enabled:true`.
+- `POST /comm/channels/telegram/test` (getMe) → 200 **`mr_kunal_bot`** (token decrypts
+  through the live vault; `vault_read.available()=true`).
+- `/comm/channels` 401 authed (mounted), webhook no-secret → **403 fail-closed (S2 holds)**.
+
+### 🟥 REAL-MESSAGE (founder hot-lead alert) — PIPELINE PROVEN LIVE, blocked on ONE founder tap
+- `engine.send("admin", …)` to a real Telegram chat → **reaches api.telegram.org for
+  real** → `http_400: Bad Request: chat not found` (logged in append-only
+  `comm_send_log`). i.e. the WHOLE chain (vault token → telegram adapter → real HTTPS
+  POST → SendResult → metering → send_log) is LIVE; the ONLY missing piece is the
+  destination.
+- **Why no message landed yet:** `getWebhookInfo` = `{url:"", pending:0}`, `getUpdates`
+  = **0 updates** → the founder has NOT messaged `@mr_kunal_bot` in the last ~24h, so
+  his chat_id can't be derived (`derive_founder_chat_id(force) → ''`). The founder
+  sentinel is correctly ABSENT (never fabricated). The alert no-ops cleanly
+  (`no_founder_chat_id`) — never blocks the call loop. **ONE founder tap unblocks a real
+  message** (then auto-persists forever). Recorded in `_HUMAN_TASKS.md` #1.
+- **Webhook NOT set (deliberate):** the caller (8209) is firewalled to the panel box
+  `10.122.0.2` only — NO public HTTPS ingress, no tunnel. `setWebhook` would create a
+  DEAF BOT (PLAYBOOK footgun) and disable getUpdates. So we stay in **getUpdates mode**
+  (the W1-P3 design path); the public inbound webhook is a later infra task (panel proxy).
+
+### ✅ CONVERSATION BRAIN (reply, grounded) — PROVEN LIVE
+- Seeded a `comm_session` with `call_summary="Asha asked about EMI options for a 3BHK
+  flat at Prestige Lakeside; budget 95 lakh"` → POSTed a REAL inbound through the live
+  `/comm/webhook/telegram/admin` with a valid HMAC `secret_token` →
+  **200 `{stored:true}`** (fail-closed secret verify + GUC-after-verify, S2, LIVE).
+- `brain.generate_reply(ctx)` (Groq `llama-3.3-70b-versatile`, ~1.5s) produced a
+  **grounded, in-persona Hinglish reply**: *"haan ji, main aapko EMI breakup bhejne wali
+  thi, abhi bhejti hoon, aap dekh kar batayein ki aapko kaisa lagta hai, phir hum site
+  visit ke baare mein baat kar sakte hain"* (`action=replied`). The reply send 400'd only
+  because the synthetic contact chat isn't real.
+- **Cost-guard #5 PROVEN LIVE end-to-end:** the retry inbound was pre-blocked
+  `blocked_dead / deliverability_dead` (the engine flipped the chat `dead` after the
+  first 400; the adapter was never called → fast 0.46s return). #1 metering wrote the
+  send_log row.
+
+### 🟥 EARNER GATE (before + after, under an INDUCED `api.telegram.org` black-hole)
+Black-holed `149.154.166.110` (telegram reachability → HTTP 000), then:
+- **[HOTPATH]** `post_call.snapshot` **0.017 ms** + `asyncio.create_task` scheduling
+  **0.016 ms** — the ONLY cost the dial loop pays at `_finalize_call` (~0.03 ms). Nothing
+  awaited.
+- **[DETACHED]** `post_call.run()` bounded **0.00 s** under outage (dead-chat fast path);
+  a FRESH (non-dead) destination → `engine.send` bounded **0.75 s** under the black-hole
+  (≪ the 8 s per-channel cap, failed cleanly, never hung).
+- **agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED** · **famit-agent PID 2808658
+  NRestarts=0 NOT restarted** · **famit-caller /health 200** · **0 5xx** under outage · **NO
+  ring.** Black-hole removed → telegram reachable (302), **0 residual blackhole routes**.
+
+### Cleanup + state
+- Synthetic test session + deliverability row deleted (tenant `admin` clean: 0 residual
+  test sessions / deliverability; founder sentinel correctly absent). The append-only
+  `comm_send_log` retains the send-attempt audit rows (immutable by design).
+- Temp box scripts + `_comm_stage` removed.
+
+### Rollback
+- Instant: set the 4 new flags → 0 (brain/guards no-op, reverts to W1-P3 live behaviour).
+- Full: `COMM_ENABLED=0` (routes → 404) → restore `comm.COMMW2W3bak.20260614-214207` +
+  `.env.COMMW2W3bak.20260614-214442` → restart famit-caller. (3 cost tables are
+  additive/drop-safe.)
+
+**NET: W2 brain + W3 cost guards are LIVE + USABLE for the founder tenant; the founder
+hot-lead alert is fully wired and reaches Telegram — it will land a real message on the
+founder's phone the instant he taps `@mr_kunal_bot` once. Earner untouched, proven under
+outage.**

@@ -21,9 +21,16 @@ Telegram alert with a "Open in panel" button. (Privacy-minimized by default — 
 inline; set `COMM_FOUNDER_ALERT_FULL_PII=1` in `/opt/famit-agent/.env` if you want the full
 lead detail in the message itself.)
 
-**Status:** Everything else is LIVE. Flags ON for the `admin` tenant
-(`FEATURE_TELEGRAM_FOUNDER_ALERT=1`, `FEATURE_TELEGRAM_FOLLOWUP=1`). getMe verified
-(`mr_kunal_bot`, token works). Only the fresh chat_id is pending your one tap.
+**Status (updated 2026-06-15):** Everything else is LIVE for the `admin` tenant — and
+now the **conversation brain + all 6 cost guards are LIVE too** (flags
+`COMM_BRAIN_ENABLED · COMM_COST_GUARDS_ENABLED · COMM_METERING_ENABLED ·
+COMM_TOKEN_BUCKET_ENABLED` all ON, on top of `FEATURE_TELEGRAM_FOUNDER_ALERT ·
+FEATURE_TELEGRAM_FOLLOWUP`). Proven live: getMe → `mr_kunal_bot` (token decrypts), the
+brain replies grounded in the prior call (real Hinglish reply generated through the live
+webhook), the send pipeline reaches Telegram for real (`http_400 chat-not-found` — only
+the destination is missing). **The ONLY thing standing between you and a real alert on
+your phone is this one tap.** After you tap, run nothing — the next hot lead (interest
+≥ 70) auto-sends you the alert.
 
 ## #2 — Post-call auto-summary to the CONTACT (W1: usually a no-op, by design)
 
