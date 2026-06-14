@@ -75,7 +75,21 @@ try:  # pragma: no cover - all-or-nothing W3 surface
 except Exception:  # noqa: BLE001 — never let a W3 import failure break the W1/W2 shell
     _W3_LOADED = False
 
-if _W3_LOADED:
+# --- W4 mount surface: the FastAPI build_router (the connector API). Import-guarded — FastAPI is
+# optional at scaffold time (endpoints.build_router returns None when it's absent), and a failure
+# here can NEVER break the W1/W2/W3 shell or the live spine. Not active until caller.py mounts it
+# AND PROVIDER_REGISTRY_ENABLED is on (every route also self-404s when the flag is OFF). ---
+try:  # pragma: no cover - all-or-nothing W4 surface
+    from . import endpoints  # noqa: F401
+    from .endpoints import build_router  # noqa: F401
+    _W4_LOADED = True
+except Exception:  # noqa: BLE001 — never let a W4 import failure break the shell
+    build_router = None  # type: ignore
+    _W4_LOADED = False
+
+if _W4_LOADED and _W3_LOADED:
+    __version__ = "0.4.0-w4"
+elif _W3_LOADED:
     __version__ = "0.3.0-w3"
 elif _W2_LOADED:
     __version__ = "0.2.0-w2"
@@ -110,5 +124,7 @@ __all__ = [
     "get_provider",
     "ProviderClient",
     "resolve_status",
+    # W4 mount surface
+    "build_router",
     "__version__",
 ]

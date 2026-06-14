@@ -7307,6 +7307,46 @@ if FEATURE_MEDIA and _build_media_router is not None:
 
 
 # ==============================================================================================
+# MODULE MOUNT — provider-registry (the universal AI/connector registry, prefix /providers). FLAG-GATED.
+# ----------------------------------------------------------------------------------------------
+# ⚠ TENANT ISOLATION: provider-registry ships ONLY a token-deriving AUTHENTICATED surface
+# `build_router(resolve_tenant, can, need_auth, forbidden, require_super_admin=, firewall=, audit=)`
+# — there is NO body-tenant bare router at all. tenant_id is ALWAYS resolve_tenant(request)["tenant_id"]
+# (token-derived), writes enforce can(t,"write"), the /providers/admin/* surface is gated by
+# require_super_admin (which EXCLUDES the legacy static password — control-security #1), and a
+# provider-key REVEAL requires a firewall.consume_reveal_step_up single-use PIN step-up (the W3 reveal
+# scope). A self-hosted base_url is SSRF-validated before a def can be created / tested. The
+# request/response field-maps of a custom_field_map def are JSONPath-validated (no-eval) at write-time.
+#
+# IMPORT-GUARD (house pattern): a missing/broken provider_registry package can NEVER break startup —
+# build_router degrades to None when FastAPI/crypto are absent, and any import error is swallowed.
+# FEATURE FLAG default OFF: PROVIDER_REGISTRY_ENABLED!=1/true => router NOT mounted => byte-identical
+# behavior. Even if mounted, EVERY route self-404s while the flag is OFF (defense in depth) — so the
+# resting state is byte-identical whether the flag-check happens here at mount or per-route.
+# This is the W4 caller.py mount; serialized against RAG/Vault/Video (only ONE edits caller.py at a time).
+try:
+    from provider_registry.endpoints import build_router as _build_provreg_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _build_provreg_router = None
+
+PROVIDER_REGISTRY_ENABLED = (cfg_get("PROVIDER_REGISTRY_ENABLED", "0") or "0").strip().lower() \
+    in ("1", "true", "yes", "on")
+
+if PROVIDER_REGISTRY_ENABLED and _build_provreg_router is not None:
+    try:
+        _provreg_router = _build_provreg_router(
+            resolve_tenant, can, need_auth, _forbidden,
+            require_super_admin=require_super_admin, firewall=_firewall_mod, audit=_audit,
+        )
+        if _provreg_router is not None:
+            app.include_router(_provreg_router)
+    except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
+        import logging as _lg_provreg
+        _lg_provreg.getLogger("famit-caller").warning("provider_registry router mount failed",
+                                                       exc_info=True)
+
+
+# ==============================================================================================
 # MODULE MOUNT — booking (appointments / site-visits / reminders ENGINE, prefix /booking). FLAG-GATED.
 # ----------------------------------------------------------------------------------------------
 # ⚠ TENANT ISOLATION: booking is a HEADER-TENANT module on its bare surface — its module-level
