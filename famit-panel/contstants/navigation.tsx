@@ -157,6 +157,10 @@ export const navigation = [
         list: [
             { title: "Workflows", href: "/workflows", feature_key: "automate.workflows" },
             { title: "Webhooks", href: "/webhooks", roles: "manager", feature_key: "automate.webhooks" },
+            // Universal Provider / Connector registry — add any AI model + key,
+            // self-host a model, or wire a tool, all from the UI. Video Studio is
+            // its first consumer. Manager-gated (BYO-key is spend-sensitive).
+            { title: "Integrations", href: "/integrations", roles: "manager", feature_key: "integrations.providers" },
         ],
     },
     {
@@ -218,6 +222,7 @@ export const navigation = [
             { title: "Plans", href: "/super-admin/plans", roles: "admin" },
             { title: "Usage Analytics", href: "/super-admin/usage", roles: "admin" },
             { title: "Audit Logs", href: "/super-admin/audit", roles: "admin" },
+            { title: "Integrations", href: "/super-admin/integrations", roles: "admin" },
         ],
     },
 ];

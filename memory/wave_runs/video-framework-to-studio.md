@@ -95,3 +95,89 @@ OFF → legacy env path verbatim). To fully remove the code: restore
 ### NEXT (W6)
 VID: engine.py seam fix + PG video schema + live-library bridge (`FEATURE_VIDEO_LIBRARY`) — on the
 AI-asset service (`:8310`), NOT caller.py.
+
+---
+
+## INTEGRATIONS UI — the crazy Provider/Connector management page — ✅ BUILT + GREEN (FE only, NOT deployed)
+
+**Scope:** the universal Provider/Integrations management page (PROVIDER-FRAMEWORK-PLAN §9 + §14 W11
+FE + video-flex-framework-design `DESIGN [crazy-ui-security]` §B), consuming the LIVE
+`/provider-registry` API (W4-mounted, flag ON). FE-only — built + committed to `fe/unify-run-wavec`,
+`tsc --noEmit` + `npm run build` GREEN locally, **panel NOT deployed** (single deploy after
+voice-core-surgery, per the no-panel-deploy-race rule). Zero box mutation, agent.py never touched.
+
+### THE API CONTRACT (verified on disk vs the live BE — endpoints.py)
+The live registry mounts under **`/provider-registry`** (NOT the spec's `/admin/providers`; the bare
+`/providers` prefix is shadowed by the legacy LLM-router list). FE proxies caller.py at `/api`, auth =
+`X-Auth` header (lib/api.ts convention). Shapes consumed: list `{providers:[_def_public_dict + masked +
+circuit]}`, health (`registry.resolve_status`, normalized to rows), create/update/delete, `POST
+/{id}/credential` → `{stored,key_masked,scope}`, the 3-step PIN reveal (`/firewall/verify-pin` Form →
+`/{id}/reveal-init` aud-bound single-use → `/{id}/reveal` `X-Step-Up` → plaintext once), `POST
+/{id}/test` → `{healthy,latency_ms,detail,circuit}`, and the `/admin/*` super-admin twin surface.
+DORMANT-SAFE: every route 404s when flag-off/not-entitled → reads degrade to a calm coming-soon card,
+never an error wall (mutations surface a typed `IntegrationError`).
+
+### FILES (path:line)
+- `famit-panel/lib/integrations.ts` (NEW) — typed fetchers + `IntegrationError` + `humanizeError`
+  (ssrf_blocked/https-only/step_up/field_map → human msgs) + hooks `useProviders` (`:~360`),
+  `useIntegrations(capability)` (`:~395` — the Video Studio BYO-key picker seam), `useProviderHealth`
+  (30s poll, NOT 5s) + display dicts (CAPABILITY/AUTH/TRANSFORM labels, SELFHOST_PRESETS, `fmtCost`
+  micro-USD→"$/sec"). The 3-step reveal is `verifyPin`+`revealInit`+`revealCredential`+`revealFlow`.
+- `famit-panel/app/integrations/page.tsx` (NEW) — the vendor page: `EntitlementGuard
+  featureKey="integrations.providers"` → `Layout title="Integrations"` → `IntegrationsBody` (shared,
+  also drives the admin twin). 4 views via `SubNav` pill-strip (Providers / Self-hosted / Health /
+  Audit). Dormant → coming-soon card. Add-provider + self-hosted seed + edit modals.
+- `famit-panel/app/integrations/_shared.tsx` (NEW) — `SubNav`, `HealthBadge` (circuit→Badge: closed=
+  Healthy green / half_open=Recovering amber / open=Down danger / unknown=Unchecked), `CapabilityChips`,
+  `TypePill`, `PlatformLock`, `InfoStrip`, `ghostBtnCls`/`textBtnCls`.
+- `famit-panel/app/integrations/_provider-card.tsx` (NEW) — one provider Card (port of api-keys
+  ProviderCard/KeyRow): type pill + HealthBadge + capability chips + base_url/model/cost + masked
+  credential row (RevealPin for own `integration` key; `PlatformLock` masked-only for `is_global`/
+  platform key per Vault §9) + enable Switch + BYO-key add/rotate + "Test connection" inline result +
+  two-step confirm-delete.
+- `famit-panel/app/integrations/_add-provider-modal.tsx` (NEW) — `Modal isSlidePanel` add/edit:
+  display_name/slug/capability-multiselect/type/base_url (Hosted) OR SSRF-decomposed host+port +
+  server-preset (Self-hosted, admin-only)/auth_scheme/auth_header_name (api_key_header only)/transform
+  /model/cost/api_key. `seedSelfHosted` (admin) pre-selects the SSRF form. Vendor type Select hides
+  Self-hosted (BE 403s it). custom_field_map → the FieldMapper.
+- `famit-panel/app/integrations/_field-mapper.tsx` (NEW, the ONE net-new leaf) — the visual JSONPath
+  request/response field-mapper (the "connect ANY tool, no code" lever). `validatePath`/`validateMap`
+  = client-side JSONPath-only, depth≤5, no-eval/expression refusal (mirrors the BE
+  `adapter.validate_field_map` gate) — emits the JSONB map without hand-editing JSON.
+- `famit-panel/app/integrations/_reveal-pin.tsx` (NEW) — inline PIN-pad + 30s countdown-ring reveal.
+  **Plaintext lives in a `useRef`, NEVER react-state**; wiped on timeout/unmount/Hide; copy-without-
+  revealing (clipboard from the ref). Glyph = `lock` + TEXT buttons (eye/copy/key don't exist).
+- `famit-panel/app/integrations/_health-table.tsx` (NEW) — Health tab: ok/recovering/down count strip
+  + per-provider circuit/latency/detail table, 30s poll, dormant-safe.
+- `famit-panel/app/integrations/_audit-drawer.tsx` (NEW) — Audit tab: provider.* events from the
+  existing `/audit` feed (immutable control leg, no new endpoint) + Export CSV (text button — download
+  glyph absent) + a right slide-over event-detail drawer. Plaintext never in the audit (key_masked only).
+- `famit-panel/app/super-admin/integrations/page.tsx` (NEW) — the super-admin TWIN: SuperAdminGuard +
+  AdminHeader strip + `IntegrationsBody admin` (drives `/provider-registry/admin/*`: `_global` catalogue
+  + all-tenants, self-hosted register, platform-key add).
+- `famit-panel/app/super-admin/_shared.tsx` — +1 `ADMIN_TABS` line (Integrations).
+- `famit-panel/contstants/navigation.tsx` — +Integrations under Automate (manager-gated,
+  `feature_key="integrations.providers"`, glyph reuse) + super-admin group child.
+
+### SECURITY / CRAZY-UI (design §E folded)
+Reveal-policy half-gate as defence-in-depth: platform (`ai_provider`/`is_global`) key → `PlatformLock`,
+NO reveal/rotate surfaced; vendor `integration` key → RevealPin (PIN step-up, single-use jti, plaintext
+in ref). SSRF surfaced: host+port separate fields + "Will probe …" preview + "SSRF-validated on save"
+badge + the BE `ssrf_blocked:<reason>` mapped to a human refusal. FieldMapper = JSONPath-only no-eval.
+EntitlementGuard HIDE/LOCK cosmetic; the BE 404/402 is the boundary. Registry prefix is the literal
+`/integrations` route (entitlement matcher = literal-prefix, no `*`).
+
+### GLYPH GROUND-TRUTH (verified vs Icon/index.tsx)
+USED (all registered): chain, lock, clock-1, info, check, check-circle, chevron, plus, trash, arrow.
+NEVER used (absent → invisible): shield, eye, copy, key, refresh, download, plug, server, globe, play.
+
+### VERIFY (GREEN, FE-only)
+`npx tsc --noEmit` = exit 0. `npm run build` = exit 0 (both `/integrations` + `/super-admin/integrations`
+compiled, 229 kB each). Raw-hex scan on all new files = EMPTY (semantic @theme tokens only). gitleaks
+`protect --staged` = 0 leaks (99 KB scanned). EARNER UNTOUCHED (FE-only, no box mutation, no restart, no
+ring; agent.py `9150fabe` never imported). **Panel NOT deployed** (single deploy after voice-core-surgery
+from the latest fe/unify-run-wavec). Commit on `fe/unify-run-wavec`.
+
+### NEXT
+Video Studio page (U6/W9: `app/creative/video/page.tsx` + TierTabs + AssetMedia split + Images↔Videos
+toggle) consumes `useIntegrations("video_gen")` from this lib for its BYO-key picker — the seam is ready.
