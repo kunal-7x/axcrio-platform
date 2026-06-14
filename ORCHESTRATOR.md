@@ -2,6 +2,17 @@
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
 
+## ✅ 2026-06-14 — INBOUND VOICE NATURALNESS FIX — VERIFY COMPLETE (all checks PASS, earner gate GREEN)
+**PLAN:** Post-deploy verify: golden 5/5, integrated LLM smoke, TTS sample clips (before/after), earner gate, update docs, founder recipe.
+**OUTPUT/STATUS = ALL PASS (with honest residual). Awaiting founder real-call confirmation.**
+- **GOLDEN 5/5:** `verify_golden.py` on box — all 5 earner campaigns byte-identical, `prompt.py` `fb87ea56` unchanged. The SCRIPT RULE edit is in `aim_voice_agent.py` only.
+- **INTEGRATED SMOKE (9/9):** `_build_sales_instructions` rendered live on box (1614be09, 20948 chars) — SCRIPT RULE block confirmed: DEVANAGARI rule, BANNED romanized list (hai/mein/ke → है/में/के), LATIN loan-words, NO default language, Switch the MOMENT, applies ONLY when Hindi/Hinglish, FINAL OVERRIDE, casual register (थोड़ी देर रुकिए/please not प्रतीक्षा कीजिए/कृपया). MLV mirror guards all intact.
+- **TTS CLIP VERDICT:** BEFORE (romanized): `ke`→`यंग`, `mein`→`मेन`, `sakta hai`→`सेक्टर हाई` — garbled, 1/3 structural Hindi words recovered. AFTER (Devanagari+Latin): `आपके...के...में...है...से शुरू होती है` — sentence structure and meaning fully intact. SIGNIFICANT IMPROVEMENT confirmed.
+- **RESIDUAL (honest):** Sarvam Bulbul v2 phonetically approximates English brand names (BHK→`थ्री उसाई`, Codename Joy→`वुड नेम मोई`) — inherent v2 limitation on English proper nouns, exists in BOTH before/after formats. Not a prompt/script issue. Upgrade path = `bulbul:v3`.
+- **EARNER GATE:** agent.py md5 `9150fabe` UNCHANGED · famit-agent PID `1477083` active, NOT restarted · aim-voice-agent PID `2721961` (post-build restart, NRestarts=0) · /health 200 · 0 5xx · NO ring.
+- **Founder recipe:** call +918071583488 in Hindi → expect Hinglish reply (Devanagari Hindi + Latin loan-words); mid-call English switch → English reply. Brand names will sound phonetically Hindi (Sarvam v2 normal).
+- Docs updated: WORKFLOW_LEDGER, AGENT_LEARNINGS, this file. Wave log: `memory/wave_runs/inbound-voice-naturalness-fix.md` (## Phase: VERIFY).
+
 ## ✅ 2026-06-14 — PROVIDER FRAMEWORK W1-W3 INTEGRATED VERIFY = ALL GREEN (earner gate PASS)
 **PLAN:** Confirm all offline suites green + FORCE-RLS live on box + firewall diff additive-only + earner gate. Update PROVIDER-FRAMEWORK-PLAN.md W1-W3 as DONE. Mark W4 ready.
 **OUTPUT/STATUS = ALL GREEN. W4 (first caller.py mount) is the next wave — serialize vs RAG (LIVE) / Vault (deferred) / Video.**
