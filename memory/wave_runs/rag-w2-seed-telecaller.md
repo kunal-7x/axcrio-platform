@@ -29,3 +29,21 @@
 **How only is_admin writes `_global`:** the seeder calls `kb.ingest(GLOBAL_TENANT, text, ..., is_admin=True)` (kb/seed_global.py:160-164). The kb_chunks/sources/documents RLS `WITH CHECK` (kb/schema.sql:45-46,74-75,116-117) is `admin-GUC OR own-tenant` and deliberately OMITS `_global` → the only path that can INSERT a `_global` row is one running under `app.is_admin='1'` (set by `eng.session(is_admin=True)`, kb/core.py:259). A tenant request can never reach it: the HTTP endpoint is `require_super_admin`-gated (caller.py:3340) AND the ingest write sets the admin GUC itself. The `_global` USING policy permits reads → read-shared / write-locked.
 
 **Earner gate:** agent.py md5 `9150fabe…` UNCHANGED · famit-agent PID 1477083 NOT restarted. py_compile OK (seed_global.py + __init__.py + caller.py). gitleaks 0.
+
+### DEPLOY + LIVE-VERIFY (box famit@168.144.153.145)
+
+**Deployed (backup-first, md5-gated, py_compile-on-box all OK):**
+- `kb/seed_global.py` (NEW), `kb/seed_global_corpus.json` (NEW, gitignored scratch shipped to box), `kb/__init__.py`, `caller.py` — restarted **famit-caller ONLY** (MainPID 2679442, port 8209). aim-voice-agent & famit-agent NOT restarted.
+- `kb/core.py` — TWO fixes surfaced live (committed 41fde4a):
+  1. **`ensure_schema` raw-cursor fix:** `exec_driver_sql(ddl)` (no params) raises `immutabledict is not a sequence` under SQLAlchemy 2.0.50 on a COLD schema apply → every ingest aborted after a caller restart. Switched to raw DBAPI cursor (`s.connection().connection.cursor().execute(ddl)`); schema is fully `IF NOT EXISTS` idempotent. kb/core.py:96-108.
+  2. **`KB_INCLUDE_GLOBAL=0` real exclusion:** `retrieve(include_global=False)` relied on RLS alone, but the kb_chunks RLS USING READ-SHARES `_global` → the poison kill-switch did NOT exclude `_global`. Now pins to explicit `AND tenant_id=:selftid`. kb/core.py:367-375.
+
+**Live proof (box DB, real famit Postgres):**
+- BEFORE: `_global` chunks = 0. RUN1 (CLI): ingested=41, duplicate=0, failed=0 → **120 chunks** / 41 sources. RUN2 (CLI re-run): ingested=0, **duplicate=41**, failed=0 → still 120 (IDEMPOTENT). 
+- LIVE HTTP `POST /kb/seed-telecaller` (super-admin hmac token, warm service): ok=True, ingested=0, **duplicate=41**, failed=0 → idempotent through the endpoint too.
+- **Auth gate:** no-auth→401, legacy-pw `FamitCall2026`→403 (excluded per control-security §1), GET→405, valid admin hmac→200. 
+- **`_global` read-share:** tenant `ae1ba3017296` retrieve(include_global=True) surfaces the `_global` "Bahut mahanga / Too expensive" objection chunk. include_global=False → 0 `_global` leaked.
+- **`_global` write-lock:** tenant-GUC (is_admin=False) INSERT of a `_global` row BLOCKED (RLS WITH CHECK ProgrammingError); 0 hacked rows landed.
+- **Earner gate (final, post-restart):** agent.py md5 `9150fabe…` UNCHANGED · famit-agent PID 1477083 NOT restarted (active) · aim-voice-agent active (NOT restarted) · caller /health 200 · 0 5xx · NO ring.
+
+**Commits (fe/unify-run-wavec):** ff44770 (seeder+endpoint) · 41fde4a (core.py fixes). gitleaks 0.
