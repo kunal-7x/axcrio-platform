@@ -30,9 +30,15 @@
   hot-path cost), detached run bounded 0.10s, agent.py `9150fabe` unchanged, famit-agent PID 2808658
   not restarted, /health 200, 0 5xx. **ONE founder action pending** (tap @mr_kunal_bot once to seed
   the live chat_id — getUpdates aged out; auto-persists after) → `communication/_HUMAN_TASKS.md`.
-- **NEXT (W1 FE / W2)** — the FE channel-setup + send-log view (deferred per the panel-deploy race);
-  then W2 = the LLM conversation brain (reply-only) + the `?start=` deep-link that seeds CONTACT
-  chat_ids (which activates the auto-summary's deliverable path).
+- **W2** ✅ BUILT (flag-gated) — the LLM conversation brain (reply-only) + the signed single-use
+  `?start=` deep-link that seeds CONTACT chat_ids (activates the auto-summary's deliverable path).
+- **FE (W1/W2)** ✅ BUILT (panel deploy DEFERRED) — the **Communication TAB** (`Engage > Communication`,
+  `/communication`): one shell, four views (Channels setup + Builder + unified Inbox + Analytics) behind a
+  SubNav + ChannelPicker. Telegram live; Email/SMS coming-soon; WhatsApp deep-links out. Dormant-safe,
+  Core_2, zero raw hex. tsc 0 + build GREEN + eslint 0 + gitleaks 0, committed on `fe/unify-run-wavec`.
+  Panel deploy deferred to the single final canonical deploy (no race). Details: `_BUILD-LOG.md` (FE section).
+- **NEXT (LIVE)** — founder taps `@mr_kunal_bot` once → `setWebhook` + flip `COMM_BRAIN_ENABLED=1` →
+  earner gate under an induced Telegram outage → the FE goes live with the final panel deploy.
 
 ## Build order (from the plan §8)
 | Wave | What | Channel | ~Effort |

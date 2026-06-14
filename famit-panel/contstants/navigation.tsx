@@ -149,6 +149,12 @@ export const navigation = [
             { title: "Call Logs", href: "/calls", feature_key: "engage.calls" },
             { title: "Callbacks", href: "/callbacks", feature_key: "engage.callbacks" },
             { title: "WhatsApp", href: "/whatsapp", roles: "manager", feature_key: "engage.whatsapp" },
+            // Communication — the omnichannel tab (Telegram live; Email/SMS coming).
+            // Mirrors + exceeds WhatsApp: builder + unified inbox + the LLM brain +
+            // founder hot-lead alert + post-call auto-summary. Manager-gated (it
+            // sends on the contact's behalf). Dormant-safe: COMM_ENABLED off ->
+            // every /comm route 404s -> the page renders a calm coming-soon card.
+            { title: "Communication", href: "/communication", roles: "manager", feature_key: "engage.communication" },
             { title: "Customer Support", href: "/support", feature_key: "engage.support" },
             { title: "Booking", href: "/booking", feature_key: "engage.booking" },
         ],

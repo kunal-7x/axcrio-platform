@@ -366,3 +366,52 @@ deep-link nonce store are additive (drop-safe).
 **Status: BUILT + OFFLINE-GREEN (flag OFF, resting byte-identical), committed on `fe/unify-run-wavec`.
 NO caller.py edit (no lock needed). The inbound->brain->reply loop + the signed single-use deep-link +
 the cost/media guards are wired behind `COMM_BRAIN_ENABLED`. LIVE flip is the founder-gated step.**
+
+---
+
+## W1/W2 FE — THE COMMUNICATION TAB · `fe/unify-run-wavec` · BUILT (panel deploy DEFERRED)
+
+**Scope:** the omnichannel Communication TAB — a new **Engage > Communication** nav section
+alongside WhatsApp. ONE page, four views (Channels / Builder / Inbox / Analytics) behind a SubNav,
+scoped by a ChannelPicker. Telegram is the live channel (founder hot-lead alert + post-call
+auto-summary + the LLM brain reply, all W1/W2 backend); Email/SMS render calm coming-soon cards
+(W3/W5); WhatsApp deep-links to its own live page (earner-safe — NO duplicated Meta logic).
+Built from `fe/unify-run-wavec`; tsc 0 + npm build GREEN + eslint 0 + gitleaks 0 + COMMITTED.
+**Panel NOT deployed** (the video-studio-activate wave is also deploying the panel — single final
+deploy from the latest canonical, no race). frontend-design skill invoked; Core_2 reuse, Inter
+Display, ZERO raw hex, dormant-safe.
+
+### Files (NEW — `famit-panel/`)
+| File | file:lines | What |
+|---|---|---|
+| `lib/communication.ts` | **1–320** | the typed, DORMANT-SAFE client (mirrors `lib/integrations.ts`). Reads degrade to empty on any non-2xx (404 → `disabled` → coming-soon); mutations throw a typed `CommError` (humanized). Hooks `useChannels`/`useSessions`. Maps the LIVE `/api/comm/*` surface 1:1 (channels/test/derive-chat-id/set-webhook/deeplink/sessions/send). NEVER reveals the bot token. |
+| `app/communication/page.tsx` | **1–32** | the route wrapper — `EntitlementGuard(engage.communication)` + `Layout` + `CommunicationBody` (the integrations/page.tsx pattern, avoids the Next route-type checker). |
+| `app/communication/_body.tsx` | **1–120** | the shell — SubNav (4 views) + ChannelPicker + toast + the **dormant coming-soon card** when `COMM_ENABLED` is off (channels read 404). |
+| `app/communication/_shared.tsx` | **1–185** | chrome primitives (ghost/text buttons, `SubNav` segmented control, `ChannelPicker` chip row [Telegram live · WhatsApp link · Email/SMS "Soon"], `ConsentBadge` for `channel×purpose`, `StatusDot`, `InfoStrip`) — same vocabulary as `integrations/_shared.tsx`. |
+| `app/communication/_components/TelegramSetup.tsx` | **1–290** | the guided 3-step CONNECT flow: (1) Test the stored token via getMe, (2) Find-my-chat (derive founder chat_id) + Register-webhook, (3) Send-me-a-test (real-reach proof). Token NEVER pasted/revealed (it lives in the vault). Plus `useContactDeeplink` (mint a signed single-use `?start=` link). |
+| `app/communication/_components/TelegramPreview.tsx` | **1–135** | the live phone PREVIEW — a restyle of the WhatsApp `PhonePreview` for Telegram (tinted own-bubble, media header for photo/video/document, inline URL buttons, `{variable}` token resolution). |
+| `app/communication/_views/ChannelsView.tsx` | **1–215** | TelegramSetup + automations card (founder-alert / post-call-summary on/off + consent pill) + contact-deeplink minter + WhatsApp deep-link card + Email/SMS coming-soon cards. |
+| `app/communication/_views/BuilderView.tsx` | **1–255** | the author-once message/template BUILDER: textarea + `{variable}` chips + seed templates + media (photo/video/PDF, presigned-URL) + up-to-3 URL buttons + sticky live `TelegramPreview` + "test send to me" (own chat only — never a contact). |
+| `app/communication/_views/InboxView.tsx` | **1–230** | the unified INBOX: two-pane (session list ← channel column · transcript →) with the CRM `ChatBubble` pattern (CONTACT on the RIGHT/primary tint, **Riya on the LEFT**), a "from the call" grounding header (summary/next-action/interest), 20s poll, and a one-tap takeover composer (live send = W4). |
+| `app/communication/_views/AnalyticsView.tsx` | **1–195** | per-channel KPIs derived from REAL session data (conversations / reply-rate / hot-leads / messages — no fabricated deltas) + a channel-mix meter + honest "on the roadmap" cards (savings ticker · cost guards · CAPI signal closure). |
+| `contstants/navigation.tsx` | +1 child | `Engage > Communication` (`/communication`, `roles:"manager"`, `feature_key:"engage.communication"`) right after WhatsApp. |
+
+### Verification (all GREEN)
+- **tsc --noEmit:** exit 0 (zero type errors).
+- **npm run build:** Compiled successfully; `/communication` route built (12.9 kB · 226 kB first-load).
+- **eslint** (`app/communication` + `lib/communication.ts`, `--max-warnings=0`): 0 problems.
+- **gitleaks `protect --staged`:** 0 leaks (~86 KB scanned). No token is ever client-side (getMe/test
+  only; webhook secret_token + deep-link MAC are server-derived).
+- **Dormant-safe:** `COMM_ENABLED` off → `/api/comm/*` 404 → reads `disabled` → the shell renders the
+  calm coming-soon card, never an error wall. EntitlementGuard renders optimistically (the backend
+  404 is the real boundary).
+- **Earner-safe:** FE-only; no caller.py / agent.py touched; WhatsApp uses a deep-link (no Meta logic
+  duplicated).
+
+### Deploy
+**DEFERRED** per the directive (panel deploy owned by the video-studio-activate wave — single final
+deploy from the latest canonical, no race). This wave: build green + commit ONLY.
+
+**Status: DONE (FE built + committed, panel deploy deferred). The Communication TAB is live-ready
+behind `COMM_ENABLED`; flipping it ON for the founder tenant surfaces the full setup → builder →
+inbox → analytics flow grounded in the W1/W2 backend.**
