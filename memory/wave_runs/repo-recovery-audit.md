@@ -212,3 +212,38 @@ NONE deployed. There was NO clearly-safe committed-but-undeployed earner gap to 
 - Repo now MATCHES live box truth for every earner-path file → a future "deploy from local" can no longer silently revert the box.
 - ONE canonical copy per file established + the stale `_inbound_ref` snapshots labeled obsolete (`README.CANONICAL.md`).
 - Earner untouched (md5/PID/health all unchanged); no flag flip; W0 RAG retro-gate remains the separate next box-mutating wave.
+
+---
+
+## PHASE 3 — RECOVERY-STATE.md + bank rules + ORCHESTRATOR update (2026-06-14)
+
+### EARNER GATE: PASS (all disk/git work, zero box write)
+- agent.py md5 `9150fabe` UNCHANGED; famit-agent PID `1477083` NOT restarted; /health 200; 0 5xx; NO ring.
+
+### DELIVERABLES WRITTEN
+| File | Action | Purpose |
+|---|---|---|
+| `caps/design/RECOVERY-STATE.md` | CREATED | Authoritative canonical-source-per-file map + live flag state + 4 open follow-ups |
+| `caps/PLAYBOOK.md` | APPENDED rules 16+17 | Bank "deploy from LIVEBOX golden" + "one auth copy per file" as permanent rules |
+| `caps/AGENT_LEARNINGS.md` | PREPENDED new entry | Class-of-bug: branch-sprawl + stale local; RAG live+ungated; W0 first; `.LIVEBOX` golden rule |
+| `caps/ORCHESTRATOR.md` | PREPENDED new wave entry | Ledger of this wave's plan + output + open follow-ups |
+
+### RULES BANKED (PLAYBOOK §1)
+- **Rule 16:** Every deployed-file edit MUST start from a box-pulled `.LIVEBOX` golden — never the repo or `_inbound_ref/*.py` scratch. SCP direction = box→local only.
+- **Rule 17:** One authoritative copy per file. `droplet_work/<file>.LIVEBOX.py` = canonical local mirror. Update `RECOVERY-STATE.md` after every deploy.
+
+### OPEN FOLLOW-UPS (from RECOVERY-STATE.md §3, priority order)
+1. **P0 — W0:** Build `RAG_INJECT_ENABLED` kill-switch into `aim_voice_agent.py` (start from `018c20a7` LIVEBOX golden) — first move before any RAG wave.
+2. **P1 — ENV verify:** Confirm `CTX_CACHE=1` + `INBOUND_PROV_LOCK=1` in box `.env` on next famit-caller-only restart.
+3. **P2 — Branch merge:** Merge `fe/unify-run-wavec` into `backend/handoff-name-clean-line` to align the active branch with deployed FORTRESS FE.
+4. **P3 — kb/ local tracking:** `scp -r box:/opt/famit-agent/kb/ droplet_work/kb/` — already matched, just needs tracking.
+
+### PHASE-3 CONSISTENCY VERDICT
+**LOCAL ↔ BOX = CONSISTENT** (for all earner-path files after P2 reconcile):
+- `aim_voice_agent.py`: local = box = `018c20a7` ✅
+- `prompt.py`: local = box = `fb87ea56` ✅
+- `agent.py`: local on-disk = box = `9150fabe` (gitignored, box is truth) ✅
+- All other `droplet_work/` files: matched in P1 audit (22 files) ✅
+- Remaining divergence: **intentional** — `_inbound_ref/aim_voice_agent.{LIVE,NEW,VERIFY}.py` are OBSOLETE scratch, not deployed copies; they are labeled as such in `README.CANONICAL.md`.
+
+**The branch-sprawl class of bug is CLOSED for these files** — a future "deploy from local" can no longer silently revert the box, because the local mirrors now match box truth. Earner untouched throughout the entire wave.
