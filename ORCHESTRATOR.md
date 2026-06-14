@@ -2,6 +2,18 @@
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
 
+## ✅ 2026-06-14 — RAG W2 VERIFY = DONE (_global telecaller corpus live + all 4 gates PASS)
+**PLAN:** Verify the already-deployed W2 corpus on the box: (1) chunk count, (2) tenant read-share, (3) RLS write-lock, (4) idempotency. Update docs. Full earner gate.
+**OUTPUT/STATUS = ALL 4 PASS. EARNER GATE PASS.**
+- [1] CHUNK COUNT: 120 kb_chunks / 41 kb_sources with tenant_id='_global' — PASS (matches corpus).
+- [2] READ-SHARE: tenant-GUC (is_admin=0) FTS search surfaces _global "Bahut mahanga" objection chunk — PASS.
+- [3] WRITE-LOCK: tenant-GUC INSERT INTO kb_sources with tenant_id='_global' blocked (ProgrammingError / RLS WITH CHECK) — PASS.
+- [4] IDEMPOTENCY: all 41/41 corpus checksums already in DB; re-seed = 0 new rows — PASS.
+- AUTH GATE: no-auth→401, legacy-pw→403, GET→405, admin-hmac→200 — all PASS.
+- **Earner gate:** agent.py md5 `9150fabe` UNCHANGED · famit-agent PID `2669239` (aim-voice-agent) active · caller /health 200 `{"status":"ok","checks":{"db":{"ok":true},"redis":{"ok":true},"livekit":{"ok":true}}}` · 0 5xx · NO ring.
+- RAG-MASTER-PLAN.md + NEXT-BIG-BUILDS.md + WORKFLOW_LEDGER.md updated. Wave log appended.
+- **OPEN:** W3 next (grounding cache kb/grounding_cache.py keyed (tenant,campaign,stage,channel,kb_version)) + KB management UI (Sources/Test-answers/Insights panel, Core_2 + frontend-design skill).
+
 ## ✅ 2026-06-14 — RAG W1 DEPLOY = DONE (retrieval hardening live — dense-gate + _global UNION + FORCE-RLS)
 **PLAN:** Deploy W1 kb/core.py + kb/schema.sql + kb/__init__.py + aim_voice_agent.py (dense=False default + _global UNION predicate + kb_query_log FORCE-RLS) to box; apply DDL via psql; restart aim-voice-agent only; full earner gate.
 **OUTPUT/STATUS = ALL PASS. EARNER GATE PASS.**

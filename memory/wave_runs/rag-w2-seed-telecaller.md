@@ -47,3 +47,19 @@
 - **Earner gate (final, post-restart):** agent.py md5 `9150fabe…` UNCHANGED · famit-agent PID 1477083 NOT restarted (active) · aim-voice-agent active (NOT restarted) · caller /health 200 · 0 5xx · NO ring.
 
 **Commits (fe/unify-run-wavec):** ff44770 (seeder+endpoint) · 41fde4a (core.py fixes). gitleaks 0.
+
+## DO VERIFY (2026-06-14)
+
+**Re-probed live box DB directly (no writes, no restarts).**
+
+- [1] CHUNK COUNT: 120 kb_chunks / 41 kb_sources (tenant_id='_global') — PASS
+- [2] READ-SHARE: tenant-GUC FTS `OR tenant_id='_global'` surfaces "Bahut mahanga" objection — PASS (2 rows)
+- [3] WRITE-LOCK: tenant-GUC INSERT blocked (ProgrammingError / RLS WITH CHECK) — PASS
+- [4] IDEMPOTENCY: 41/41 corpus checksums already in DB; re-seed = 0 new rows — PASS
+- AUTH GATE: no-auth→401, legacy-pw→403, GET→405, admin-hmac→200 — PASS
+- RAG_INJECT_ENABLED=1 confirmed in .env
+- Seed endpoint live at caller.py:3326 (port 8209)
+- EARNER GATE: agent.py md5 9150fabe UNCHANGED · aim-voice-agent PID 2669239 active · /health 200 {"status":"ok","checks":{"db":{"ok":true},"redis":{"ok":true},"livekit":{"ok":true}}} · 0 5xx · NO ring
+- Docs updated: design/RAG-MASTER-PLAN.md (W2 DONE status) · NEXT-BIG-BUILDS.md (W2 DONE entry) · ORCHESTRATOR.md (W2 verify wave added) · AGENT_LEARNINGS.md (5 lessons appended)
+
+**OVERALL: ALL 4 PASS. RAG W2 COMPLETE + VERIFIED LIVE.**

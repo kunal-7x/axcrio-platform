@@ -6,7 +6,7 @@
 > NOT "build RAG", it is "**retroactively put the live RAG mutation under the gate + golden-diff
 > discipline it skipped.**" Everything else (corpus seeding, W2-cache, faithfulness, eval) follows.
 >
-> **Status:** READY TO BUILD (design only — no code shipped by this wave). VOICE-BRAIN epic **W4**.
+> **Status:** W0 DONE (RAG_INJECT_ENABLED=1 live, earner-safe) · W1 DONE (retrieve dense=False + _global UNION + RLS write-lock + kb_query_log) · **W2 DONE (2026-06-14): _global telecaller corpus SEEDED LIVE — 41 sources / 120 kb_chunks, idempotent CLI+HTTP, read-share PASS, write-lock PASS, earner UNTOUCHED)** · Next: W3 grounding cache (kb/grounding_cache.py) + KB management UI. VOICE-BRAIN epic **W4**.
 > **Read order:** this → `RAG-INGESTION-PLAN.md` → `RAG-EVAL-SPEC.md` → `VOICE-BRAIN-MASTER-PLAN.md`
 > §3C/§4 → `platform-knowledge-rag.md` → `dynamic-context-rag.md` → `AGENT_LEARNINGS.md`.
 > **Grounded in LIVE box state** (`famit@168.144.153.145:/opt/famit-agent`), verified this pass.
