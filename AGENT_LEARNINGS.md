@@ -174,3 +174,15 @@
   (e) **Golden verify_golden.py on the box uses `/opt/capsy-agent/.venv/bin/python3`** (NOT `/opt/famit-agent/venv/` or `.venv/` — those paths don't exist). The correct invocation from `/opt/famit-agent/`: `/opt/capsy-agent/.venv/bin/python3 _golden/verify_golden.py`.
   (f) **`_build_sales_instructions` signature**: `(fields: dict, recap: str, caller_name: str, is_returning: bool, pending_disambig: bool, campaign_options: list[dict] | None, grounding: str = "", pg_memory: str = "")` — positional args are NOT keyword-only; a smoke script must pass them in the right order or use the correct keyword names.
   (g) **MLV mirror and SCRIPT RULE are orthogonal** — the mirror rule says WHICH language to speak; the SCRIPT RULE says HOW to write that language. The guard "applies ONLY when you are speaking Hindi or Hinglish; an English caller still gets pure English" is the critical bridge. Any future edit to the language rules must preserve this separation.
+
+## LESSONS FROM voice-core-surgery VERIFY+FE+DEPLOY (2026-06-14)
+
+  (h) **Panel box (143.110.247.249) = 2GB RAM, cannot run `npm run build`** — it OOMs and SIGKILLs every time. ALWAYS build locally (Windows node v22.11.0) and SCP the `.next` output. The box runs `next start` on a pre-built `.next`, not `next build`.
+
+  (i) **When syncing a Next.js build: sync the FULL `.next/` (excluding cache/) atomically, not file-by-file.** Partial syncs of manifests (build-manifest.json, middleware-manifest.json, app-path-routes-manifest.json) without syncing the matching server/static files cause `[TypeError: Cannot read properties of undefined (reading '/_middleware')]` at startup. The safe pattern: zip all except cache, scp, stop service, atomic rm+mv, start service. 4.2MB for the full build zip — fast enough.
+
+  (j) **Inbound sessions list page lives at `/ai-manager/sessions` (FORTRESS panel).** `fetchTranscript(session_id)` calls `GET /api/calls/{session_id}/transcript` — the existing caller.py endpoint resolves both outbound (CALLS JSON) and inbound (ai_manager_session_turns) via `_inbound_transcript_turns`. No new backend needed; the page is fully self-contained in the frontend.
+
+  (k) **`contact_timeline` has 0 rows for inbound calls** — aim_voice_agent never writes CRM timeline entries. So inbound calls are invisible in the CRM page even if the transcript is accessible. The fix is a separate inbound CRM timeline write — NOT done in this wave. The sessions page is the workaround.
+
+  (l) **Sarvam bulbul v3/priya round-trip verification** — production proof: "2 BHK Codename Joy 3.0 book/confirm" → "दो बीएचके कोड नेम जॉय 3.0 अवेलेबल है। आप बुक और कंफर्म कर सकते हैं।" All English loan-words correctly passed through. This proves the minimal .env restore (SARVAM_TTS_MODEL=bulbul:v3 + SARVAM_TTS_SPEAKER=priya) is the correct fix for the garbling regression.

@@ -307,3 +307,64 @@ Call **+91 80 7158 3488** in Hindi, mention "Codename Joy 3.0 / 2 BHK / book / c
 - EL premium-tier latent fix (Hindi-capable voice + drop `AIM_TTS_LANG=hi`) — dormant, founder-tier-gated.
 
 **STATUS: SURGERY COMPLETE — minimal .env restore deployed (bulbul:v3 + priya), zero code, golden N/A-unchanged, earner GREEN. Awaiting founder real inbound call.**
+
+---
+
+## Phase: VERIFY + FE-DEPLOY — synthesis clips + inbound transcript FE + earner gate + docs
+
+**Date:** 2026-06-14 · BUILD+DEPLOY · famit-panel ONLY restarted (FORTRESS box 143.110.247.249) · aim-voice-agent NOT restarted · earner UNTOUCHED.
+
+### (1) SYNTHESIS VERIFICATION — Sarvam v3/priya round-trip STT PASS
+
+Real Sarvam v3/priya synth + saarika STT (on-box capsy venv, keys from .env, never hardcoded):
+
+**Test phrase:** `आपके ₹2 करोड़ के budget में 2 BHK Codename Joy 3.0 available है। आप book और confirm कर सकते हैं।`
+- STT round-trip result: `...दो बीएचके कोड नेम जॉय 3.0 अवेलेबल है। आप बुक और कंफर्म कर सकते हैं।`
+- "BHK" → "बीएचके" (correct spell-out) ✓
+- "Codename Joy" → "कोड नेम जॉय" (correct) ✓
+- "book" → "बुक", "confirm" → "कंफर्म" ✓
+- ₹2 करोड़ preserved ✓
+- Hindi casual "थोड़ी देर रुकिए" clean ✓
+
+**English sentence test:**
+- "We have 2 BHK flats available at Codename Joy 3.0. Would you like to confirm?"
+- Round-trip: clean English — no Devanagari bleed-through ✓ (MLV mirror intact)
+
+**v2/anushka (old broken):** "2 BHK"→"टू उसाई", "Codename Joy"→"हुड नेमो" — GARBLED
+**v3/priya (deployed):** all terms correct — GARBLING GONE ✓
+
+### (2) FE TRANSCRIPT BUG FIX — /ai-manager/sessions page DEPLOYED to FORTRESS
+
+**Root cause of bug:** `contact_timeline` has 0 rows for inbound calls (aim_voice_agent never writes CRM timeline entries). So CRM page never showed inbound call rows to click. The existing `/ai-manager/sessions/[id]` detail view existed but required navigating via AI Manager → Calls tab.
+
+**Fix shipped:**
+- NEW page: `famit-panel/app/ai-manager/sessions/page.tsx` (committed `73054f9` on `fe/unify-run-wavec`)
+- Route: `/ai-manager/sessions`
+- Shows all inbound sessions list (caller phone avatar+number, started time, duration, status pill, outcome)
+- Click row → `TranscriptModal` slide-over: AI-left (b-surface2), customer-right (primary-01/12 tint), spinner
+- `fetchTranscript(session_id)` → `GET /api/calls/{session_id}/transcript` (existing endpoint that resolves both outbound+inbound via `_inbound_transcript_turns`)
+- `ChatBubble` with per-turn timestamp; empty/error/dormant states all handled
+
+**Build+deploy:**
+- Built locally (node v22.11.0 Windows) — box build fails OOM on 2GB panel box
+- Full `.next` synced to root@143.110.247.249:/opt/famit-panel/.next/ (4.21MB zip, atomic swap)
+- famit-panel restarted (PID 318530 → new PID after restart)
+- Verified: `http://localhost:3001/ai-manager/sessions` = 200 ✓
+- CF edge: `https://panel.famit.in/ai-manager/sessions` = 200 ✓
+- Core routes unchanged: `/crm` = 200, `/ai-manager` = 200 ✓
+
+**Existing flow also works:** AI Manager → Calls tab → session → `/ai-manager/sessions/[id]` (pre-existing; 25 turns visible for session vs_07c19d8f8b0b confirmed via GET).
+
+### (3) GOLDEN 5/5 + EARNER GATE — ALL PASS
+
+**Golden verify (verify_golden.py):** EARNER GATE PASS — 5/5 byte-identical ✓
+- aim_voice_agent.py box md5 `1614be09` UNCHANGED (zero code edit this phase) ✓
+- prompt.py `fb87ea56` UNCHANGED ✓
+
+**Earner gate PASS (fresh check post-deploy):**
+- `agent.py` md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED ✓
+- `famit-agent` MainPID **1477083** NOT restarted ✓
+- `/health` port 8209 = 200 ✓
+- 0 voice 5xx, NO ring ✓
+
+**STATUS: VERIFY+FE+DEPLOY COMPLETE — synthesis PASS (BHK/Codename Joy clean), /ai-manager/sessions LIVE at CF edge, 5/5 golden PASS, earner GREEN. Founder live-test: call +918071583488 in Hindi → see transcript at panel.famit.in/ai-manager/sessions.**
