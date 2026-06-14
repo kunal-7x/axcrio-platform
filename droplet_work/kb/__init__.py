@@ -26,3 +26,7 @@ from .core import (  # noqa: F401
     retrieve,
     status,
 )
+
+# `_global` telecaller-corpus seeder (RAG W2). Import-safe: pulls in only stdlib + this package; the
+# corpus JSON is read lazily inside seed(). Exposed as `kb.seed_global_corpus(...)` for the endpoint.
+from .seed_global import seed as seed_global_corpus  # noqa: F401

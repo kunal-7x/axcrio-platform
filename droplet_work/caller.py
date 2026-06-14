@@ -3323,6 +3323,29 @@ async def brain_retrieve(request: Request, q: str = "", k: int = 4):
     return JSONResponse({"results": res})
 
 
+@app.post("/kb/seed-telecaller")
+async def kb_seed_telecaller(request: Request):
+    """SUPER-ADMIN ONLY: (re)seed the shared `_global` telecaller knowledge corpus — universal,
+    business-neutral telecaller BEHAVIOUR (objection handlers, rapport/backchannel, close techniques,
+    pricing/value framing, vertical explainer scaffolds), read-shared into every tenant's recall.
+
+    IDEMPOTENT: each corpus entry dedups by sha256(content) under `_global` -> re-running (or hitting
+    this twice) writes nothing the second time (returns duplicate counts). Lets the founder re-seed /
+    refresh from the panel after editing kb/seed_global_corpus.json on the box.
+
+    `_global` WRITE-LOCK: the seeder ingests under is_admin=True — the ONLY path the kb_chunks RLS
+    `WITH CHECK` permits to write `_global` (a tenant request can never reach here: this is
+    require_super_admin-gated, and the write itself sets the admin GUC). Heavy work (chunk+FTS+upsert,
+    one PG round-trip per entry) runs OFF the uvicorn loop via asyncio.to_thread."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _kb_mod is None:
+        return JSONResponse({"ok": False, "reason": "kb module unavailable"}, status_code=503)
+    res = await asyncio.to_thread(_kb_mod.seed_global_corpus, actor=t.get("tenant_id", "admin"))
+    return JSONResponse(res)
+
+
 # ============================================================================
 # CRM CORE — contact spine + unified timeline + next-best-action (additive; read-model).
 # All X-Auth, tenant-scoped (org_id == t["tenant_id"], NEVER a body/param), RBAC per can().
