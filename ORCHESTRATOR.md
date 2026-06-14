@@ -13,6 +13,19 @@
 - **Founder recipe:** call +918071583488 in Hindi → expect Hinglish reply (Devanagari Hindi + Latin loan-words); mid-call English switch → English reply. Brand names will sound phonetically Hindi (Sarvam v2 normal).
 - Docs updated: WORKFLOW_LEDGER, AGENT_LEARNINGS, this file. Wave log: `memory/wave_runs/inbound-voice-naturalness-fix.md` (## Phase: VERIFY).
 
+## ✅ 2026-06-14 — PROVIDER FRAMEWORK W4 LIVE VERIFY = ALL 6 CHECKS PASS (flag ON, PROVIDER_REGISTRY_ENABLED=1)
+**PLAN:** Set `PROVIDER_REGISTRY_ENABLED=1` in box .env, restart famit-caller, run 6-check live verify: (1) routes mounted, (2) create provider def + encrypted credential, (3) SSRF guard, (4) PIN reveal step-up + single-use replay→403, (5) cross-tenant isolation, (6) flag-off dormant.
+**OUTPUT/STATUS = ALL 6 PASS. BUG FOUND+FIXED: `schema.py` ProviderDef/ProviderCred.from_any did not stringify psycopg2 UUID objects → HTTP response serialization TypeError; fixed with `str(uuid_obj)` coercion in from_any.**
+- (1) Routes: `/provider-registry`→401, `/provider-registry/health`→401, `/provider-registry/admin/all`→401, `/providers`(legacy)→401. PASS.
+- (2) Create hosted-api def (`openai-test`, admin tenant) + credential (`sk-test-key-live123`) via `/credential` endpoint: `{"stored":true, "key_masked":"sk-t…e123", "scope":"integration"}`. DB: `ciphertext=ENCRYPTED_BLOB` present, no plaintext in DB or logs. PASS.
+- (3) SSRF: admin create self_hosted `http://169.254.169.254/latest/meta-data` → `ssrf_blocked:ip_literal_blocked:link_local_or_metadata`; `http://127.0.0.1:8080/v1` → `ssrf_blocked:ip_literal_blocked:loopback`. PASS.
+- (4) Reveal without step-up → 403; reveal-init mints 60s/`aud=prov_id` step-up; first reveal → plaintext; replay same token → 403 (single-use jti). PASS.
+- (5) Cross-tenant: axcrio sees 0 admin providers; cannot PUT admin provider (404); creates own `axcrio-test` (tenant_id=21d0a13603da); admin sees only `admin/openai-test`; axcrio sees only `21d0a13603da/axcrio-test`. Mutual isolation PASS.
+- (6) Flag OFF → `/provider-registry*`→404/dormant, `/providers`→401/intact; flag ON → routes back 401. PASS.
+- Earner gate: agent.py `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED · famit-agent PID 1477083 NOT restarted · /health 200 · 0 5xx · NO ring.
+- Fix committed: `schema.py` UUID stringify (8 lines, additive). Box: `schema.py` deployed, famit-caller restarted (3rd restart in W4, earner UNTOUCHED). Test data cleaned up (0 rows remaining in provider_definitions/credentials).
+- `design/PROVIDER-FRAMEWORK-PLAN.md` W4 row marked ✅ DONE + LIVE. `NEXT-BIG-BUILDS.md` #8b updated to W1-W4 DONE. Wave log appended. WORKFLOW_LEDGER appended. NEXT = W5 strangler VIDEO (`REGISTRY_FOR_VIDEO`).
+
 ## ✅ 2026-06-14 — PROVIDER FRAMEWORK W1-W3 INTEGRATED VERIFY = ALL GREEN (earner gate PASS)
 **PLAN:** Confirm all offline suites green + FORCE-RLS live on box + firewall diff additive-only + earner gate. Update PROVIDER-FRAMEWORK-PLAN.md W1-W3 as DONE. Mark W4 ready.
 **OUTPUT/STATUS = ALL GREEN. W4 (first caller.py mount) is the next wave — serialize vs RAG (LIVE) / Vault (deferred) / Video.**

@@ -127,3 +127,56 @@ Set flag→0 / leave absent (instant, no deploy — already the resting state). 
 Strangler cut-over VIDEO first (`REGISTRY_FOR_VIDEO`): `media_gen/video/client._resolve_key` asks
 the registry, falls back to `config.fal_key(...)` on miss. The legacy `@app.get("/providers")`
 LLM-router list is the eventual strangle target (plan §3) — left untouched this wave.
+
+---
+
+## W4 LIVE VERIFY — 6-CHECK PASS (2026-06-14, flag ON deployed)
+
+### Bug found + fixed during verify
+`provider_registry/schema.py` `ProviderDef.from_any` and `ProviderCred.from_any` did not stringify
+`uuid.UUID` objects returned by psycopg2 RowMapping. Although the dataclass declares `id: Optional[str]`,
+Python's `setattr` does NOT coerce; `json.dumps` raised `TypeError: Object of type UUID is not JSON
+serializable`. Fix: added `if not isinstance(obj.id, str): obj.id = str(obj.id)` (and equivalent for
+`ProviderCred.provider_def_id`). Schema.py deployed to box, famit-caller restarted (earner gate PASS).
+Local file: `droplet_work/provider_registry/schema.py` (committed).
+
+### 6 Live Checks (all PASS)
+1. **Routes mounted (401 not 404)** — `/provider-registry`→401, `/provider-registry/health`→401,
+   `/provider-registry/admin/all`→401 (all unauth → 401). Legacy `/providers`→401 (intact). PASS.
+
+2. **Create provider def + encrypted credential** — `POST /provider-registry` with `slug=openai-test`,
+   `provider_type=hosted_api`, `base_url=https://api.openai.com/v1`, `capabilities=["llm"]` → 201 with
+   correct UUID-stringified `id`. `POST /<id>/credential` with `api_key=sk-test-key-live123` → 
+   `{"stored":true,"key_masked":"sk-t…e123","scope":"integration"}`. DB check (admin GUC): 
+   `ciphertext=ENCRYPTED_BLOB`, no plaintext in `key_aad` or any column. PASS.
+
+3. **SSRF guard** — `POST /provider-registry/admin` with self_hosted `http://169.254.169.254/...` → 
+   `ssrf_blocked:ip_literal_blocked:link_local_or_metadata`; `http://127.0.0.1:8080/v1` → 
+   `ssrf_blocked:ip_literal_blocked:loopback`. PASS.
+
+4. **PIN reveal step-up + single-use replay** — `POST /<id>/reveal` without step-up → 403. 
+   `POST /<id>/reveal-init` → `{step_up_token, expires_in:60, scope:provider.reveal, aud:<id>}`. 
+   First reveal with step-up → `{"provider_id":..., "credential":"sk-test-key-live123"}` (plaintext
+   returned correctly). Replay same step-up → 403. PASS.
+
+5. **Cross-tenant isolation** — axcrio HMAC token (from `var/secret`): lists 0 admin providers; 
+   PUT on admin provider_id → 404 (not 403 — RLS makes it look non-existent); creates own 
+   `axcrio-test` (tenant_id=21d0a13603da). Admin sees `admin/openai-test` only; axcrio sees 
+   `21d0a13603da/axcrio-test` only. Mutual isolation PASS.
+
+6. **Flag-off dormant** — set `PROVIDER_REGISTRY_ENABLED=0`, restart famit-caller → 
+   `/provider-registry`→404, `/provider-registry/health`→404, `/provider-registry/admin/all`→404. 
+   Legacy `/providers`→401 (intact). Flag-on restored → 401 (mounted). PASS.
+
+### Final Earner Gate
+| Check | Value |
+|---|---|
+| agent.py md5 | `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED |
+| famit-agent MainPID | `1477083` NOT restarted |
+| /health | 200 ok db+redis+livekit |
+| 5xx | 0 |
+| Ring | NO ring |
+| `PROVIDER_REGISTRY_ENABLED` | `1` (ON in box .env) |
+
+Test data cleaned: 0 rows in `provider_definitions`/`provider_credentials` after cleanup.
+schema.py UUID fix committed on `fe/unify-run-wavec`. WORKFLOW_LEDGER appended. NEXT = W5 (`REGISTRY_FOR_VIDEO`).

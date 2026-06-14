@@ -148,6 +148,9 @@ class ProviderDef:
         obj.provider_type = _enum_or_raw(ProviderType, obj.provider_type, ProviderType.HOSTED_API)
         obj.auth_scheme = _enum_or_raw(AuthScheme, obj.auth_scheme, AuthScheme.BEARER)
         obj.transform_type = _enum_or_raw(TransformType, obj.transform_type, TransformType.OPENAI_COMPAT)
+        # UUID objects from psycopg2 must be stringified (JSON can't serialize uuid.UUID).
+        if obj.id is not None and not isinstance(obj.id, str):
+            obj.id = str(obj.id)
         return obj
 
 
@@ -198,4 +201,9 @@ class ProviderCred:
             if k in valid:
                 setattr(obj, k, v)
         obj.scope = _enum_or_raw(CredentialScope, obj.scope, CredentialScope.INTEGRATION)
+        # Stringify UUID objects from psycopg2.
+        for uuid_field in ("id", "provider_def_id"):
+            v = getattr(obj, uuid_field, None)
+            if v is not None and not isinstance(v, str):
+                setattr(obj, uuid_field, str(v))
         return obj
