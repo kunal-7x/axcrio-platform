@@ -15,8 +15,10 @@ Branch: fe/unify-run-wavec. Box golden caller md5 = 44b867eaa3a448792a82c9760db0
 5. [DONE] offline tests — test_webhook_offline (17/17 PASS) + test_endpoints_offline (9/9 PASS);
    telegram 22/22 + engine 9/9 regression PASS. agent-import grep 0. empty-env import rc 0. gitleaks 0.
 6. [DONE] py_compile all + gitleaks 0. COMMITTED (non-caller.py unit).
-7. [IN PROGRESS] caller.py mount (anchor after whatsapp-builder include_router) — additive, 0 deletions
-8. [ ] earner gate BEFORE+AFTER under induced Telegram outage; commit; append _BUILD-LOG.md; release lock
+7. [DONE] caller.py mount (anchor after whatsapp-builder include_router) — +43 lines, 0 deletions.
+   Box golden 44b867ea -> 73d7be4f. md5-gated deploy. Flags COMM_ENABLED=1 + COMM_TELEGRAM_ENABLED=1.
+8. [DONE] earner gate BEFORE+AFTER under induced Telegram outage — ALL GREEN. LIVE T-WEBHOOK 6/6 PASS.
+   Lock RELEASED. _BUILD-LOG.md appended. WHOLE PHASE COMPLETE.
 
 ## KEY DECISIONS
 - Webhook secret_token DERIVED (not a new DB column): hmac_sha256(WEBHOOK_SIGNING_SECRET, tenant||provider_def_id),

@@ -127,3 +127,77 @@ else altered; the W1-P0 vault row + DDL are independent).
 **Status: DONE. Adapter + engine built, offline-green, import-safe, gitleaks 0, committed on
 `fe/unify-run-wavec`. Next phase: `founder_alert.py` + `post_call.py` + `router.py` mount + the
 caller.py `_finalize_call` insertions (CALLER_EDIT_LOCK).**
+
+---
+
+## W1-P2 — WEBHOOK + COMM ENDPOINTS + caller.py MOUNT · `fe/unify-run-wavec` · LIVE (flags ON)
+
+**Scope:** Build the inbound webhook (FAIL-CLOSED) + the comm API endpoints, then MOUNT them in
+`caller.py` via the CALLER_EDIT_LOCK (anchor-string, additive, flag-gated `COMM_ENABLED`). Deploy
+the comm package + the mounted caller.py to the box; flip the flags ON for the founder tenant and
+run the LIVE T-WEBHOOK probes. Earner gate before+after under an INDUCED Telegram outage.
+
+### Files (NEW / EDIT, `droplet_work/comm/`)
+| File | file:lines | What |
+|---|---|---|
+| `comm/webhook.py` | **1–214** | the FAIL-CLOSED inbound Telegram handler. Per-tenant `secret_token = HMAC-SHA256(signing, "telegram-webhook‖{tenant}‖{provider_def_id}")` (hex, domain-separated). `handle(tenant_id, header_value, raw)`: (1) dormant→403; (2) resolve the tenant's bot provider_def (bot-identity bind) or →403; (3) **constant-time `compare_digest` the X-Telegram-Bot-Api-Secret-Token header BEFORE any DB row** — no/wrong/other-tenant secret→403; (4) only AFTER verify, set the RLS GUC (inside `sessions.*`) + store the inbound turn; `update_id` idempotency; (5) ack 200 fast. **W1 reply-DISABLED** (the brain is W2). `_signing_secret()` reads `COMM_WEBHOOK_SIGNING_SECRET` → box `var/secret` (the SAME secret caller.py uses) → '' (fail-closed). NEVER raises. |
+| `comm/sessions.py` | **1–250** | `comm_sessions` `get_or_create` (UNIQUE upsert) + `append_turn` (rolling-20, **server-side jsonb trim**) + `list_sessions`/`get_session`. RLS-scoped via `db.engine.session`; best-effort (no-PG→None/[]/False); never raises. |
+| `comm/endpoints.py` | **1–250** | `build_router(resolve_tenant, can, need_auth, forbidden, *, require_super_admin=, firewall=, audit=)` (prefix `/comm`). Authed (token-derived tenant): `GET /channels`, `POST /channels/telegram/test` (getMe), `/derive-chat-id` (write), `/set-webhook` (write), `GET /sessions[/{id}]`, `POST /send` (write). UNAUTH: `POST /webhook/telegram/{tenant_id}` → `webhook.handle` (fail-closed). `COMM_ENABLED`-gated → **404 dormant**. (Intentionally NOT `from __future__ import annotations` so FastAPI resolves the `Request`/`Body` annotations as request params.) |
+| `comm/router.py` | **1–17** | thin `build_router` re-export (caller.py mounts `from comm.router import build_router`). |
+| `comm/engine.py` | +**202–263** | `set_telegram_webhook(tenant, url)` — `setWebhook` with the derived `secret_token` (https-only, bounded by `wait_for`). |
+| `comm/__init__.py` | +1 | behavioural import-guard now pulls `sessions, webhook`. |
+| `comm/tests/test_webhook_offline.py` | — | **17/17 PASS** — derive distinct-per-tenant; dormant/no-bot/no-header/wrong/cross-tenant→403 (+ no-store-before-verify = GUC-after-verify proof); correct→200 store; retry dedup; no-signing-secret→403; garbage body→200 no-raise. |
+| `comm/tests/test_endpoints_offline.py` | — | **9/9 PASS** — flag-off→404 (incl. webhook); flag-on→200; no-auth→401; webhook unauth-fail-closed→403; read-only write→403. |
+
+### caller.py mount (CALLER_EDIT_LOCK — additive, anchor-string from the box golden)
+- **Lock:** acquired (no other wave held it; the video-activate wave's caller.py work was already
+  deployed) → RELEASED after the earner gate. `CALLER_EDIT_LOCK.md`.
+- **Edit:** ANCHOR after the `whatsapp-builder router mount failed` block → a new flag-gated
+  `MODULE MOUNT — communication` block: `from comm.router import build_router`,
+  `COMM_ENABLED = cfg_get(...)`, `build_router(resolve_tenant, can, need_auth, _forbidden,
+  require_super_admin=require_super_admin, firewall=_firewall_mod, audit=_audit)` → `include_router`.
+  Import-guarded (a broken comm pkg can never crash startup); a mount failure is swallowed.
+- **Additive proof:** `diff` box-golden `44b867ea` vs mounted = **+43 lines, 0 deletions**, single
+  hunk `7830a7831,7873`. py_compile clean (local + box). Box live caller.py md5: **`73d7be4f`**
+  (local `caller.py.LIVEBOX.py` re-synced to match = the new golden).
+- **Deploy:** backup `caller.py.COMMW1P2bak.20260614-201851` + `.env.COMMW1P2bak.*`; full comm pkg
+  scp'd to `/opt/famit-agent/comm/` (W1-P1 modules were offline-only — deployed here for the first
+  time); caller.py via md5-gated staged-then-move; restart **famit-caller ONLY**.
+
+### Flags (LIVE — flipped ON for the founder tenant, NOT dormant)
+`COMM_ENABLED=1` + `COMM_TELEGRAM_ENABLED=1` appended to `/opt/famit-agent/.env`. (`FEATURE_TELEGRAM_FOUNDER_ALERT` / `FEATURE_TELEGRAM_FOLLOWUP` stay OFF — their post-call `_finalize_call` hook is the next phase.)
+
+### LIVE PROOF (over real HTTP, box `:8209`)
+- **Routes LIVE:** `/comm/channels` + `/comm/sessions` → **401** (auth-gated, NOT 404). Flag-OFF (pre-flip) both → **404** (resting byte-identical — route table identical).
+- **T-WEBHOOK 6/6 PASS:** (1) no secret→**403** · (2) wrong→**403** · (3) **other-tenant's secret on admin's path→403** (bound to the PATH tenant) · (4) correct→**200** `{ok,handled,stored:true,reply:false}` (row landed in admin's scope ⇒ GUC set AFTER verify) · (5) retry same `update_id`→**200 dedup** (no double-store) · (6) unknown tenant→**403**.
+
+### EARNER GATE (before + after, under an INDUCED `api.telegram.org` black-hole — NOT a green path)
+| Check | BEFORE | AFTER (under outage) |
+|---|---|---|
+| agent.py md5 (`9150fabe…`) | `9150fabe…` UNCHANGED | `9150fabe…` UNCHANGED |
+| famit-agent MainPID | 2808658 | **2808658 (NOT restarted)** |
+| caller `/health` | 200 | **200** |
+| caller 5xx | 0 | **0** |
+| webhook under outage | — | **fail-closed in 9ms** (pure HMAC, no Telegram I/O) |
+| outbound send under outage | — | **bounded ≤0.7s** (engine `wait_for` cap; never hangs) |
+| famit-caller | active (2819984) | active (2825728) — restarted by THIS wave only |
+> Black-hole induced via `/etc/hosts` `127.0.0.1 api.telegram.org`, then **removed** (telegram
+> reachability restored, 0 residual pins). NO ring placed (PLAYBOOK #4 — the founder's job).
+
+### gitleaks / CI grep
+`gitleaks protect --staged` = **0 leaks** (+ pre-commit hook clean). `import agent|from agent` over
+`comm/` = **0**. Empty-env `import comm` rc 0 (resting). The `secret_token` is HMAC-derived (never
+stored/committed/logged); the only `SECRET` literals are the deliberate test fixtures.
+
+### Commits (`fe/unify-run-wavec`)
+- `4acaf26` — webhook + endpoints + sessions + router + engine.set_telegram_webhook + the 2 offline suites.
+- (this build-log + lock + state commit follows.)
+
+### Rollback
+`COMM_ENABLED=0` (instant, routes→404, resting byte-identical) → if needed restore
+`caller.py.COMMW1P2bak.20260614-201851` + `.env.COMMW1P2bak.*` + restart famit-caller. The comm
+package + DDL are additive (drop-safe).
+
+**Status: DONE + LIVE. Webhook fail-closed + comm endpoints mounted + flags ON, earner gate green
+under induced outage. Next phase: `founder_alert.py` + `post_call.py` + the caller.py `_finalize_call`
+insertions (founder hot-lead alert + post-call auto-summary), under the CALLER_EDIT_LOCK.**
