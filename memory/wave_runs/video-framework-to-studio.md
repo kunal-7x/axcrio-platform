@@ -181,3 +181,61 @@ from the latest fe/unify-run-wavec). Commit on `fe/unify-run-wavec`.
 ### NEXT
 Video Studio page (U6/W9: `app/creative/video/page.tsx` + TierTabs + AssetMedia split + Images↔Videos
 toggle) consumes `useIntegrations("video_gen")` from this lib for its BYO-key picker — the seam is ready.
+
+---
+
+## W6 — VID seam fix + PG video schema + live-library bridge (U1+U2+U3) — ✅ DONE+DEPLOYED (2026-06-14)
+
+Scope (plan §0/§5/§7/§8 + roadmap W6): the 1-line engine seam fix, the additive PG video schema
+(FORCE-RLS), and the live-library bridge so a generated video lands in the SAME `ai_asset_*` library
+images already live in. Earner-safe: PG + the famit-aiasset service (:8310) only — agent.py never
+touched; famit-aiasset restarted ONLY.
+
+### EARNER GATE (before+after, PASS)
+agent.py md5 `9150fabe` UNCHANGED · famit-agent MainPID `1477083` NOT restarted · caller /health 200 ·
+box caller.py `310ea9c9` (= local golden, untouched this unit) · NO ring.
+
+### U1 — seam fix (local only, no box mutation)
+`creative/video_studio/engine.py` `_real_engine()` repointed `from automation.video import client` →
+`from media_gen.video import client` (+ `engine_name()` string + docstring). Still lazy + never-raises.
+PROOF: `engine_name()` = `media_gen.video.client` when configured (FAL_KEY+SPACES_*), `fake_engine`
+dormant. 19 video-offline + 3 studio tests = 22 PASS.
+
+### U2 — PG video schema (`db/ddl_video.sql`, md5 `137c5ebc`) — APPLIED LIVE
+Additive + idempotent (`IF NOT EXISTS`), FORCE-RLS, INTEGER PAISE, zero-percent. Applied on the live
+`famit` DB as `famit_app` (the ai_asset table owner) via psql.
+- `ai_asset_assets` +8 cols: media_type('image' default)·duration_s·with_audio·poster_key·outputs·
+  ab_group·moderation_status('pending')·music_license (+media_type index).
+- `ai_asset_versions` +4: poster_key·duration_s·with_audio·outputs.
+- NEW `video_jobs` (text PK vj_, vendor_id key, hold_id/attempts/updated_at reaper-ready, *_minor PAISE,
+  reaper partial index) FORCE-RLS.
+- NEW `video_scripts` (text PK vs_, lang+tts_provider default 'sarvam', voiceover/caption/render keys)
+  FORCE-RLS.
+PROOF on box: video_jobs/video_scripts rls=true force=true; all 12 columns present; CROSS-TENANT RLS
+PROBE PASS (A sees only A, B only B, cross-tenant INSERT BLOCKED by WITH CHECK); probe rows cleaned.
+Resting byte-identical (media_type defaults 'image' → existing rows + image FE untouched).
+
+### U3 — live-library bridge — DEPLOYED to famit-aiasset (:8310)
+RECONCILE FIRST (PLAYBOOK r16): box `ai_asset/store.py` (`d9eeffd5`) + `auth.py` (`1e05bf47`) were NEWER
+than the stale local repo — pulled box goldens, reconciled local, THEN edited. endpoints.py local ==
+box (`dadadbe6`).
+- `store.register_video_asset(vendor_id, …)` — creates a `kind='video' media_type='video'` asset +
+  an immutable spaces-backed MP4 version (storage='spaces', key in local_path so the existing
+  presign-on-read machinery serves it); poster_key/duration_s/with_audio/outputs/ab_group/
+  moderation_status/music_license on the row; best-effort (never breaks a batch); audit_log entry.
+- `store.list_assets(..., media_type=)` filter ('video'|'image'|'all'); `add_version` +video kwargs.
+- `config.feature_video_library()` (`FEATURE_VIDEO_LIBRARY` default OFF).
+- endpoints: `GET /assets?media_type=`; `POST /assets/_internal/register-video` (gated by enabled()
+  AND FEATURE_VIDEO_LIBRARY; service-token authed via auth.service_token_ok; body vendor_id, VPC-only);
+  `GET /assets/{id}/poster` (302-presign the poster_key, falls back to /raw).
+DEPLOY: box backups `*.VIDbak.20260614-225653`; scp md5-gate (store `41496677`/endpoints `e29cd2e5`/
+config `4346f2d4`); box-venv py_compile OK; atomic swap; chown; import-check `feature_video_library()=
+False`; famit-aiasset restarted ONLY (PID 2768818, NRestarts=0, /status 200).
+LIVE BRIDGE PROBE (box, PG sourced from /opt/famit-aiasset/.env, FEATURE_VIDEO_LIBRARY=1): register ok
+(asset+version ids); A list `media_type=video` returns it (media_type/duration_s/ab_group/moderation
+correct); `media_type=image` EXCLUDES it; tenant B canNOT see A's video (RLS) + `get_asset(B,A_id)=None`;
+`public_dict` presigns url + strips local_path. Probe rows purged (assets/versions/auditlogs=0).
+flag OFF → resting byte-identical (register-video/poster dormant). ROLLBACK: flags→0 + restore
+`*.VIDbak.*` + restart famit-aiasset; DDL columns additive (drop video_jobs/video_scripts to remove).
+
+NEXT: U5/W7 (FFmpeg composite tier) → U4/W8 (mount studio in caller.py + submit_gate).
