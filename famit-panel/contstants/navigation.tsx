@@ -181,7 +181,10 @@ export const navigation = [
         title: "Intelligence",
         icon: "chart",
         feature_key: "mod.intelligence",
-        list: [{ title: "Analytics", href: "/analytics", feature_key: "intelligence.analytics" }],
+        list: [
+            { title: "Analytics", href: "/analytics", feature_key: "intelligence.analytics" },
+            { title: "Knowledge Base", href: "/knowledge", feature_key: "intelligence.knowledge" },
+        ],
     },
     {
         // H — Foundation. Operator-facing config of the foundational systems. The
