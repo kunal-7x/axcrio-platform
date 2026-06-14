@@ -155,3 +155,52 @@ no box mutation, no restart, no calls). gitleaks staged = 0. Commit on `fe/unify
 **NEXT = T3** (additive `/trunk-registry/*` + `/trunks/byo/*` guarded mount in caller.py, flag OFF;
 /test-call rate-limited; DELETE soft-disables + refuses `_global`/env; `POST /quarantine-did` kill switch)
 — DEFERRED until caller.py frees from the video wave (cross-product serialization, PLAYBOOK #5).
+
+
+## VERIFY + DOCS — per-item PASS/FAIL + earner gate + next-steps (2026-06-15)
+
+**Status:** DONE. All items confirmed live; all docs updated.
+
+### Per-item results
+
+| # | Check | Result |
+|---|-------|--------|
+| 1 | 3 FORCE-RLS tables (`pg_class relforcerowsecurity=t`) | PASS |
+| 2 | 3 custom triggers (append-only health + 2 undeletable locks + FK triggers) | PASS |
+| 3 | `is_campaign_eligible` STORED generated (`attgenerated='s'`) | PASS |
+| 4 | Vobiz `_global` seed un-deletable (DELETE→0 rows, row intact) | PASS |
+| 5 | B1 gate live: non-140 → `is_campaign_eligible=f`, compliant → `t` | PASS |
+| 6 | AAD cred encrypted + roundtrip verified (`provider_registry.credentials` on box) | PASS |
+| 7 | RLS cross-tenant: `_global` shared-read=1, private cross-tenant=0, `_global` write=BLOCKED | PASS |
+| 8 | Red-team-D delete refuse (DELETE silently blocked, row intact after) | PASS |
+| 9 | 31/31 offline suites (9/9 registry + 8/8 concurrency + 14/14 rotation/livekit) | PASS |
+| 10 | provider_registry suites still green (5/5) | PASS |
+| 11 | B1 gate enforced TWICE in code (store `campaign_eligible_only` + `registry.get_trunk` re-check) | PASS |
+| 12 | AAD cross-tenant ciphertext copy → `InvalidTag` (test_registry_offline suite) | PASS |
+| 13 | In-process counter try/finally no-oversell, no-leak (test_concurrency_offline suite) | PASS |
+| 14 | Velocity throttle spaces calls (concurrency suite fake-clock) | PASS |
+| 15 | Ring-out-burst quarantine + B3 disable+alert (test_rotation_livekit_offline suite) | PASS |
+| 16 | Red-team-D delete refusal in code (`livekit_sync.is_protected_trunk_id`) | PASS |
+| 17 | gitleaks staged = 0 | PASS |
+| 18 | py_compile clean | PASS |
+
+### Earner gate (before + after) = ALL PASS
+- agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED
+- famit-agent MainPID `1477083` active, NRestarts=0, NOT restarted
+- /health (8209) = 200
+- 0 HTTP 5xx in recent traffic (grep `'" [5][0-9][0-9] '` on recent journal = 0 matches)
+- NO ring
+
+### Docs updated
+- `design/TELEPHONY-INDEPENDENCE-PLAN.md` — T1 + T2 rows marked DONE with live proof
+- `caps/NEXT-BIG-BUILDS.md` — roadmap updated: T1 + T2 DONE with commit refs
+- `caps/ORCHESTRATOR.md` — T1+T2 wave appended
+- `caps/AGENT_LEARNINGS.md` — learnings (m)-(s) appended
+- `caps/WORKFLOW_LEDGER.md` — verify+docs phase line appended
+
+### Next steps
+- **T0 (HARD GATE before rotation):** Fix `scheduler_loop` retry bug in `caller.py` — the queued retry currently re-fires terminal-outcome (dead/486) numbers. This MUST be fixed and verified before `TRUNK_REGISTRY_ENABLED=1` (rotation would amplify the failed-call burst across the whole DID pool → carrier spam-flags every DID). Scope: `caller.py` `scheduler_loop` function, additive guard on terminal-outcome statuses.
+- **T3 (mount, flag OFF):** Additive `/trunk-registry/*` + `/trunks/byo/*` routes in `caller.py`. `/test-call` rate-limited (≤3/hr); DELETE soft-disables + refuses `_global`/env trunk; `POST /quarantine-did`. Deferred until the video wave frees caller.py (cross-product serialization rule — only ONE wave edits caller.py at a time).
+- **T4 (Telephony FE):** `app/telephony/page.tsx` (Core_2 port) — trunk cards + 3-step Add-trunk wizard + test-call flow (founder-placed, NOT auto-dial) + reputation panel + DID kill switch. FORTRESS deploy.
+- **T5 (strangler flag-ON):** The `caller.py:2913` dial-loop cut behind `TRUNK_REGISTRY_ENABLED`. Acceptance = a real founder outbound call RINGS via the registry-resolved Vobiz `_global` row both BEFORE and AFTER the flag flip. DID rotation enabled only AFTER T0 + a compliant 140/DLT trunk is provisioned.
+- **Founder buy list (non-code blockers for full campaign legality):** (1) 140-series DID + DLT registration (~1-2wk, Airtel Business/Tata Tele/C-Zentrix) [non-negotiable]; (2) Plivo 2nd trunk (instant, software, multi-concurrency).
