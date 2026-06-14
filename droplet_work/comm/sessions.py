@@ -245,3 +245,80 @@ def get_session(tenant_id: str, session_id: str, *, is_admin: bool = False) -> O
            "WHERE session_id = :sid AND tenant_id = :tid LIMIT 1")
     rows = _rows(tenant_id, sql, {"sid": session_id, "tid": tenant_id or ""}, is_admin=is_admin)
     return _shape(rows[0]) if rows else None
+
+
+# ---------------------------------------------------------------------------
+# founder chat_id persistence (W1-P3) — the hot-lead-alert destination.
+#
+# Telegram getUpdates only retains ~24h of updates and drops confirmed ones, so a chat_id
+# derived once from getUpdates ages out. We persist the derived founder chat_id as a SENTINEL
+# comm_sessions row (call_id=_FOUNDER_SENTINEL) so the alert destination survives — RLS-scoped,
+# tenant-private, reusing the live table (zero schema change). NEVER raises.
+# ---------------------------------------------------------------------------
+_FOUNDER_SENTINEL = "__founder_chat__"
+
+
+def set_founder_chat_id(
+    tenant_id: str,
+    chat_id: str,
+    *,
+    provider_def_id: str = "",
+    channel: str = "telegram",
+    is_admin: bool = False,
+) -> bool:
+    """Persist the tenant's founder chat_id (the hot-lead-alert destination) as a sentinel
+    comm_sessions row. Idempotent on the UNIQUE (tenant, channel, external_chat_id, provider_def).
+    Returns True on a successful write. NEVER raises."""
+    if not available() or not tenant_id or not (chat_id or "").strip():
+        return False
+    eng = _engine()
+    try:
+        from sqlalchemy import text
+        with eng.session(tenant_id=tenant_id, is_admin=is_admin) as s:  # type: ignore
+            s.execute(text(
+                "INSERT INTO comm_sessions "
+                "  (session_id, tenant_id, channel, external_chat_id, provider_def_id, "
+                "   call_id, agent_persona, status, last_message_at) "
+                "VALUES (:sid, :tid, :ch, :cid, :pdid, :sentinel, 'Riya', 'founder', now()) "
+                "ON CONFLICT (tenant_id, channel, external_chat_id, provider_def_id) "
+                "DO UPDATE SET call_id = :sentinel, status = 'founder', updated_at = now()"
+            ), {
+                "sid": new_session_id(), "tid": tenant_id, "ch": channel or "telegram",
+                "cid": (chat_id or "").strip(), "pdid": provider_def_id or "",
+                "sentinel": _FOUNDER_SENTINEL,
+            })
+            return True
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("comm.sessions.set_founder_chat_id failed: %r", type(exc).__name__)
+        return False
+
+
+def get_founder_chat_id(
+    tenant_id: str,
+    *,
+    provider_def_id: str = "",
+    channel: str = "telegram",
+    is_admin: bool = False,
+) -> str:
+    """Read the persisted founder chat_id for this tenant's bot (the hot-lead-alert destination).
+
+    STRICT: returns ONLY the explicitly-marked sentinel row (call_id=_FOUNDER_SENTINEL, written
+    by set_founder_chat_id when the chat_id is derived from getUpdates after the founder taps
+    Start). We deliberately do NOT fall back to 'the most recent inbound session' — that could
+    be any contact's chat_id and would mis-route a hot-lead alert to a customer. Returns '' when
+    no founder chat is confirmed. NEVER raises."""
+    if not available() or not tenant_id:
+        return ""
+    where = ["tenant_id = :tid", "channel = :ch", "external_chat_id <> ''",
+             "call_id = :sentinel"]
+    params: Dict[str, Any] = {"tid": tenant_id, "ch": channel or "telegram",
+                              "sentinel": _FOUNDER_SENTINEL}
+    if provider_def_id:
+        where.append("provider_def_id = :pdid"); params["pdid"] = provider_def_id
+    sql = (
+        "SELECT external_chat_id FROM comm_sessions "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY updated_at DESC NULLS LAST, created_at DESC LIMIT 1"
+    )
+    rows = _rows(tenant_id, sql, params, is_admin=is_admin)
+    return str(rows[0].get("external_chat_id", "")) if rows else ""

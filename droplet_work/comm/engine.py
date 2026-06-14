@@ -186,18 +186,42 @@ async def derive_founder_chat_id(
     named_provider: str = "telegram",
     force: bool = False,
 ) -> str:
-    """Derive the founder chat_id from getUpdates (cached). The hot-lead-alert destination.
-    Returns '' if the founder hasn't messaged the bot yet. NEVER raises."""
-    adapter, _pdid = resolve_telegram_adapter(
+    """Resolve the founder chat_id (the hot-lead-alert destination). NEVER raises.
+
+    Order (robust against Telegram's getUpdates 24h aging — see comm.sessions):
+      1. the PERSISTED chat_id (a sentinel comm_sessions row, OR the most recent inbound
+         telegram session the live webhook stored) — survives getUpdates aging, no network;
+      2. else getUpdates (the founder just tapped Start) — and PERSIST it for next time.
+    `force=True` skips the persisted cache and re-derives from getUpdates."""
+    adapter, pdid = resolve_telegram_adapter(
         tenant_id, provider_def_id=provider_def_id, slug=slug, named_provider=named_provider
     )
     if adapter is None:
         return ""
+
+    # (1) persisted first (no network; survives getUpdates aging) unless forced.
+    if not force:
+        try:
+            from . import sessions
+            cached = sessions.get_founder_chat_id(tenant_id, provider_def_id=pdid)
+            if cached:
+                return cached
+        except Exception:  # noqa: BLE001
+            pass
+
+    # (2) getUpdates (bounded), then persist for next time.
     try:
-        return await asyncio.wait_for(adapter.derive_founder_chat_id(force=force),
+        chat = await asyncio.wait_for(adapter.derive_founder_chat_id(force=force),
                                       timeout=config.send_timeout_s())
     except Exception:  # noqa: BLE001
-        return ""
+        chat = ""
+    if chat:
+        try:
+            from . import sessions
+            sessions.set_founder_chat_id(tenant_id, chat, provider_def_id=pdid)
+        except Exception:  # noqa: BLE001
+            pass
+    return chat
 
 
 async def set_telegram_webhook(
