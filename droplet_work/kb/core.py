@@ -96,10 +96,18 @@ def ensure_schema() -> bool:
     try:
         with open(_SCHEMA_PATH, "r", encoding="utf-8") as fh:
             ddl = fh.read()
-        from sqlalchemy import text
         # admin GUC so DDL isn't subject to a tenant scope; raw exec of the whole script.
+        # Use the RAW DBAPI cursor (not Connection.exec_driver_sql): under SQLAlchemy 2.0.50 the
+        # latter forwards its default immutabledict() as `parameters` to psycopg2, which rejects a
+        # param-less multi-statement DDL ("immutabledict is not a sequence"). The raw cursor takes
+        # the SQL string alone. Schema is fully idempotent (IF NOT EXISTS / DROP POLICY IF EXISTS),
+        # so this is safe to (re)run even when every object already exists.
         with eng.session(tenant_id="", is_admin=True) as s:
-            s.connection().exec_driver_sql(ddl)
+            raw = s.connection().connection.cursor()
+            try:
+                raw.execute(ddl)
+            finally:
+                raw.close()
         _schema_ready = True
         logger.info("kb schema ensured")
         return True
@@ -361,10 +369,15 @@ def retrieve(tenant_id: str, query: str, *, top_k: int = DEFAULT_TOP_K,
     # wildcard; NEVER is_admin=True on a voice read. RLS still gates every other tenant out (the only
     # rows this opens are the caller's own + `_global`). When include_global is off, retrieval is
     # tenant-only (own-tenant rows only). The leading "AND" closes the WHERE the legs already opened.
-    tenant_sql = ""
+    # When include_global is OFF, we must NOT rely on RLS alone to exclude `_global`: the kb_chunks
+    # RLS USING policy READ-SHARES `_global` (own tenant OR `_global`), so a predicate-less WHERE under
+    # a tenant GUC would still surface `_global` rows. The KB_INCLUDE_GLOBAL=0 poison kill-switch
+    # (RAG plan §8: "OFF -> tenant-only retrieval") is therefore enforced HERE with an explicit
+    # `tenant_id = :selftid` predicate that pins recall to own-tenant rows only.
+    tenant_sql = " AND tenant_id = :selftid"
+    params_common["selftid"] = tenant_id
     if use_global:
         tenant_sql = " AND (tenant_id = :selftid OR tenant_id = '_global')"
-        params_common["selftid"] = tenant_id
 
     try:
         with eng.session(tenant_id=tenant_id, is_admin=is_admin) as s:
