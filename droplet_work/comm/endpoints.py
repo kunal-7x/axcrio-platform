@@ -141,6 +141,31 @@ def build_router(
                meta={"ok": bool(ok), "error": err})
         return JSONResponse({"ok": bool(ok), "provider_def_id": pdid, "error": err})
 
+    @router.post("/channels/telegram/deeplink")
+    async def _tg_deeplink(request: Request, body: dict = Body(default={})):
+        """Mint a SIGNED, SINGLE-USE Telegram /start consent deep-link binding (this tenant, a
+        contact phone). Body: {phone, bot_username?}. Returns {payload, link}. The tenant shares
+        the link; when the contact taps it the webhook verifies it (S5) + binds their chat_id +
+        writes a telegram_start consent row. Write-gated; the secret is server-side only."""
+        if not config.comm_enabled():
+            return _dormant()
+        t = _auth(request)
+        if not t:
+            return _need_auth()
+        if not can(t, "write"):
+            return _forbid()
+        b = body or {}
+        phone = str(b.get("phone", "")).strip()
+        if not phone:
+            return JSONResponse({"error": "phone required"}, status_code=400)
+        from . import deeplink
+        payload = deeplink.mint(t["tenant_id"], phone)
+        bot = str(b.get("bot_username", "")).strip()
+        link = deeplink.link_for(bot, t["tenant_id"], phone) if bot else ""
+        _audit(request, t, "comm.deeplink.mint", "comm_channel", "telegram",
+               meta={"minted": bool(payload)})
+        return JSONResponse({"payload": payload, "link": link, "ok": bool(payload)})
+
     # ======================================================================
     # SESSIONS — list / detail (the brain's rolling window; seeded post-call / inbound)
     # ======================================================================

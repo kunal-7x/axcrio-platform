@@ -266,3 +266,103 @@ getMe verified (token works, `mr_kunal_bot`). The founder's ORIGINAL Start tap a
 under induced outage. ONE founder action pending (tap @mr_kunal_bot once) for live real-reach.
 Next phase (W2): the LLM conversation brain (reply-only) + the contact deep-link that seeds
 contact chat_ids (which activates the auto-summary's deliverable path).**
+
+---
+
+## W2 — THE CONVERSATION BRAIN (reply-only) + DEEP-LINK · `fe/unify-run-wavec` · BUILT OFF (flag-gated)
+
+**Scope:** the contact chats with "Riya" on Telegram. Inbound webhook message -> the LLM brain
+(reply-only, `COMM_TOOLS_ENABLED=0`) grounded in the prior call + the campaign context -> a
+Telegram reply. A SIGNED, SINGLE-USE `?start=` consent deep-link (S5) that binds a contact's
+chat_id + writes a `telegram_start` consent row (this is what makes the W1 post-call CONTACT
+auto-summary deliverable). Inbound media must not crash. Per-tenant rate + body + daily-Groq caps.
+NO caller.py edit this wave (the webhook route was already mounted in W1-P2 — W2 only flips the
+reply ON inside the EXISTING handler, behind a new flag). All NEW flags default OFF (resting
+byte-identical). `agent.py` NEVER imported; the Groq client is a SELF-CONTAINED copy (no caller.py
+coupling). Built OFF + offline-green; the LIVE flag-flip + the LIVE webhook/brain reach-test is the
+founder-gated step.
+
+### Files (NEW / EDIT, `droplet_work/comm/`)
+| File | file:lines | What |
+|---|---|---|
+| `comm/brain.py` | **1-260** | the channel-neutral reply brain — a COPY of caller.py `_wa_reply_text` (caller.py:2189), NOT a move (the WhatsApp helper stays byte-identical; `agent.py`/`caller.py` never imported). `precheck(text) -> PreCheck` = the FREE, ungameable PRE-LLM keyword gate (opt-out -> `opted_out`+short_circuit; handoff -> `needs_human`+short_circuit; copies the caller.py:2017/:2020 word lists) — runs BEFORE any token. `build_system_prompt(ctx)` injects the 5-layer grounding (campaign brand + call_summary/next_action/outcome/interest + cross-call memory recap + persona) + a per-channel suffix. `generate_reply(ctx) -> ReplyPlan` = ONE Groq call (self-contained `_groq_chat`, key=`GROQ_KEY`/model=`GROQ_MODEL`, temp 0.6, ~220 tok) -> reply text, `""` on any failure (the webhook still acks 200). `tools_enabled()` OFF this wave. |
+| `comm/deeplink.py` | **1-280** | the SIGNED, SINGLE-USE Telegram `/start` consent deep-link (S5). `mint(tenant,phone)` -> a COMPACT Telegram-safe payload `<tenant_token>_<digits>_<nonce8>_<iat36>_<mac16>` (51 chars typ., **<= 64** of `[A-Za-z0-9_-]` — the /start budget; tenant_token is the short alnum id or its 12-hex hash, recomputed on verify from the PATH tenant). `verify(tenant,payload)` checks (in order, fail-closed each): signing secret present -> shape -> **tenant binding** (a payload minted for B presented on A -> `tenant_mismatch`) -> **HMAC** constant-time (`bad_mac`) -> **expiry** (`expired`) -> **single-use** nonce store (`replayed`, a firewall.py-style on-disk consumed-nonce file, offline-safe). NO new secret (reuses `comm.webhook._signing_secret`). |
+| `comm/lang.py` | **1-60** | best-effort `langdetect` (optional dep) -> a BCP-47 hint; degrades to `''` when absent (the box default). The brain Hinglish prompt stands; a hint for a later localisation wave. |
+| `comm/ratelimit.py` | **1-115** | in-process per-tenant cost guards run BEFORE any Groq token: `allow_inbound(tenant,chat)` = sliding-60s per-(tenant,chat) flood gate (`COMM_INBOUND_RATE_PER_MIN`, default 20); `allow_groq_call(tenant)` = per-UTC-day brain-call ceiling (`COMM_GROQ_DAILY_CAP`, default 500). |
+| `comm/webhook.py` | +`_maybe_handle_start` / `_maybe_reply` / `_build_ctx` / `_memory_recap` / `_send_reply` + `handle` rewire | after the FAIL-CLOSED verify + store (unchanged), W2 adds: (a) a **body-size cap** (oversized -> 200 drop, no parse); (b) **`/start` deep-link** verify+bind+consent; (c) the **brain reply** (flag `COMM_BRAIN_ENABLED`): precheck -> rate/Groq-cap -> assemble ctx from the session seeds -> `brain.generate_reply` -> `engine.send` (per-channel `wait_for` timeout owned there) -> append the assistant turn. **Inbound media (photo-only, no text) does NOT crash** -> 200 ack, no reply, no Groq. The ack reports `{stored, reply, action, start}`. NEVER raises. |
+| `comm/config.py` | +`brain_enabled()` + `groq_daily_cap()` + `inbound_rate_per_min()` + `inbound_body_max_bytes()` + snapshot | the W2 flags/caps, read at CALL time (default OFF / sane caps). |
+| `comm/endpoints.py` | +`POST /comm/channels/telegram/deeplink` | mint a contact signed `?start=` link from the panel (write-gated; secret server-side only) -> `{payload, link}`. |
+| `comm/__init__.py` | +1 | the behavioural import-guard now pulls `brain, deeplink, lang, ratelimit`. |
+
+### The inbound -> brain -> reply loop (the seam)
+```
+Telegram POST /comm/webhook/telegram/{tenant}  (X-Telegram-Bot-Api-Secret-Token header)
+  -> webhook.handle: FAIL-CLOSED secret verify (S2, unchanged) -> body-size cap
+     -> _maybe_handle_start (a /start <payload> -> deeplink.verify -> bind chat_id + telegram_start consent)
+     -> sessions.get_or_create + append_turn(role=user)            [the brain grounding window]
+     -> if COMM_BRAIN_ENABLED and not a /start:
+          brain.precheck(text)  [FREE: STOP -> suppress+canned ack, no Groq; handoff -> needs_human]
+          ratelimit.allow_inbound + allow_groq_call                [cost guards BEFORE the LLM]
+          _build_ctx(session seeds: call_summary/next_action/outcome/interest + turns + memory_recap + brand)
+          brain.generate_reply(ctx)  [ONE Groq call, grounded]
+          engine.send(SendEnvelope(text=reply))  [per-channel wait_for timeout]
+          sessions.append_turn(role=assistant)
+  -> ack 200 {ok,stored,reply,action[,start]}      (NEVER raises; an LLM/send failure is still 200)
+```
+
+### Grounded-reply PROOF (offline smoke, the brain reads the PRIOR call)
+A full `webhook.handle` run with `COMM_BRAIN_ENABLED=1` and a session seeded with
+`call_summary="Asha wanted EMI options for a 3BHK"`: the system prompt handed to Groq CONTAINED that
+call summary (asserted via a sentinel only emitted when the prompt carried it), the reply was SENT to
+the contact chat_id, the assistant turn appended -> `status 200, reply True, action replied`. On
+`COMM_BRAIN_ENABLED=0` the SAME inbound is store+ack only (reply False, 0 Groq).
+
+### Offline tests (no network, no PG — monkeypatched seams)
+- `test_brain_offline` — **ALL PASS**: precheck opt-out/handoff/normal/empty/hinglish; the system
+  prompt injects persona+company+call_summary+next_action+outcome+channel; generate_reply = EXACTLY
+  ONE Groq call (system-first/incoming-last/turns-included); a Groq failure / a raising client ->
+  `text=""`/never-raises; tools OFF; no caller/agent in the module namespace.
+- `test_deeplink_offline` — **ALL PASS** (S5/T-DEEPLINK): payload <= 64 + Telegram alphabet;
+  verify-own-tenant ok; **replay -> `replayed`**; no-consume-then-consume; **forged mac -> `bad_mac`**;
+  tampered phone -> `bad_mac`; **tenant-mismatch -> `tenant_mismatch`**; long/unsafe tenant hashed but
+  binds; **expired -> `expired`**; malformed payloads never raise; **no-secret -> fail-closed**.
+- `test_webhook_reply_offline` — **ALL PASS**: brain-OFF = W1 store+ack (0 Groq); brain-ON = 1 Groq +
+  reply sent + assistant turn + **grounded in the session seeds**; opt-out/handoff short-circuit BEFORE
+  Groq (0 Groq); **inbound media (photo-only) no-crash 200**; `/start` verify+bind (no brain reply for a
+  bare /start); **per-tenant daily Groq cap blocks the 2nd call**; **body-size cap drops oversized**; a
+  Groq failure -> 200 no-reply, never raises.
+- The 5 prior suites (`test_telegram/engine/webhook/endpoints/post_call_offline`) — **ALL PASS** (zero
+  regression; the W1 webhook test still sees `reply: False` with the brain flag off).
+
+### EARNER LAW / gates
+- **NO caller.py edit this wave** (the W1-P2 webhook mount already exists; W2 only flips a reply ON
+  inside the EXISTING handler, behind `COMM_BRAIN_ENABLED`). `git status` confirms the only `caller.py`
+  diff is a PRIOR wave (zero `brain|deeplink|COMM_BRAIN|_maybe_reply|ratelimit` hits).
+- **`agent.py`/`caller.py` NEVER imported** by the comm package (grep over `comm/` = 0). The Groq client
+  is a self-contained copy (`comm.brain._groq_chat`), so the earner helper is never coupled.
+- **Resting byte-identical:** empty-env `import comm` rc 0, `__version__=0.1.0-w1`, `brain_enabled()`
+  False, `tools_enabled()` False. All new flags default OFF -> the webhook keeps its W1 behaviour.
+- **py_compile:** all comm + channels + tests compile clean. **gitleaks `protect --staged`: 0 leaks**
+  (~425 KB scanned). The signing secret / bot token are HMAC/vault-derived (never stored/committed/logged).
+
+### NEW flags (all default OFF / safe caps)
+`COMM_BRAIN_ENABLED` (the reply master — OFF keeps W1 store+ack) · `COMM_TOOLS_ENABLED` (OFF this wave;
+reply degrades to plain text) · `COMM_GROQ_DAILY_CAP` (500/tenant/day) · `COMM_REPLY_MAX_TURNS` (12) ·
+`COMM_INBOUND_RATE_PER_MIN` (20) · `COMM_INBOUND_BODY_MAX_BYTES` (64 KiB) · `COMM_DEEPLINK_TTL_S` (7d) ·
+`COMM_DEEPLINK_STORE` (the single-use nonce file).
+
+### Founder-gated LIVE step (recorded, not done in this build wave)
+To go LIVE the founder taps `@mr_kunal_bot` once (already a pending W1 task), then we: `setWebhook`
+(engine.set_telegram_webhook, the per-tenant secret_token) + flip `COMM_BRAIN_ENABLED=1` for the founder
+tenant + run the LIVE reach test (the founder messages the bot -> Riya replies grounded in the prior
+call). Earner gate (agent.py md5 `9150fabe` unchanged · famit-agent NOT restarted · /health 200 · 0 5xx ·
+no ring) under an induced Telegram outage runs before+after the live deploy, exactly as W1-P2/P3.
+
+### Rollback
+`COMM_BRAIN_ENABLED=0` (instant — the webhook reverts to W1 store+ack, no Groq, no reply) — or
+`COMM_ENABLED=0` (the whole surface dormant) -> `setWebhook(url="")` to detach. The comm modules + the
+deep-link nonce store are additive (drop-safe).
+
+**Status: BUILT + OFFLINE-GREEN (flag OFF, resting byte-identical), committed on `fe/unify-run-wavec`.
+NO caller.py edit (no lock needed). The inbound->brain->reply loop + the signed single-use deep-link +
+the cost/media guards are wired behind `COMM_BRAIN_ENABLED`. LIVE flip is the founder-gated step.**

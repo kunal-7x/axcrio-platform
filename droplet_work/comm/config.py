@@ -28,6 +28,10 @@ FLAG_MASTER = "COMM_ENABLED"
 FLAG_TELEGRAM = "COMM_TELEGRAM_ENABLED"
 FLAG_FOUNDER_ALERT = "FEATURE_TELEGRAM_FOUNDER_ALERT"
 FLAG_FOLLOWUP = "FEATURE_TELEGRAM_FOLLOWUP"
+# Wave 2 — the inbound conversation brain (reply-only). Default OFF: with this off the
+# webhook keeps its W1 behaviour (verify + store the inbound turn + ack 200, NO reply, NO
+# Groq call). Flipping it ON lets the contact chat with "Riya" (a grounded LLM reply).
+FLAG_BRAIN = "COMM_BRAIN_ENABLED"
 
 
 def _truthy(val: str | None) -> bool:
@@ -58,6 +62,41 @@ def founder_alert_enabled() -> bool:
 def followup_enabled() -> bool:
     """Is the post-call contact auto-summary ON? Requires the master + Telegram flags."""
     return telegram_enabled() and _truthy(os.environ.get(FLAG_FOLLOWUP))
+
+
+def brain_enabled() -> bool:
+    """Wave 2: is the inbound conversation brain (the contact-chats-with-Riya reply path) ON?
+    Requires the master + Telegram flags. OFF -> the webhook only stores+acks (W1 behaviour)."""
+    return telegram_enabled() and _truthy(os.environ.get(FLAG_BRAIN))
+
+
+def _int_env(key: str, default: int) -> int:
+    """Read an int env var; fall back to default on unset/garbage (never raises)."""
+    raw = os.environ.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def groq_daily_cap() -> int:
+    """Per-tenant daily ceiling on brain LLM calls (a runaway/abuse circuit-breaker, checked
+    BEFORE any Groq call). Default 500/day. 0 or negative -> treated as unlimited."""
+    return _int_env("COMM_GROQ_DAILY_CAP", 500)
+
+
+def inbound_rate_per_min() -> int:
+    """Per-(tenant, chat) inbound webhook rate ceiling per minute (a flood guard, checked before
+    the brain runs). Default 20/min. 0 or negative -> unlimited."""
+    return _int_env("COMM_INBOUND_RATE_PER_MIN", 20)
+
+
+def inbound_body_max_bytes() -> int:
+    """Max accepted inbound webhook body size in bytes (oversized -> dropped, acked 200 so
+    Telegram stops retrying). Default 64 KiB (a Telegram Update is small)."""
+    return _int_env("COMM_INBOUND_BODY_MAX_BYTES", 64 * 1024)
 
 
 def _float_env(key: str, default: float) -> float:
@@ -93,6 +132,9 @@ def config_snapshot() -> dict:
         "telegram_enabled": telegram_enabled(),
         "founder_alert_enabled": founder_alert_enabled(),
         "followup_enabled": followup_enabled(),
+        "brain_enabled": brain_enabled(),
         "send_timeout_s": send_timeout_s(),
         "http_timeout_s": http_timeout_s(),
+        "groq_daily_cap": groq_daily_cap(),
+        "inbound_rate_per_min": inbound_rate_per_min(),
     }
