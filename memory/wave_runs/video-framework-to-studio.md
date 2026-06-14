@@ -239,3 +239,78 @@ flag OFF → resting byte-identical (register-video/poster dormant). ROLLBACK: f
 `*.VIDbak.*` + restart famit-aiasset; DDL columns additive (drop video_jobs/video_scripts to remove).
 
 NEXT: U5/W7 (FFmpeg composite tier) → U4/W8 (mount studio in caller.py + submit_gate).
+
+---
+
+## W7+W8 — composite tier + mount studio + submit_gate (U5+U4) — ✅ DONE+DEPLOYED (2026-06-14)
+
+Scope: the FFmpeg COMPOSITE tier (the cheap $0-gen-key floor), the 1-paid-test submit_gate (H1) +
+per-tenant daily cap (H2), and the caller.py mount of the studio (token-deriving) with the live-library
+bridge wired into collect. Earner-safe: caller.py + media_gen + the new creative/ tree only — agent.py
+never touched; famit-caller restarted ONLY.
+
+### EARNER GATE (before+after, PASS)
+agent.py `9150fabe` UNCHANGED · famit-agent PID `1477083` NOT restarted · famit-caller PID 2774834
+(NRestarts=0) · /health 200 · famit-aiasset 200 · 0 5xx · NO ring.
+
+### U5 — FFmpeg COMPOSITE tier (LOCAL; render-worker is the deploy-the-other-half item)
+`media_gen/video/compose.py` (NEW) — the always-available floor (FFmpeg, NO gen-key):
+- `is_available()` = FEATURE_VIDEO_COMPOSE + FFmpeg on PATH (NOT api-key gated).
+- `estimate_compose_cost()` = COST-TRUTH chars(TTS)+minutes(Whisper)+worker-sec; **Sarvam $0.0023 vs
+  ElevenLabs $0.1523/clip (66×)** — the silent-EL-bill made explicit (never "$0.003/free").
+- `build_render_plan()` = script→VO→caption→visual→compose→ABR→register saga; 4-rung ABR (1080/720/
+  480/360) + poster + Spaces keys.
+- `build_ffmpeg_argv()` = fixed argv (NO shell → no injection) Ken-Burns + ASS captions + voiceover mux
+  + watermark; `build_abr_argv()` = H.265/HLS (egress saver §3d).
+- `submit()/poll()` = worker seam (dispatch to Hatchet/compose_worker; dormant when FFmpeg absent).
+`client.py`: `provider='compose'` branch in `submit_video_job` (`_submit_compose`: AUP screen + likeness
+gate + cost-truth estimate + cap + **pre-fan-out wallet HOLD** then `compose.submit`; bypasses the
+api-key/license/network gates that don't apply to a local render) + a `poll_video_job` compose branch
+(settle/release the hold on terminal). W5 registry seam preserved (additive on top).
+video_studio wiring: `schema` +`provider` field; `brief.from_variant` +`tier`/`tts_provider`/`brand_kit`
+(composite → `provider=compose` + script/caption in extra; hosted tier leaves provider blank for the
+engine/registry); `batch` passes tier; `shared/config.compose_available()` + `is_configured()` OR floor
+(the studio is configured WITHOUT a gen-key when the composite tier is available — the no-paid-key win).
+PROOF (offline): AUP denylist + likeness enforced on compose; cost-truth Sarvam<EL; wallet hold placed;
+idempotency; studio propose→submitted with compose briefs; 22 tests green.
+
+### U4/W8 — submit_gate + caller.py mount + the live-library bridge
+`submit_gate.py` (NEW, H1/H2): `gate(tenant,opts)` = the ONE choke-point — composite+Sarvam (free floor)
+NOT gated; a PAID class (hosted gen OR ElevenLabs voiceover) on a tenant with NO prior approved paid
+render of that class → FORCE size=1 / dur≤6 / auto_approve=False / require_hold; durable per-tenant JSON
+marker (`<FAMIT_VAR>/creative/paid_test/`); FAIL-SAFE (any error → the choke, never opens the paid path).
+`check_daily_cap` + per-tenant `VIDEO_DAILY_CAP_USD` (default $20, `__<tenant>` override; ISOLATED — one
+tenant can't drain another's ceiling). PROOF: free-floor not gated; first paid → size=1/dur6/no-approve;
+EL-on-composite is a paid class; prior-approval allows full batch; per-tenant cap isolation.
+`endpoints.py` REWRITTEN to the token-deriving `build_router(resolve_tenant, can, need_auth, forbidden,
+list_campaigns=, bridge=)` — the old body-`tenant` cross-tenant hole is GONE; every route token-derives
+the tenant, writes gate on `can(t,"write")`, batch ownership verified per-id (cross-tenant → no_such_batch).
+`service.py`: +tenant ownership checks on every lifecycle op; `set_library_bridge` + `_bridge_finished_
+assets` (collect calls the bridge once per finished job, idempotent) + `_mark_paid_if_first` (approval sets
+the 1-test marker). `caller.py`: +the video_studio mount block under `FEATURE_VIDEO_STUDIO` (default OFF,
+additive 0-deletion vs golden, import-guarded, binds `list_campaigns` + `_video_library_bridge` which
+POSTs the ai_asset internal register-video over the VPC loopback with AIASSET_SERVICE_TOKEN).
+E2E PROOF (offline): propose→submitted→collect→complete FIRES the library bridge per finished job
+(vendor_id=tenant, provider=compose); cross-tenant collect blocked. 9/9 routes mount; bridge+campaigns bound.
+
+### DEPLOY (FORTRESS recipe, famit-caller-only)
+NEW `creative/` tree (shared+video_studio, 25 py) + `media_gen/video/compose.py` + swapped `client.py`
+(`8dc28563`, W5 registry intact) + `caller.py` (`ef9ae696`) to `/opt/famit-agent`. Edited FROM box
+golden (caller `310ea9c9` == box; client `be38c169` W5 base). Backups `caller.py`/`client.py`.VIDW8bak.
+20260614-231712 + `.env`.VIDW8bak. Staged → caller-venv (`/opt/capsy-agent/.venv`) py_compile ALL OK →
+md5-gate (caller `ef9ae696`/client `8dc28563`) → atomic swap → chown → import-smoke (studio imports clean,
+W5 intact). famit-caller restarted ONLY (PID 2773782→2774834, NRestarts=0).
+LIVE: flag-OFF `/creative/video`=404 dormant + legacy `/campaigns`=401 intact (resting byte-identical);
+flag-ON proof → routes mount (401 auth-gated, NOT 404) + authed `GET /campaigns`=200 (REAL tenant
+campaigns: Codename Joy 3.0, DLF The Crest…) + `POST /batches`=200 `not_configured` (dormant-safe, compose
+flag off) + 0 errors; reverted `FEATURE_VIDEO_STUDIO=0` (resting byte-identical end-state).
+ROLLBACK: flags→0 (instant) + restore `*.VIDW8bak.*`/`*.VIDbak.*` + restart famit-caller/famit-aiasset.
+
+### END-STATE + the build-the-other-half items (gated/sequenced, NOT this wave)
+Video Studio BE = seam fix + PG schema + live-library bridge + composite tier + submit_gate + mounted
+studio, ALL deployed dormant (flags OFF). REMAINING: (a) the composite render WORKER — the FFmpeg/TTS/
+Whisper execution on famit-hatchet (compose.py is the primitive + plan + argv; `compose_worker.enqueue`
+is the seam the worker implements); (b) the FE (W9 — Video Studio page + AssetMedia `<video>` + Images↔
+Videos toggle, sibling FE wave, NOT this BE wave); (c) U7 Signal-Loop export, U8 reaper/output-moderation/
+lifecycle/alerts, U9 BYO-key/multilingual/music — the hardening tail. ACTIVATE: FEATURE_VIDEO_STUDIO=1 +
+FEATURE_VIDEO_COMPOSE=1 (+FFmpeg on worker) + FEATURE_VIDEO_LIBRARY=1 + AIASSET_SERVICE_TOKEN.
