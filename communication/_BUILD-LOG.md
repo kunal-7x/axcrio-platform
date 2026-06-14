@@ -608,3 +608,76 @@ Black-holed `149.154.166.110` (telegram reachability → HTTP 000), then:
 hot-lead alert is fully wired and reaches Telegram — it will land a real message on the
 founder's phone the instant he taps `@mr_kunal_bot` once. Earner untouched, proven under
 outage.**
+
+---
+
+## COMM-FINAL-VERIFY (2026-06-15) — PER-ITEM PASS/FAIL + FOUNDER RECIPE
+
+### Per-item result table
+
+| # | Item | Result |
+|---|---|---|
+| 1 | comm BE LIVE (webhook 200, all flags ON for `admin` tenant) | PASS — `GET /comm/channels` 200 `configured:true`; `COMM_ENABLED · COMM_TELEGRAM_ENABLED · FEATURE_TELEGRAM_FOUNDER_ALERT · FEATURE_TELEGRAM_FOLLOWUP · COMM_BRAIN_ENABLED · COMM_COST_GUARDS_ENABLED · COMM_METERING_ENABLED · COMM_TOKEN_BUCKET_ENABLED` all ON |
+| 2 | Telegram bot token decrypts via live vault | PASS — `POST /comm/channels/telegram/test` (getMe) → 200 `mr_kunal_bot` |
+| 3 | Inbound webhook fail-closed (no secret → 403) | PASS — unauthenticated POST → 403, never 200 |
+| 4 | Real Telegram message landed on founder phone | PENDING founder tap — pipeline PROVEN to reach `api.telegram.org` for real (`http_400: chat-not-found`); ONLY the destination is missing (`getUpdates=0`). NOT faked. ONE tap unblocks it. |
+| 5 | LLM brain replies grounded in prior call | PASS — real inbound through `/comm/webhook/telegram/admin` (valid HMAC → 200 stored) → Groq `llama-3.3-70b-versatile` produced grounded Hinglish reply referencing EMI and the 3BHK flat (`action=replied`) |
+| 6 | S1 — HMAC webhook verify fail-closed | PASS — wrong-secret/replay/wrong-tenant all → 403 |
+| 7 | S2 — SQL-injection via contact identity | PASS — parameterized; no injection path |
+| 8 | S3 — PII not logged in structured fields | PASS — send_log stores send result metadata only, no name/phone in JSON body |
+| 9 | S4 — vault cross-tenant read blocked | PASS — AAD binding; wrong-tenant ciphertext → `InvalidTag` |
+| 10 | S5 — deep-link signed single-use | PASS — replay → `token_used` reject |
+| 11 | S6 — billing gate not bypassable | PASS — cost-guard #2 blocks over-budget sends server-side; no UI bypass path |
+| 12 | Cost guard #1 — per-message metering via wallet reserve/settle | PASS — `wallet.reserve→settle` per send; `release` on failure (never bills failed sends); AST-proven no `wallet.debit` |
+| 13 | Cost guard #2 — per-tenant daily budget ceiling | PASS — over-cap → `blocked_budget`; free-tier TG flows always |
+| 14 | Cost guard #3 — per-contact/day frequency cap | PASS — over-cap → `blocked_frequency` |
+| 15 | Cost guard #4 — spend-anomaly alert | PASS — today > 3× trailing-7d median → founder priority-alert (once/day flag) |
+| 16 | Cost guard #5 — deliverability state (dead-chat block) | PASS PROVEN LIVE — retry inbound pre-blocked `blocked_dead` (403 flip → `dead`; adapter never called → fast 0.46s return) |
+| 17 | Cost guard #6 — per-bot async token-bucket | PASS — 30/s global + 1/s per-chat; founder-alert PRIORITY LANE bypasses drained global; bounded wait never hangs |
+| 18 | FE committed on `fe/unify-run-wavec` | PASS — tsc 0 + npm build EXIT 0 + eslint 0 + gitleaks 0; commit `c2d4e02`. Panel deploy deferred to single canonical deploy. |
+| 19 | EARNER GATE — agent.py md5 `9150fabe` UNCHANGED | PASS |
+| 20 | EARNER GATE — famit-agent PID 2808658 NOT restarted | PASS (NRestarts=0) |
+| 21 | EARNER GATE — caller /health 200 | PASS |
+| 22 | EARNER GATE — 0 5xx under induced Telegram outage | PASS |
+| 23 | EARNER GATE — NO ring | PASS |
+| 24 | EARNER GATE — hot-path latency (snapshot + create_task) | PASS — 0.017ms + 0.016ms (≪ 1ms; never blocks dial loop) |
+| 25 | EARNER GATE — detached run bounded under black-hole | PASS — fresh-dest bounded 0.75s ≪ 8s per-channel cap; dead-chat path 0.00s |
+| 26 | gitleaks 0 (no secrets committed) | PASS — `c2d4e02` gitleaks staged exit 0 |
+| 27 | 7 comm tables FORCE-RLS | PASS — `ddl_comm_cost.sql` applied; all 7 `relforcerowsecurity=t` |
+
+**SUMMARY: 26/27 PASS. Item 4 is PENDING one founder tap (not a system failure — a deliberate gap: we never fabricate a chat_id). Every system piece is live and proven.**
+
+---
+
+### FOUNDER RECIPE — how to use the Communication system today
+
+**You already got the Telegram bot token set up and all waves are live. Here's what it means for you:**
+
+**1. Hot-lead alerts to your Telegram (ONE tap away)**
+- Open Telegram → search `@mr_kunal_bot` → send it any message (or tap Start).
+- After that single tap: the next time a call ends with an interest score ≥ 70 (a "hot lead"), you automatically get a Telegram message: the lead's summary, score, and a "Open in panel" button. You never need to do anything else — it auto-persists forever.
+- Privacy-minimized by default (no name/phone inline, just score + link). Set `COMM_FOUNDER_ALERT_FULL_PII=1` in `/opt/famit-agent/.env` if you want full detail in the message itself.
+
+**2. Run a campaign → hot leads ping your Telegram**
+- Start a campaign from the Run page as normal. When a lead shows strong interest and the AI scores it ≥ 70, within seconds you'll get a Telegram ping. No checking the panel — it comes to your phone.
+
+**3. Contacts get an auto-summary after the call**
+- After every call, Riya automatically sends the contact a WhatsApp-style follow-up message on Telegram IF the contact has ever messaged your bot (via the `?start=` deep-link the system generates). In W1/W2 there are no contact chats yet — this path is a clean no-op (`no_destination`) and activates automatically as contacts opt in.
+
+**4. The brain replies for Riya (on Telegram)**
+- When a contact replies on Telegram, the LLM brain (Riya persona, grounded in the prior call summary + lead context) auto-generates a reply. Proven live: real Hinglish reply generated from a real call context ("haan ji, main aapko EMI breakup bhejne wali thi…").
+
+**5. The Communication tab in the panel**
+- The full UI (Channels setup + Builder + Inbox + Analytics, `Engage > Communication`, `/communication`) is built and committed. It ships in the NEXT panel deploy — the same deploy that brings the Integrations page, Video Studio, and any other pending FE. No action needed from you; it comes automatically.
+
+**Next waves (in order):**
+- W3 Email: needs a Resend API key from `resend.com` (free tier, 3,000 emails/mo; own-domain DNS wizard ships with it). Give us the key and we set it up.
+- W4: Unified inbox (one thread table for Telegram + Email + SMS + WhatsApp; human takeover).
+- W5 SMS: needs MSG91 account + DLT registration (PE ID + header + template). This is a 5-10 day external process with TRAI — start it early.
+- W6: CAPI signal closure — the named moat (omni-conversation outcome → Meta OfflineConv signal → smarter CPL bidding).
+
+**Rollback (if anything looks wrong):**
+- Instant: set `COMM_BRAIN_ENABLED=0 COMM_COST_GUARDS_ENABLED=0` in `/opt/famit-agent/.env` + `systemctl restart famit-caller` → brain + guards no-op, reverts to W1-P3 behavior.
+- Full: `COMM_ENABLED=0` → restore box backups (`comm.COMMW2W3bak.20260614-214207` + `.env.COMMW2W3bak.20260614-214442`) + restart famit-caller.
+
+**The earner is untouched.** agent.py `9150fabe` is byte-identical. famit-agent PID 2808658 was never restarted. The live dial loop runs exactly as before — the only additions are a ~0.03ms synchronous snapshot + a detached task that owns its own timeout.

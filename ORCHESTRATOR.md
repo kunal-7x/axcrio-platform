@@ -1,3 +1,5 @@
+> 🧭 **READ `MASTER-INDEX.md` FIRST** (repo root) — the single read-first orchestration index: compaction protocol (Step 0 = save the harness summary verbatim) · running-now · done+live · the complete pending build queue · gated/founder actions · file map · laws. Then read THIS for the wave-by-wave ledger.
+
 # ORCHESTRATOR — single source of truth (READ FIRST, always current)
 
 > After ANY compaction / new session: read THIS + `AGENT_LEARNINGS.md` first. This is the bird's-eye ledger — every wave logs its PLAN + OUTPUT + STATUS here, every agent appends learnings/mistakes to `AGENT_LEARNINGS.md`. Never lose agent work. Per-wave detail lives in `memory/build_log/` + `MASTER_BUILD_STATE.md`; resume docs in `CONTINUE_HERE.md`. **The big sequenced backlog (FIXES → Multilingual-voice fix → AIM-Access+PIN → Video Studio → Vault → Workflow/Funnel; Credits/Plans ON-HOLD until founder asks) = `NEXT-BIG-BUILDS.md`** — execute it top-down, one wave at a time, non-stop.
@@ -353,3 +355,17 @@ The Video Studio now renders a REAL, playable composite MP4 end-to-end and is LI
 - NEXT (additive hardening, not blockers): U7 Signal-Loop · U8 reaper/moderation/lifecycle/alerts ·
   U9 BYO-key/Vault-seam/multilingual/music · U10 soak · durable Hatchet-saga upgrade of enqueue ·
   full 4-rung ABR ladder.
+
+## WAVE: COMM-W1+W2+W3-LIVE (Telegram BE fully live) — DONE 2026-06-15
+
+**Plan/output:** `communication/_BUILD-LOG.md` (## W2+W3 LIVE DEPLOY) + `communication/README.md` + `communication/_HUMAN_TASKS.md`.
+**Goal:** Deploy the W2 LLM conversation brain + the 6 W3 cost guards to the box for the founder tenant (`admin`); confirm the full Telegram pipeline reaches `api.telegram.org` for real; prove the brain replies grounded in the prior call; run the earner gate under an induced Telegram black-hole. FE already committed, deferred to the single canonical panel deploy.
+**Key results:**
+- 13 comm files deployed md5-verified (7 NEW: brain/cost_guards/deeplink/lang/metering/ratelimit/token_bucket; 6 CHANGED: config/endpoints/engine/founder_alert/webhook/__init__). `ddl_comm_cost.sql` applied → 3 NEW FORCE-RLS tables → **7 comm tables total FORCE-RLS**. Flags ON: `COMM_BRAIN_ENABLED · COMM_COST_GUARDS_ENABLED · COMM_METERING_ENABLED · COMM_TOKEN_BUCKET_ENABLED` (on top of `COMM_ENABLED · COMM_TELEGRAM_ENABLED · FEATURE_TELEGRAM_FOUNDER_ALERT · FEATURE_TELEGRAM_FOLLOWUP`). famit-caller restarted ONLY. NO caller.py edit (W1-P2 mount + W1-P3 hook already route through the mounted package; box golden `ccf9715b` UNCHANGED, no lock needed). NO agent.py touch.
+- **LIVE proof:** `GET /comm/channels` 200 `configured:true` all flags live; `getMe` → `mr_kunal_bot` (token decrypts via live vault); webhook no-secret → 403 fail-closed.
+- **REAL-MESSAGE pipeline PROVEN LIVE:** `engine.send` reaches `api.telegram.org` for real → `http_400: chat-not-found` (whole chain: vault decrypt → adapter → HTTPS POST → SendResult → metering → send_log). ONLY the founder chat_id is missing (`getUpdates=0` — founder hasn't tapped in 24h; sentinel correctly absent, never fabricated; alert no-ops `no_founder_chat_id`, never blocks the call loop). Webhook deliberately NOT set (caller firewalled to panel box only → no public HTTPS ingress → would deaf-bot; stays getUpdates mode).
+- **BRAIN PROVEN LIVE:** real inbound through `/comm/webhook/telegram/admin` (valid HMAC `secret_token` → 200 stored) → Groq `llama-3.3-70b-versatile` produced grounded Hinglish reply from the seeded call summary ("haan ji, main aapko EMI breakup bhejne wali thi…", `action=replied`). Cost-guard #5 deliverability proven live (retry → `blocked_dead`).
+- **EARNER GATE (under induced `api.telegram.org` black-hole):** hot-path `snapshot 0.017ms` + `create_task 0.016ms`; detached `run()` bounded `0.75s` (≪ 8s cap); **agent.py md5 `9150fabe` UNCHANGED · famit-agent PID 2808658 NRestarts=0 NOT restarted · caller /health 200 · 0 5xx · NO ring.** Black-hole removed → 0 residual routes.
+- Backups: `comm.COMMW2W3bak.20260614-214207` + `.env.COMMW2W3bak.20260614-214442`. Rollback: 4 new flags→0 → `COMM_ENABLED=0` → restore baks + restart famit-caller. Committed `c2d4e02` on `fe/unify-run-wavec`, gitleaks 0.
+- **ONE founder action remaining:** tap `@mr_kunal_bot` once → chat_id auto-persists forever → next hot lead (interest ≥ 70) sends a real Telegram alert to his phone. Recorded in `communication/_HUMAN_TASKS.md` #1.
+**Status:** ✅ DONE. Communication tab (W1+W2+W3 BE) is LIVE + USABLE for the admin tenant. FE ships with the next canonical panel deploy. Next waves: W3 Email (needs Resend key) → W4 unified inbox → W5 SMS (DLT-gated).

@@ -2,7 +2,7 @@
 
 > **Read-first context:** see `communication/README.md` (index of this folder).
 > **Source research:** `communication/_RESEARCH-LOG.md` (every architecture phase + 7 red-teams + completeness critic appended there).
-> **Status:** DESIGN COMPLETE — READY TO BUILD. No box mutated by the planning waves. First build wave = Telegram (the unblocked launch).
+> **Status:** W1 DONE · W2 DONE · W3-COSTGUARDS DONE · **W1+W2+W3 LIVE (2026-06-15)** — Telegram alert + post-call auto-summary + LLM conversation brain + 6 cost guards ALL LIVE for the `admin` tenant. ONE founder action remaining: tap `@mr_kunal_bot` once to seed chat_id → real alerts land on phone. FE (Communication tab) COMMITTED on `fe/unify-run-wavec`, ships in the next canonical panel deploy. Next wave: W3 Email (needs Resend key); then W5 SMS (DLT-gated, 5-10d external). See `communication/README.md` for the full build status.
 > **Date:** 2026-06-15. Base dir `C:\Users\kunal\Desktop\caps`. Box (READ-ONLY for design) `famit@168.144.153.145`.
 
 ---

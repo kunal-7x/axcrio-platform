@@ -85,10 +85,10 @@ The adaptive-human-voice-brain epic (5 needs A-E: dynamic vendor script→person
 
 ---
 
-## 📡 COMMUNICATION OMNICHANNEL (Telegram + Email + SMS) — DESIGN COMPLETE, READY TO BUILD (2026-06-15)
+## 📡 COMMUNICATION OMNICHANNEL (Telegram + Email + SMS) — W1+W2+W3 LIVE (2026-06-15)
 A new **Communication** tab (Engage nav, alongside the live WhatsApp) carrying **Telegram + Email + SMS** that mirrors+exceeds WhatsApp: multi-step builder, send banner/video/PDF, after-a-call auto-summary to the contact, hot-lead auto-alert to the founder's Telegram, a multi-step LLM conversation brain — per-tenant, earner-safe, sellable.
 - **Full plan:** `communication/COMMUNICATION-MASTER-PLAN.md` (read `communication/README.md` first).
-- **Structural decision:** the channel registry = the LIVE provider registry (1 `provider_credentials` row + 1 adapter = a channel; zero new crypto).
-- **MVP-first / Telegram-first:** Wave 1 = 3 tables + Telegram-only + founder alert + post-call auto-summary + setup UI (~2 wks). NOT the cost-router/Hatchet/tools/inbox (those are Waves 3-6).
-- **Earner-safety (red-team-corrected):** `_finalize_call` is awaited inside the live dial loop → every send is `asyncio.create_task` + snapshot + timeout, NEVER `await`; agent.py never imported; flags OFF = byte-identical; earner gate under induced channel outage.
-- **Founder action to start:** a 2-min BotFather bot token (no verification, free) → we test on his real phone. Email = Resend key (W3). SMS = MSG91 + DLT (W5, 5-10 day external gate).
+- **Current state (2026-06-15):** W1 (Telegram alert + post-call auto-summary) + W2 (LLM conversation brain + inbound webhook) + W3-COSTGUARDS (6 cost guards + 3 FORCE-RLS tables) ALL LIVE for the `admin` tenant. FE (Communication tab, Core_2) COMMITTED on `fe/unify-run-wavec`, ships in the next canonical panel deploy. 7 comm tables FORCE-RLS. Full pipeline reaches `api.telegram.org` for real. Brain replies grounded in the prior call (Groq Hinglish reply proven live). Earner gate PASS under induced Telegram black-hole.
+- **ONE founder action remaining:** tap `@mr_kunal_bot` once → chat_id auto-persists → next hot lead triggers a real Telegram alert on the phone. See `communication/_HUMAN_TASKS.md` #1.
+- **Next waves:** W3 Email (needs Resend key → wizard in panel) → W4 unified inbox + `book_slot` tool → W5 SMS (MSG91 + DLT, 5-10 day external gate) → W6 CAPI signal closure (the moat).
+- **Earner-safety law:** `_finalize_call` is awaited inside the live dial loop → every send is `asyncio.create_task` + snapshot + timeout, NEVER `await`; agent.py never imported; flags OFF = byte-identical; earner gate under induced channel outage.
