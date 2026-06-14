@@ -503,10 +503,25 @@ _GROUNDING_PREFETCH_K = int(os.getenv("AIM_KB_PREFETCH_K", "5") or 5)
 _GROUNDING_LOOKUP_K = int(os.getenv("AIM_KB_LOOKUP_K", "3") or 3)
 _GROUNDING_CHAR_CAP = int(os.getenv("AIM_KB_GROUNDING_CHARS", "1400") or 1400)
 
+# RAG kill-switch (W0 retro-gate). The live agent already grounds at 3 sites with NO flag guard;
+# this is the single voice switch. DEFAULT 1 so absence preserves today's behaviour exactly, but it
+# WILL be set explicitly in /opt/famit-agent/.env. When OFF: _kb_retrieve performs NO kb retrieval
+# and returns [] at every site -> _format_grounding([]) == "" and lookup's snippets are empty -> the
+# inbound render is byte-identical to a no-RAG (grounding="") inbound build. When ON: today's
+# behaviour is unchanged (no retrieval is added/removed; the same kb.retrieve runs). Gating at the
+# single _kb_retrieve chokepoint covers all 3 grounding sites (connect-prefetch, pick_campaign
+# re-ground, lookup) and guarantees "no retrieval + grounding='' when off".
+RAG_INJECT_ENABLED = (os.getenv("RAG_INJECT_ENABLED", "1") or "1").strip().lower() not in (
+    "0", "false", "no", "off", "")
+
 
 def _kb_retrieve(tenant_id: str, query: str, *, campaign_id: str, top_k: int) -> list[dict]:
     """Thin READ-ONLY wrapper over kb.retrieve, scoped to this tenant + campaign + the voice channel.
-    Returns [] on any failure (KB absent / PG down / no hits) so every caller no-ops cleanly."""
+    Returns [] on any failure (KB absent / PG down / no hits) so every caller no-ops cleanly. When the
+    RAG_INJECT_ENABLED kill-switch is OFF, returns [] WITHOUT any kb retrieval (no FTS/embed/PG hit) ->
+    grounding is '' everywhere -> byte-identical to a no-RAG inbound render."""
+    if not RAG_INJECT_ENABLED:
+        return []
     if _kb is None or not tenant_id or not (query or "").strip():
         return []
     try:
@@ -1694,17 +1709,21 @@ class CustomerSalesAgent(Agent):
         self._pending_disambig = False
         # RAG: retrieve grounding for the JUST-matched campaign (off the loop) so the rebuilt
         # instructions carry verified facts. Never blocks the reply; '' on any miss/outage.
-        try:
-            rows = await asyncio.to_thread(
-                _kb_retrieve, (self._tenant_id or ADMIN_TENANT),
-                _grounding_seed(self._fields), campaign_id=self._campaign_id,
-                top_k=_GROUNDING_PREFETCH_K)
-            self._grounding = _format_grounding(rows)
-            logger.info("AIM pick_campaign grounding chunks=%d campaign=%s",
-                        len(rows), self._campaign_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("pick_campaign grounding prefetch failed: %r", exc)
+        # RAG_INJECT_ENABLED OFF -> skip retrieval entirely; grounding stays '' (byte-identical no-RAG).
+        if not RAG_INJECT_ENABLED:
             self._grounding = ""
+        else:
+            try:
+                rows = await asyncio.to_thread(
+                    _kb_retrieve, (self._tenant_id or ADMIN_TENANT),
+                    _grounding_seed(self._fields), campaign_id=self._campaign_id,
+                    top_k=_GROUNDING_PREFETCH_K)
+                self._grounding = _format_grounding(rows)
+                logger.info("AIM pick_campaign grounding chunks=%d campaign=%s",
+                            len(rows), self._campaign_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("pick_campaign grounding prefetch failed: %r", exc)
+                self._grounding = ""
         try:
             await self.update_instructions(_build_sales_instructions(
                 self._fields, "", self._caller_name, False, False, None,
@@ -1733,6 +1752,11 @@ class CustomerSalesAgent(Agent):
         if not q:
             return ("need_question: ask the caller once more, warmly, exactly what detail they want, "
                     "then call lookup again with it.")
+        # RAG_INJECT_ENABLED OFF -> no kb retrieval; same no-facts answer (team will confirm).
+        if not RAG_INJECT_ENABLED:
+            return ("no_facts: the knowledge base didn't have that specific detail. Tell the caller "
+                    "warmly that our team will confirm the exact detail on a quick callback / on "
+                    "WhatsApp — do NOT make up a number or specific.")
         # filler so the (sub-second) retrieve never sits in dead air — never blocks the fetch.
         try:
             await _say_filler(context, "Ek second, dekh ke batati hoon…")
@@ -2524,7 +2548,7 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         # NEVER blocks: it runs as a task; the greeting + first turns proceed regardless. Import-safe-
         # degrade: a KB outage / empty corpus -> '' -> instructions exactly as today. New callers with
         # no campaign yet get grounding the moment pick_campaign matches (handled in that tool).
-        if _kb is not None and cust_fields and (cust_fields.get("_campaign_id") or ""):
+        if RAG_INJECT_ENABLED and _kb is not None and cust_fields and (cust_fields.get("_campaign_id") or ""):
             async def _prefetch_grounding() -> None:
                 try:
                     seed = _grounding_seed(cust_fields)
