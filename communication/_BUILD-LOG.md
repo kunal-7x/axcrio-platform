@@ -459,3 +459,56 @@ deploy from the latest canonical, no race). This wave: build green + commit ONLY
 **Status: DONE (FE built + committed, panel deploy deferred). The Communication TAB is live-ready
 behind `COMM_ENABLED`; flipping it ON for the founder tenant surfaces the full setup → builder →
 inbox → analytics flow grounded in the W1/W2 backend.**
+
+---
+
+## W3-COSTGUARDS — THE 6 COST GUARDS (master plan §6) · `fe/unify-run-wavec` · BUILT OFF (flag-gated)
+
+**Scope:** implement + PROVE the 6 cost guards as the master plan demands them — acceptance gates,
+not "later". All NEW (additive, flag-gated default OFF -> resting byte-identical); the engine wires
+them into the ONE send seam. NO caller.py edit (the W1-P2 mount already routes every send through
+`comm.engine.send`; the guards live INSIDE the engine). NO agent.py import. `wallet.debit()` does
+NOT exist — metering rides the LIVE ACID `reserve->settle/release`. Offline-green + earner-safe.
+
+### Files (NEW / EDIT, `droplet_work/comm/` + `communication/db/`)
+| File | file:lines | What |
+|---|---|---|
+| `communication/db/ddl_comm_cost.sql` | 1-110 | 3 NEW FORCE-RLS tables (additive to ddl_comm.sql): `comm_daily_spend` (per-(tenant,channel,UTC-day) spend paise — budget ceiling + anomaly median), `comm_freq_counter` (per-(tenant,contact,channel,day) send count — frequency cap), `comm_deliverability` (per-(tenant,contact,channel) reachability ok/dead/suppressed). tenant_id TEXT, BIGINT paise, idempotent, RLS DO-block VERBATIM. Rollback = DROP the 3 tables. |
+| `comm/metering.py` | 1-120 | GUARD #1 — per-message metering. `reserve_for_send(tenant,message_id,est)` -> wallet.reserve (idem reserve:comms:{mid}) BEFORE the send; `finalize(ticket,sent_ok,actual)` -> wallet.settle (settle:comms:{mid}) on success / wallet.release (release:comms:{mid}) on failure -> a provider 5xx NEVER bills. Free send / metering OFF / wallet-down -> a permissive no-op ticket. NO wallet.debit (AST-proven). NEVER raises. |
+| `comm/cost_guards.py` | 1-290 | GUARDS #2/#3/#4/#5 (DB-backed, RLS-scoped, permissive-on-fault, never-raise). #2 check_budget (per-tenant daily ceiling default 50000=Rs500; FREE sends always flow, only metered gated) + record_spend. #3 check_frequency (per-(contact,channel)/day cap default 8) + bump_frequency. #4 check_anomaly (today > mult x trailing-7-day median, above a paise floor) — the DETECTOR. #5 get_deliverability/is_dead/mark_deliverability/classify_failure (a 403-class error -> dead). precheck_send runs #5->#3->#2 (FIRST block wins). |
+| `comm/token_bucket.py` | 1-175 | GUARD #6 — per-bot async token-bucket. A GLOBAL bucket per provider_def_id (30/s, capacity=rate) + a PER-CHAT bucket per (bot,chat) (1/s) — journey blast + post-call trickle + alert burst SHARE one budget. acquire(bot,chat,priority=) waits at most bucket_max_wait_s (3s << send_timeout) then returns False (never hangs). PRIORITY LANE: a founder/hot-lead alert borrows a global token immediately (never waits on global) so a blast can never delay it. Disabled -> grant instantly. In-process, never-raise. |
+| `comm/engine.py` | +send wiring + _post_send_bookkeeping | the ONE seam now runs (flag-gated, resting byte-identical OFF): est-cost -> cost_guards.precheck_send (block -> blocked_dead/blocked_frequency/blocked_budget, adapter NEVER called) -> token_bucket.acquire(priority=) (block -> blocked_rate) -> metering.reserve_for_send (insufficient -> blocked_funds) -> adapter.send (bounded wait_for, unchanged) -> metering.finalize (settle ok / release fail) -> _post_send_bookkeeping (#3 bump + #2/#4 record_spend + #5 403->dead / ok-revive). send(...,priority=) added. |
+| `comm/founder_alert.py` | +priority=True + maybe_alert_spend_anomaly | the hot-lead alert sends priority=True (guard #6 priority lane). GUARD #4 (ALERT half) maybe_alert_spend_anomaly(tenant) -> if check_anomaly trips, a once-per-UTC-day founder Telegram spike-alert (priority lane) + the throttle = the hard #2 ceiling. |
+| `comm/config.py` | +cost-guard flags/caps | COMM_COST_GUARDS_ENABLED (master) / COMM_METERING_ENABLED / COMM_TOKEN_BUCKET_ENABLED (all OFF) + caps: COMM_DAILY_BUDGET_MINOR (50000) / COMM_FREQ_CAP_PER_CONTACT_DAY (8) / COMM_SPEND_ANOMALY_MULT (3.0) / COMM_SPEND_ANOMALY_FLOOR_MINOR (2000) / COMM_BUCKET_GLOBAL_RATE (30) / COMM_BUCKET_PER_CHAT_RATE (1) / COMM_BUCKET_MAX_WAIT_S (3). Read at CALL time. |
+| `comm/__init__.py` | +1 | behavioural import-guard pulls cost_guards, metering, token_bucket. |
+| `comm/tests/test_cost_guards_offline.py` | — | unit PROOF of each guard (fake in-memory db.engine + fake wallet). |
+| `comm/tests/test_engine_costguards_offline.py` | — | INTEGRATION PROOF the guards are wired into engine.send. |
+
+### PASS/FAIL per guard (the deliverable — offline, deterministic)
+- #1 per-message metering — PASS. comm/metering.py: reserve BEFORE (reserve_for_send), settle on success / release on failure (never bills) (finalize); free send -> no hold; metering OFF -> wallet untouched; insufficient funds -> ticket.ok False -> engine blocked_funds. NO wallet.debit call (AST-proven across metering+engine). Integration: success reserves+settles, failure releases-never-settles. (test_cost_guards_offline 1.* + test_engine_costguards_offline wire1.*)
+- #2 budget ceiling — PASS. cost_guards.check_budget — a FREE Telegram send ALWAYS flows; a metered send where spent+est > cap -> blocked_budget. Integration: 1st Rs6 paid send ok, 2nd over Rs10 cap -> blocked_budget, a free send still flows over budget. (2.* / wire2.*)
+- #3 frequency cap — PASS. cost_guards.check_frequency + bump_frequency — cap=N; the (N+1)-th send to one contact/day -> blocked_frequency; a different contact unaffected. Integration: cap=2, 3rd send blocked. (3.* / wire3.*)
+- #4 spend-anomaly — PASS. cost_guards.check_anomaly — today > mult x trailing-7-day median AND above the floor -> anomaly; a quiet week then a Rs50 spike trips (median Rs1); a brand-new tenant spending above the floor trips; below-floor never trips. ALERT half = founder_alert.maybe_alert_spend_anomaly (once/day, priority lane). (4.*)
+- #5 deliverability state — PASS. cost_guards get/mark/classify_failure — a 403-class error -> dead; a transient net error -> no change; a dead chat -> precheck_send blocked_dead (adapter NEVER called). Integration: a 403 send flips the chat dead, the NEXT send is blocked without calling the adapter. (5.* / wire5.*)
+- #6 per-bot token-bucket — PASS. token_bucket.acquire — global capacity drains (6th of 5 rejected no-wait); per-chat paced (3rd quick send to one chat rejected); priority lane bypasses a drained global bucket; disabled -> always grants. Integration: drain global -> a normal send blocked_rate, a priority=True send still ok. (6.* / wire6.*)
+
+### Earner-safety / gates (ALL GREEN)
+- NO caller.py edit, NO agent.py import (grep import agent|from agent over comm/ = 0). The guards live inside the existing comm.engine.send seam already mounted in W1-P2.
+- Resting byte-identical: empty-env `import comm` rc 0; all 3 guard master flags default OFF; with COMM_COST_GUARDS_ENABLED=0 the engine sends EXACTLY as W1/W2 (an integration test sends to a dead chat normally when guards are OFF).
+- Permissive-on-fault: PG down -> every guard returns allow (a guard must NEVER block a send because its own bookkeeping is unavailable — the dial loop's detached task always makes progress). Proven (fault.*).
+- py_compile all comm clean. All 10 offline suites PASS (8 prior + 2 new) = zero regression. gitleaks protect --staged = 0 leaks (~82 KB). NEVER raises on any path.
+
+### DDL apply / flags (LIVE step, founder-gated like W1/W2)
+The 3 tables apply STANDALONE via the live db.engine as famit_app (additive, idempotent), exactly
+like ddl_comm.sql. Flags flip ON for the founder tenant AFTER the live earner gate (agent.py md5
+9150fabe unchanged / famit-agent NOT restarted / /health 200 / 0 5xx / no ring / under an induced
+Telegram outage). Until then the guards are inert (resting byte-identical).
+
+### Rollback
+COMM_COST_GUARDS_ENABLED=0 + COMM_METERING_ENABLED=0 + COMM_TOKEN_BUCKET_ENABLED=0 (instant — the
+engine reverts to W1/W2 send). The 3 cost-guard tables are additive (DROP-safe); the modules are
+additive (delete-safe). No caller.py / agent.py touched.
+
+**Status: BUILT + OFFLINE-GREEN (flags OFF, resting byte-identical), committed on `fe/unify-run-wavec`.
+All 6 cost guards implemented + PROVEN PASS (unit + engine-integration). NO caller.py edit (no lock).
+LIVE flip (DDL apply + flags ON + earner gate) is the founder-gated step, same recipe as W1-P2/P3.**

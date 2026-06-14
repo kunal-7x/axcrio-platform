@@ -99,6 +99,78 @@ def inbound_body_max_bytes() -> int:
     return _int_env("COMM_INBOUND_BODY_MAX_BYTES", 64 * 1024)
 
 
+# ---------------------------------------------------------------------------
+# Wave-3 COST GUARDS (master plan §6) — caps read at call time, default safe.
+# All guards are *additive* and *permissive-on-fault*: a missing flag / PG blip
+# never blocks a send (the dial loop's detached task must always make progress).
+# ---------------------------------------------------------------------------
+FLAG_COST_GUARDS = "COMM_COST_GUARDS_ENABLED"   # master switch for budget/freq/anomaly/deliverability
+
+
+def cost_guards_enabled() -> bool:
+    """Wave-3 master cost-guard switch. OFF -> the engine sends exactly as W1/W2 (no budget,
+    no frequency, no anomaly, no deliverability precheck). Requires the comm master flag too.
+    Metering + the token-bucket are governed by their OWN flags below (independent)."""
+    return comm_enabled() and _truthy(os.environ.get(FLAG_COST_GUARDS))
+
+
+def metering_enabled() -> bool:
+    """Per-message metering through the real wallet reserve->settle/release ledger. OFF ->
+    no wallet row is written for a send (W1/W2 behaviour). Independent of cost_guards_enabled
+    so metering can run (audit every send) even before the ceilings are switched on."""
+    return comm_enabled() and _truthy(os.environ.get("COMM_METERING_ENABLED"))
+
+
+def token_bucket_enabled() -> bool:
+    """Per-bot async token-bucket (30/s global, 1/s per chat). OFF -> no pacing (W1/W2). The
+    bucket is in-process; it never blocks longer than its own bounded wait."""
+    return comm_enabled() and _truthy(os.environ.get("COMM_TOKEN_BUCKET_ENABLED"))
+
+
+def daily_budget_minor() -> int:
+    """Per-tenant daily comm-spend CEILING in INR paise. Default 50000 paise (₹500/day) — the
+    circuit-breaker that caps a runaway at a known rupee number. 0 or negative -> unlimited."""
+    return _int_env("COMM_DAILY_BUDGET_MINOR", 50000)
+
+
+def freq_cap_per_contact_day() -> int:
+    """Per-(contact, channel) per-UTC-day send cap (all channels). Default 8 — stops a journey
+    bug from spamming + billing one contact. 0 or negative -> unlimited."""
+    return _int_env("COMM_FREQ_CAP_PER_CONTACT_DAY", 8)
+
+
+def anomaly_multiplier() -> float:
+    """Spend-anomaly trip multiplier: today's spend > N x the trailing-7-day median -> alert +
+    throttle. Default 3.0 (plan §6). <= 0 -> the anomaly guard is disabled."""
+    return _float_env("COMM_SPEND_ANOMALY_MULT", 3.0)
+
+
+def anomaly_floor_minor() -> int:
+    """A paise floor below which the anomaly guard never trips (so a ₹0->₹2 day on free Telegram
+    is not flagged as a 'spike'). Default 2000 paise (₹20). Anomaly trips only when today's spend
+    exceeds BOTH the multiplier-of-median AND this floor."""
+    return _int_env("COMM_SPEND_ANOMALY_FLOOR_MINOR", 2000)
+
+
+def bucket_global_rate() -> float:
+    """Per-bot global token-bucket refill rate (messages/second). Default 30/s (Telegram's
+    documented global ceiling). Shared by the journey blast + post-call trickle + alerts."""
+    return _float_env("COMM_BUCKET_GLOBAL_RATE", 30.0)
+
+
+def bucket_per_chat_rate() -> float:
+    """Per-(bot, chat) token-bucket refill rate (messages/second). Default 1/s (Telegram's
+    documented per-chat ceiling). A burst to one chat is paced; other chats are unaffected."""
+    return _float_env("COMM_BUCKET_PER_CHAT_RATE", 1.0)
+
+
+def bucket_max_wait_s() -> float:
+    """The HARD cap on how long token-bucket acquire() will wait for a token before giving up
+    (returns False -> the send is dropped/deferred, never hangs). Default 3s — well under the
+    per-channel send_timeout envelope so the detached task is always bounded. <=0 -> no-wait."""
+    return _float_env("COMM_BUCKET_MAX_WAIT_S", 3.0)
+
+
 def _float_env(key: str, default: float) -> float:
     """Read a float env var; fall back to default on unset/garbage (never raises)."""
     raw = os.environ.get(key)
@@ -137,4 +209,12 @@ def config_snapshot() -> dict:
         "http_timeout_s": http_timeout_s(),
         "groq_daily_cap": groq_daily_cap(),
         "inbound_rate_per_min": inbound_rate_per_min(),
+        "cost_guards_enabled": cost_guards_enabled(),
+        "metering_enabled": metering_enabled(),
+        "token_bucket_enabled": token_bucket_enabled(),
+        "daily_budget_minor": daily_budget_minor(),
+        "freq_cap_per_contact_day": freq_cap_per_contact_day(),
+        "anomaly_multiplier": anomaly_multiplier(),
+        "bucket_global_rate": bucket_global_rate(),
+        "bucket_per_chat_rate": bucket_per_chat_rate(),
     }

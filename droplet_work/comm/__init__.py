@@ -47,6 +47,7 @@ try:  # pragma: no cover - all-or-nothing behavioural surface
     from . import vault_read, send_log, engine, sessions, webhook  # noqa: F401
     from . import consent, founder_alert, post_call  # noqa: F401
     from . import brain, deeplink, lang, ratelimit  # noqa: F401  (Wave 2: the conversation brain)
+    from . import cost_guards, metering, token_bucket  # noqa: F401  (Wave 3: the 6 cost guards)
     _BEHAVIOURAL_LOADED = True
 except Exception:  # noqa: BLE001 — never let an optional-dep import break the config shell
     _BEHAVIOURAL_LOADED = False

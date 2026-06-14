@@ -34,7 +34,7 @@ import asyncio
 import logging
 from typing import Optional, Tuple
 
-from . import config, send_log, vault_read
+from . import config, cost_guards, metering, send_log, token_bucket, vault_read
 from .channels.base import SendEnvelope, SendResult
 from .channels.telegram import CHANNEL as TG_CHANNEL, TelegramAdapter
 
@@ -87,11 +87,24 @@ async def send(
     session_id: str = "",
     outcome: str = "",
     log: bool = True,
+    priority: bool = False,
 ) -> SendResult:
-    """Resolve -> send (bounded) -> log. The single consumer entrypoint. NEVER raises.
+    """Resolve -> [cost guards] -> send (bounded) -> [meter] -> log. The single consumer
+    entrypoint. NEVER raises.
 
     `env.idempotency_key` (comms:{message_id}) makes a retried create_task safe: the same
-    key writes the send_log row once. If absent, the engine mints a fresh message_id."""
+    key writes the send_log row once. If absent, the engine mints a fresh message_id.
+
+    `priority=True` (a founder hot-lead alert) takes the token-bucket priority lane so a journey
+    blast can never delay the alert the founder must see now.
+
+    The 6 cost guards (master plan §6), all flag-gated (resting byte-identical when OFF):
+      #5 deliverability + #3 frequency + #2 budget  -> cost_guards.precheck_send (FIRST block wins)
+      #6 per-bot token-bucket pacing                -> token_bucket.acquire (bounded wait)
+      #1 per-message metering                       -> metering.reserve_for_send -> finalize
+      #2/#4 bookkeeping (spend + anomaly)           -> cost_guards.record_spend (post-send)
+      #5 deliverability transition (403 -> dead)    -> cost_guards.mark_deliverability (post-send)
+    """
     if not config.comm_enabled():
         return SendResult.not_configured(channel, "comm_disabled")
     if channel != TG_CHANNEL:
@@ -112,6 +125,38 @@ async def send(
             _safe_log(tenant_id, message_id, env, res, pdid, session_id, outcome)
         return res
 
+    contact_ref = (env.to_ref or "").strip()
+    # the estimated paise for this send (Telegram = 0; paid channels override estimate_cost_minor).
+    try:
+        est_cost = int(adapter.estimate_cost_minor(env))
+    except Exception:  # noqa: BLE001
+        est_cost = 0
+
+    # --- COST GUARDS #5/#3/#2: the blocking precheck (FIRST block wins; permissive on fault) ---
+    gd = cost_guards.precheck_send(tenant_id, contact_ref, channel, est_cost)
+    if not gd.allow:
+        res = SendResult.failure(channel, gd.reason, status=gd.block_status or "blocked")
+        if log:
+            _safe_log(tenant_id, message_id, env, res, pdid, session_id, outcome)
+        return res
+
+    # --- COST GUARD #6: per-bot token-bucket pacing (bounded wait; priority lane for alerts) ---
+    granted = await token_bucket.acquire(pdid or "_default", contact_ref, priority=priority)
+    if not granted:
+        res = SendResult.failure(channel, "rate_limited", status="blocked_rate")
+        if log:
+            _safe_log(tenant_id, message_id, env, res, pdid, session_id, outcome)
+        return res
+
+    # --- COST GUARD #1: reserve the estimated cost BEFORE the send (real wallet hold) ---
+    ticket = metering.reserve_for_send(tenant_id, message_id, est_cost)
+    if not ticket.ok:
+        # the ONE hard block metering imposes: insufficient prepaid funds.
+        res = SendResult.failure(channel, "insufficient_funds", status="blocked_funds")
+        if log:
+            _safe_log(tenant_id, message_id, env, res, pdid, session_id, outcome)
+        return res
+
     # HARD per-channel timeout — the earner-safety cap. A black-holed provider -> 'timeout'.
     try:
         res = await asyncio.wait_for(adapter.send(env), timeout=config.send_timeout_s())
@@ -120,9 +165,43 @@ async def send(
     except Exception as exc:  # noqa: BLE001 — adapter promised never to raise, but be paranoid
         res = SendResult.failure(channel, f"engine_{type(exc).__name__}")
 
+    # --- COST GUARD #1: settle (charged) on success, release (no bill) on failure ---
+    actual_cost = int(res.cost_minor) if res.ok else 0
+    fin = metering.finalize(ticket, sent_ok=bool(res.ok), actual_cost_minor=(actual_cost if res.ok else 0))
+    # carry the charged paise onto the result/log so the send_log cost_minor is the REAL charge.
+    if res.ok:
+        res.cost_minor = int(fin.get("charged_minor", actual_cost) or actual_cost)
+
+    # --- post-send bookkeeping (best-effort, never blocks/raises) ---
+    _post_send_bookkeeping(tenant_id, contact_ref, channel, res)
+
     if log:
         _safe_log(tenant_id, message_id, env, res, pdid, session_id, outcome)
     return res
+
+
+def _post_send_bookkeeping(tenant_id: str, contact_ref: str, channel: str, res: SendResult) -> None:
+    """Update the durable cost-guard counters AFTER a send. Best-effort: a bookkeeping failure
+    must never affect the SendResult. NEVER raises.
+      * on success -> bump the per-contact frequency counter (#3), add the charged paise to the
+        daily spend series (#2/#4), and revive deliverability to 'ok' (a dead chat re-enabled);
+      * on a 403-class failure -> flip deliverability to 'dead' (#5) so the router skips it next time.
+    """
+    try:
+        if not config.cost_guards_enabled():
+            return
+        if res.ok:
+            if contact_ref:
+                cost_guards.bump_frequency(tenant_id, contact_ref, channel)
+                cost_guards.mark_deliverability(tenant_id, contact_ref, channel, "ok", reason="")
+            cost_guards.record_spend(tenant_id, channel, int(res.cost_minor or 0))
+        else:
+            transition = cost_guards.classify_failure(res.error_code)
+            if transition and contact_ref:
+                cost_guards.mark_deliverability(tenant_id, contact_ref, channel, transition,
+                                                reason=(res.error_code or "")[:120])
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("comm.engine._post_send_bookkeeping degraded: %r", type(exc).__name__)
 
 
 def _safe_log(tenant_id: str, message_id: str, env: SendEnvelope, res: SendResult,

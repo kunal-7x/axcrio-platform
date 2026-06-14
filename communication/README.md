@@ -44,8 +44,19 @@
   SubNav + ChannelPicker. Telegram live; Email/SMS coming-soon; WhatsApp deep-links out. Dormant-safe,
   Core_2, zero raw hex. tsc 0 + build GREEN + eslint 0 + gitleaks 0, committed on `fe/unify-run-wavec`.
   Panel deploy deferred to the single final canonical deploy (no race). Details: `_BUILD-LOG.md` (FE section).
+- **W3-COSTGUARDS** ✅ BUILT (flag-gated OFF, offline-green) — the **6 cost guards** of §6, all PROVEN
+  PASS (unit + engine-integration). #1 per-message metering via the LIVE wallet `reserve→settle/release`
+  (release-on-failure never bills; **no `wallet.debit`**) · #2 per-tenant daily budget ceiling (free TG
+  flows, metered over-cap → `blocked_budget`) · #3 per-contact/day frequency cap · #4 spend-anomaly
+  (today > 3× trailing-7d median → founder priority-alert) · #5 per-(identity,channel) deliverability
+  (403 → `dead` → next send blocked) · #6 per-bot token-bucket (30/s global + 1/s per-chat, founder-alert
+  **priority lane**). 3 NEW FORCE-RLS tables (`ddl_comm_cost.sql`, additive). All permissive-on-fault;
+  resting byte-identical (flags OFF). NO caller.py edit (guards live in the mounted `comm.engine.send`).
+  10/10 comm suites PASS, gitleaks 0. Details: `_BUILD-LOG.md` (W3-COSTGUARDS).
 - **NEXT (LIVE)** — founder taps `@mr_kunal_bot` once → `setWebhook` + flip `COMM_BRAIN_ENABLED=1` →
-  earner gate under an induced Telegram outage → the FE goes live with the final panel deploy.
+  earner gate under an induced Telegram outage → the FE goes live with the final panel deploy. The
+  cost-guard flags (`COMM_COST_GUARDS_ENABLED`/`COMM_METERING_ENABLED`/`COMM_TOKEN_BUCKET_ENABLED`) +
+  the `ddl_comm_cost.sql` apply flip ON for the founder tenant after the same earner gate.
 
 ## Build order (from the plan §8)
 | Wave | What | Channel | ~Effort |

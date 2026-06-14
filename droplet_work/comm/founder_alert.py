@@ -142,7 +142,58 @@ async def send_hot_lead_alert(tenant_id: str, snap: Dict[str, Any]) -> SendResul
             channel=TG_CHANNEL,
             session_id="",
             outcome=str(snap.get("outcome") or ""),
+            priority=True,   # cost guard #6: the founder hot-lead alert takes the token-bucket
+                             # priority lane so a journey blast can never delay it.
         )
     except Exception as exc:  # noqa: BLE001 — runs in a detached task; never crash it
         _log.warning("comm.founder_alert.send_hot_lead_alert failed: %r", type(exc).__name__)
         return SendResult.failure(TG_CHANNEL, f"alert_{type(exc).__name__}")
+
+
+# In-process per-(tenant, UTC-day) de-dupe so a tripped anomaly alerts the founder ONCE per day,
+# not on every subsequent send while spend stays elevated.
+_ANOMALY_ALERTED: Dict[str, str] = {}
+
+
+async def maybe_alert_spend_anomaly(tenant_id: str) -> SendResult:
+    """COST GUARD #4 (the ALERT half): if cost_guards.check_anomaly trips (today's comm-spend >
+    multiplier x the trailing-7-day median, above the floor), send the founder a spend-spike alert
+    (priority lane) AT MOST ONCE per UTC day. Returns the SendResult, or a not_configured no-op
+    when nothing tripped / the alert is dormant. NEVER raises (detached-task safe).
+
+    The 'throttle' half is the budget ceiling (#2) — a tripped anomaly is the early-warning that
+    spend is abnormal BEFORE it hits the hard ceiling."""
+    try:
+        from . import cost_guards
+        from datetime import datetime, timezone
+        gd = cost_guards.check_anomaly(tenant_id)
+        if not gd.anomaly:
+            return SendResult.not_configured(TG_CHANNEL, "no_anomaly")
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if _ANOMALY_ALERTED.get(tenant_id) == day:
+            return SendResult.not_configured(TG_CHANNEL, "anomaly_already_alerted")
+        if not config.founder_alert_enabled():
+            # we still mark it 'detected' so the throttle (#2 ceiling) is the active control.
+            _ANOMALY_ALERTED[tenant_id] = day
+            return SendResult.not_configured(TG_CHANNEL, "alert_disabled_anomaly_detected")
+        chat_id = await engine.derive_founder_chat_id(tenant_id, slug="telegram-founder")
+        if not chat_id:
+            _ANOMALY_ALERTED[tenant_id] = day
+            return SendResult.not_configured(TG_CHANNEL, "no_founder_chat_id")
+        d = gd.detail or {}
+        today_rupees = (int(d.get("today", 0)) / 100.0)
+        med_rupees = (float(d.get("median", 0)) / 100.0)
+        text = (f"⚠️ Comm-spend anomaly: today ₹{today_rupees:.2f} is over "
+                f"{int(config.anomaly_multiplier())}x your 7-day median (₹{med_rupees:.2f}). "
+                f"Spend is being throttled at your daily ceiling. Tap to review.")
+        env = SendEnvelope(to_ref=chat_id, kind="alert", purpose="service", text=text,
+                           buttons=[Button(text="Review spend", url=f"{_panel_base()}/billing")],
+                           meta={"anomaly": True})
+        env.idempotency_key = f"comms:anomaly:{tenant_id}:{day}"
+        res = await engine.send(tenant_id, env, slug="telegram-founder", channel=TG_CHANNEL,
+                                priority=True)
+        _ANOMALY_ALERTED[tenant_id] = day
+        return res
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("comm.founder_alert.maybe_alert_spend_anomaly failed: %r", type(exc).__name__)
+        return SendResult.failure(TG_CHANNEL, f"anomaly_{type(exc).__name__}")
