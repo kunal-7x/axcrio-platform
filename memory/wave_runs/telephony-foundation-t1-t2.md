@@ -71,3 +71,87 @@ no plaintext in DB.
 famit-agent MainPID `1477083` active, NRestarts=0, NOT restarted · caller `/health` (8209) = 200 ·
 0 5xx (last 15 min) · NO ring (PG DDL + read-only smoke only; no calls). gitleaks staged = 0.
 NO caller.py edit; T3 mount deferred (serialized vs the running video wave). Commit on `fe/unify-run-wavec`.
+
+
+## T2 — trunk_registry package (flag OFF) — DONE
+
+**Status:** DONE (local + offline-tested; flag `TRUNK_REGISTRY_ENABLED` default OFF). NO caller.py
+edit, NO box mutation, NO service restart, NO calls. T3 mount remains deferred (caller.py
+serialization vs the video wave). The package lives in `droplet_work/trunk_registry/` (force-added
+to git the same way `provider_registry/` + the T1 DDL are — `droplet_work/` is broadly gitignored;
+curated source is `git add -f`'d).
+
+**11 modules shipped (`droplet_work/trunk_registry/`):**
+- **REUSE (import-share provider_registry, do NOT rewrite):**
+  - `credentials.py` (`:36-118`) — thin TRUNK-AAD wrapper over `provider_registry.credentials`
+    (the live AAD AES-256-GCM). AAD = `tenant_id||trunk_id||key_version` via `_AadAdapter` (`:121-154`)
+    that maps trunk_id -> the shared primitive's 2nd id so the AAD STRING is byte-identical. ONE crypto
+    impl on the box; Vault flip in one place. Absent provider_registry -> CredentialError (never
+    plaintext).
+  - `ssrf_guard.py` (`:21-54`) — thin RE-EXPORT of `provider_registry.ssrf_guard.validate_endpoint`
+    / `revalidate_redirect_location`; FAIL-CLOSED stand-in if absent.
+  - `health.py` (`:27-136`) — RE-USES the in-memory circuit breaker (`is_open`/`record_*`/`run_probe`,
+    3-fail open, 60->120->240 backoff) keyed per (tenant, trunk_id) + trunk-friendly aliases
+    `trunk_is_degraded` / `trunk_health_snapshot`. Local fallback breaker if absent.
+- **CLONE provider_registry (column-for-column for the sip_trunks shape):**
+  - `config.py` — call-time env reads, `TRUNK_REGISTRY_ENABLED` default OFF + the concurrency/velocity/
+    quarantine knobs (box-global cap 90, velocity 8s/200·hr, ring-out burst 5/600s, disable@3 quarantines).
+  - `schema.py` (`:120-313`) — `SipTrunk`/`SipTrunkCred`/`SipTrunkHealth` dataclasses + enums
+    (TrunkType/Direction/Transport/Encryption/DltStatus/RotationStrategy/CredentialScope/**Purpose**);
+    `is_campaign_eligible` carried as the DB-DERIVED read-only field; `is_quarantined()` helper; `dids`
+    falls back to caller_id.
+  - `store.py` (`:88-371`) — is_admin=False RLS reads/writes for the 3 tables; **B1 filter**
+    `campaign_eligible_only` (`:106-107`) + `exclude_quarantined` (`:108-109`); `soft_disable_trunk`
+    (red-team D default), `set_quarantine`, `recent_did_ringouts` (the B-rel signal query),
+    `count_trunk_quarantines` (B3), append-only `write_health_row`; `is_campaign_eligible`/`is_undeletable`
+    NOT in the write whitelist (DB-derived / admin-seed-only).
+  - `admin_store.py` — is_admin=True super-admin reads (require_super_admin-only at T3).
+  - `registry.py` (`:85-159`) — **THE choke-point `get_trunk(tenant, purpose)`**. RED-TEAM B1 enforced
+    TWICE: the store filter (`campaign_eligible_only=want_campaign`) AND a per-trunk re-check
+    `_is_campaign_eligible` (`:140`) on the DB-derived column — a non-140/unregistered trunk is NEVER
+    campaign-returned even via a direct write; purpose='test'/'manual' skip the gate (the founder single
+    dial on the non-140 Vobiz `_global` trunk). Skips circuit-open + no-DID + no-livekit-trunk; never raises.
+- **NEW (genuinely net-new, per §8):**
+  - `concurrency.py` (`:89-205`) — **IN-PROCESS** per-trunk counter (red-team C-rel: box is uvicorn
+    --workers 1, NOT the fail-open Redis :6380). `acquire` does atomic check-AND-reserve under ONE lock
+    (no A2 TOCTOU oversell), `release` paired in try/finally (no A1 leak; double/None release = no-op).
+    Enforces velocity (per-DID min spacing + calls/hour), GSM 1-SIM=1-call (A3), per-trunk cap, box-global
+    cap (A4). Injectable clock.
+  - `rotation.py` (`:70-222`) — DID round_robin/least_used/sticky (skip `avoid`); **RED-TEAM B-rel**
+    `note_call_outcome` QUARANTINES on a zero-duration RING-OUT BURST (the signal that EXISTS — caller.py
+    `wait_until_answered=False` never captures the 486); **RED-TEAM B3** >=K quarantines -> DISABLE trunk +
+    LOUD alert naming the +918071583488 pool-burn pattern; **RED-TEAM E** `manual_quarantine_did` kill switch.
+  - `livekit_sync.py` (`:84-241`) — pure request BUILDERS (outbound/inbound trunk + dispatch-rule w/
+    `metadata:{tenant_id}`) + injected-async-client create/delete (NO container restart, native multi-trunk).
+    SDK imported lazily -> dict mirror when absent (offline-assertable; SIP password NEVER echoed, only
+    `auth_password_present`). **RED-TEAM D** `is_protected_trunk_id` + `delete_trunk` REFUSE the env
+    `LIVEKIT_SIP_TRUNK_ID` / any protected id (+ empty id) unless `force_protected` (PIN-gated at T3).
+    NEVER imports agent.py.
+
+**Offline tests — 31/31 PASS (3 suites, no network / no PG / no LiveKit SDK):**
+- `tests/test_registry_offline.py` (9/9) — a fake PG engine ENFORCES the §2.2 RLS GUC in pure Python.
+  B1 campaign picks ONLY the 140-eligible trunk (not the lower-pri non-140); a 'test' dial allows the
+  non-140 `_global` Vobiz trunk; no-eligible-campaign-trunk REFUSES; A never sees/reads B (RLS+cred);
+  cross-tenant ciphertext copy -> InvalidTag (no plaintext); quarantined/circuit-open skipped+fallback;
+  flag OFF -> registry_disabled; routing_hint pins.
+- `tests/test_concurrency_offline.py` (8/8) — per-trunk cap never oversold; release-in-finally no leak;
+  double/None release no-op; box-global cap across trunks; GSM 1-SIM=1-call; velocity spacing + hourly
+  cap (fake clock).
+- `tests/test_rotation_livekit_offline.py` (14/14) — RR/least-used/sticky + avoid; connected/below-threshold
+  no-quarantine; ring-out BURST quarantines; B3 K-quarantines disables+alerts (names 918071583488);
+  manual kill switch; livekit request shapes (no pw echo, tenant metadata); red-team-D delete refuses
+  protected live trunk (force allows); create wires the injected client.
+- Regression: `provider_registry` reused suites still green (registry 10/10, ssrf 39/39 — no drift).
+- Dormancy: flag-OFF `get_trunk` -> `registry_disabled`, zero I/O (resting byte-identical).
+
+**py_compile:** all 12 modules + 3 test files compile clean. Package imports with empty env (no `db`,
+no LiveKit SDK) -> `__version__` `0.2.0-t2` (all surfaces loaded via the import guards).
+
+**EARNER GATE (read-only box, PASS):** agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED ·
+famit-agent MainPID `1477083` active NRestarts=0 NOT restarted · caller `/health` (8209) = 200 ·
+famit-caller active (PID 2774834) · 0 5xx (last 15 min) · NO ring (pure-local build + offline tests;
+no box mutation, no restart, no calls). gitleaks staged = 0. Commit on `fe/unify-run-wavec`.
+
+**NEXT = T3** (additive `/trunk-registry/*` + `/trunks/byo/*` guarded mount in caller.py, flag OFF;
+/test-call rate-limited; DELETE soft-disables + refuses `_global`/env; `POST /quarantine-did` kill switch)
+— DEFERRED until caller.py frees from the video wave (cross-product serialization, PLAYBOOK #5).
