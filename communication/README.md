@@ -32,6 +32,13 @@
   the live chat_id — getUpdates aged out; auto-persists after) → `communication/_HUMAN_TASKS.md`.
 - **W2** ✅ BUILT (flag-gated) — the LLM conversation brain (reply-only) + the signed single-use
   `?start=` deep-link that seeds CONTACT chat_ids (activates the auto-summary's deliverable path).
+- **SECURITY PROBES** ✅ IMPLEMENTED + PROVEN (offline, real code) — the 6 ship-blockers
+  (`T-WEBHOOK · T-INJECT · T-LEAK · T-VAULT · T-DEEPLINK · T-GATE`) consolidated into one harness
+  `comm/tests/test_security_probes.py` → **6/6 PASS, 53 sub-checks, 0 fail, exit 0** (no box /
+  caller.py / agent.py touch; zero regression; gitleaks 0). T-LEAK proven on the real runtime
+  memory path. ONE tracked residual surfaced honestly: S1 per-tenant HKDF DEK (the AAD binding
+  already defeats cross-tenant paste; the DEK upgrade is a separate key-version-gated crypto wave so
+  the LIVE founder token stays decryptable). Details: `_BUILD-LOG.md` (## SECURITY-PROBES).
 - **FE (W1/W2)** ✅ BUILT (panel deploy DEFERRED) — the **Communication TAB** (`Engage > Communication`,
   `/communication`): one shell, four views (Channels setup + Builder + unified Inbox + Analytics) behind a
   SubNav + ChannelPicker. Telegram live; Email/SMS coming-soon; WhatsApp deep-links out. Dormant-safe,
