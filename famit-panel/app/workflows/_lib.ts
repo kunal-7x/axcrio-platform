@@ -681,6 +681,165 @@ export function toDefinition(
     };
 }
 
+/* ---- human-language node label resolver (spec requirement) ---- */
+
+// Converts raw WfNode metadata into a plain-English label a non-technical
+// founder can read at a glance. Used by WfNodeView instead of raw `d.wfType`.
+// Priority: explicit `label` field (set by the inspector) > derived from config > fallback.
+export function humanLabel(data: WfNodeData): string {
+    if (data.label && data.label !== nodeMeta(data.wfType).label) {
+        // User has set a custom label — use it verbatim.
+        return data.label;
+    }
+    // Derive from config for the most common cases:
+    switch (data.wfType) {
+        case "trigger": {
+            const kind = data.config?.trigger_kind as string | undefined;
+            const seg = data.config?.segment as string | undefined;
+            if (kind === "lead.created") return seg ? `When a ${seg} lead arrives` : "When a new lead arrives";
+            if (kind === "call.completed") return "When a call completes";
+            if (kind === "payment.received") return "When payment is received";
+            if (kind === "booking.made") return "When a booking is made";
+            if (kind === "form.submitted") return "When a form is submitted";
+            if (kind === "lead.replied") return "When a lead replies";
+            if (kind === "lead.qualified") return "When a lead qualifies";
+            if (kind === "schedule") {
+                const cron = data.config?.cron as string | undefined;
+                return cron ? `On schedule: ${cron}` : "On a schedule";
+            }
+            if (kind === "webhook") return "On webhook";
+            if (kind === "event") {
+                const ev = data.config?.event as string | undefined;
+                return ev ? `On event: ${ev.replace(/\./g, " ")}` : "On an event";
+            }
+            return data.label || "Start here";
+        }
+        case "condition": {
+            const expr = data.config?.expr as string | undefined;
+            if (expr) return `Check: ${expr.length > 28 ? expr.slice(0, 28) + "…" : expr}`;
+            return "Check a condition";
+        }
+        case "delay": {
+            const h = data.config?.after_hours as number | undefined;
+            const m = data.config?.after_minutes as number | undefined;
+            const ev = data.config?.event_key as string | undefined;
+            if (ev) return `Wait for: ${ev.replace(/\./g, " ")}`;
+            if (h && h > 0) return `Wait ${h} hour${h === 1 ? "" : "s"}`;
+            if (m && m > 0) return `Wait ${m} minute${m === 1 ? "" : "s"}`;
+            return "Wait / delay";
+        }
+        case "ai_agent": {
+            const tool = data.config?.tool as string | undefined;
+            if (tool === "leads.enqueue_calls") return "Start calling";
+            if (tool === "whatsapp.send") return "Send on WhatsApp";
+            if (tool === "crm.update_lead") return "Update lead in CRM";
+            if (tool === "booking.create") return "Create a booking";
+            const role = data.role;
+            if (role === "ai_telecaller") return "AI voice call";
+            if (role === "campaign_strategist") return "AI: plan campaign";
+            if (role === "support_agent") return "AI: support agent";
+            if (role === "data_analyst") return "AI: analyse data";
+            return data.label || "AI agent step";
+        }
+        case "action": {
+            const tool = data.config?.tool as string | undefined;
+            if (tool === "leads.enqueue_calls") return "Start calling";
+            if (tool === "whatsapp.send") return "Send WhatsApp message";
+            if (tool === "crm.update_lead") return "Update lead record";
+            if (tool === "booking.create") return "Create booking";
+            if (tool === "payments.create_invoice") return "Create invoice";
+            if (tool === "ads.set_budget") return "Set ad budget";
+            if (tool === "brain.retrieve") return "Look up knowledge";
+            if (tool === "email.send") return "Send email";
+            return data.label || "Run an action";
+        }
+        case "integration": {
+            const tool = data.config?.tool as string | undefined;
+            if (tool === "ads.set_budget") return "Adjust ad budget";
+            if (tool === "whatsapp.send") return "WhatsApp via integration";
+            if (tool === "email.send") return "Send email";
+            if (tool === "calendar.create") return "Create calendar event";
+            if (tool === "webhook.post") return "Call a webhook";
+            return data.label || "External integration";
+        }
+        case "budget": {
+            const cap = data.config?.cap_inr as number | undefined;
+            if (cap) return `Budget cap: ₹${cap.toLocaleString()}`;
+            return "Set spend limit";
+        }
+        case "approval": {
+            const role = data.config?.role as string | undefined;
+            const req = data.config?.require as string | undefined;
+            if (role && req) return `${role} approves (${req})`;
+            if (role) return `${role} must approve`;
+            return "Human approval";
+        }
+        case "error":
+            return data.label || "Handle errors";
+        case "data": {
+            const read = data.config?.read_tool as string | undefined;
+            if (read === "brain.retrieve") return "Read from Brain";
+            if (read === "crm.get_lead") return "Read lead data";
+            return data.label || "Read / write data";
+        }
+    }
+}
+
+// The default human-friendly label to pre-populate when a node is first dropped.
+// These are the "nice defaults" — the inspector's Label field can override them.
+export const HUMAN_DEFAULT_LABELS: Record<WfNodeType, string> = {
+    trigger: "When a new lead arrives",
+    condition: "Check a condition",
+    delay: "Wait",
+    ai_agent: "Start calling",
+    action: "Run an action",
+    integration: "External integration",
+    budget: "Set spend limit",
+    approval: "Human approval",
+    error: "Handle errors",
+    data: "Read / write data",
+};
+
+// The "starter: call run" working template — the backend-verified linear flow.
+// Trigger -> ai_agent(leads.enqueue_calls). The backend `starter_call_run` template
+// compiles to this graph. We render it as the one-click "Load template" option.
+export const STARTER_CALL_TEMPLATE: WfDefinition = {
+    schema_version: 1,
+    workflow_id: "wf_tpl_starter_call_run",
+    name: "Starter: call new leads",
+    version: 1,
+    status: "draft",
+    industry_pack: "generic",
+    trigger: {
+        node_id: "n_trigger",
+        type: "trigger",
+        label: "When a new lead arrives",
+        config: { trigger_kind: "lead.created", segment: "hot" },
+        x: 80,
+        y: 220,
+    },
+    nodes: [
+        {
+            node_id: "n_call",
+            type: "ai_agent",
+            label: "Start calling",
+            role: "ai_telecaller",
+            config: { tool: "leads.enqueue_calls" },
+            money: false,
+            x: 340,
+            y: 220,
+        },
+    ],
+    edges: [{ from: "n_trigger", to: "n_call" }],
+    guards: {
+        max_actions: 500,
+        calling_window: "09:00-21:00 IST",
+        respect_dnd: true,
+        respect_consent: true,
+        kill_switch: false,
+    },
+};
+
 // A blank starter graph for "New workflow" — just a trigger node, centered.
 export function blankGraph(): { nodes: RFNode[]; edges: RFEdge[] } {
     return {
@@ -730,9 +889,12 @@ export function blankDefinition(): WfDefinition {
 
 // The single node-data factory used by BOTH click-to-add and drag-drop in the
 // editor (spec §B) so the two paths build an identical node (one source of truth).
+// Uses human-language defaults (HUMAN_DEFAULT_LABELS) so nodes are readable
+// immediately without the inspector needing to be opened.
 export function newNodeData(wfType: WfNodeType): WfNodeData {
     const meta = nodeMeta(wfType);
-    return { wfType, label: meta.label, config: {}, money: meta.money };
+    const label = HUMAN_DEFAULT_LABELS[wfType] ?? meta.label;
+    return { wfType, label, config: {}, money: meta.money };
 }
 
 // Edge validation (spec §2): which source type may connect to which target.

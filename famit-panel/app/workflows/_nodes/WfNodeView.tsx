@@ -12,7 +12,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import Icon from "@/components/Icon";
-import { nodeMeta, type WfNodeData } from "../_lib";
+import { nodeMeta, humanLabel, type WfNodeData } from "../_lib";
 
 // Shared handle look — small token-coloured dot, hit-area enlarged by RF.
 const handleStyle: React.CSSProperties = {
@@ -65,7 +65,7 @@ function WfNodeViewImpl({ data, selected }: NodeProps) {
                         {meta.label}
                     </div>
                     <div className="text-body-2 text-t-primary truncate leading-tight mt-0.5">
-                        {d.label || d.wfType}
+                        {humanLabel(d)}
                     </div>
                 </div>
                 {d.money && (

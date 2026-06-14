@@ -52,6 +52,8 @@ import {
     validateWorkflow,
     publishWorkflow,
     runWorkflow,
+    STARTER_CALL_TEMPLATE,
+    TEMPLATES,
     type WfNodeType,
     type WfNodeData,
     type WfDefinition,
@@ -108,6 +110,15 @@ function EditorInner({
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [badNodes, setBadNodes] = useState<Set<string>>(new Set());
     const [busy, setBusy] = useState<ToolbarState>("idle");
+    // Inline run status shown after a Run click (spec §D) — shown until dismissed.
+    const [runStatus, setRunStatus] = useState<{
+        ok: boolean;
+        run_id?: string;
+        status?: string;
+        msg: string;
+    } | null>(null);
+    // Template picker state — controls the small template dropdown in the toolbar.
+    const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
     const [fullscreen, setFullscreen] = useState(false);
     // The editable workflow name (spec §C). Seeded from the loaded def; flushed up
     // to the page via onRename so a from-scratch workflow can be named before save.
@@ -385,6 +396,7 @@ function EditorInner({
             onToast("Engine not live yet — your workflow is saved, but runs start once it's provisioned.", "error");
             return;
         }
+        setRunStatus(null);
         setBusy("running");
         try {
             // Run executes the PUBLISHED version. Save + publish first so a
@@ -395,19 +407,27 @@ function EditorInner({
             const pub = await publishWorkflow(id);
             const pubErrs = (pub as { ok?: boolean; errors?: { msg?: string; code?: string }[] }).errors;
             if (pub && pub.ok === false && Array.isArray(pubErrs)) {
-                onToast(pubErrs.map((e) => e.msg || e.code).filter(Boolean).join("; ") || "Couldn't publish before run", "error");
+                const msg = pubErrs.map((e) => e.msg || e.code).filter(Boolean).join("; ") || "Couldn't publish before run";
+                setRunStatus({ ok: false, msg });
+                onToast(msg, "error");
                 return;
             }
             const res = await runWorkflow(id);
             const rr = res as { ok?: boolean; run_id?: string; status?: string; reason?: string };
             if (rr && rr.ok === false) {
-                onToast(rr.reason ? `Run blocked: ${rr.reason.replace(/_/g, " ")}` : "Couldn't run", "error");
+                const msg = rr.reason ? `Run blocked: ${rr.reason.replace(/_/g, " ")}` : "Couldn't run";
+                setRunStatus({ ok: false, msg });
+                onToast(msg, "error");
                 return;
             }
-            const status = rr.status ? ` (${rr.status.replace(/_/g, " ")})` : "";
-            onToast(`Run started${status} — watch it in the Runs tab.`);
+            const statusLabel = rr.status ? rr.status.replace(/_/g, " ") : "queued";
+            const msg = `Run started — ${statusLabel}`;
+            setRunStatus({ ok: true, run_id: rr.run_id, status: statusLabel, msg });
+            onToast(`${msg}. Watch it in the Runs tab.`);
         } catch (e) {
-            onToast(e instanceof Error ? e.message : "Couldn't run", "error");
+            const msg = e instanceof Error ? e.message : "Couldn't run";
+            setRunStatus({ ok: false, msg });
+            onToast(msg, "error");
         } finally {
             setBusy("idle");
         }
@@ -488,17 +508,97 @@ function EditorInner({
                     aria-label="Workflow name"
                     className="h-9 min-w-0 max-w-[16rem] flex-1 px-3 rounded-full bg-b-surface2 ring-1 ring-s-subtle text-button text-t-primary outline-none transition-colors hover:ring-s-highlight focus:ring-primary-01/50 disabled:opacity-60 placeholder:text-t-tertiary"
                 />
+                {/* Load template — one-click template picker */}
+                <div className="relative">
+                    <button
+                        onClick={() => setTemplatePickerOpen((v) => !v)}
+                        disabled={!writable || busy !== "idle"}
+                        title="Load a pre-built template onto the canvas"
+                        className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary fill-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary active:scale-[0.98] disabled:opacity-50"
+                    >
+                        <Icon name="layers" className="size-4 fill-current" />
+                        Load template
+                    </button>
+                    {templatePickerOpen && (
+                        <>
+                            {/* backdrop */}
+                            <div
+                                className="fixed inset-0 z-10"
+                                onClick={() => setTemplatePickerOpen(false)}
+                            />
+                            {/* dropdown */}
+                            <div className="absolute left-0 top-11 z-20 w-64 rounded-2xl bg-b-surface1 ring-1 ring-s-subtle shadow-widget overflow-hidden">
+                                <div className="px-3 pt-3 pb-1 text-caption text-t-tertiary uppercase tracking-[0.06em]">
+                                    Templates
+                                </div>
+                                {/* Working starter template — the backend-verified one-click flow */}
+                                <button
+                                    onClick={() => {
+                                        onRename?.(STARTER_CALL_TEMPLATE.name);
+                                        // Reset to the starter template graph
+                                        const next = fromDefinition(STARTER_CALL_TEMPLATE);
+                                        setNodes(next.nodes as unknown as Node[]);
+                                        setEdges((next.edges as unknown as RFEdge[]).map(styleEdge) as unknown as Edge[]);
+                                        setSelectedId(null);
+                                        setBadNodes(new Set());
+                                        setName(STARTER_CALL_TEMPLATE.name);
+                                        setServerId(STARTER_CALL_TEMPLATE.workflow_id);
+                                        setTemplatePickerOpen(false);
+                                        onToast("Template loaded — wire your leads and hit Run.");
+                                    }}
+                                    className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-b-surface2 transition-colors"
+                                >
+                                    <span className="grid place-items-center size-8 shrink-0 rounded-lg bg-b-surface2 ring-1 ring-s-subtle fill-primary-01 mt-0.5">
+                                        <Icon name="mobile" className="size-4 fill-inherit" />
+                                    </span>
+                                    <div>
+                                        <div className="text-body-2 text-t-primary">{STARTER_CALL_TEMPLATE.name}</div>
+                                        <div className="text-caption text-t-tertiary">New lead → AI calls them</div>
+                                    </div>
+                                </button>
+                                <div className="mx-3 h-px bg-s-subtle" />
+                                {TEMPLATES.slice(0, 4).map((t) => (
+                                    <button
+                                        key={t.template_id}
+                                        onClick={() => {
+                                            const next = fromDefinition(t.definition);
+                                            setNodes(next.nodes as unknown as Node[]);
+                                            setEdges((next.edges as unknown as RFEdge[]).map(styleEdge) as unknown as Edge[]);
+                                            setSelectedId(null);
+                                            setBadNodes(new Set());
+                                            setName(t.name);
+                                            setServerId(t.definition.workflow_id);
+                                            onRename?.(t.name);
+                                            setTemplatePickerOpen(false);
+                                            onToast(`"${t.name}" loaded onto the canvas.`);
+                                        }}
+                                        className="w-full flex items-start gap-2.5 px-3 py-2.5 text-left hover:bg-b-surface2 transition-colors"
+                                    >
+                                        <span className="grid place-items-center size-8 shrink-0 rounded-lg bg-b-surface2 ring-1 ring-s-subtle fill-primary-01 mt-0.5">
+                                            <Icon name={t.icon} className="size-4 fill-inherit" />
+                                        </span>
+                                        <div>
+                                            <div className="text-body-2 text-t-primary">{t.name}</div>
+                                            <div className="text-caption text-t-tertiary truncate max-w-[180px]">{t.industry_pack}</div>
+                                        </div>
+                                    </button>
+                                ))}
+                                <div className="px-3 py-2" />
+                            </div>
+                        </>
+                    )}
+                </div>
                 <ToolbarBtn icon="check-circle" label="Validate" onClick={doValidate} loading={busy === "validating"} />
                 <ToolbarBtn icon="check" label={busy === "saving" ? "Saving…" : "Save"} onClick={doSave} loading={busy === "saving"} />
                 <ToolbarBtn icon="layers" label={busy === "publishing" ? "Publishing…" : "Publish"} onClick={doPublish} loading={busy === "publishing"} />
                 <ToolbarBtn
                     icon="send"
-                    label={busy === "running" ? "Running…" : "Run"}
+                    label={busy === "running" ? "Running…" : "Run workflow"}
                     onClick={doRun}
                     primary
                     loading={busy === "running"}
                     disabled={!engineLive}
-                    title={engineLive ? "Trigger a run" : "Engine not live yet — runs start once it's provisioned"}
+                    title={engineLive ? "Save → publish → run in one click" : "Engine not live yet — runs start once it's provisioned"}
                 />
                 <button
                     onClick={() => setFullscreen((v) => !v)}
@@ -513,6 +613,41 @@ function EditorInner({
                     {nodes.length} nodes · {edges.length} edges
                 </span>
             </div>
+
+            {/* Inline run status banner — shows after a Run click, dismissed on × */}
+            {runStatus && (
+                <div
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-body-2 ring-1 ring-inset ${
+                        runStatus.ok
+                            ? "bg-primary-02/10 text-primary-02 ring-primary-02/20"
+                            : "bg-primary-03/10 text-primary-03 ring-primary-03/20"
+                    }`}
+                >
+                    <span className={`size-2 shrink-0 rounded-full ${runStatus.ok ? "bg-primary-02" : "bg-primary-03"}`} />
+                    <span className="flex-1 min-w-0">
+                        {runStatus.ok ? (
+                            <>
+                                <span className="font-semibold">Run dispatched</span>
+                                {runStatus.status && (
+                                    <span className="ml-2 opacity-70 capitalize">{runStatus.status}</span>
+                                )}
+                                {runStatus.run_id && (
+                                    <span className="ml-2 font-mono text-caption opacity-60">{runStatus.run_id}</span>
+                                )}
+                            </>
+                        ) : (
+                            <span>{runStatus.msg}</span>
+                        )}
+                    </span>
+                    <button
+                        onClick={() => setRunStatus(null)}
+                        className="shrink-0 grid place-items-center size-6 rounded-full opacity-60 hover:opacity-100 hover:bg-current/10 transition-opacity"
+                        title="Dismiss"
+                    >
+                        <Icon name="close" className="size-3.5 fill-current" />
+                    </button>
+                </div>
+            )}
 
             <div className={`flex gap-3 max-xl:flex-col ${fullscreen ? "flex-1 min-h-0" : ""}`}>
                 {/* palette rail */}
