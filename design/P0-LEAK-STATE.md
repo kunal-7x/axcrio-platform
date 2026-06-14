@@ -20,8 +20,20 @@ Hardcoded agent name "Riya".
 - `whatsapp_threads` glob -> recursive (**/*.json) for tenant subdirs.
 - replace hardcoded "Riya" in WA brain with tenant/campaign agent name.
 
-## Units
-- [ ] U1 memory.py edit + py_compile + backup
-- [ ] U2 caller.py WA path/recap/unrouted/Riya edits + py_compile + backup
-- [ ] U3 deploy box (backup-first *.LEAKbak.<ts>), restart famit-caller + aim-voice-agent ONLY
-- [ ] U4 earner gate after + verify
+## Units — ALL DONE (commit 4db497f)
+- [x] U1 memory.py _path_for(phone,tenant_id) + tenant-checked legacy fallback + migrate-on-read + build_recap(agent_name). Self-test + on-box smoke PASS.
+- [x] U2 caller.py WA path/read/write tenant-scoped + _unrouted (no ADMIN_ID) + recursive glob + admin _wa_thread_find_any + tenant-scoped _wa_memory_recap w/ campaign agent name. Self-test PASS.
+- [x] U2b aim_voice_agent.py (inbound, restarted) load/save_memory tenant-scoped to resolved call tenant + recap label = configured agent voice.
+- [x] U3 deployed box 168.144.153.145 (backups *.LEAKbak.20260614-052257), md5-gated, restarted famit-caller + aim-voice-agent ONLY. famit-agent PID 1477083 untouched.
+- [x] U4 EARNER GATE before+after PASS: agent.py md5 9150fabe... UNCHANGED, PID 1477083 not restarted, /health 200, aim re-registered clean (worker 23:55:19), no 5xx. gitleaks 0.
+
+## How the tenant-check prevents the leak
+load_memory/_wa_thread_read prefer {tenant}/{phone}.json. On miss they read the legacy flat {phone}.json
+but return it ONLY IF its stored tenant_id == this tenant OR is empty (unowned -> claim+migrate). A legacy
+file whose tenant_id is a DIFFERENT tenant returns None/{} -> tenant A can never read tenant B. Unknown WA
+number -> _unrouted bucket, never ADMIN_ID.
+
+## How legacy/earner-written files still load for the same tenant
+The un-restarted earner runs the OLD memory.py and writes legacy flat {phone}.json with tenant_id="" (or
+absent). A new tenant-aware reader treats an empty/absent owner as "unclaimed" -> returns it AND migrates it
+into {tenant}/{phone}.json. So returning leads keep their memory; only cross-tenant reads are blocked.
