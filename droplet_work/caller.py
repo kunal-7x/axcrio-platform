@@ -159,6 +159,28 @@ LEGACY_TOKEN_ENABLED = (cfg_get("LEGACY_TOKEN_ENABLED", "true") or "true").strip
 CONTROL_ENABLED = (cfg_get("CONTROL_ENABLED", "false") or "false").strip().lower() \
     in ("1", "true", "yes", "on")
 
+# ---------- W2: full-context cache invalidation bus (flag CTX_CACHE, default OFF) ----------
+# context_store.py is a tenant-scoped LRU + Redis version-stamp cache the INBOUND voice brain reads at
+# connect. caller.py's only job here is to PUBLISH a version bump when a campaign is created/edited so the
+# inbound process reloads the new context immediately (not after the 300s TTL). DEFAULT OFF -> a no-op:
+# when CTX_CACHE is off, _publish_ctx_invalidate does nothing, so the save path is byte-identical to today.
+# Import is best-effort + side-effect-free; a missing/broken module NEVER affects campaign save.
+try:
+    import context_store as _ctx_store  # noqa: F401
+except Exception:  # noqa: BLE001
+    _ctx_store = None  # type: ignore
+
+
+def _publish_ctx_invalidate(tenant_id: str, cid: str) -> None:
+    """Bump the campaign's version stamp on the cache bus so inbound reloads it. Flag-gated (CTX_CACHE);
+    no-op + swallows on any error — must NEVER break a campaign create/edit (earner-safe, additive)."""
+    try:
+        if _ctx_store is None or not _ctx_store.is_enabled():
+            return
+        _ctx_store.bump_version(tenant_id, cid)
+    except Exception:  # noqa: BLE001
+        pass
+
 TRUNK = cfg_get("LIVEKIT_SIP_TRUNK_ID", "ST_fmtVmNJmpzKa")
 AGENT = cfg_get("LIVEKIT_AGENT_NAME", "capsy")
 LK_URL = cfg_get("LIVEKIT_URL", "ws://127.0.0.1:7880")
@@ -1439,6 +1461,9 @@ def save_campaign(fields: dict, tenant_id: str) -> dict:
             _store.mirror_campaign_upsert(rec)
     except Exception:  # noqa: BLE001
         pass
+    # W2: publish a cache-invalidate (version bump) so the inbound context cache reloads this new
+    # campaign immediately. Flag-gated (CTX_CACHE); no-op when off; never breaks the create.
+    _publish_ctx_invalidate(tenant_id, cid)
     return rec
 
 
@@ -4065,6 +4090,9 @@ async def update_campaign(request: Request, cid: str, fields_json: str = Form(""
             _store.mirror_campaign_upsert(d)
     except Exception:  # noqa: BLE001
         pass
+    # W2: publish a cache-invalidate (version bump) — a compliance-line / script edit must reach the
+    # inbound voice brain on the NEXT connect, not after the 300s TTL. Flag-gated; no-op when off.
+    _publish_ctx_invalidate(d.get("tenant_id", t["tenant_id"]), d["id"])
     _audit(request, t, "campaign.update", "campaign", d["id"], meta={"name": d.get("name")})
     return JSONResponse({"id": d["id"], "name": d["name"]})
 
