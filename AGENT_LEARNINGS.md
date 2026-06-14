@@ -214,3 +214,15 @@
   (r) **B1 gate must be enforced in TWO places: the DB GENERATED column AND the Python resolution choke-point.** A single DB CHECK can be bypassed by a direct `UPDATE is_enabled=true` if the generated column isn't re-checked at resolve time. The `get_trunk` function re-checks `_is_campaign_eligible` on the returned row to make it unbypassable at the application layer even if the DB somehow lets a non-140 row through.
 
   (s) **T0 (scheduler_loop retry-bug fix) is a HARD GATE before T5 (rotation ON).** The rotation logic is built and correct, but enabling DID rotation before fixing the retry bug will amplify failed-call bursts across the whole pool, causing carrier spam-flagging of every DID. The gate in TELEPHONY-INDEPENDENCE-PLAN.md §3 is not a suggestion — it is an earner-safety requirement.
+
+## LESSONS FROM PANEL DEPLOY + TELEPHONY T3 VERIFY (2026-06-15)
+
+  (t) **`systemctl restart` does NOT reliably restart a service when systemd has a race condition.** After adding an env var, `systemctl restart famit-caller` left PID 2797344 unchanged (the `--since` log filter confirmed no new startup). A force-kill (`kill -9 <pid>`) + manual `systemctl start` (or just kill, letting Restart=always trigger) is the reliable path. Always verify PID changed after a restart.
+
+  (u) **`TRUNK_REGISTRY_ENABLED` (and all module-level feature flags) is evaluated at IMPORT TIME (module load), not per-request.** Adding the env var to `.env` has zero effect until the process is actually killed and re-launched fresh. The flag is read once at Python startup; runtime env changes are invisible until restart. Always kill+confirm-new-PID before testing flag-ON behavior.
+
+  (v) **Flag-ON auth-gate proof requires a fresh process with the env var set from the start.** The T3 verify cycle proved: (1) append flag to `.env`, (2) kill -9 the uvicorn PID, (3) wait for systemd Restart=always to bring it up fresh (new PID), (4) only THEN test routes. The prior `systemctl restart` approach silently failed. Lesson: for flag-gated routes, always verify new PID before running auth-gate checks.
+
+  (w) **The panel's `app/integrations/page.tsx` used `params` as a page prop, triggering Next.js TS2344 route-type checker.** Fix: extract the render body to `_body.tsx` (a non-route file), leaving `page.tsx` as a thin wrapper with no typed props. This pattern (thin `page.tsx` + `_body.tsx` body) is the correct fix for any Next.js 15 App Router TS2344 error from `params`/`searchParams` mistyping.
+
+  (x) **Wave log APPEND is earner-safe even when the verify cycle exercises the flag-ON path.** The key invariant: the flag is reverted to ABSENT (not 0 — absent avoids any future confusion about whether "0" or "false" also suppress it) before the wave concludes. The resting state must be byte-identical to pre-wave. Confirm via `grep -i trunk_registry /opt/famit-agent/.env` = no output.

@@ -95,3 +95,28 @@ restart famit-caller.
 NEXT: T4 (Telephony FE — `app/telephony/page.tsx` Core_2 port: trunk cards + 3-step add-trunk wizard +
 founder test-call + reputation panel + DID kill switch) → T0 (scheduler_loop retry-bug fix, HARD GATE) →
 T5 (strangler `caller.py:2913` dial-loop cut + wire `place_test_call` seam, real founder ring before+after).
+
+## Phase: VERIFY (2026-06-15) — PASS
+
+### Panel edge (8/8 pages = 200 PASS)
+/integrations=200, /super-admin/integrations=200, /creative/video=200, /run=200, /crm=200, /ai-manager=200, /workflows=200, /knowledge=200. BUILD_ID `u6yKGIuhALhhzdzQcywXQ`.
+
+### Trunk-registry flag-OFF dormancy (PASS)
+GET /trunk-registry=404, GET /trunk-registry/health=404, POST /trunk-registry/byo=404. Legacy GET /campaigns=401 intact. TRUNK_REGISTRY_ENABLED: ABSENT from .env (confirmed via grep = no output). caller /health=200.
+
+### Trunk-registry flag-ON auth-gate (PASS)
+All 5 sampled routes: GET /trunk-registry=401, GET /trunk-registry/health=401, POST /trunk-registry/byo=401, GET /trunk-registry/admin/all=401, POST /trunk-registry/admin=401. caller /health=200. 0 5xx in journal.
+Note: systemctl restart did NOT re-exec the process (PID unchanged); required kill -9 + systemd Restart=always to get a fresh PID with the new env. Flag reverted (ABSENT) after proof — new PID confirmed dormant (404).
+
+### Earner gate FINAL (PASS)
+- agent.py md5: 9150fabe4ff62b4b4470f9a87df346e5 UNCHANGED
+- famit-agent MainPID: 1477083, NRestarts: 0, NOT restarted
+- caller.py md5: 44b867ea (T3)
+- famit-caller /health: 200
+- 0 5xx, NO ring
+
+### Docs updated
+- design/TELEPHONY-INDEPENDENCE-PLAN.md → T3 row DONE
+- design/VIDEO-STUDIO-MASTER-PLAN.md → U6 DEPLOYED
+- ORCHESTRATOR.md → wave block appended
+- AGENT_LEARNINGS.md → lessons (t)–(x) appended

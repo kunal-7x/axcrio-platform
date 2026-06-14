@@ -305,5 +305,18 @@ Honest end-to-end verify of the shipped PVS Phase-1 (backend + frontend). NO /ru
 - **NEXT:** T0 (`scheduler_loop` retry-bug fix in caller.py — HARD GATE before rotation) → T3 (caller.py additive mount, flag OFF, serialize vs video wave) → T4 (Telephony FE, Core_2 port) → T5 (strangler flag-ON + real founder ring smoke).
 - Wave log: `memory/wave_runs/telephony-foundation-t1-t2.md`. Design updated: `design/TELEPHONY-INDEPENDENCE-PLAN.md` T1+T2 rows marked DONE.
 
+## ✅ 2026-06-15 — PANEL UI DEPLOY (Integrations + Video Studio) + TELEPHONY T3 MOUNT = DONE
+
+**PLAN:** Single unified panel deploy (Integrations UI `f3d9bd4` + Video Studio FE `2d26c98` + tsc fix `2c299c8`) to FORTRESS panel.famit.in; then T3 additive caller.py mount (trunk-registry, flag OFF, 16 endpoints).
+
+**OUTPUT/STATUS = DONE. Branch `fe/unify-run-wavec`. Commits `2c299c8` (tsc fix) + `db7b489` (T3 mount). BUILD_ID before `xVT-E_KsjR9pQnUkYfJkC` → after `u6yKGIuhALhhzdzQcywXQ`.**
+- **PANEL DEPLOY:** all 8 edge pages 200 (`/integrations`, `/super-admin/integrations`, `/creative/video`, `/run`, `/crm`, `/ai-manager`, `/workflows`, `/knowledge`). tsc fix: extracted `IntegrationsBody` → `app/integrations/_body.tsx` (resolves TS2344). 58/58 pages, 0 build error.
+- **T3 (trunk-registry mount, flag OFF):** 16 routes (`/trunk-registry/*`) mounted additively in `caller.py:7349-7393` (45 additions, 0 deletions). flag-OFF → 404 dormant (byte-identical); flag-ON → all routes 401 auth-gated (NOT 500). caller.py md5 `44b867ea`. trunk_registry package 13 modules on box.
+- **VERIFY (live, 2026-06-15):** flag-OFF dormancy PASS (all trunk-registry = 404); flag-ON auth-gate PASS (all 401); legacy routes intact (campaigns=401); 0 5xx; caller /health 200.
+- **EARNER GATE = PASS:** agent.py md5 `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED · famit-agent PID `1477083` NRestarts=0 · NO ring · 0 5xx.
+- **DESIGN UPDATED:** `design/TELEPHONY-INDEPENDENCE-PLAN.md` T3 row → DONE. `design/VIDEO-STUDIO-MASTER-PLAN.md` U6 → DEPLOYED.
+- **NEXT:** T4 (Telephony FE page — `app/telephony/page.tsx` Core_2 port: trunk cards + Add-trunk wizard + test-call + reputation panel + kill switch) → T0 (scheduler_loop retry-bug HARD GATE) → T5 (strangler dial-loop cut + real founder ring).
+- Wave log: `memory/wave_runs/ship-ui-and-telephony-t3.md`.
+
 ## RESUME RUN-IDs
 resilience `wf_832cdc86-295` (done) · handoff-realtime-fix `wf_3dcb8fb6-bf3` (running). Others: `MASTER_BUILD_STATE.md`.
