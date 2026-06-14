@@ -44,3 +44,54 @@ NOT restarted; caller /health 200; 0 5xx; NO ring (DID resting, no calls placed)
 
 ROLLBACK: cp caller.py.W3bak.20260614-124353 -> caller.py + restart famit-caller. (pypdf install is
 additive/harmless; routes degrade to 503 if kb absent.)
+
+## W3-FRONTEND — /knowledge KB management UI (famit-panel)
+
+### DONE (2026-06-14) commit 5275473 on fe/unify-run-wavec
+
+3 new files:
+  famit-panel/app/knowledge/_lib.ts   — typed API client (getKbSources, uploadKbText, uploadKbPdf,
+                                         testRetrieve, getKbGaps); X-Auth JWT; handle401 redirect;
+                                         dormant-safe (every call has its own error state, never throws
+                                         into a blank screen).
+  famit-panel/app/knowledge/page.tsx  — "use client" 3-tab page: Sources / Test Answers / Knowledge Gaps.
+  famit-panel/contstants/navigation.tsx — "Knowledge Base" → /knowledge added under Intelligence section.
+
+UX summary (5 lines):
+  1. Sources tab: lists tenant sources + shared _global sources (chunk count, status badge, kind icon);
+     Upload card toggles between text-paste and PDF-file upload with optional campaign scope.
+  2. Test Answers tab: founder types a question → POST /kb/test-retrieve → renders each chunk that fires
+     with BM25 score visualized as a progress bar + snippet; grounded/not-grounded verdict banner in green/red.
+  3. Knowledge Gaps tab: GET /kb/gaps with 7/30/90-day window picker via Card's built-in selectOptions;
+     gap rows show ask-count (red), last-seen, channel badges, hover clipboard action.
+  4. All sections are dormant-safe: loading skeletons + calm empty states (no error walls, no blank screens).
+  5. All icons from the Core_2 icon set; zero raw hex; Inter Display via Tailwind `font-inter`; token-only classes.
+
+Build: tsc --noEmit = 0 errors; npm run build = green; /knowledge listed at 5.57 kB.
+gitleaks = 0 leaks. Earner gate: agent.py + famit-agent untouched (frontend-only commit).
+
+## W3-DEPLOY — FORTRESS panel deploy (2026-06-14)
+
+LOCAL BUILD: npm run build EXIT 0. BUILD_ID = YV9obkLRRD0U5oX-CPOCH.
+
+DEPLOY METHOD: prebuilt .next artifacts (no cache, 4MB tgz) + 3 source files shipped via scp → atomic swap on FORTRESS box 143.110.247.249. On-box npm build SIGKILL'd twice (OOM-transient on 1.9GB box); switched to local-build-ship-artifacts strategy (pattern from wave-build-REC-C-recordings-api.md).
+
+BOX STEPS:
+1. Backup /opt/famit-panel/.next → /opt/famit-panel/.next.W3bak.20260614-133740
+2. Extracted fp_next.tgz (4MB, .next excl cache + 3 source files)
+3. Atomic rm -rf .next && mv staged/.next /opt/famit-panel/.next
+4. Source files: app/knowledge/_lib.ts, app/knowledge/page.tsx, contstants/navigation.tsx installed
+5. chown -R deployuser:deployuser /opt/famit-panel
+6. systemctl restart famit-panel → active
+
+VERIFY (loopback:3001): /login:200 /knowledge:200 /run:200 /crm:200
+VERIFY (CF edge panel.famit.in): /login:200 /knowledge:200 /run:200 /crm:200 /ai-manager:200 /workflows:200
+CONTENT: "Knowledge Base" + BUILD_ID YV9obkLRRD0U5oX-CPOCH confirmed in live HTML.
+
+KB BACKEND (unchanged from W3-backend deploy): /kb/sources:401 /kb/test-retrieve:401 (mounted, auth-gated). famit-caller: active.
+
+EARNER GATE: agent.py md5=9150fabe UNCHANGED · famit-agent PID=1477083 NOT restarted · /health=200 · famit-caller active · 0 5xx · NO ring (NO calls placed).
+
+ROLLBACK: cp -a /opt/famit-panel/.next.W3bak.20260614-133740 /opt/famit-panel/.next && systemctl restart famit-panel.
+
+RAG IS NOW FEATURE-COMPLETE-FOR-NOW. NEXT PRODUCT = VIDEO STUDIO.

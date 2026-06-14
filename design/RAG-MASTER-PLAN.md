@@ -6,7 +6,7 @@
 > NOT "build RAG", it is "**retroactively put the live RAG mutation under the gate + golden-diff
 > discipline it skipped.**" Everything else (corpus seeding, W2-cache, faithfulness, eval) follows.
 >
-> **Status:** W0 DONE (RAG_INJECT_ENABLED=1 live, earner-safe) · W1 DONE (retrieve dense=False + _global UNION + RLS write-lock + kb_query_log) · **W2 DONE (2026-06-14): _global telecaller corpus SEEDED LIVE — 41 sources / 120 kb_chunks, idempotent CLI+HTTP, read-share PASS, write-lock PASS, earner UNTOUCHED)** · Next: W3 grounding cache (kb/grounding_cache.py) + KB management UI. VOICE-BRAIN epic **W4**.
+> **Status:** W0 DONE · W1 DONE · W2 DONE (_global 41 sources / 120 chunks) · **W3 DONE (2026-06-14): 4 KB-management endpoints (/kb/sources /kb/upload /kb/test-retrieve /kb/gaps) deployed to caller.py (famit-caller restarted, earner UNTOUCHED)** · **W7 DONE (2026-06-14): /knowledge UI (Sources/Test Answers/Gaps) deployed to FORTRESS panel — BUILD_ID YV9obkLRRD0U5oX-CPOCH, all routes 200 via CF edge. RAG is now FEATURE-COMPLETE-FOR-NOW.** · Next: VIDEO STUDIO.
 > **Read order:** this → `RAG-INGESTION-PLAN.md` → `RAG-EVAL-SPEC.md` → `VOICE-BRAIN-MASTER-PLAN.md`
 > §3C/§4 → `platform-knowledge-rag.md` → `dynamic-context-rag.md` → `AGENT_LEARNINGS.md`.
 > **Grounded in LIVE box state** (`famit@168.144.153.145:/opt/famit-agent`), verified this pass.
@@ -268,12 +268,12 @@ block — completeness A3). Files/contract: `rag-frontend` spec (this doc's sour
 |---|---|---|---|---|---|
 | **W0** ✅ **DONE** | **RETRO-GATE** | golden-capture live `018c20a7`; build `RAG_INJECT_ENABLED`; wrap all 3 grounding sites; prove `grounding=""` byte-identical in CI; **DEPLOYED `8335d4ba` to box 2026-06-14; RAG_INJECT_ENABLED=1 in .env; golden 5/5 PASS; flag-gate A/B/C PASS; earner untouched** | aim_voice_agent.py | `RAG_INJECT_ENABLED=1` (ON; kill = set 0) | opus |
 | **W1** ✅ **DONE** | **RETRIEVAL HARDENING** | dense-gate (`dense=False` default, embed skipped on reply path), `_global` UNION predicate (RLS USING + explicit SQL, no `%`), `kb_query_log` FORCE-RLS + TTL; **DEPLOYED 2026-06-14: DDL applied (kb_query_log live, all 4 kb_ tables FORCE-RLS=t), kb/core.py+schema.sql+__init__.py+aim_voice_agent.py deployed, aim-voice-agent restarted (PID 2669239), 8/8 offline probes PASS, DB FORCE-RLS verified, earner UNTOUCHED** | kb/core.py + kb/schema.sql + aim_voice_agent.py | `KB_INCLUDE_GLOBAL` (default ON) | opus |
-| **W2** | `POST /kb/seed-telecaller` + `kb/seed_global.py` corpus (canary→promote) | caller.py + corpus | — | opus |
-| **W3** | campaign-save collateral ingest (raw_script-skip) + PII scrub + soft-delete versioning + per-tenant quota | caller.py save handlers | — | opus |
+| **W2** ✅ **DONE** | seed telecaller corpus LIVE: 41 sources/120 chunks in `_global`, idempotent CLI+HTTP, RLS read-share PASS, write-lock PASS | caller.py + corpus | — | opus |
+| **W3** ✅ **DONE** | 4 KB-management endpoints: GET /kb/sources, POST /kb/upload (text+PDF), POST /kb/test-retrieve, GET /kb/gaps — deployed to caller.py 2026-06-14 | caller.py | — | opus |
 | **W4** | `kb/grounding_cache.py` (W2-substrate) + wire connect-prefetch through it (`dense=True` here only); memory-seed thread; prompt-tax meter | aim_voice_agent.py | — | opus |
 | **W5** | WA reply-brain grounding (Mode A, FTS-only) | caller.py WA handler | `RAG_WA_ENABLED` | opus |
 | **W6** | **eval gate** (p95 latency + faithfulness + RLS + no-embed-on-reply) — flip flags ON only if all green | env flip | — | opus |
-| **W7** | **KB-management UI** (Sources/Test/Insights), FORTRESS deploy | famit-panel (separate box) | `mod.knowledge` entitlement | sonnet + frontend-design |
+| **W7** ✅ **DONE** | **/knowledge KB-management UI** (Sources/Test Answers/Gaps) — 3-tab Core_2 page deployed to FORTRESS 2026-06-14; BUILD_ID YV9obkLRRD0U5oX-CPOCH; all routes 200 | famit-panel | `mod.knowledge` entitlement | sonnet + frontend-design |
 | W-OB | *(deferred, founder-signed)* outbound `rag.py` precompute-at-dial | caller.py `run_job` | — | opus |
 | Ph2 | *(deferred, founder-signed)* dense embeddings (OpenAI key, prefetch-only, `dense_ready` flip) + DPDP erase + knowledge-gap loop + outcome-attribution | — | various | opus |
 
