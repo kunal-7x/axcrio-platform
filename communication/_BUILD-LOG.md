@@ -201,3 +201,68 @@ package + DDL are additive (drop-safe).
 **Status: DONE + LIVE. Webhook fail-closed + comm endpoints mounted + flags ON, earner gate green
 under induced outage. Next phase: `founder_alert.py` + `post_call.py` + the caller.py `_finalize_call`
 insertions (founder hot-lead alert + post-call auto-summary), under the CALLER_EDIT_LOCK.**
+
+---
+
+## W1-P3 — FOUNDER ALERT + POST-CALL AUTO-SUMMARY + _finalize_call HOOK · `fe/unify-run-wavec` · LIVE (flags ON)
+
+**Scope:** the founder's two flagship Telegram features — (a) HOT-LEAD ALERT to the founder's
+own Telegram when a call ends hot (interest ≥ 70), (b) POST-CALL AUTO-SUMMARY to the contact —
+plus the caller.py `_finalize_call` insertion that fires them. EARNER LAW: a PURE-SYNC snapshot
+on the hot path, then `asyncio.create_task` a DETACHED send, NEVER awaited on the dial loop; the
+engine owns a HARD per-channel `asyncio.wait_for` timeout. Deployed LIVE; earner gate before+after
+under an INDUCED `api.telegram.org` black-hole.
+
+### Files (NEW / EDIT, `droplet_work/comm/`)
+| File | file:lines | What |
+|---|---|---|
+| `comm/founder_alert.py` | **1–155** | `send_hot_lead_alert(tenant_id, snap) -> SendResult`. Resolves the founder chat_id (cached/persisted), builds a channel-neutral `SendEnvelope` (kind=`alert`, purpose=`service`, an "Open in panel" URL button → `/crm?phone=`, NO callback/firewall per W1), dispatches via `engine.send` (per-channel timeout). **PII-MINIMIZED by default** (§5.7): "Hot lead from a call — score N/100. Tap to view" + button; `COMM_FOUNDER_ALERT_FULL_PII=1` inlines name/phone/summary. Idempotent `comms:{call_id}:alert`. Dormant→`not_configured`. NEVER raises. |
+| `comm/post_call.py` | **1–215** | `snapshot(rec,tr,camp_fields,*,tenant_id,call_id) -> dict` = the PURE-SYNC, NO-live-ref copy (the earner law; DUPLICATES the `_wa_draft_followup_text` reads — does NOT refactor it). `is_hot_lead` = the SAME `>=70 & non-opt_out` def caller.py already uses. `run(snap) -> dict` = the detached-task body: (a) founder alert (gated `FEATURE_TELEGRAM_FOUNDER_ALERT` + hot), (b) contact auto-summary (gated `FEATURE_TELEGRAM_FOLLOWUP`, only when a deliverable contact chat_id exists — W1 normally a clean `no_destination` no-op), each via `engine.send`; writes a service-implicit consent artifact BEFORE the contact send (§5.3). NEVER raises. |
+| `comm/consent.py` | **1–135** | `record_consent(...)` = append-only `comm_consent_log` writer (RLS-scoped, best-effort, never raises). `derive_basis(lead_source)` derives `consent_basis` from `lead_source` (§5.2 — NEVER a constant): inbound/form→`inbound_form`, call→`prior_transaction`, purchased→`purchased_optin` (does NOT auto-fire in W1). |
+| `comm/sessions.py` | +**251–330** | `set_founder_chat_id` / `get_founder_chat_id` — persist the founder chat_id as a STRICT sentinel `comm_sessions` row (`call_id=__founder_chat__`), surviving Telegram's getUpdates 24h-aging. **STRICT read (sentinel-only)** so a hot-lead alert can NEVER mis-route to a contact's chat. |
+| `comm/engine.py` | ~**181–225** | `derive_founder_chat_id` now reads the persisted chat_id FIRST (no network), falls back to getUpdates, and AUTO-PERSISTS on derivation. |
+| `comm/__init__.py` | +1 | behavioural import-guard pulls `consent, founder_alert, post_call`. |
+| `comm/tests/test_post_call_offline.py` | — | **22/22 PASS** — snapshot-no-alias (mutate the live dict after snapshot → snapshot unchanged), dormant run→skip/skip, one-send-per-hot-lead, no-send-when-cold, PII-minimized alert (no name/phone inline) vs full-PII opt-in, consent basis derivation, followup no_destination vs send, never-raises. |
+
+### caller.py hook (CALLER_EDIT_LOCK — additive, anchor-string from the box golden)
+- **Lock:** acquired (FREE; box live caller.py md5 RE-VERIFIED `73d7be4f` == local golden before edit) → RELEASED after the earner gate.
+- **Edit:** ANCHOR = the END of `_finalize_call`, right after the existing hot-lead `notify_handoff_team` try/except → a new flag-gated `COMMUNICATION (W1-P3)` block at the function-body level (runs for every finalized call): `if cfg_get("COMM_ENABLED")…: _comm_snap = comm.post_call.snapshot(rec, tr, camp_fields, tenant_id=…, call_id=rec.get("id")); asyncio.create_task(comm.post_call.run(_comm_snap))`. Import-guarded + wrapped in its OWN try/except (a comm fault can NEVER disrupt finalize).
+- **Additive proof:** `diff` box-golden `73d7be4f` vs edited = **+28 lines, 0 deletions**, single hunk `2795a2796,2822`. py_compile clean (local + box caller-venv). Box live caller.py md5: **`ccf9715b`** (local `caller.py.LIVEBOX.py` re-synced = the new golden).
+- **Deploy:** backup `caller.py.COMMW1P3bak.20260615-020542` + `.env.COMMW1P3bak.*`; comm modules md5-gated staged-then-move; caller.py md5-gated atomic move; restart **famit-caller ONLY**.
+
+### Flags (LIVE — ON for the founder tenant)
+`FEATURE_TELEGRAM_FOUNDER_ALERT=1` + `FEATURE_TELEGRAM_FOLLOWUP=1` appended to `/opt/famit-agent/.env` (atop the W1-P2 `COMM_ENABLED=1`+`COMM_TELEGRAM_ENABLED=1`). Live `config.config_snapshot()` confirms all four True. getMe ok (`mr_kunal_bot`).
+
+### EARNER GATE (before + after, under an INDUCED `api.telegram.org` black-hole — NOT a green path)
+Worst case: a HOT lead whose alert WILL attempt a network send while Telegram is unreachable.
+| Check | Result |
+|---|---|
+| **[HOTPATH] snapshot sync** | **0.047 ms** (the only synchronous cost the dial loop pays) |
+| **[HOTPATH] create_task scheduling** | **0.015 ms** (fire-and-forget; the dial loop never waits) |
+| **[DETACHED] run() under black-hole** | **0.10 s** (≪ the 8s `send_timeout` cap; failed cleanly → `alert: failed`, never hung) |
+| agent.py md5 (`9150fabe`) | UNCHANGED before+after |
+| famit-agent MainPID | **2808658 — NOT restarted** |
+| caller `/health` | **200** (under outage) |
+| caller 5xx | **0** |
+| token in error log | **redacted** (`bot<redacted>`) |
+> Black-hole induced via `/etc/hosts` then **removed** (telegram reachability restored, `getMe ok`, **0 residual pins**). NO ring placed (PLAYBOOK #4 — the founder's job). The stale test chat rows were purged; `get_founder_chat_id` returns '' (no false founder).
+
+### REAL-REACH (the one open founder action)
+getMe verified (token works, `mr_kunal_bot`). The founder's ORIGINAL Start tap aged out of Telegram's getUpdates buffer (24h retention), so the live chat_id needs ONE fresh message from the founder; thereafter it AUTO-PERSISTS forever. Recorded as the single founder action in `communication/_HUMAN_TASKS.md`. Until then the alert no-ops cleanly (`no_founder_chat_id`) — it never blocks the call loop.
+
+### gitleaks / CI grep
+`gitleaks protect --staged` = **0 leaks** (pre-commit hook clean). `import agent|from agent` over `comm/` = **0**. All 5 comm offline suites PASS. The `secret_token`/tokens are vault/HMAC-derived (never stored/committed/logged).
+
+### Commits (`fe/unify-run-wavec`)
+- `889807e` — founder_alert + post_call + consent modules + the 22-case offline suite (offline-green).
+- `e58c836` — founder chat_id persistence (sessions) + engine wiring + the live-deploy record.
+- (this build-log + lock-release + ledger commit follows.)
+
+### Rollback
+`FEATURE_TELEGRAM_FOUNDER_ALERT=0` + `FEATURE_TELEGRAM_FOLLOWUP=0` (instant, the hook no-ops) — or `COMM_ENABLED=0` (the whole block is inert). If needed restore `caller.py.COMMW1P3bak.20260615-020542` + `.env.COMMW1P3bak.*` + restart famit-caller. The comm modules + DDL are additive (drop-safe).
+
+**Status: DONE + LIVE. Founder hot-lead alert + post-call auto-summary wired into `_finalize_call`
+(create_task + sync snapshot + per-channel timeout, never awaited), flags ON, earner gate green
+under induced outage. ONE founder action pending (tap @mr_kunal_bot once) for live real-reach.
+Next phase (W2): the LLM conversation brain (reply-only) + the contact deep-link that seeds
+contact chat_ids (which activates the auto-summary's deliverable path).**

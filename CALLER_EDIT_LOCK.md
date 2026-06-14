@@ -10,10 +10,20 @@
 
 - **STATUS:** FREE
 - **HELD-BY:** (none)
-- **LAST GOLDEN md5 (box live + local caller.py.LIVEBOX.py):** `73d7be4f05bd5e9decdd27cafb6a3f48`
-  (was `44b867eaa3a448792a82c9760db0d76b` before the comm mount). Re-pull + re-verify before the next edit.
+- **LAST GOLDEN md5 (box live + local caller.py.LIVEBOX.py):** `ccf9715bbc2da14ed989dac3af95c5fe`
+  (was `73d7be4f05bd5e9decdd27cafb6a3f48` before the W1-P3 post-call hook). Re-pull + re-verify before the next edit.
 
 ## HISTORY
+- 2026-06-15 — comm-w1-p3 acquired then RELEASED. Inserted the post-call COMMUNICATION block at
+  the END of `_finalize_call` (anchor: after the hot-lead `notify_handoff_team` except). PURE-SYNC
+  `comm.post_call.snapshot(rec,tr,camp_fields,...)` then `asyncio.create_task(comm.post_call.run(snap))`
+  — DETACHED, NEVER awaited on the dial loop; flag-gated `COMM_ENABLED`. Additive: +28 lines, 0
+  deletions (single hunk `2795a2796,2822`). Box golden `73d7be4f` -> live `ccf9715b`. Deployed
+  (md5-gate, famit-caller restarted ONLY). Flags `FEATURE_TELEGRAM_FOUNDER_ALERT=1` +
+  `FEATURE_TELEGRAM_FOLLOWUP=1` ON (founder tenant). EARNER GATE under an induced api.telegram.org
+  black-hole: snapshot 0.047ms + create_task 0.015ms (only hot-path cost) · detached run bounded
+  0.10s under outage · agent.py `9150fabe` UNCHANGED · famit-agent PID 2808658 NOT restarted · caller
+  /health 200 · 0 5xx · token redacted · 0 residual pins.
 - 2026-06-15 — comm-w1-p2 acquired then RELEASED. Mounted `comm.router.build_router(...)` (prefix
   /comm) after the whatsapp-builder include_router. Additive: +43 lines, 0 deletions. Anchor-string
   insertion from the box golden `44b867ea`. Deployed (md5-gate), flag `COMM_ENABLED=1` +

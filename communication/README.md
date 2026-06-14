@@ -21,9 +21,18 @@
   (additive +43/−0; box golden `44b867ea`→`73d7be4f`). Flags `COMM_ENABLED=1`+`COMM_TELEGRAM_ENABLED=1`
   ON for the founder tenant. LIVE T-WEBHOOK 6/6 PASS; earner gate green under an induced Telegram
   outage (agent.py `9150fabe` unchanged, famit-agent PID not restarted, /health 200, 0 5xx).
-- **NEXT (W1-P3)** — `founder_alert.py` + `post_call.py` + the caller.py `_finalize_call` insertions
-  (founder hot-lead alert + post-call contact auto-summary; both `asyncio.create_task` + snapshot +
-  per-channel timeout, NEVER awaited on the dial loop), then FE channel-setup + send-log view.
+- **W1-P3** ✅ **LIVE** — `founder_alert.py` + `post_call.py` + `consent.py` + the caller.py
+  `_finalize_call` hook (additive +28/−0, box golden `73d7be4f`→`ccf9715b`). The post-call block
+  takes a PURE-SYNC snapshot then `asyncio.create_task`s a DETACHED send (founder hot-lead alert +
+  contact auto-summary), NEVER awaited on the dial loop; the engine owns the per-channel timeout.
+  Flags `FEATURE_TELEGRAM_FOUNDER_ALERT=1`+`FEATURE_TELEGRAM_FOLLOWUP=1` ON for the founder tenant.
+  EARNER GATE under an induced Telegram black-hole: snapshot 0.047ms + create_task 0.015ms (the only
+  hot-path cost), detached run bounded 0.10s, agent.py `9150fabe` unchanged, famit-agent PID 2808658
+  not restarted, /health 200, 0 5xx. **ONE founder action pending** (tap @mr_kunal_bot once to seed
+  the live chat_id — getUpdates aged out; auto-persists after) → `communication/_HUMAN_TASKS.md`.
+- **NEXT (W1 FE / W2)** — the FE channel-setup + send-log view (deferred per the panel-deploy race);
+  then W2 = the LLM conversation brain (reply-only) + the `?start=` deep-link that seeds CONTACT
+  chat_ids (which activates the auto-summary's deliverable path).
 
 ## Build order (from the plan §8)
 | Wave | What | Channel | ~Effort |
