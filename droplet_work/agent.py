@@ -445,8 +445,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # section + FLOW step-1 make the LLM re-greet on turn 1 (live-proven double "नमस्ते
     # {name}"). This one-line behavioral instruction (no hardcoded name/company) tells the
     # model it has already opened → never greet/repeat the naam again. Cache-safe (in the
-    # one-time prefix, not per-turn). Gated + reversible via OPENER_ALREADY_SAID (default 1).
-    if os.getenv("OPENER_ALREADY_SAID", "1") not in ("0", "false", "False"):
+    # one-time prefix, not per-turn). Gated + reversible. Default "0" so a deployed-but-not-
+    # yet-flagged build is BYTE-IDENTICAL to today; Cycle-2 sets OPENER_ALREADY_SAID=1 (with
+    # OPENER_IN_CTX=0) to enable the fix.
+    if os.getenv("OPENER_ALREADY_SAID", "0") in ("1", "true", "True"):
         base_instructions += (
             "\n\n=== तुम पहले ही OPEN कर चुके हो (ज़रूरी) ===\n"
             "Call की शुरुआत में तुम greet कर के अपना परिचय (naam + company + किस product के "
