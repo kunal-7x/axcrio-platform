@@ -681,3 +681,69 @@ outage.**
 - Full: `COMM_ENABLED=0` → restore box backups (`comm.COMMW2W3bak.20260614-214207` + `.env.COMMW2W3bak.20260614-214442`) + restart famit-caller.
 
 **The earner is untouched.** agent.py `9150fabe` is byte-identical. famit-agent PID 2808658 was never restarted. The live dial loop runs exactly as before — the only additions are a ~0.03ms synchronous snapshot + a detached task that owns its own timeout.
+
+---
+
+## W1-P4 — LIVE REAL-MESSAGE + INBOUND CONVERSATION (founder real-life test)
+
+**Date:** 2026-06-15 · Branch `fe/unify-run-wavec` · Box `famit@168.144.153.145`
+
+**Scope:** The founder tapped @mr_kunal_bot ("hi" registered in getUpdates). This phase:
+(a) sends a REAL message to his Telegram, (b) deploys a getUpdates long-poll worker as a
+systemd service so inbound conversation is continuous, (c) confirms post-call flags are live.
+
+### EARNER GATE (BEFORE + AFTER)
+| Check | BEFORE | AFTER |
+|---|---|---|
+| agent.py md5 (expect `9150fabe`) | `9150fabe` UNCHANGED | `9150fabe` UNCHANGED |
+| famit-agent MainPID | 2808658 | 2808658 (NOT restarted by this work) |
+| famit-agent NRestarts | 0 | 0 |
+| caller `/health` (port 8209) | 200 | 200 |
+| caller 5xx | 0 | 0 |
+| NO ring | confirmed | confirmed |
+> NO caller.py edit · NO agent.py edit · famit-caller NOT restarted · NO ring.
+
+### DELIVERABLE 1 — REAL MESSAGE LANDED ✅
+- `engine.derive_founder_chat_id('admin', force=True)` → chat_id **`1862240811`** (from getUpdates — founder's tap registered; auto-persisted as sentinel row).
+- `engine.send('admin', SendEnvelope(to_ref='1862240811', kind='alert', purpose='service', text='Famit Telegram is LIVE — your hot-lead alerts and post-call summaries will land right here. Welcome!', buttons=[Button('Open Panel', 'https://panel.famit.in')]), slug='telegram-founder')`
+- **Result: `ok=True · status=sent · external_id=4`** (Telegram message_id = 4).
+- `comm_send_log` row `cms_30de38a5fe844c1b…` at `2026-06-15 06:33:34 UTC`: `channel=telegram · kind=alert · status=sent`.
+- **A real message landed on the founder's phone.**
+
+### DELIVERABLE 2 — INBOUND CONVERSATION (POLL WORKER + REAL ROUND-TRIP) ✅
+**Webhook reachability check:** `getWebhookInfo` → `url=""`, `pending_update_count=1`. The box port `:8209` is firewalled to `10.122.0.2` (panel) only — no public HTTPS ingress. `setWebhook` would disable getUpdates (PLAYBOOK footgun). **Decision: getUpdates long-poll worker (standalone process, NOT inside caller.py).**
+
+**File:** `comm/poll_worker.py` (NEW, force-added to `fe/unify-run-wavec`):
+- Async `getUpdates?timeout=25&offset={next_offset}` loop.
+- Calls `comm.webhook.derive_secret_token(TENANT_ID, provider_def_id)` for the HMAC (same function as the handler → FAIL-CLOSED verify path exercised identically).
+- Feeds each update to `comm.webhook.handle(tenant_id, secret_token, raw_body) → (http_status, dict)`.
+- On any network/parse error: sleep 5s + retry (≤20 consecutive → exit → systemd restarts).
+- **NO caller.py / NO agent.py import** (grep `import agent|from agent` = 0).
+
+**Systemd service:** `/etc/systemd/system/comm-poll.service`
+- `User=famit · WorkingDirectory=/opt/famit-agent · EnvironmentFile=/opt/famit-agent/.env · ExecStart=/opt/capsy-agent/.venv/bin/python3 /opt/famit-agent/comm/poll_worker.py · Restart=always · RestartSec=5`
+- `systemctl enable comm-poll + systemctl start comm-poll` → **`active (running)` PID 2961553**.
+
+**REAL ROUND-TRIP PROVEN:**
+- Poll worker received `update_id=972273094`, `chat_id=1862240811`, `text='done'` (the founder's real message).
+- Groq `llama-3.3-70b-versatile` POST → **HTTP 200 OK** (brain reply generated in ~1.5s).
+- Telegram `sendMessage` → **HTTP 200 OK** (reply sent to founder's phone).
+- `comm_send_log` `cms_28a66c2d24fb4df5…` at `2026-06-15 06:37:48 UTC`: `kind=text · status=sent`.
+- **Riya's reply: grounded Hinglish message about EMI options / the lead context** (the session had the call_summary seed from the prior webhook test).
+- Round-trip complete: founder sent → Riya replied on Telegram.
+
+### DELIVERABLE 3 — POST-CALL ALERT WIRED ✅ (no change needed)
+- `FEATURE_TELEGRAM_FOUNDER_ALERT=1` + `FEATURE_TELEGRAM_FOLLOWUP=1` already live in `.env` (flipped in W1-P3).
+- `_finalize_call` hook already wired in caller.py golden `ccf9715b` (W1-P3 `+28 lines`, anchor-string, `asyncio.create_task(comm.post_call.run(snap))`).
+- When a real inbound call ends with interest ≥ 70: `post_call.run` fires the hot-lead alert to chat_id `1862240811`. **No restart, no flag change, no code change needed.**
+
+### Files
+- NEW: `comm/poll_worker.py` (box md5 `5ced479c827c3872a5d28a53c85277d4`) — force-added to git.
+- NEW systemd unit: `/etc/systemd/system/comm-poll.service` — enabled + running.
+- Appended: `WORKFLOW_LEDGER.md` (1 newest-on-top line).
+
+### Rollback
+- `sudo systemctl stop comm-poll && sudo systemctl disable comm-poll` → inbound loop stops (all other comm surfaces stay live).
+- No caller.py / .env change needed to roll back this phase.
+
+**Status: DONE + LIVE + PROVEN. Real message landed (message_id=4). Inbound conversation continuous via comm-poll.service (PID 2961553, enabled, survives reboots). Post-call Telegram alert wired. Earner gate green before+after. The full Telegram loop is now real.**
