@@ -606,6 +606,45 @@ export async function addLeads(
     return res.json();
 }
 
+// ---- Lead deletes (tenant-scoped, BOLA-guarded on the backend) ----
+// Single lead by id. Backend: DELETE /leads/{id} (404 if missing/not owned).
+export async function deleteLead(id: string): Promise<{ deleted: string; total: number }> {
+    const res = await fetch(`${BASE}/leads/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to delete lead");
+    return res.json();
+}
+
+// Bulk delete a set of ids (multi-select). Idempotent: unknown/cross-tenant ids
+// are skipped server-side. Backend: POST /leads/delete (form field `ids`).
+export async function deleteLeadsBulk(ids: string[]): Promise<{ deleted: number; total: number }> {
+    const fd = new FormData();
+    fd.append("ids", ids.join(","));
+    const res = await fetch(`${BASE}/leads/delete`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to delete leads");
+    return res.json();
+}
+
+// Delete ALL of this tenant's leads (destructive, confirm-gated). The backend
+// requires ?confirm=DELETE and is STRICTLY tenant-scoped (never cross-tenant).
+export async function deleteAllLeads(): Promise<{ deleted: number; total: number }> {
+    const res = await fetch(`${BASE}/leads?confirm=DELETE`, {
+        method: "DELETE",
+        headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to delete all leads");
+    return res.json();
+}
+
 // ---- Run ----
 export type RunPayload = {
     campaign_id: string;

@@ -70,6 +70,38 @@ function initials(name?: string): string {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// Manual-pick sort options. Client-side over the already-loaded picker rows,
+// mirroring the Leads page sort so the manual list can be ordered the same way.
+const PICK_SORTS: (SelectOption & { sort: string })[] = [
+    { id: 1, name: "Newest first", sort: "recent" },
+    { id: 2, name: "Oldest first", sort: "oldest" },
+    { id: 3, name: "Name (A–Z)", sort: "name" },
+    { id: 4, name: "Status", sort: "status" },
+    { id: 5, name: "Score (high→low)", sort: "score" },
+];
+
+function sortLeads(rows: Lead[], key: string): Lead[] {
+    const out = [...rows];
+    switch (key) {
+        case "oldest":
+            return out.sort((a, b) => (a.added_at || "").localeCompare(b.added_at || ""));
+        case "name":
+            return out.sort((a, b) =>
+                (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase())
+            );
+        case "status":
+            return out.sort(
+                (a, b) =>
+                    (a.status || "").toLowerCase().localeCompare((b.status || "").toLowerCase()) ||
+                    (b.added_at || "").localeCompare(a.added_at || "")
+            );
+        case "score":
+            return out.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        default: // "recent" / newest-first
+            return out.sort((a, b) => (b.added_at || "").localeCompare(a.added_at || ""));
+    }
+}
+
 // The four steps of the Run flow. Pure labels — the stepper is presentational.
 const STEPS: Step[] = [
     { label: "Campaign & Audience", hint: "Who gets called" },
@@ -101,6 +133,8 @@ export default function RunPage() {
 
     // ── Manual override (empty ⇒ all-filtered) ──
     const [manualSelected, setManualSelected] = useState<Set<string>>(new Set());
+    // ── Manual-pick sort (client-side over the loaded picker rows) ──
+    const [pickSort, setPickSort] = useState<SelectOption>(PICK_SORTS[0]);
 
     // ── WAVE C: exclude leads already called in THIS campaign ──
     const [excludeCalled, setExcludeCalled] = useState(false);
@@ -244,10 +278,11 @@ export default function RunPage() {
         [basePool, filter]
     );
 
-    // Manual-picker view (filtered + search) — rows the vendor hand-picks from.
+    // Manual-picker view (filtered + search + sort) — rows the vendor hand-picks from.
+    const pickSortKey = (PICK_SORTS.find((s) => s.id === pickSort.id) ?? PICK_SORTS[0]).sort;
     const pickerRows = useMemo(
-        () => applyQuery(filtered, query),
-        [filtered, query]
+        () => sortLeads(applyQuery(filtered, query), pickSortKey),
+        [filtered, query, pickSortKey]
     );
 
     const audience = useMemo(() => {
@@ -856,20 +891,29 @@ export default function RunPage() {
 
                                     {showManual && (
                                         <div className="mt-5">
-                                            <div className="flex items-center justify-between mb-3">
-                                                <span className="text-button">
+                                            <div className="flex items-center justify-between gap-2 mb-3 max-md:flex-wrap">
+                                                <span className="text-button shrink-0">
                                                     Pick leads
                                                 </span>
-                                                <Search
-                                                    className="w-44 max-md:w-32"
-                                                    classInput="!h-9"
-                                                    isGray
-                                                    value={query}
-                                                    onChange={(e) =>
-                                                        setQuery(e.target.value)
-                                                    }
-                                                    placeholder="Search"
-                                                />
+                                                <div className="flex items-center gap-2 max-md:w-full">
+                                                    <Select
+                                                        className="w-40 max-md:flex-1"
+                                                        classButton="!h-9"
+                                                        value={pickSort}
+                                                        onChange={setPickSort}
+                                                        options={PICK_SORTS}
+                                                    />
+                                                    <Search
+                                                        className="w-36 max-md:flex-1"
+                                                        classInput="!h-9"
+                                                        isGray
+                                                        value={query}
+                                                        onChange={(e) =>
+                                                            setQuery(e.target.value)
+                                                        }
+                                                        placeholder="Search"
+                                                    />
+                                                </div>
                                             </div>
                                             {loadingLeads ? (
                                                 <div className="px-3 py-8 text-center text-caption text-t-tertiary">

@@ -9,12 +9,21 @@ import Icon from "@/components/Icon";
 import Search from "@/components/Search";
 import Tabs from "@/components/Tabs";
 import Table from "@/components/Table";
+import Select from "@/components/Select";
+import Modal from "@/components/Modal";
 import VirtualRows from "@/components/VirtualRows";
 import { StatusBadge, ScoreBadge } from "@/lib/badges";
-import { addLeads, type Lead } from "@/lib/api";
+import {
+    addLeads,
+    deleteLead,
+    deleteLeadsBulk,
+    deleteAllLeads,
+    type Lead,
+} from "@/lib/api";
 import { useLeadsInfinite } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
 import { type TabsOption } from "@/types/tabs";
+import { type SelectOption } from "@/types/select";
 
 function fmtDate(d: string) {
     if (!d) return "—";
@@ -38,13 +47,31 @@ const VIEWS: TabsOption[] = [
     { id: 2, name: "Hot" },
 ];
 
+// Sort options — map to the backend GET /leads `sort` param. "recent" (newest
+// first) is the default the founder asked for. Each option's `id` carries the
+// raw sort key the API expects.
+const SORTS: (SelectOption & { sort: string })[] = [
+    { id: 1, name: "Newest first", sort: "recent" },
+    { id: 2, name: "Oldest first", sort: "oldest" },
+    { id: 3, name: "Name (A–Z)", sort: "name" },
+    { id: 4, name: "Status", sort: "status" },
+    { id: 5, name: "Score (high→low)", sort: "score" },
+];
+
 export default function LeadsPage() {
     const [text, setText] = useState("");
     const [file, setFile] = useState<File | null>(null);
     const [adding, setAdding] = useState(false);
     const [toast, setToast] = useState("");
+    const [toastErr, setToastErr] = useState(false);
     const [view, setView] = useState<TabsOption>(VIEWS[0]);
+    const [sort, setSort] = useState<SelectOption>(SORTS[0]);
     const [query, setQuery] = useState("");
+    // ── Multi-select + delete state ──
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [deleting, setDeleting] = useState(false);
+    const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+    const [confirmText, setConfirmText] = useState("");
     const fileInputRef = useRef<HTMLInputElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const { me } = useMe();
@@ -52,18 +79,18 @@ export default function LeadsPage() {
     const queryClient = useQueryClient();
 
     const hotOnly = view.id === 2;
+    const sortKey = (SORTS.find((s) => s.id === sort.id) ?? SORTS[0]).sort;
 
-    // PERF UNIT-4: cursor-paged read keyed by the hot filter. Loads ONE page
-    // (~60 rows) at a time and fetches the next as you scroll near the end — the
-    // leads page no longer loads every lead at once. Switching All<->Hot and
-    // tab-back are instant (react-query keeps fetched pages cached + revalidates).
+    // PERF UNIT-4: cursor-paged read keyed by the hot filter + sort. Loads ONE
+    // page (~60 rows) at a time and fetches the next as you scroll near the end.
+    // Switching All<->Hot, changing the sort, and tab-back are instant.
     const {
         data,
         isLoading,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useLeadsInfinite({ pageSize: 60, hot: hotOnly });
+    } = useLeadsInfinite({ pageSize: 60, hot: hotOnly, sort: sortKey });
     const leads: Lead[] = useMemo(
         () => (data?.pages ?? []).flatMap((p) => p.leads),
         [data]
@@ -71,20 +98,24 @@ export default function LeadsPage() {
     const total = data?.pages?.[0]?.total;
     const loading = isLoading && leads.length === 0;
 
+    function refreshLeads() {
+        queryClient.invalidateQueries({ queryKey: ["leads-infinite"] });
+        queryClient.invalidateQueries({ queryKey: ["leads"] });
+    }
+
     async function handleAdd() {
         setAdding(true);
         setToast("");
         try {
             const result = await addLeads(text, file);
+            setToastErr(false);
             setToast(`Added ${result.added} leads. Total: ${result.total}`);
             setText("");
             setFile(null);
             if (fileInputRef.current) fileInputRef.current.value = "";
-            // Refresh every cached leads view (paged All + Hot, and any flat reads)
-            // after a write, so the new leads appear without a manual reload.
-            queryClient.invalidateQueries({ queryKey: ["leads-infinite"] });
-            queryClient.invalidateQueries({ queryKey: ["leads"] });
+            refreshLeads();
         } catch (e: unknown) {
+            setToastErr(true);
             setToast(e instanceof Error ? e.message : "Failed to add leads");
         } finally {
             setAdding(false);
@@ -110,18 +141,108 @@ export default function LeadsPage() {
         );
     }, [leads, query]);
 
-    const toastOk = toast.startsWith("Added");
+    // ── Selection helpers (scoped to the currently visible/loaded rows) ──
+    const allVisibleSelected =
+        visibleLeads.length > 0 && visibleLeads.every((l) => selected.has(l.id));
+    function toggleSelectAll(on: boolean) {
+        setSelected((prev) => {
+            const next = new Set(prev);
+            for (const l of visibleLeads) {
+                if (on) next.add(l.id);
+                else next.delete(l.id);
+            }
+            return next;
+        });
+    }
+    function toggleRow(id: string) {
+        setSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }
+    function clearSelection() {
+        setSelected(new Set());
+    }
+
+    async function handleDeleteRow(id: string) {
+        if (deleting) return;
+        setDeleting(true);
+        setToast("");
+        try {
+            await deleteLead(id);
+            setSelected((prev) => {
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+            });
+            setToastErr(false);
+            setToast("Lead deleted.");
+            refreshLeads();
+        } catch (e: unknown) {
+            setToastErr(true);
+            setToast(e instanceof Error ? e.message : "Failed to delete lead");
+        } finally {
+            setDeleting(false);
+        }
+    }
+
+    async function handleDeleteSelected() {
+        const ids = [...selected];
+        if (ids.length === 0 || deleting) return;
+        setDeleting(true);
+        setToast("");
+        try {
+            const r = await deleteLeadsBulk(ids);
+            clearSelection();
+            setToastErr(false);
+            setToast(`Deleted ${r.deleted} ${r.deleted === 1 ? "lead" : "leads"}.`);
+            refreshLeads();
+        } catch (e: unknown) {
+            setToastErr(true);
+            setToast(e instanceof Error ? e.message : "Failed to delete leads");
+        } finally {
+            setDeleting(false);
+        }
+    }
+
+    async function handleDeleteAll() {
+        if (deleting) return;
+        setDeleting(true);
+        setToast("");
+        try {
+            const r = await deleteAllLeads();
+            clearSelection();
+            setConfirmAllOpen(false);
+            setConfirmText("");
+            setToastErr(false);
+            setToast(`Deleted all ${r.deleted} ${r.deleted === 1 ? "lead" : "leads"}.`);
+            refreshLeads();
+        } catch (e: unknown) {
+            setToastErr(true);
+            setToast(e instanceof Error ? e.message : "Failed to delete all leads");
+        } finally {
+            setDeleting(false);
+        }
+    }
+
+    const toastOk = !toastErr;
+    const selCount = selected.size;
 
     const tableHead = (
         <>
+            {writable && <th className="w-10" />}
             <th>Name</th>
             <th>Phone</th>
             <th>Status</th>
             <th>Score</th>
             <th className="max-lg:hidden">Last outcome</th>
             <th className="text-right">Added</th>
+            {writable && <th className="w-12 text-right" />}
         </>
     );
+    const colCount = writable ? 8 : 6;
 
     return (
         <Layout title="Leads">
@@ -152,14 +273,70 @@ export default function LeadsPage() {
                                 {hotOnly ? "Hot leads" : "All leads"}
                             </div>
                             <Search
-                                className="w-64 ml-6 mr-6 max-md:w-full max-md:ml-3 max-md:mr-0"
+                                className="w-56 ml-6 mr-4 max-md:w-full max-md:ml-3 max-md:mr-0"
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 placeholder="Search name or phone"
                                 isGray
                             />
+                            <Select
+                                className="w-44 mr-4 max-md:w-full max-md:mr-0"
+                                classButton="!h-10"
+                                value={sort}
+                                onChange={setSort}
+                                options={SORTS}
+                            />
                             <Tabs items={VIEWS} value={view} setValue={setView} />
                         </div>
+
+                        {/* ── Bulk action toolbar (writable only) ── */}
+                        {writable && (
+                            <div className="flex items-center gap-3 flex-wrap pl-5 pr-4 pt-3 max-lg:pl-3">
+                                {selCount > 0 ? (
+                                    <>
+                                        <span className="text-caption text-t-secondary">
+                                            {selCount} selected
+                                        </span>
+                                        <Button
+                                            isStroke
+                                            className="!h-9 !px-4 text-button"
+                                            onClick={handleDeleteSelected}
+                                            disabled={deleting}
+                                        >
+                                            <Icon
+                                                name="trash"
+                                                className="size-4 fill-primary-03 mr-1.5"
+                                            />
+                                            {deleting ? "Deleting…" : "Delete selected"}
+                                        </Button>
+                                        <button
+                                            type="button"
+                                            className="text-caption text-t-tertiary hover:text-t-primary transition-colors"
+                                            onClick={clearSelection}
+                                        >
+                                            Clear
+                                        </button>
+                                    </>
+                                ) : (
+                                    leads.length > 0 && (
+                                        <button
+                                            type="button"
+                                            className="inline-flex items-center gap-1.5 text-caption text-t-tertiary hover:text-primary-03 transition-colors"
+                                            onClick={() => {
+                                                setConfirmText("");
+                                                setConfirmAllOpen(true);
+                                            }}
+                                        >
+                                            <Icon
+                                                name="trash"
+                                                className="size-3.5 fill-current"
+                                            />
+                                            Delete all leads
+                                        </button>
+                                    )
+                                )}
+                            </div>
+                        )}
 
                         {!loading && leads.length > 0 && (
                             <div className="flex items-center gap-3 pl-5 pr-4 pt-3 text-caption text-t-tertiary max-lg:pl-3">
@@ -184,13 +361,13 @@ export default function LeadsPage() {
                             scrolling near the end fetches the next cursor page. */}
                         <div
                             ref={scrollRef}
-                            className="mt-3 max-h-[calc(100vh-17rem)] overflow-auto scrollbar-thin"
+                            className="mt-3 max-h-[calc(100vh-19rem)] overflow-auto scrollbar-thin"
                         >
                             {loading ? (
                                 <Table cellsThead={tableHead}>
                                     {[...Array(8)].map((_, i) => (
                                         <tr key={i}>
-                                            {[...Array(6)].map((__, j) => (
+                                            {[...Array(colCount)].map((__, j) => (
                                                 <td key={j}>
                                                     <div className="skeleton h-4 w-20" />
                                                 </td>
@@ -235,21 +412,50 @@ export default function LeadsPage() {
                             ) : (
                                 <table className="w-full text-body-2 [&_th]:h-14 [&_th,&_td]:pl-5 [&_th,&_td]:py-4 [&_th,&_td]:first:pl-4 [&_th,&_td]:last:pr-4 [&_th]:align-middle [&_th]:text-left [&_th]:text-overline [&_th]:uppercase [&_th]:tracking-[0.06em] [&_th]:text-t-tertiary [&_th]:font-semibold [&_thead]:border-b [&_thead]:border-s-subtle max-lg:[&_th,&_td]:first:pl-3 max-md:[&_th,&_td]:p-3 max-md:[&_th]:h-13 max-md:[&_th]:border-b max-md:[&_th]:border-s-subtle">
                                     <thead className="sticky top-0 z-10 bg-b-surface2 max-md:hidden">
-                                        <tr>{tableHead}</tr>
+                                        <tr>
+                                            {writable && (
+                                                <th className="w-10">
+                                                    <input
+                                                        type="checkbox"
+                                                        className="size-4 rounded cursor-pointer accent-primary-01"
+                                                        checked={allVisibleSelected}
+                                                        onChange={(e) =>
+                                                            toggleSelectAll(e.target.checked)
+                                                        }
+                                                        aria-label="Select all loaded leads"
+                                                    />
+                                                </th>
+                                            )}
+                                            <th>Name</th>
+                                            <th>Phone</th>
+                                            <th>Status</th>
+                                            <th>Score</th>
+                                            <th className="max-lg:hidden">Last outcome</th>
+                                            <th className="text-right">Added</th>
+                                            {writable && <th className="w-12 text-right" />}
+                                        </tr>
                                     </thead>
                                     <tbody>
                                         <VirtualRows
                                             items={visibleLeads}
                                             rowKey={(l) => l.id}
                                             scrollRef={scrollRef}
-                                            colSpan={6}
+                                            colSpan={colCount}
                                             estimateRowH={65}
                                             onEndReached={
                                                 searching || !hasNextPage || isFetchingNextPage
                                                     ? undefined
                                                     : () => fetchNextPage()
                                             }
-                                            renderRow={(l) => renderLeadRow(l)}
+                                            renderRow={(l) =>
+                                                renderLeadRow(l, {
+                                                    writable,
+                                                    selected: selected.has(l.id),
+                                                    onToggle: () => toggleRow(l.id),
+                                                    onDelete: () => handleDeleteRow(l.id),
+                                                    deleting,
+                                                })
+                                            }
                                         />
                                     </tbody>
                                 </table>
@@ -350,16 +556,89 @@ export default function LeadsPage() {
                     </div>
                 )}
             </div>
+
+            {/* ── Delete-all type-to-confirm modal (strong destructive guard) ── */}
+            <Modal
+                open={confirmAllOpen}
+                onClose={() => {
+                    if (!deleting) setConfirmAllOpen(false);
+                }}
+            >
+                <div className="flex justify-center items-center size-16 mb-8 bg-primary-03/15 rounded-full">
+                    <Icon name="trash" className="size-6 fill-primary-03" />
+                </div>
+                <div className="mb-4 text-h4 max-md:text-h5">
+                    Delete all leads?
+                </div>
+                <div className="mb-6 text-body-2 font-medium text-t-tertiary">
+                    This permanently deletes{" "}
+                    <span className="text-t-primary">all of your leads</span>
+                    {total != null ? ` (${total})` : ""}. Only your own leads are
+                    removed — this can&apos;t be undone. Type{" "}
+                    <span className="font-semibold text-t-primary">DELETE</span> to
+                    confirm.
+                </div>
+                <input
+                    type="text"
+                    autoFocus
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder="Type DELETE"
+                    className="w-full h-12 px-4 mb-2 rounded-2xl border border-s-stroke2 text-body-2 text-t-primary outline-none transition-colors bg-transparent hover:border-s-highlight focus:border-primary-03/60 placeholder:text-t-secondary/50"
+                />
+                <div className="flex justify-end gap-3 mt-6">
+                    <Button
+                        className="flex-1"
+                        isStroke
+                        onClick={() => setConfirmAllOpen(false)}
+                        disabled={deleting}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        className="flex-1"
+                        isBlack
+                        onClick={handleDeleteAll}
+                        disabled={deleting || confirmText.trim().toUpperCase() !== "DELETE"}
+                    >
+                        {deleting ? "Deleting…" : "Delete all"}
+                    </Button>
+                </div>
+            </Modal>
         </Layout>
     );
 }
 
 // One lead row as a plain <tr> (so the virtualizer can attach its measurement ref).
 // Classes mirror the Core_2 <TableRow> + shared <Table> cell rules — look unchanged.
-function renderLeadRow(l: Lead) {
+function renderLeadRow(
+    l: Lead,
+    opts: {
+        writable: boolean;
+        selected: boolean;
+        onToggle: () => void;
+        onDelete: () => void;
+        deleting: boolean;
+    }
+) {
     const isHot = (l.score ?? 0) >= 70;
     return (
-        <tr className="group relative [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3">
+        <tr
+            className={`group relative [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3 ${
+                opts.selected ? "bg-primary-01/5" : ""
+            }`}
+        >
+            {opts.writable && (
+                <td className="w-10">
+                    <input
+                        type="checkbox"
+                        className="size-4 rounded cursor-pointer accent-primary-01"
+                        checked={opts.selected}
+                        onChange={opts.onToggle}
+                        aria-label={`Select ${l.name}`}
+                    />
+                </td>
+            )}
             <td className="text-sub-title-1">
                 <div className="flex items-center gap-3">
                     <span
@@ -387,6 +666,19 @@ function renderLeadRow(l: Lead) {
             <td className="text-t-secondary td-num text-right">
                 {fmtDate(l.added_at)}
             </td>
+            {opts.writable && (
+                <td className="w-12 text-right">
+                    <button
+                        type="button"
+                        onClick={opts.onDelete}
+                        disabled={opts.deleting}
+                        aria-label={`Delete ${l.name}`}
+                        className="inline-grid place-items-center size-8 rounded-full text-t-tertiary transition-colors hover:bg-primary-03/10 hover:text-primary-03 disabled:opacity-40 disabled:pointer-events-none md:opacity-0 md:group-hover:opacity-100"
+                    >
+                        <Icon name="trash" className="size-4 fill-current" />
+                    </button>
+                </td>
+            )}
         </tr>
     );
 }
