@@ -9,11 +9,22 @@
 ## CURRENT LOCK STATE
 
 - **STATUS:** FREE
-- **HELD-BY:** (none)
-- **LAST GOLDEN md5 (box live + local caller.py.LIVEBOX.py):** `ccf9715bbc2da14ed989dac3af95c5fe`
-  (was `73d7be4f05bd5e9decdd27cafb6a3f48` before the W1-P3 post-call hook). Re-pull + re-verify before the next edit.
+- **HELD-BY:** —
+- **LAST GOLDEN md5 (box live + local caller.py.LIVEBOX.py):** `32e6062f5fcfd8448437a2cbcad4b7e9`
+  (was `ccf9715bbc2da14ed989dac3af95c5fe` before the leads-mgmt routes). Re-pull + re-verify before the next edit.
 
 ## HISTORY
+- 2026-06-15 — leads-mgmt-feature acquired then RELEASED. Additive leads CRUD/sort: GET /leads
+  full sort selector (default=recent/newest; oldest/name/status/score); +POST /leads/delete
+  (delete-by-ids, BOLA tenant_id-scoped, idempotent — unknown/cross-tenant ids skipped);
+  +DELETE /leads?confirm=DELETE (delete-all, STRICT tenant_id scope NEVER cross-tenant even for
+  admin token, confirm-gated). Mounted at the END of the leads route block (anchor: after
+  @app.delete("/leads/{lead_id}")). Additive only, py_compile OK. Box golden ccf9715b -> live
+  32e6062f. Deployed (md5-gate, famit-caller restarted ONLY; backup
+  /opt/famit-agent/caller.py.leadsmgmtbak.20260615-174918). VERIFIED over loopback (SAFE, total
+  unchanged at 30): no-auth=401, sort recent≠oldest, DELETE w/o confirm=400, bulk empty/bogus
+  ids→deleted=0. EARNER GATE: agent.py 9150fabe UNCHANGED · famit-agent PID 2808658 NOT restarted
+  · caller /health 200 · 0 5xx · NO ring.
 - 2026-06-15 — comm-w1-p3 acquired then RELEASED. Inserted the post-call COMMUNICATION block at
   the END of `_finalize_call` (anchor: after the hot-lead `notify_handoff_team` except). PURE-SYNC
   `comm.post_call.snapshot(rec,tr,camp_fields,...)` then `asyncio.create_task(comm.post_call.run(snap))`

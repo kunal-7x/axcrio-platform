@@ -7,9 +7,11 @@ Founder ask: Leads page — delete-all (tenant-scoped, confirm-gated), delete sp
 - [DONE] FE api.ts: deleteLead / deleteLeadsBulk / deleteAllLeads.
 - [DONE] FE leads/page.tsx: sort Select, multi-select checkboxes + select-all, bulk delete toolbar, per-row delete (hover trash), delete-all type-to-confirm Modal.
 - [DONE] FE run/page.tsx: manual-pick sort Select (PICK_SORTS + sortLeads client-side over pickerRows).
-- [IN PROGRESS] Build green (tsc + build).
-- [ ] Deploy panel to FORTRESS + caller.py to box (famit-caller restart only).
-- [ ] Earner gate before/after; verify on edge.
+- [DONE] Build green: `npx tsc --noEmit` EXIT 0 + `npm run build` EXIT 0 (/leads 5.68kB, /run 21.1kB).
+- [DONE] BE DEPLOYED to box: caller.py md5 ccf9715b -> 32e6062f (md5-gated, py-compiled OK, famit-caller restarted ONLY). EARNER GATE PASS: agent.py 9150fabe UNCHANGED before+after, famit-agent PID 2808658 UNCHANGED, /health 200. Backup `/opt/famit-agent/caller.py.leadsmgmtbak.20260615-174918` (=ccf9715b).
+- [DONE] BE VERIFIED over loopback (SAFE, no real wipe — total stayed 30): no-auth=401; sort=recent first 2026-06-15 (newest), sort=oldest first 2026-06-03 (oldest) -> order visibly changes; DELETE /leads w/o confirm=400 (gate); POST /leads/delete empty/bogus ids -> deleted=0 (idempotent, tenant-scoped); total_after=30.
+- [IN PROGRESS] Deploy panel to FORTRESS 143.110.247.249. Tarball uploaded (md5 801ea5b6 matched on box at /tmp/panel-src.tgz). Deploy script staged at /tmp/_deploy_panel.sh (swaps .next only + restart famit-panel). BLOCKED: SSH to panel box intermittently timing out (port 22 banner-exchange; edge site itself = 200). RETRYING with backoff. BUILD_ID before = u6yKGIuhALhhzdzQcywXQ.
+- [ ] Verify panel on edge (panel.famit.in/leads sort+delete UI, /run manual-pick sort); note new BUILD_ID.
 
 ## Earner baseline (BEFORE) captured @ start
 - voice box famit-livekit 168.144.153.145, ssh user=famit key=~/.ssh/do-blr-test/id_ed25519
