@@ -262,16 +262,6 @@ TENANTS_FILE = VAR / "tenants.json"
 SECRET_FILE = VAR / "secret"
 SUPPRESSION_FILE = VAR / "suppression.json"   # P0.2 DND/suppression store
 RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
-# 🚨 KILL-SWITCH (callback/retry SPAM hotfix 2026-06-16): the auto-retry+callback scheduler
-# was redialing leads ~every 2h NON-STOP (no-answer reconciliation reset attempts→1 /
-# backoff→120min each tick; callbacks enqueued on ANY LLM-extracted callback_at — even on
-# answered/completed calls — with attempts never incrementing → infinite redial loop).
-# Until the retry engine is REBUILT with correct policy (≤2 retries, next-day cadence, NO
-# callback on a completed pickup, busy→short reschedule, "call me at X"→that-time), the
-# scheduler's DIALING is DISABLED by default. Set RETRY_SCHEDULER_ENABLED=1 ONLY after the
-# rebuild lands. First-calls (run_job) are UNAFFECTED — only auto-retry/callback dialing is gated.
-RETRY_SCHEDULER_ENABLED = (cfg_get("RETRY_SCHEDULER_ENABLED", "0") or "0").strip().lower() \
-    in ("1", "true", "yes", "on")
 WA_LOG_FILE = VAR / "wa_log.json"             # P1.A whatsapp send log
 WA_THREADS_DIR = VAR / "wa_threads"           # WAVE A2 per-contact WhatsApp conversation state
 WA_UNROUTED_TENANT = "_unrouted"              # P0-LEAK: quarantine bucket for unknown inbound numbers (never ADMIN_ID)
@@ -7235,19 +7225,15 @@ async def scheduler_loop():
                     rebuild_cost_ledger()
                 except Exception:  # noqa: BLE001
                     pass
-            # 🚨 KILL-SWITCH: only DIAL due retries/callbacks when explicitly enabled.
-            # Default OFF → zero redials go out while the retry engine is rebuilt. The
-            # reconciliation/classify sweep below still runs (outcomes/scores stay correct).
-            if RETRY_SCHEDULER_ENABLED:
-                due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
-                for r in due:
-                    camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
-                    if not _in_window(camp_fields)[0]:
-                        continue                                   # respect calling window
-                    if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
-                        await _remove_retry(r["id"]); continue     # opted out since enqueue
-                    _spawn_retry_job(r)
-                    await _remove_retry(r["id"])
+            due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
+            for r in due:
+                camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
+                if not _in_window(camp_fields)[0]:
+                    continue                                   # respect calling window
+                if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
+                    await _remove_retry(r["id"]); continue     # opted out since enqueue
+                _spawn_retry_job(r)
+                await _remove_retry(r["id"])
             # Reconciliation sweep: the agent writes the transcript on shutdown, which can
             # LAG run_job's finalize (which then read an empty transcript -> misclassified as
             # no_human/0). Re-reconcile any done call whose transcript now has real data but

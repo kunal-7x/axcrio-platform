@@ -262,16 +262,6 @@ TENANTS_FILE = VAR / "tenants.json"
 SECRET_FILE = VAR / "secret"
 SUPPRESSION_FILE = VAR / "suppression.json"   # P0.2 DND/suppression store
 RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
-# 🚨 KILL-SWITCH (callback/retry SPAM hotfix 2026-06-16): the auto-retry+callback scheduler
-# was redialing leads ~every 2h NON-STOP (no-answer reconciliation reset attempts→1 /
-# backoff→120min each tick; callbacks enqueued on ANY LLM-extracted callback_at — even on
-# answered/completed calls — with attempts never incrementing → infinite redial loop).
-# Until the retry engine is REBUILT with correct policy (≤2 retries, next-day cadence, NO
-# callback on a completed pickup, busy→short reschedule, "call me at X"→that-time), the
-# scheduler's DIALING is DISABLED by default. Set RETRY_SCHEDULER_ENABLED=1 ONLY after the
-# rebuild lands. First-calls (run_job) are UNAFFECTED — only auto-retry/callback dialing is gated.
-RETRY_SCHEDULER_ENABLED = (cfg_get("RETRY_SCHEDULER_ENABLED", "0") or "0").strip().lower() \
-    in ("1", "true", "yes", "on")
 WA_LOG_FILE = VAR / "wa_log.json"             # P1.A whatsapp send log
 WA_THREADS_DIR = VAR / "wa_threads"           # WAVE A2 per-contact WhatsApp conversation state
 WA_UNROUTED_TENANT = "_unrouted"              # P0-LEAK: quarantine bucket for unknown inbound numbers (never ADMIN_ID)
@@ -2803,34 +2793,6 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
         except Exception as exc:  # noqa: BLE001
             _lg_handoff.warning("hot-lead notify_handoff_team failed: %r", exc)
 
-    # ── COMMUNICATION (W1-P3): post-call founder hot-lead alert + contact auto-summary ──
-    # COMMUNICATION-MASTER-PLAN §2.3 / §1.1 / §8 WAVE 1. EARNER LAW (the red-team mandate):
-    #   * _finalize_call is AWAITED inside the live dial loop (run_job, ~:2845). So this MUST
-    #     NEVER await a network send. We take a PURE-SYNCHRONOUS snapshot of ONLY the fields the
-    #     send needs (no ref to the live rec/tr/it the loop keeps mutating, no open files, no db),
-    #     then asyncio.create_task a DETACHED fire-and-forget send. The dial loop never waits.
-    #   * The detached comm.post_call.run owns a HARD per-channel asyncio.wait_for timeout inside
-    #     comm.engine.send — a black-holed Telegram can NEVER keep the task alive past the bound.
-    #   * Flag-gated COMM_ENABLED (default OFF => this block is a no-op => resting byte-identical).
-    #     The founder-alert / auto-summary sub-flags are checked INSIDE run (also default OFF).
-    #   * Snapshot/dispatch is wrapped in its OWN try/except so a comm fault can NEVER disrupt the
-    #     finalize hot path (the call still finalizes; rec/tr are already persisted above).
-    #   * We DUPLICATE the field reads here (summary/next_action/company/product/agent) — we do
-    #     NOT refactor _wa_draft_followup_text (additive+isolated beats DRY when it's the earner).
-    if (cfg_get("COMM_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on"):
-        try:
-            from comm import post_call as _comm_post_call  # import-guarded; never crashes finalize
-            _comm_snap = _comm_post_call.snapshot(            # PURE SYNC — no live-object refs
-                rec, tr, camp_fields, tenant_id=tenant_id, call_id=rec.get("id", ""))
-            asyncio.create_task(_comm_post_call.run(_comm_snap))  # DETACHED — never awaited here
-        except Exception as exc:  # noqa: BLE001 — a comm fault must NEVER disrupt the call loop
-            try:
-                import logging as _lg_comm_pc
-                _lg_comm_pc.getLogger("comm.post_call").warning(
-                    "comm post-call hook skipped: %r", type(exc).__name__)
-            except Exception:  # noqa: BLE001
-                pass
-
 
 def _variant_pool(camp_fields: dict) -> list[str]:
     """Build a weighted round-robin pool of variant ids for a campaign. Empty if no variants."""
@@ -4829,21 +4791,8 @@ async def get_leads(request: Request, hot: str = "", sort: str = "",
     rows = _leads_for(t)
     if hot:
         rows = [x for x in rows if (x.get("score", 0) or 0) >= 70]
-    # Sort selector (additive; default = newest-first by added_at, latest->oldest).
-    # Accepts: "" / "recent" -> created_at DESC; "oldest" -> created_at ASC;
-    # "name" -> A->Z; "status" -> status A->Z then newest; "score" -> high->low.
-    s = (sort or "recent").lower()
-    if s == "score":
+    if sort == "score":
         rows = sorted(rows, key=lambda x: x.get("score", 0) or 0, reverse=True)
-    elif s == "oldest":
-        rows = sorted(rows, key=lambda x: x.get("added_at", "") or "")
-    elif s == "name":
-        rows = sorted(rows, key=lambda x: (x.get("name", "") or "").lower())
-    elif s == "status":
-        rows = sorted(rows, key=lambda x: ((x.get("status", "") or "").lower(),
-                                           x.get("added_at", "") or ""))
-    else:  # "recent" / default / unknown -> newest-first
-        rows = sorted(rows, key=lambda x: x.get("added_at", "") or "", reverse=True)
     total = len(rows)
     off = max(0, int(offset))
     lim = int(limit)
@@ -4947,62 +4896,6 @@ async def delete_lead(request: Request, lead_id: str):
     _write(LEADS_FILE, store)
     _audit(request, t, "leads.delete", "lead", lead_id)
     return JSONResponse({"deleted": lead_id, "total": len(_leads_for(t))})
-
-
-@app.post("/leads/delete")
-async def delete_leads_bulk(request: Request, ids: str = Form("")):
-    """Delete a SET of this tenant's leads by id (multi-select). Idempotent:
-    unknown / already-deleted / cross-tenant ids are simply skipped (never error,
-    never touch another tenant's rows). Tenant-scoped STRICTLY by tenant_id — even
-    an admin only deletes rows it actually owns here (no cross-tenant wipe). The
-    ids arrive as a comma/space-separated form field (max form-field compat)."""
-    t = resolve_tenant(request)
-    if not t:
-        return need_auth()
-    if not can(t, "write"):
-        return _forbidden("read-only role cannot delete leads")
-    want = _csv_set(ids)
-    if not want:
-        return JSONResponse({"deleted": 0, "total": len(_leads_for(t))})
-    tid = t["tenant_id"]
-    store = _read(LEADS_FILE, [])
-    # Owned + requested = the rows we may remove (BOLA: tenant_id must match).
-    kill = {x.get("id") for x in store
-            if x.get("id") in want and x.get("tenant_id", ADMIN_ID) == tid}
-    if not kill:
-        return JSONResponse({"deleted": 0, "total": len(_leads_for(t))})
-    store = [x for x in store if x.get("id") not in kill]
-    _write(LEADS_FILE, store)
-    _audit(request, t, "leads.delete_bulk", "lead", "",
-           meta={"deleted": len(kill), "ids": sorted(kill)})
-    return JSONResponse({"deleted": len(kill), "total": len(_leads_for(t))})
-
-
-@app.delete("/leads")
-async def delete_all_leads(request: Request, confirm: str = ""):
-    """Delete ALL of THIS tenant's leads (destructive). STRICTLY tenant-scoped by
-    tenant_id — NEVER cross-tenant, even for an admin token (we filter by tenant_id
-    explicitly rather than via _leads_for's admin all-view). Confirm-gated: requires
-    ?confirm=DELETE so a stray call can't wipe leads. Idempotent (0 leads -> 0).
-    Other tenants' rows are preserved byte-for-byte."""
-    t = resolve_tenant(request)
-    if not t:
-        return need_auth()
-    if not can(t, "write"):
-        return _forbidden("read-only role cannot delete leads")
-    if (confirm or "").strip().upper() != "DELETE":
-        return JSONResponse({"error": "confirm required",
-                             "detail": "pass ?confirm=DELETE to wipe all of this tenant's leads"},
-                            status_code=400)
-    tid = t["tenant_id"]
-    store = _read(LEADS_FILE, [])
-    mine = [x for x in store if x.get("tenant_id", ADMIN_ID) == tid]
-    keep = [x for x in store if x.get("tenant_id", ADMIN_ID) != tid]
-    deleted = len(mine)
-    if deleted:
-        _write(LEADS_FILE, keep)
-    _audit(request, t, "leads.delete_all", "lead", "", meta={"deleted": deleted})
-    return JSONResponse({"deleted": deleted, "total": 0})
 
 
 @app.post("/run/preview")
@@ -7235,19 +7128,15 @@ async def scheduler_loop():
                     rebuild_cost_ledger()
                 except Exception:  # noqa: BLE001
                     pass
-            # 🚨 KILL-SWITCH: only DIAL due retries/callbacks when explicitly enabled.
-            # Default OFF → zero redials go out while the retry engine is rebuilt. The
-            # reconciliation/classify sweep below still runs (outcomes/scores stay correct).
-            if RETRY_SCHEDULER_ENABLED:
-                due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
-                for r in due:
-                    camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
-                    if not _in_window(camp_fields)[0]:
-                        continue                                   # respect calling window
-                    if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
-                        await _remove_retry(r["id"]); continue     # opted out since enqueue
-                    _spawn_retry_job(r)
-                    await _remove_retry(r["id"])
+            due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
+            for r in due:
+                camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
+                if not _in_window(camp_fields)[0]:
+                    continue                                   # respect calling window
+                if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
+                    await _remove_retry(r["id"]); continue     # opted out since enqueue
+                _spawn_retry_job(r)
+                await _remove_retry(r["id"])
             # Reconciliation sweep: the agent writes the transcript on shutdown, which can
             # LAG run_job's finalize (which then read an empty transcript -> misclassified as
             # no_human/0). Re-reconcile any done call whose transcript now has real data but
@@ -7455,51 +7344,6 @@ if PROVIDER_REGISTRY_ENABLED and _build_provreg_router is not None:
         import logging as _lg_provreg
         _lg_provreg.getLogger("famit-caller").warning("provider_registry router mount failed",
                                                        exc_info=True)
-
-
-# ==============================================================================================
-# MODULE MOUNT — trunk-registry (own/flexible telephony SIP-trunk registry, prefix /trunk-registry).
-# FLAG-GATED (TRUNK_REGISTRY_ENABLED, default OFF => byte-identical resting). TELEPHONY-INDEPENDENCE
-# -PLAN §5 T3. This rides caller.py (famit-caller), NEVER agent.py (the earner). At T3 the routes are
-# mounted but the strangler dial-loop cut (T5) is NOT wired — so flag-OFF the live `TRUNK` env dial
-# path is byte-identical, and flag-ON the routes only manage trunk ROWS (no campaign auto-dial here).
-# ----------------------------------------------------------------------------------------------
-# ⚠ TENANT ISOLATION: trunk-registry ships ONLY a token-deriving AUTHENTICATED surface
-# `build_router(resolve_tenant, can, need_auth, forbidden, require_super_admin=, firewall=, audit=)`
-# — a TWIN of provider-registry. tenant_id is ALWAYS resolve_tenant(request)["tenant_id"]
-# (token-derived), writes enforce can(t,"write"), the /trunk-registry/admin/* surface is gated by
-# require_super_admin (which EXCLUDES the legacy static password — control-security #1). A BYO
-# sip_host is SSRF-validated before a trunk can be created. A SIP-password REVEAL requires a
-# firewall.consume_reveal_step_up single-use PIN step-up. RED-TEAM D: DELETE default = soft-disable;
-# a hard-delete REFUSES a `_global`/env-protected trunk + is PIN-gated. RED-TEAM F: /test-call is
-# rate-limited (<=3/hr/trunk) + founder-typed destination (the ONLY non-campaign originate; NEVER an
-# auto-dial — at T3 it returns a dial-intent only). RED-TEAM E: /quarantine-did is the kill switch.
-#
-# IMPORT-GUARD (house pattern): a missing/broken trunk_registry package can NEVER break startup —
-# build_router degrades to None when FastAPI is absent, and any import error is swallowed.
-# FEATURE FLAG default OFF: TRUNK_REGISTRY_ENABLED!=1/true => router NOT mounted => byte-identical
-# behavior. Even if mounted, EVERY route self-404s while the flag is OFF (defense in depth).
-# Serialized against RAG/Vault/Video/provider-registry (only ONE edits caller.py at a time).
-try:
-    from trunk_registry.endpoints import build_router as _build_trunkreg_router  # noqa: E402
-except Exception:  # noqa: BLE001
-    _build_trunkreg_router = None
-
-TRUNK_REGISTRY_ENABLED = (cfg_get("TRUNK_REGISTRY_ENABLED", "0") or "0").strip().lower() \
-    in ("1", "true", "yes", "on")
-
-if TRUNK_REGISTRY_ENABLED and _build_trunkreg_router is not None:
-    try:
-        _trunkreg_router = _build_trunkreg_router(
-            resolve_tenant, can, need_auth, _forbidden,
-            require_super_admin=require_super_admin, firewall=_firewall_mod, audit=_audit,
-        )
-        if _trunkreg_router is not None:
-            app.include_router(_trunkreg_router)
-    except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
-        import logging as _lg_trunkreg
-        _lg_trunkreg.getLogger("famit-caller").warning("trunk_registry router mount failed",
-                                                        exc_info=True)
 
 
 # ==============================================================================================
@@ -7937,49 +7781,6 @@ if FEATURE_WHATSAPP_BUILDER and _build_wab_router is not None:
     except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
         import logging as _lg_wab
         _lg_wab.getLogger("famit-caller").warning("whatsapp-builder router mount failed", exc_info=True)
-
-
-# ==============================================================================================
-# MODULE MOUNT — communication (the omnichannel comms tab: Telegram now; Email/SMS later, prefix /comm).
-# FLAG-GATED (COMM_ENABLED, default OFF => byte-identical resting). COMMUNICATION-MASTER-PLAN §8 WAVE 1.
-# ----------------------------------------------------------------------------------------------
-# ⚠ TENANT ISOLATION: comm ships the token-deriving AUTHENTICATED surface
-# `build_router(resolve_tenant, can, need_auth, forbidden, require_super_admin=, firewall=, audit=)`
-# — same shape as whatsapp_builder/provider_registry. Every AUTHENTICATED route derives tenant_id from
-# resolve_tenant(request)["tenant_id"] (token), NEVER a body/query field; writes enforce can(t,"write").
-#
-# THE ONE UNAUTHENTICATED route is POST /comm/webhook/telegram/{tenant_id} — Telegram (a machine) calls
-# it. It is FAIL-CLOSED (COMMUNICATION-MASTER-PLAN §4 S2): the {tenant_id} is UNTRUSTED until
-# comm.webhook.handle() constant-time-verifies the per-tenant secret_token (bound to the PATH tenant +
-# that tenant's bot provider_def); the RLS GUC is set ONLY AFTER that verify. No/wrong/other-tenant
-# secret -> 403; a dormant tenant -> 403 (NOT fail-open like the legacy Meta webhook). It NEVER blocks.
-#
-# EARNER LAW: comm rides caller.py (a separate process). It NEVER imports agent.py (the live earner).
-# Every contact-facing send (the post-call hook, a later phase) is asyncio.create_task'd + bounded by a
-# per-channel asyncio.wait_for inside the engine — NEVER awaited on the dial loop.
-#
-# IMPORT-GUARD (house pattern): a missing/broken comm package can NEVER break startup — build_router
-# degrades to None when FastAPI is absent, and any import error is swallowed. FEATURE FLAG default OFF:
-# COMM_ENABLED!=1/true => router NOT mounted => byte-identical. Even if mounted, EVERY route self-404s
-# while the flag is OFF (defense in depth) — so the resting state is byte-identical either way.
-try:
-    from comm.router import build_router as _build_comm_router  # noqa: E402
-except Exception:  # noqa: BLE001
-    _build_comm_router = None
-
-COMM_ENABLED = (cfg_get("COMM_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
-
-if COMM_ENABLED and _build_comm_router is not None:
-    try:
-        _comm_router = _build_comm_router(
-            resolve_tenant, can, need_auth, _forbidden,
-            require_super_admin=require_super_admin, firewall=_firewall_mod, audit=_audit,
-        )
-        if _comm_router is not None:
-            app.include_router(_comm_router)
-    except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
-        import logging as _lg_comm
-        _lg_comm.getLogger("famit-caller").warning("communication router mount failed", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
