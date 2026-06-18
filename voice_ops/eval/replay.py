@@ -127,6 +127,11 @@ def replay_conversation(call: RecordedCall) -> ReplayResult:
     import voice_kernel.integrations.outbound as ob
 
     from voice_kernel.brain_packs.disclosure import contains_banned_phrase, strip_guardrail
+    from voice_kernel.brain_packs.delivery import (
+        has_name_sparingly_rule,
+        has_single_greeting_rule,
+    )
+    from voice_kernel.brain_packs.language import contains_banned_literary
 
     res = ReplayResult(name=call.name, prompt="")
     with kernel_outbound_on():
@@ -151,6 +156,28 @@ def replay_conversation(call: RecordedCall) -> ReplayResult:
 
         # R5 — exactly one greeting directive.
         res.invariants["R5_single_greeting"] = _count_greeting_directives(low) <= 1
+
+        # W-VOICE-HEART invariants — the new outbound voice-heart rules are LIVE in
+        # the rendered prompt (so the BAD-transcript regressions are structurally gone).
+        # R11 — no double intro: an explicit single-greeting / no-re-greet rule + 1 OPENING.
+        res.invariants["R11_no_double_intro"] = (
+            has_single_greeting_rule(prompt) and low.count("opening:") == 1
+        )
+        # R12 — name said sparingly + at constant volume (no per-turn name prefix).
+        res.invariants["R12_name_sparingly"] = has_name_sparingly_rule(prompt)
+        # R13 — natural Hinglish: the formal/literary ('mahatvapurn') ban is rendered,
+        # and no literary token is used as plain spoken guidance (only inside the ban).
+        _lit_ok = "mahatvapurn" in low and "literary" in low
+        if "mahatvapurn" in low:
+            _seg = low.split("mahatvapurn", 1)[0][-80:]
+            _lit_ok = _lit_ok and any(p in _seg for p in ("never", "not ", "avoid", "literary"))
+        res.invariants["R13_natural_hinglish"] = _lit_ok
+        # R14 — the closing is LLM-generated (a CLOSING directive that bans a canned line).
+        _close_ok = "closing:" in low
+        if _close_ok:
+            _cseg = low.split("closing:", 1)[1][:400]
+            _close_ok = any(c in _cseg for c in ("never a canned", "never scripted", "never a scripted", "llm-generated"))
+        res.invariants["R14_llm_close"] = _close_ok
 
         # R2 — vendor hook reached the prompt (if the script declares one).
         raw = str(call.fields.get("raw_script", ""))
