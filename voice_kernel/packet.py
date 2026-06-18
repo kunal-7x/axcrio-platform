@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Optional
 
 from .errors import BudgetExceededError, ClampError
+from .fences import defang_fences
 from .tokens import clamp_chars, clamp_list, estimate_tokens
 
 
@@ -115,11 +116,19 @@ class FencedText:
     label: str = ""  # optional human label, e.g. the RAG source name
 
     def render(self) -> str:
-        body = (self.content or "").strip()
+        # RED-TEAM FIX (render choke point): defang any forged fence tag in the
+        # body BEFORE wrapping it. This is the ONE place every untrusted source
+        # (campaign brief, RAG/PDF snippet, lead memory, caller utterance) passes
+        # through, so a poisoned source cannot inject `</tag>` to break out (or
+        # `<tag>` to re-open and escalate). Defense-in-depth: save-time sanitize
+        # may be absent on a legacy/RAG/un-migrated source, but this is not.
+        body = defang_fences((self.content or "").strip())
         if not body:
             return ""
         tag = _FENCE_TAG.get(self.trust, "untrusted")
-        head = f"<{tag}>" if not self.label else f"<{tag} source=\"{self.label}\">"
+        # The label is operator-controlled but defanged too (belt-and-suspenders).
+        label = defang_fences(self.label) if self.label else ""
+        head = f"<{tag}>" if not label else f"<{tag} source=\"{label}\">"
         # The fence body is DATA, never instructions — say so once, structurally.
         return f"{head}\n{body}\n</{tag}>"
 

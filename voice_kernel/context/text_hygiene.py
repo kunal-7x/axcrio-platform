@@ -11,17 +11,24 @@ Responsibilities:
   - normalize(): NFKC + strip zero-width + drop control chars (keep \t\n\r).
     This is hardening, NOT lossy compression — length is preserved (no clamp
     here; lossless preservation is the whole point of W3's dual-layer fix).
-  - defang_fences(): neutralize any forged fence open/close tag a vendor might
-    paste to break OUT of its CAMPAIGN_BRIEF/vendor_script fence. The platform
-    safety layer always sits ABOVE the fence by position (C3), and the vendor's
-    content can never re-open the fence to escalate to instructions.
+  - defang_fences(): re-exported from the leaf `voice_kernel.fences` module (the
+    SINGLE source of truth, shared with packet.FencedText.render so the render
+    choke point and the save-time pass can never drift). Neutralizes any forged
+    fence open/close tag a vendor might paste to break OUT of its CAMPAIGN_BRIEF/
+    vendor_script fence. The platform safety layer always sits ABOVE the fence by
+    position (C3), and the vendor's content can never re-open the fence to
+    escalate to instructions.
 
 Pure-stdlib only (unicodedata / re). Idempotent.
 """
 from __future__ import annotations
 
-import re
 import unicodedata
+
+# defang_fences lives in the leaf module so packet.py (which is imported BY
+# context/, so it cannot import back into context/ without a cycle) and this
+# save-time pass share ONE implementation. Re-exported here for back-compat.
+from ..fences import defang_fences  # noqa: F401  (re-exported)
 
 # The exact zero-width / bidi set the live prompt.py strips. Keeping it
 # byte-identical means a brief cleaned here renders identically to the live path.
@@ -40,24 +47,6 @@ _ZERO_WIDTH = "".join(
 )
 _ZW_TABLE = {ord(c): None for c in _ZERO_WIDTH}
 
-# Any forged fence tag a vendor could paste to escape its container. We defang
-# the OPENING bracket of any of our typed fences (campaign_brief, vendor_script,
-# vendor_data, retrieved_knowledge, lead_memory, caller_utterance) AND of a raw
-# `vendor_*` tag — turning `<` into the full-width `＜` so it can never be parsed
-# as a real tag, while staying human-readable in a trace.
-_FENCE_NAMES = (
-    "campaign_brief",
-    "vendor_script",
-    "vendor_data",
-    "retrieved_knowledge",
-    "lead_memory",
-    "caller_utterance",
-)
-_FORGED_TAG_RE = re.compile(
-    r"<(\s*/?\s*(?:vendor_\w+|" + "|".join(_FENCE_NAMES) + r")\b)",
-    re.IGNORECASE,
-)
-
 
 def normalize(s: object) -> str:
     """NFKC-normalize + strip zero-width + drop control chars (keep \\t\\n\\r).
@@ -70,14 +59,6 @@ def normalize(s: object) -> str:
     text = text.translate(_ZW_TABLE)
     text = "".join(ch for ch in text if ch in ("\t", "\n", "\r") or ord(ch) >= 0x20)
     return text
-
-
-def defang_fences(text: str) -> str:
-    """Neutralize any forged fence open/close tag so vendor content cannot break
-    out of the fence the renderer wraps it in. Idempotent. Self-contained."""
-    if not text:
-        return text or ""
-    return _FORGED_TAG_RE.sub(lambda m: "＜" + m.group(1), text)
 
 
 def sanitize(s: object) -> str:
