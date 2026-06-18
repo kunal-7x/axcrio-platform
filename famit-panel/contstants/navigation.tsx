@@ -78,14 +78,33 @@ export const navigation = [
             // tab inside /crm; the CRM link is the home. Keep BOTH keys live so an
             // entitlement that hides either page still resolves (the page self-gates).
             { title: "Leads & CRM", href: "/crm", feature_key: "sell.crm" },
+            // Leads — RESTORED standalone people page (was folded into a CRM tab; the
+            // standalone route is real on disk).
+            { title: "Leads", href: "/leads", feature_key: "sell.leads" },
             // Call Logs — ONE call surface. /callbacks folds in as a "Callbacks" tab.
             { title: "Call Logs", href: "/calls", feature_key: "engage.calls" },
+            // Callbacks — RESTORED standalone link (lands on the calls callbacks view).
+            { title: "Callbacks", href: "/callbacks", feature_key: "engage.callbacks" },
             { title: "Bookings", href: "/booking", feature_key: "engage.booking" },
-            // AI Manager — collapsed from 9 sidebar children to ONE link; the page
-            // owns Overview/Live/Handoff/Try-it/Commands/Approvals/Capabilities/Setup/
-            // Team as in-page tabs. Manager-gated; the group key rides the link so the
-            // whole inbound-command surface hides/locks as one entitlement.
-            { title: "AI Manager", href: "/ai-manager", roles: "manager", feature_key: "mod.ai_manager" },
+            // AI Manager — RESTORED to a collapsible group; the group keeps the single
+            // gate (mod.ai_manager) and lists the 9 real sub-routes (all pages exist on
+            // disk), so the whole inbound-command surface hides/locks as one entitlement
+            // while every sub-page is reachable from the rail again.
+            {
+                title: "AI Manager", icon: "ai", roles: "manager", feature_key: "mod.ai_manager",
+                list: [
+                    { title: "Overview",          href: "/ai-manager/overview",       feature_key: "ai_manager.overview" },
+                    { title: "Live Calls",        href: "/ai-manager/live" },
+                    { title: "Command Center",    href: "/ai-manager/command-center" },
+                    { title: "Handoff Team",      href: "/ai-manager/handoff" },
+                    { title: "Try it",            href: "/ai-manager/test",            feature_key: "ai_manager.test" },
+                    { title: "Command History",   href: "/ai-manager/commands",        feature_key: "ai_manager.commands" },
+                    { title: "Pending Approvals", href: "/ai-manager/approvals",       feature_key: "ai_manager.approvals" },
+                    { title: "Capabilities",      href: "/ai-manager/capabilities",    feature_key: "ai_manager.capabilities" },
+                    { title: "Setup",             href: "/ai-manager/setup",           feature_key: "ai_manager.setup" },
+                    { title: "Team",              href: "/ai-manager/users",           feature_key: "ai_manager.users" },
+                ],
+            },
         ],
     },
     {
@@ -101,10 +120,19 @@ export const navigation = [
             // Run — the founder's named multi-card audience+config launcher. Lives in
             // GROW next to Campaigns (build → run) instead of buried in the old Engage.
             { title: "Run", href: "/run", feature_key: "engage.run" },
-            // Creative Studio — the campaign-aware AI design engine. Promoted to a
-            // single link; Studio/Video/Library/Brand are in-page tabs of /creative.
-            // (Was its own 4-child group; the sub-pages remain real routes.)
-            { title: "Creative Studio", href: "/creative" },
+            // Creative Studio — the campaign-aware AI design engine. RESTORED to a
+            // collapsible group exposing all four REAL routes (Image/Video/Library/
+            // Brand) — the W15 single-link folded the suite to a URL-only state.
+            {
+                title: "Creative Studio",
+                icon: "image",
+                list: [
+                    { title: "Image Studio", href: "/creative" },
+                    { title: "Video Studio", href: "/creative/video" },
+                    { title: "Asset Library", href: "/creative/library" },
+                    { title: "Brand Kit", href: "/creative/brand" },
+                ],
+            },
             { title: "Ad Automation", href: "/ads", roles: "manager", feature_key: "grow.ads" },
             { title: "Funnels", href: "/funnels", feature_key: "grow.funnels" },
             { title: "Form Builder", href: "/forms", feature_key: "grow.forms" },
@@ -120,6 +148,9 @@ export const navigation = [
         feature_key: "mod.engage",
         list: [
             { title: "WhatsApp", href: "/whatsapp", roles: "manager", feature_key: "engage.whatsapp" },
+            // Communication — RESTORED standalone multi-channel page (W15 dropped it
+            // with no replacement entry; the page is real on disk).
+            { title: "Communication", href: "/communication", feature_key: "engage.communication" },
             { title: "Customer Support", href: "/support", feature_key: "engage.support" },
         ],
     },
@@ -192,6 +223,8 @@ export const navigation = [
             { title: "Usage Analytics", href: "/super-admin/usage", roles: "admin" },
             { title: "Audit Logs", href: "/super-admin/audit", roles: "admin" },
             { title: "Integrations", href: "/super-admin/integrations", roles: "admin" },
+            // API Keys — RESTORED: the one genuinely never-linked real page (MAP 1).
+            { title: "API Keys", href: "/super-admin/api-keys", roles: "admin" },
         ],
     },
 ];
