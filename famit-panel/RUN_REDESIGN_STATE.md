@@ -22,4 +22,15 @@ handlers, buildRunPayload, queue/force logic, getStatus poll, liveLeads verbatim
 - Segmented-pattern reference: _voice-providers.tsx:362-401.
 - NO deploy this phase.
 
-## Status: COMPLETE — build green, committed.
+## Status: COMPLETE — Phase 1 build green + Phase 2 deployed to FORTRESS.
+
+## Phase 2 Deploy (2026-06-14)
+- Local build: EXIT 0, /run = 16.8 kB, no TS errors
+- BUILD_ID before: p6hSTJX9R46-NQdLf8Daw
+- BUILD_ID after:  jcDEy4iclWbxS_zvVpvk0
+- Tarball md5: 638736b0cc2b6461361489e2bd79924c (matched on box)
+- Backup: /opt/famit-panel.bak-<timestamp>
+- Loopback 200: http://127.0.0.1:3001/ + /run 200
+- Edge 200: https://panel.famit.in/
+- 0 recent 5xx
+- EARNER GATE PASS: agent.py md5=9150fabe4ff62b4b4470f9a87df346e5 UNCHANGED, famit-agent=active, famit-caller /health=200
