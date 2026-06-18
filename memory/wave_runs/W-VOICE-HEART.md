@@ -42,5 +42,29 @@ deployable patch + gated-deploy params only.
   static OFF-identity test (hunks outside voice-constructor spans). Drop-in template.
 - [DONE] U5 — pytest voice_kernel/ + voice_ops/ green; run_all_gates green; replay green.
 
-## RESULT
-See the final report block at the bottom (files, tests, deployable, gated-deploy params).
+## RESULT — DONE (build wave complete, no box mutation)
+- pytest voice_kernel/ + voice_ops/ = **931 passed** (baseline 895; +36 new).
+- run_all_gates() = **ALL GREEN, 16 gates** (R1-R15 + R1-repo). New: R11 no-double-intro,
+  R12 name-≤2x/no-emphasis, R13 no-formal-Hindi, R14 LLM-close-not-hardcoded, R15 constant-
+  prosody/no-name-emphasis — each with negative controls that BITE.
+- 5/5 golden replays pass; BAD-outbound-transcript replay = all voice-heart regressions GONE
+  (R11/R12/R13/R14 True).
+- Static OFF-identity proof (test_voice_unchanged_voice_heart.py, 4 pass against REAL agent.py):
+  every hunk outside the TTS-engine spans; Hunk D edits ONLY VoiceSettings knobs.
+
+### FILES
+TRACKED kernel: voice_kernel/brain_packs/{model.py,provider.py,packs_data.py,delivery.py(NEW)}
+  · voice_ops/eval/{regression_gates.py,replay.py} · voice_ops/eval/tests/{test_regression_gates.py,
+  test_bad_outbound_replay.py(NEW)} · voice_kernel/integrations/tests/test_voice_unchanged_voice_heart.py(NEW)
+  · voice_kernel/systemd/famit-agent.service.d-voice-heart.conf(NEW)
+DEPLOYABLE (box agent.py, gitignored): design/W-VOICE-HEART-DEPLOYABLE-PATCH.md (Hunks A+B+C+H+I+J+D).
+
+### GATED-DEPLOY PARAMS (founder-gated, one box-variable at a time)
+- Drop-in voice_kernel/systemd/famit-agent.service.d-voice-heart.conf:
+  STEP 4 prosody-only: EL_STABILITY=0.45, EL_SPEED=1.08, EL_SIMILARITY=0.80 (derived from the
+  GOOD inbound voice; env wins -> instant revert to 0.65/1.0 if the real ring swings).
+  STEP 5 flip brain: uncomment KERNEL_OUTBOUND=1 (scoped to famit-agent only, never shared .env).
+- OFF (default) = byte-identical to box 98655dbf. Worst case at flip = old brain + perfect voice
+  (TTS engine + voice_id QTKSa2Iyv0yoxvXY2V8a never touched).
+- ONE behavioral unknown to verify on the canary: session.generate_reply() greeting kickoff on
+  the box's pinned livekit-agents version (Hunk H fails OPEN to model turn-1, never crashes).
