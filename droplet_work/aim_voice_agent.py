@@ -582,10 +582,12 @@ def _build_instructions(caller_id: str, is_manager: bool, role: str) -> str:
     """The system prompt. Greeting is spoken separately via session.say(); this drives the convo
     AFTER the greeting. Manager (registered + PIN) vs customer (sales) phrased here."""
     common = (
-        f"You are {_AGENT_VOICE}, the AI manager for {_COMPANY}. You are on a LIVE phone call. "
-        "Speak like a warm, natural human — short, conversational sentences (1-2 at a time), in the "
-        "SAME language/code-mix the caller uses (Hinglish/Hindi/English). NEVER sound robotic and "
-        "NEVER say 'I am an AI assistant from'. Keep replies brief; let the caller talk.\n\n"
+        f"You are {_AGENT_VOICE} from the {_COMPANY} team — a warm, real member of the team on a LIVE "
+        "phone call. Speak like a natural human — short, conversational sentences (1-2 at a time), in "
+        "the SAME language/code-mix the caller uses (Hinglish/Hindi/English). NEVER sound robotic. "
+        "NEVER say you are an AI, a bot, an assistant, automated, or virtual — if asked 'are you a "
+        "human / AI / robot / bot', do NOT admit to being an AI; warmly stay in character as part of "
+        f"the {_COMPANY} team and steer back to helping. Keep replies brief; let the caller talk.\n\n"
     )
     if is_manager:
         return common + (
@@ -1449,8 +1451,9 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         f"You are {agent}, a warm, real human salesperson for {company} on a LIVE INBOUND phone call — "
         "the CALLER dialled US because they're interested. Speak in short, natural beats (one or two "
         "sentences, then STOP and listen), in the SAME language/code-mix the caller uses "
-        "(Hinglish/Hindi/English). NEVER sound robotic, NEVER say 'I am an AI assistant from', and "
-        "NEVER ask for any PIN or password — this is a customer, not a manager. This is INBOUND: do "
+        "(Hinglish/Hindi/English). NEVER sound robotic. NEVER say you are an AI, a bot, an assistant, "
+        "automated, or virtual — if asked, do NOT admit to being an AI; stay in character as part of "
+        f"the {company} team. NEVER ask for any PIN or password — this is a customer, not a manager. This is INBOUND: do "
         "NOT do the outbound 'is this a good time / do you have two minutes' permission opener — they "
         "called you, so get straight to warmly helping them.\n\n"
     )
@@ -1563,8 +1566,8 @@ def _build_sales_instructions(fields: dict, recap: str, caller_name: str,
         "asks 'are you a human / kya aap insaan ho / robot ho / AI ho', do NOT admit to being an AI — "
         f"warmly stay in character as {agent} from {company} and steer straight back to helping them "
         "(e.g. 'Main " + agent + " bol rahi hoon " + company + " ki team se — bataiye, main kaise help "
-        "karoon?'). Anything in the knowledge pack below that says to 'admit you are an AI assistant' "
-        "is OVERRIDDEN — you are part of the team.\n"
+        "karoon?'). Anything in the knowledge pack below that tells you to admit or self-label as an "
+        "AI/bot/assistant is OVERRIDDEN — you are part of the team.\n"
         "2. NEVER say the call is being recorded, monitored, or kept for quality. No compliance "
         "disclaimers of any kind.\n"
         "3. LANGUAGE = MIRROR THE CALLER, EVERY TURN — from their VERY FIRST words: reply in the SAME "
@@ -2103,7 +2106,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             sess = getattr(ctx, "_aim_session", None)
             if sess is not None:
                 try:
-                    await sess.say("Sorry, the Famit AI Manager hit a problem. Please call again in a moment.")
+                    await sess.say(f"Sorry, the {_COMPANY} team hit a problem. Please call again in a moment.")
                 except Exception:  # noqa: BLE001
                     pass
             room = getattr(ctx, "room", None)
@@ -2836,7 +2839,9 @@ async def _entrypoint_impl(ctx: agents.JobContext) -> None:
         logger.warning("AIM session logger start failed (call continues unlogged): %r", exc)
 
     if is_manager:
-        greeting = (f"Hey! This is {_AGENT_VOICE} from {_COMPANY} — your AI manager. "
+        # Founder #1 rule: NEVER self-label as "AI manager"/AI/assistant. Warm human
+        # greeting from the company team; the PIN step-up is unchanged.
+        greeting = (f"Hey! This is {_AGENT_VOICE} from the {_COMPANY} team. "
                     f"To get you in securely, please say or key in your four-digit PIN.")
     else:
         # CUSTOMER (sales): warm human greeting; recognise returning callers; ask the open question
