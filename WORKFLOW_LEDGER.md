@@ -205,3 +205,65 @@ mandate jti-dedup at receivers; land the dial-loop admission seam (else live loo
 OAuth/WABA refresh tokens; per-purpose rotation runbook ready (`runbook.py`).
 
 **Full output:** `memory/wave_runs/W-SEC.md`
+
+---
+
+## W-SURGICAL-A — Part A surgical AI-self-label removal (disclosure-default strings)
+**2026-06-18** · VERDICT: **HALTED PRE-DEPLOY — AIRTIGHT RESULT = FAIL. NO box mutation.**
+
+Deploy was gated to proceed ONLY on airtight PASS (zero self-label AND voice byte-identical). Voice gate
+PASSED; zero-self-label gate **FAILED** on a real production campaign -> stopped before touching the box.
+
+- **EARNER GATE (before & after):** agent.py `98655dbf`, prompt.py `fb87ea56`, famit-agent **active**,
+  `.env` `EL_STABILITY=0.55 / OPENER_ALREADY_SAID=1 / OPENER_IN_CTX=0`, `KERNEL_OUTBOUND=0`. UNTOUCHED.
+  Backups present: `agent.py.WOUTbak.1781793303`, `prompt.py.AIFIXbak.1781801811`.
+- **Patch (HELD, not deployed):** agent.py ONE line `:218`; prompt.py 5 disclosure/self-label string hunks
+  (`:208,:225-226,:358,:361,:436,:683`). Voice-constructor ranges (agent.py 451-457/563-631/878-884)
+  byte-IDENTICAL. `py_compile` OK both.
+- **Held synthetic canary (AI-self-label detector, box python, all 15 campaigns + SYSTEM_PROMPT + GODREJ):**
+  **16 PASS / 1 FAIL**, neg-control fired. VERDICT FAIL.
+- **Blocking FAIL = DATA defect, not code:** `var/campaigns/c17e55e9f3.json` (Shapoorji Pallonji) stores
+  `ai_disclosure="Shapoorji Pallonji की एक AI assistant"` (`disclose_ai=True`) — the ONLY self-label of 15.
+  At prompt.py:356-359 `custom_disc or disc_default` lets the stored field override the patched clean default.
+  Brief does NOT authorize mutating live campaign JSON -> not touched.
+- **To reach airtight PASS (GATED follow-up):** one-field DATA fix — set `c17e55e9f3.json` `ai_disclosure`
+  to `"Shapoorji Pallonji से"` (or empty) -> re-run canary -> 17/17 -> then gated code+data deploy.
+
+**Full output:** `memory/wave_runs/W-SURGICAL-A.md`
+
+---
+
+## W-SURGICAL-B — BRAIN-ONLY outbound integration (old PERFECT voice, new BRAIN)
+**2026-06-18 → verified 2026-06-19** · VERDICT: **SHIP (BUILD-only) — READY for the gated `KERNEL_OUTBOUND` flip AFTER the founder validates Part A. NO deploy.**
+
+Executes `design/W-VOICE-SURGICAL-PLAN.md` **Part B**: the W1–W7 kernel feeds **ONLY the SYSTEM PROMPT**
+to the old worker via the tracked façade `voice_kernel/integrations/outbound.py`, gated `KERNEL_OUTBOUND`
+(**default OFF**). Deployable patch = **ONLY Patches A+B+C** (instruction-swap + OFF-gated entrypoint lines);
+**D (TTS/Sarvam) / E (per-turn hook) / F (post-call memory) / G (box-memory bind) are DELIBERATELY OMITTED** —
+they are the VOICE PATH and stay the old worker's, byte-identical. The opener is still SPOKEN by the old
+worker's `session.say()`.
+
+- **EARNER LAW (held sacred, re-verified):** `droplet_work/agent.py` byte-untouched vs HEAD; `grep -c
+  KERNEL_OUTBOUND droplet_work/agent.py` = **0**. The earner is paper-untouched; no box edit, no restart.
+- **VERIFICATION (this wave, re-run 2026-06-19 on Python 3.14.3):**
+  - `python -m pytest voice_kernel/ voice_ops/` ⇒ **895 passed** / 0 fail.
+  - W17 deploy gate `run_all_gates().passed` ⇒ **True** — **11/11 gates PASS** (R1 no-AI-self-label, R1-repo
+    repo-scan, R2 vendor-script-drives-flow — the two that map to the cutover's original regressions — plus
+    R3–R10). Failing gates **[]**.
+  - OFF byte-identity (façade OFF ⇒ `instructions == base_instructions` ⇒ identical to legacy
+    `build_system_prompt` across all 5 outbound field shapes) ⇒ **26 passed**.
+  - VOICE-UNCHANGED static proof (`test_voice_unchanged_brainonly.py`): both brain anchors fall OUTSIDE every
+    voice-constructor span (`elevenlabs.TTS`/`VoiceSettings`/`sarvam.STT`/`groq.LLM`/`AgentSession`/`session.say`
+    opener), by drift-robust code landmark ⇒ A+B+C edit **zero** voice lines.
+  - 0-droplet at load: importing `voice_kernel.integrations.outbound` drags **no** `droplet`/`livekit`/`agent`
+    module into `sys.modules` ⇒ **[]** (the flip can't drag the box SDK into the clean graph).
+- **Files (committed):** `design/W-INT-OUTBOUND-PATCH-BRAINONLY.md` (A+B+C-only patch doc; OMITS D/E/F/G with
+  per-patch rationale + gated deploy runbook), `voice_kernel/integrations/tests/test_voice_unchanged_brainonly.py`,
+  `voice_ops/eval/tests/test_surgical_b_brainonly.py`, `voice_ops/config/tests/test_config.py` (flaky-import fix).
+- **HONEST NOTE:** every proof above proves the cutover PATH is safe; only the founder's REAL outbound ring after
+  the gated flip proves the box. Revert is a single `KERNEL_OUTBOUND=0` + restart (no voice risk — D/E omitted).
+- **NEXT (founder-gated):** validate Part A first, THEN gate the Part B `KERNEL_OUTBOUND` flip per
+  `design/W-INT-OUTBOUND-PATCH-BRAINONLY.md §5` (systemd drop-in, not shared `.env`; W17 + real-call canary;
+  instant `=0` revert).
+
+**Full output:** `memory/wave_runs/W-SURGICAL-B.md`
