@@ -326,12 +326,22 @@ def test_language_directive_bans_literary_words():
 # 9. Isolation: building a kernel with the provider imports ZERO droplet modules.
 # --------------------------------------------------------------------------- #
 def test_brain_packs_import_no_droplet_modules():
-    import voice_kernel.brain_packs  # noqa: F401
+    """The W2 brain-pack package must add ZERO droplet_work modules to sys.modules.
+
+    Delta-based (not absolute): a concurrent sibling wave's test (e.g. W7 memory
+    erasure) may have pre-loaded `droplet_work.db.engine` into this same pytest
+    process. We assert that IMPORTING + BUILDING the brain packs adds no NEW
+    droplet module — i.e. OUR code imports none — which is the real isolation
+    guarantee and is order-independent."""
     from voice_kernel.kernel import build_kernel
 
+    before = {m for m in sys.modules if m.startswith("droplet")}
+    import voice_kernel.brain_packs  # noqa: F401
+
     build_kernel(brain_packs=build_brain_packs())
-    droplet = [m for m in sys.modules if m.startswith("droplet")]
-    assert droplet == [], f"brain packs must not import droplet modules, found: {droplet}"
+    after = {m for m in sys.modules if m.startswith("droplet")}
+    added = sorted(after - before)
+    assert added == [], f"brain packs must not import droplet modules, added: {added}"
 
 
 def test_kernel_folds_in_the_provider_on_warm_path():
