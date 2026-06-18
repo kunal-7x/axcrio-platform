@@ -11,4 +11,11 @@ Sub-packages:
   - recording/  W9: real-time recording finalize + staged transcript/summary
                 pipeline + object storage (R2/B2) + retention/cleanup/audit +
                 the panel status API contract. Reuses voice_kernel.events.
+  - booking/    W11: AI `book_site_visit` tool + full appointment lifecycle
+                (manual + AI) over the booking engine (lazy-wrapped, no double-book
+                inherited) + W8 site_visit_booked emit, AND the warm-transfer
+                hardening brain (one-line ack + dial/exit plan + state log).
+  - gcal/       W11: Google Calendar OAuth (server-side flow + self-contained
+                AAD AES-256-GCM refresh-token vault) + ASYNC event create/
+                update/cancel on booking changes (never blocks the call).
 """
