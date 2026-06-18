@@ -248,6 +248,11 @@ _IMPL_ALIASES = {
     "vendor": "vendor_script",
     "brain_packs": "brain_packs",
     "brain": "brain_packs",
+    # W8 EventBus: the FROZEN registration spec is build_kernel(cfg, event_bus=impl);
+    # the KernelServices field is `events`. Accept both (additive).
+    "event_bus": "events",
+    "eventbus": "events",
+    "events": "events",
 }
 
 
