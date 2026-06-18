@@ -53,6 +53,11 @@ GATE_LIST: tuple[tuple[str, str], ...] = (
     ("R8", "No half-words (truncation repaired at the text layer)"),
     ("R9", "Casual Hinglish grammar (no literary-Hindi 'aapne call kiya'-class errors)"),
     ("R10", "Cross-vertical: support does NOT push sales; real-estate language never leaks"),
+    ("R11", "No DOUBLE intro: the kernel carries an explicit single-greeting/no-re-greet rule (1 OPENING)"),
+    ("R12", "Name used SPARINGLY: name-at-most-twice + no-emphasis rule present (no per-turn name prefix)"),
+    ("R13", "No literary/formal Hindi ('mahatvapurn'-class) — the casual-Hinglish ban is rendered"),
+    ("R14", "Closing is LLM-GENERATED (a CLOSING directive, never a canned hardcoded goodbye)"),
+    ("R15", "Constant prosody / no name-emphasis: the prompt forbids loud/fast/ALL-CAPS on the name token"),
 )
 
 
@@ -604,6 +609,194 @@ def gate_r10_cross_vertical_isolation(goldens=None) -> GateResult:
 
 
 # --------------------------------------------------------------------------- #
+# R11 — NO DOUBLE INTRO (W-VOICE-HEART). The founder's #1 complaint: the outbound
+# greeted+pitched, then re-greeted+re-introduced ("main bol rahi hoon..." twice).
+# The structural fix is the worker-opener suppression (agent.py Hunk H), but the
+# PROMPT must ALSO carry an explicit single-greeting / no-re-greet directive so the
+# kernel-ON prefix can never re-introduce by another door (the red-team's grep-found
+# gap). R11 asserts the SINGLE GREETING: rule IS in the rendered prompt AND there is
+# exactly one OPENING directive (reusing R5's non-vacuous opener counter). Negative
+# control: a prompt without the rule (or with two OPENING lines) FAILS.
+# --------------------------------------------------------------------------- #
+def gate_r11_no_double_intro(goldens=None) -> GateResult:
+    from voice_kernel.brain_packs.delivery import has_single_greeting_rule
+
+    from .verticals import all_goldens
+
+    goldens = goldens if goldens is not None else all_goldens()
+    bad: list[str] = []
+    with kernel_outbound_on():
+        for g in goldens:
+            out = assemble_prompt(g.fields)
+            if not has_single_greeting_rule(out):
+                bad.append(f"{g.name}: missing the SINGLE GREETING / no-re-greet rule (double-intro risk)")
+            if _count_openers(out.lower()) != 1:
+                bad.append(f"{g.name}: {_count_openers(out.lower())} OPENING directives (double/zero intro)")
+    return GateResult(
+        "R11", "no double intro (explicit single-greeting rule + exactly one OPENING)",
+        passed=not bad, detail="; ".join(bad[:5]) or "single-greeting rule present; one OPENING per prompt",
+        samples=tuple(bad[:5]),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R12 — NAME USED SPARINGLY (W-VOICE-HEART #3a). The outbound said the lead's name
+# again and again, every line. The fix is a PROMPT rule (name at most once/twice,
+# never a per-turn prefix). R12 asserts the NAME USE: rule + the no-emphasis clause
+# are rendered. Negative control: a prompt lacking the rule FAILS.
+# --------------------------------------------------------------------------- #
+def gate_r12_name_used_sparingly(goldens=None) -> GateResult:
+    from voice_kernel.brain_packs.delivery import has_name_sparingly_rule
+
+    from .verticals import all_goldens
+
+    goldens = goldens if goldens is not None else all_goldens()
+    bad: list[str] = []
+    with kernel_outbound_on():
+        for g in goldens:
+            out = assemble_prompt(g.fields)
+            if not has_name_sparingly_rule(out):
+                bad.append(f"{g.name}: missing the NAME USE (sparingly + no-emphasis) rule")
+    return GateResult(
+        "R12", "name used sparingly (at-most-twice + no per-turn prefix + no emphasis)",
+        passed=not bad, detail="; ".join(bad[:5]) or "name-sparingly rule present in every prompt",
+        samples=tuple(bad[:5]),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R13 — NO LITERARY/FORMAL HINDI (W-VOICE-HEART #4). The founder heard
+# "mahatvapurn"-class formal Hindi instead of natural Hinglish. The casual-Hinglish
+# LANGUAGE directive bans the literary tokens by name. R13 asserts the ban is
+# rendered (the literary token 'mahatvapurn' is named as forbidden) AND no
+# literary token is used as PLAIN SPOKEN guidance outside the ban list. Negative
+# control: the has_literary_hindi detector flips on a literary input.
+# --------------------------------------------------------------------------- #
+_LITERARY_BAN_CUE = "literary"  # the LANGUAGE directive's ban phrasing
+
+
+def gate_r13_no_formal_hindi(goldens=None) -> GateResult:
+    from voice_kernel.brain_packs.language import contains_banned_literary
+
+    from .verticals import all_goldens
+
+    goldens = goldens if goldens is not None else all_goldens()
+    bad: list[str] = []
+    with kernel_outbound_on():
+        for g in goldens:
+            out = assemble_prompt(g.fields)
+            low = out.lower()
+            # (a) the casual-Hinglish ban must be rendered (names 'mahatvapurn' as
+            # forbidden, paired with the 'never use literary' instruction).
+            if "mahatvapurn" not in low or _LITERARY_BAN_CUE not in low:
+                bad.append(f"{g.name}: casual-Hinglish ban not rendered (formal-Hindi guard missing)")
+            # (b) the ONLY occurrence of a literary token must be inside the ban
+            # clause ('NEVER use ... mahatvapurn'), never as plain spoken guidance.
+            # We check the directive carries the prohibition cue near the token.
+            if "mahatvapurn" in low:
+                seg = low.split("mahatvapurn", 1)[0][-80:]
+                if not any(p in seg for p in ("never", "not ", "avoid", "literary", "मत")):
+                    bad.append(f"{g.name}: 'mahatvapurn' rendered WITHOUT a prohibition (used as guidance)")
+    # sanity: the detector the gate's negative control relies on actually bites.
+    if not contains_banned_literary("yeh mahatvapurn baat hai"):
+        bad.append("contains_banned_literary failed to flag a literary input (detector broken)")
+    return GateResult(
+        "R13", "no formal/literary Hindi (casual-Hinglish ban rendered)",
+        passed=not bad, detail="; ".join(bad[:5]) or "formal-Hindi ('mahatvapurn'-class) banned in every prompt",
+        samples=tuple(bad[:5]),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R14 — CLOSING IS LLM-GENERATED (W-VOICE-HEART #2-ending). The outbound said a
+# hardcoded 'ok perfect' close (and repeated it at bye). The kernel persona carries
+# a CLOSING directive that mandates a warm LLM-generated goodbye, never a canned
+# line. R14 asserts a CLOSING: directive is rendered AND it explicitly forbids a
+# canned/scripted goodbye. Negative control: a prompt with no CLOSING fails.
+# --------------------------------------------------------------------------- #
+_CLOSING_DIRECTIVE = "closing:"
+_CANNED_CLOSE_BAN_CUES = ("never a canned", "never scripted", "never a scripted", "llm-generated")
+
+
+def gate_r14_llm_generated_closing(goldens=None) -> GateResult:
+    from .verticals import all_goldens
+
+    goldens = goldens if goldens is not None else all_goldens()
+    bad: list[str] = []
+    with kernel_outbound_on():
+        for g in goldens:
+            low = assemble_prompt(g.fields).lower()
+            if _CLOSING_DIRECTIVE not in low:
+                bad.append(f"{g.name}: no CLOSING directive (close would fall back to a hardcoded line)")
+                continue
+            seg = low.split(_CLOSING_DIRECTIVE, 1)[1][:400]
+            if not any(cue in seg for cue in _CANNED_CLOSE_BAN_CUES):
+                bad.append(f"{g.name}: CLOSING directive does not forbid a canned/scripted goodbye")
+    return GateResult(
+        "R14", "closing is LLM-generated (a CLOSING directive bans a canned goodbye)",
+        passed=not bad, detail="; ".join(bad[:5]) or "every mode carries an LLM-generated CLOSING directive",
+        samples=tuple(bad[:5]),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# R15 — CONSTANT PROSODY / NO NAME-EMPHASIS (W-VOICE-HEART #3b, #6). Two halves:
+#   (a) PROMPT: the name token must never be written with shouting/emphasis markup
+#       (the TEXT->prosody artifact that makes flash_v2_5 render the name louder/
+#       faster). The NAME USE rule must carry the 'no emphasis' clause, AND the
+#       rendered prompt must not itself emit an emphasised name example.
+#   (b) DEPLOYABLE: the constant prosody constants are pinned (the derived inbound
+#       value 0.45/1.08, style 0, speaker_boost off) — asserted against the shipped
+#       systemd drop-in template so the deploy params can't silently drift.
+# Negative control: text_emphasizes_name flips on a shouted name.
+# --------------------------------------------------------------------------- #
+# the constant prosody the deploy pins (derived from the GOOD inbound voice
+# `_inbound_ref/aim_voice_agent.LIVE.py:_build_tts`). Asserted against the drop-in.
+CONSTANT_PROSODY = {
+    "EL_STABILITY": "0.45",
+    "EL_SPEED": "1.08",
+    "EL_SIMILARITY": "0.80",
+    "style": "0.0",
+    "use_speaker_boost": "False",
+}
+_DROPIN_PATH = _REPO_ROOT / "voice_kernel" / "systemd" / "famit-agent.service.d-voice-heart.conf"
+
+
+def gate_r15_constant_prosody_no_name_emphasis(goldens=None) -> GateResult:
+    from voice_kernel.brain_packs.delivery import NO_EMPHASIS_CUE, text_emphasizes_name
+
+    from .verticals import all_goldens
+
+    goldens = goldens if goldens is not None else all_goldens()
+    bad: list[str] = []
+    with kernel_outbound_on():
+        for g in goldens:
+            low = assemble_prompt(g.fields).lower()
+            # (a) the no-emphasis-on-name rule must be present.
+            if NO_EMPHASIS_CUE not in low:
+                bad.append(f"{g.name}: prompt missing the no-name-emphasis (constant volume) rule")
+    # negative-control sanity: the emphasis detector bites on a shouted name.
+    if not text_emphasizes_name("RAHUL! great to talk", name="Rahul"):
+        bad.append("text_emphasizes_name failed to flag a shouted name (detector broken)")
+    if text_emphasizes_name("namaste Rahul ji, kaise hain aap", name="Rahul"):
+        bad.append("text_emphasizes_name false-positived on a normal name mention")
+    # (b) the constant-prosody drop-in pins the derived inbound constants.
+    if _DROPIN_PATH.exists():
+        conf = _DROPIN_PATH.read_text(encoding="utf-8", errors="replace")
+        for k, v in (("EL_STABILITY", CONSTANT_PROSODY["EL_STABILITY"]),
+                     ("EL_SPEED", CONSTANT_PROSODY["EL_SPEED"])):
+            if f"{k}={v}" not in conf:
+                bad.append(f"drop-in does not pin {k}={v} (constant prosody drift)")
+    else:
+        bad.append("constant-prosody systemd drop-in template is missing")
+    return GateResult(
+        "R15", "constant prosody + no name-emphasis (drop-in pins 0.45/1.08; prompt bans shouting the name)",
+        passed=not bad, detail="; ".join(bad[:5]) or "prosody pinned constant; name never emphasised",
+        samples=tuple(bad[:5]),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # THE DEPLOY GATE — run them all.
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -640,6 +833,12 @@ def run_all_gates(goldens=None) -> GateReport:
     rep.results.append(gate_r8_no_half_words())
     rep.results.append(gate_r9_casual_hinglish())
     rep.results.append(gate_r10_cross_vertical_isolation(goldens))
+    # W-VOICE-HEART founder rules (the outbound voice-heart fixes).
+    rep.results.append(gate_r11_no_double_intro(goldens))
+    rep.results.append(gate_r12_name_used_sparingly(goldens))
+    rep.results.append(gate_r13_no_formal_hindi(goldens))
+    rep.results.append(gate_r14_llm_generated_closing(goldens))
+    rep.results.append(gate_r15_constant_prosody_no_name_emphasis(goldens))
     return rep
 
 
@@ -652,5 +851,9 @@ __all__ = [
     "gate_r4_selected_tts_provider_used", "gate_r5_single_greeting", "_count_openers",
     "gate_r6_neutral_prosody", "gate_r7_language_adapts",
     "gate_r8_no_half_words", "gate_r9_casual_hinglish",
-    "gate_r10_cross_vertical_isolation", "run_all_gates",
+    "gate_r10_cross_vertical_isolation",
+    "gate_r11_no_double_intro", "gate_r12_name_used_sparingly",
+    "gate_r13_no_formal_hindi", "gate_r14_llm_generated_closing",
+    "gate_r15_constant_prosody_no_name_emphasis", "CONSTANT_PROSODY",
+    "run_all_gates",
 ]

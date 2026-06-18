@@ -398,6 +398,159 @@ def test_r10_bites_on_real_estate_leak():
 
 
 # --------------------------------------------------------------------------- #
+# W-VOICE-HEART gates R11..R15 — POSITIVE + NEGATIVE CONTROLS (each must bite).
+# --------------------------------------------------------------------------- #
+# R11 — no double intro: the single-greeting rule must be rendered AND exactly one
+# OPENING. Negative: a prompt missing the rule, and a prompt with two OPENINGs, FAIL.
+def test_r11_passes_on_fixed_kernel():
+    assert G.gate_r11_no_double_intro().passed
+
+
+def test_r11_bites_when_single_greeting_rule_absent(monkeypatch):
+    g = _broken_golden()
+    no_rule = "you are r.\nobjective: move the lead.\nopening: greet skeleton.\nsuccess: y.\n"
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: no_rule)
+    r = G.gate_r11_no_double_intro([g])
+    assert not r.passed, "R11 failed to bite when the SINGLE GREETING rule is absent"
+    assert "single greeting" in r.detail.lower()
+
+
+def test_r11_bites_on_double_opening(monkeypatch):
+    g = _broken_golden()
+    double = (
+        "you are r.\nopening: greet skeleton.\nopening: also greet again warmly.\n"
+        "SINGLE GREETING: greet once only.\n"
+    )
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: double)
+    r = G.gate_r11_no_double_intro([g])
+    assert not r.passed, "R11 failed to bite on a double OPENING directive"
+
+
+def test_r11_single_greeting_rule_is_actually_in_the_real_prompt():
+    """The rule must be LIVE in the real kernel output (not just asserted in a mock)."""
+    from voice_kernel.brain_packs.delivery import has_single_greeting_rule
+
+    out = G.assemble_prompt(_broken_golden().fields)
+    assert has_single_greeting_rule(out), "kernel prompt does not carry the single-greeting rule"
+
+
+# R12 — name sparingly: the NAME USE + no-emphasis rule must be rendered. Negative:
+# a prompt without it FAILS.
+def test_r12_passes_on_fixed_kernel():
+    assert G.gate_r12_name_used_sparingly().passed
+
+
+def test_r12_bites_when_name_rule_absent(monkeypatch):
+    g = _broken_golden()
+    no_rule = "you are r.\nobjective: x.\nopening: greet.\n"  # no NAME USE rule
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: no_rule)
+    r = G.gate_r12_name_used_sparingly([g])
+    assert not r.passed, "R12 failed to bite when the NAME USE rule is absent"
+
+
+def test_r12_name_rule_live_in_real_prompt():
+    from voice_kernel.brain_packs.delivery import has_name_sparingly_rule
+
+    out = G.assemble_prompt(_broken_golden().fields)
+    assert has_name_sparingly_rule(out), "kernel prompt does not carry the name-sparingly rule"
+
+
+# R13 — no formal Hindi: the casual-Hinglish ban (names 'mahatvapurn' as forbidden)
+# must be rendered. Negative: the detector must flag a literary input; a prompt that
+# renders 'mahatvapurn' WITHOUT a prohibition fails.
+def test_r13_passes_on_fixed_kernel():
+    assert G.gate_r13_no_formal_hindi().passed
+
+
+def test_r13_bites_when_literary_used_as_guidance(monkeypatch):
+    g = _broken_golden()
+    # 'mahatvapurn' appears but NOT inside a prohibition -> used as plain guidance.
+    leaky = "you are r.\nspeak in clear mahatvapurn hindi for the customer.\n"
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: leaky)
+    r = G.gate_r13_no_formal_hindi([g])
+    assert not r.passed, "R13 failed to bite on literary Hindi used as spoken guidance"
+
+
+def test_r13_detector_bites():
+    from voice_kernel.brain_packs.language import contains_banned_literary
+
+    assert contains_banned_literary("yeh mahatvapurn baat hai") is True
+    assert contains_banned_literary("yeh zaroori baat hai") is False
+
+
+# R14 — LLM-generated closing: a CLOSING directive that forbids a canned goodbye.
+# Negative: a prompt with no CLOSING directive FAILS.
+def test_r14_passes_on_fixed_kernel():
+    assert G.gate_r14_llm_generated_closing().passed
+
+
+def test_r14_bites_when_no_closing_directive(monkeypatch):
+    g = _broken_golden()
+    no_close = "you are r.\nopening: greet skeleton.\nobjective: move the lead.\n"
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: no_close)
+    r = G.gate_r14_llm_generated_closing([g])
+    assert not r.passed, "R14 failed to bite when there is NO CLOSING directive (hardcoded close)"
+    assert "no closing" in r.detail.lower()
+
+
+def test_r14_bites_when_closing_allows_canned(monkeypatch):
+    g = _broken_golden()
+    canned = "you are r.\nclosing: say 'ok perfect dhanyavaad' and hang up.\n"  # no ban cue
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: canned)
+    r = G.gate_r14_llm_generated_closing([g])
+    assert not r.passed, "R14 failed to bite on a CLOSING that permits a canned goodbye"
+
+
+def test_r14_closing_live_in_real_prompt():
+    low = G.assemble_prompt(_broken_golden().fields).lower()
+    assert "closing:" in low, "kernel prompt does not carry a CLOSING directive"
+
+
+# R15 — constant prosody / no name-emphasis: the no-emphasis rule rendered + the
+# drop-in pins 0.45/1.08. Negative: a prompt without the rule FAILS; the
+# emphasis detector bites on a shouted name.
+def test_r15_passes_on_fixed_kernel():
+    assert G.gate_r15_constant_prosody_no_name_emphasis().passed
+
+
+def test_r15_bites_when_no_emphasis_rule_absent(monkeypatch):
+    g = _broken_golden()
+    no_rule = "you are r.\nopening: greet.\nNAME USE: say it sometimes.\n"  # no 'no emphasis'
+    monkeypatch.setattr(G, "assemble_prompt", lambda fields: no_rule)
+    r = G.gate_r15_constant_prosody_no_name_emphasis([g])
+    assert not r.passed, "R15 failed to bite when the no-name-emphasis rule is absent"
+
+
+def test_r15_emphasis_detector_bites():
+    from voice_kernel.brain_packs.delivery import text_emphasizes_name
+
+    assert text_emphasizes_name("RAHUL! kaise hain", name="Rahul") is True
+    assert text_emphasizes_name("Rahul!!! bahut accha", name="Rahul") is True
+    assert text_emphasizes_name("namaste Rahul ji, kaise hain", name="Rahul") is False
+
+
+def test_r15_dropin_pins_constant_prosody():
+    """The shipped systemd drop-in must pin the derived inbound constants (0.45/1.08)
+    so the deploy params cannot silently drift from the GOOD inbound voice."""
+    from voice_ops.eval.regression_gates import _DROPIN_PATH, CONSTANT_PROSODY
+
+    assert _DROPIN_PATH.exists(), "constant-prosody drop-in template missing"
+    conf = _DROPIN_PATH.read_text(encoding="utf-8")
+    assert f"EL_STABILITY={CONSTANT_PROSODY['EL_STABILITY']}" in conf
+    assert f"EL_SPEED={CONSTANT_PROSODY['EL_SPEED']}" in conf
+
+
+# every new gate appears in the canonical GATE_LIST + run_all_gates report.
+def test_voice_heart_gates_registered():
+    ids = {g[0] for g in G.GATE_LIST}
+    assert {"R11", "R12", "R13", "R14", "R15"} <= ids
+    rep = G.run_all_gates()
+    produced = {r.gate_id for r in rep.results}
+    assert {"R11", "R12", "R13", "R14", "R15"} <= produced
+    assert rep.passed, f"deploy gate BLOCKED: {rep.failed_gates}"
+
+
+# --------------------------------------------------------------------------- #
 # IMPORT ISOLATION — the harness must never pull a droplet module.
 # --------------------------------------------------------------------------- #
 def test_eval_import_pulls_zero_droplet_modules():
