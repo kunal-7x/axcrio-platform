@@ -12,7 +12,13 @@ Plan: `design/W15-UI-IA-PLAN.md` · Reuse-map: `design/spec-core2-reuse-map.md`.
 5. [DONE] Dashboard `/` — consolidate analytics (funnel + volume + KPI) + GlobalFilters + LeadBadge; "View full report" -> Reports.
 6. [DONE] Call Logs `/calls` — Callbacks as a tab; LeadBadge in transcript area.
 7. [DONE] Reports `/analytics` — relabel + GlobalFilters + share params; funnel + breakdown tables.
-8. [PENDING] CRM/Leads polish — LeadBadge wired (leads already uses ScoreBadge; swap to LeadBadge).
+8. [DONE] CRM/Leads polish — Leads ScoreBadge->LeadBadge (col Score->Lead); CRM honors ?status= deep-link + Suspense.
+
+## RESULT — all units DONE, tsc + next build green (59 pages, exit 0).
+Commits: shell (nav/badges/GlobalFilters/report) · dashboard · calls+reports+leads+crm.
+Dropped-by-design nav keys (pages folded into tabs, routes still resolve server-gated):
+sell.leads, engage.callbacks, engage.communication, ai_manager.{overview,test,commands,
+approvals,capabilities,setup,users}, group key mod.sell. Every still-visible rail gate preserved.
 
 ## Key facts learned (ground truth)
 - `/report*` W14 routes are NOT mounted on the box yet (seam note only). LIVE routes: `/analytics`, `/stats`, `/calls`, `/leads`, `/callbacks`. So `lib/report.ts` builds the W14-shaped report by COMPOSING the live endpoints (dormant-safe), and will prefer real `/report*` when present.
