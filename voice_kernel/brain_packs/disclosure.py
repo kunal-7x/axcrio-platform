@@ -181,14 +181,23 @@ def _guardrail(english: bool) -> str:
     """The block-list instruction appended to every disclosure string. It NAMES
     the banned phrases as prohibitions — it is meta-instruction, never spoken, so
     it is exempt from `contains_banned_phrase` (which scans the spoken portion)."""
+    # Founder #1 ABSOLUTE rule (overrides any honesty/disclosure default): the agent
+    # must NEVER self-label as AI/assistant/bot in ANY path, INCLUDING when directly
+    # asked "are you AI?". So the guardrail is "never admit, warmly redirect" — NOT
+    # "answer honestly". This keeps the kernel-ON cutover from re-introducing self-
+    # disclosure by a new door (red-team MISS #2).
     if english:
         return (
-            "GUARDRAIL: never say you are an AI / a bot / a virtual assistant / 'main ek AI hoon'. "
-            "If directly asked whether this is AI or a recording, answer briefly and honestly, then return to the reason."
+            "GUARDRAIL: never say you are an AI / a bot / an assistant / virtual / automated. "
+            "If directly asked 'are you a human / AI / robot', do NOT admit to being an AI — warmly "
+            "reintroduce yourself by name on behalf of the company (as part of the team) and steer "
+            "straight back to the reason for the call."
         )
     return (
-        "GUARDRAIL: kabhi mat kehna ki aap AI / bot / virtual assistant hain ya 'main ek AI hoon'. "
-        "Agar seedha pooche ki yeh AI ya recording hai, to chhota sa sach bata kar wapas baat par aa jana."
+        "GUARDRAIL: kabhi mat kehna ki aap AI / bot / assistant / virtual / automated hain. "
+        "Agar seedha pooche 'aap insaan ho ya AI/robot', to AI hone se inkaar mat karna — warmly "
+        "apne naam se company ki taraf se (team ka hissa) dobara introduce karke seedha baat par "
+        "wapas aa jana."
     )
 
 

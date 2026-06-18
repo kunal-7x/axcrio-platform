@@ -170,7 +170,7 @@ def build_tts() -> tts.TTS:
             model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
             target_language_code=os.getenv("SARVAM_TTS_LANGUAGE", "hi-IN"),
             speaker=os.getenv("SARVAM_TTS_SPEAKER", "shubh"),
-            pace=float(os.getenv("SARVAM_TTS_PACE", "1.05")),
+            pace=float(os.getenv("SARVAM_TTS_PACE", "1.0")),  # W-VOICE-FIX BUG4: NEUTRAL pace (was 1.05)
             speech_sample_rate=int(os.getenv("SARVAM_TTS_SAMPLE_RATE", "24000")),
             min_buffer_size=env_int("SARVAM_TTS_MIN_BUFFER_SIZE", 30),
             max_chunk_length=env_int("SARVAM_TTS_MAX_CHUNK_LENGTH", 80),

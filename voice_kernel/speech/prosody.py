@@ -20,6 +20,7 @@ Pure, deterministic, stdlib-only, fail-open.
 """
 from __future__ import annotations
 
+import os
 import re
 
 # sparse fillers — a real telecaller's verbal nods. Used at MOST once per
@@ -28,6 +29,15 @@ _FILLERS_HINGLISH = ("haan", "achha", "toh", "dekhiye")
 _FILLERS_EN = ("right", "okay", "so", "see")
 
 _FILLER_EVERY = 3  # at most one filler per 3 sentences
+
+
+def _fillers_enabled() -> bool:
+    """W-VOICE-FIX (BUG4): filler injection is OFF by DEFAULT — the founder wants
+    NEUTRAL/consistent delivery, not over-varied "sound human" rhythm (injected
+    fillers create an uneven perceived pace/loudness). Punctuation-shaped pauses
+    stay on; only the prepended verbal-nod fillers are gated. Set VOICE_FILLERS=1
+    to re-enable (e.g. for an inbound persona tuned to want them)."""
+    return os.getenv("VOICE_FILLERS", "0") in ("1", "true", "True")
 
 # a line is SENSITIVE (no fillers, no extra pauses injected mid-number) if it
 # carries a price, a phone number, a booking/appointment, an OTP, or a
@@ -70,14 +80,23 @@ def shape_punctuation(line: str, hinglish: bool, sparse_filler_slot: bool) -> st
     return out
 
 
-def apply_prosody(sentences: tuple[str, ...], hinglish: bool) -> tuple[str, ...]:
-    """Apply sparse fillers + hesitation shaping across the sentence list. One
-    filler at most per `_FILLER_EVERY` sentences, never on a sensitive line."""
+def apply_prosody(
+    sentences: tuple[str, ...], hinglish: bool, *, fillers: bool | None = None
+) -> tuple[str, ...]:
+    """Apply hesitation/punctuation shaping across the sentence list, and — only
+    when fillers are enabled — at most one sparse verbal-nod filler per
+    `_FILLER_EVERY` sentences (never on a sensitive line).
+
+    `fillers`: None (default) => read the VOICE_FILLERS env (OFF by default for
+    NEUTRAL delivery, W-VOICE-FIX BUG4). Pass True/False to force it (tests / a
+    per-direction caller). When OFF, punctuation prosody still applies — only the
+    prepended fillers are suppressed, keeping pace/loudness consistent."""
+    use_fillers = _fillers_enabled() if fillers is None else bool(fillers)
     out: list[str] = []
     since_filler = _FILLER_EVERY  # allow the first eligible non-sensitive line
     for s in sentences:
         slot = False
-        if not is_sensitive_line(s) and since_filler >= _FILLER_EVERY:
+        if use_fillers and not is_sensitive_line(s) and since_filler >= _FILLER_EVERY:
             slot = True
             since_filler = 0
         else:

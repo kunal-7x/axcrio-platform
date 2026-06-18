@@ -333,10 +333,11 @@ def _flow_block(f: dict, agent: str, company: str, product: str, location: str,
 line, फिर PAUSE कर के caller को बोलने दो। ये कोई checklist नहीं जो रट कर एक साथ बोलनी है — caller \
 के जवाब के हिसाब से natural तरीके से आगे बढ़ो, बीच में वो कुछ पूछे तो पहले उसका जवाब दो।
 
-1. WARM GREET + CONFIRM IDENTITY: गर्मजोशी से greet ("नमस्ते / good morning") + {company} का नाम, \
-फिर naam confirm करो — "क्या मैं {{lead_name}} जी से बात {am_m}?" caller के हाँ कहने का WAIT करो।
-2. PERMISSION + एक-line reason: "मैंने {product} के बारे में call किया था — क्या अभी दो minute बात हो \
-सकती है?" फिर रुको। (अगर busy → time पूछ कर politely callback.)
+1. CONFIRM IDENTITY (तुम पहले ही greet + परिचय दे चुकी/चुके हो — दोबारा 'नमस्ते'/greeting मत करना): \
+सीधे naam confirm करो — "क्या मैं {{lead_name}} जी से बात {am_m}?" caller के हाँ कहने का WAIT करो।
+2. PERMISSION + एक-line reason (पहला-purush — कभी 'आपने call किया' मत कहना; यह OUTBOUND है, तुमने call \
+किया है): "मैंने {product} के बारे में call किया था — क्या अभी दो minute बात हो सकती है?" फिर रुको। \
+(अगर busy → time पूछ कर politely callback.)
 3. BRIEF PROJECT INTRO (एक-दो line, brochure नहीं): "{intro_where}" — बस इतना, फिर रुको / देखो caller को।
 4. CREDIBILITY (एक line trust): {credibility}
 5. KEY DETAILS (caller के पूछने / interest पर, थोड़ा-थोड़ा — एक साथ सब मत डालो): configs/price/USP में से \
@@ -423,6 +424,35 @@ def build_system_prompt(f: dict) -> str:
     # --- the PROVEN human-telecaller flow (generic, field-driven) ---
     flow = _flow_block(f, agent, company, product, location, price, gender)
 
+    # --- OPENER section: CONDITIONAL (W-VOICE-FIX BUG2 — double greeting) ---------
+    # On OUTBOUND the opener (greeting + naam + company + product + permission) is
+    # ALWAYS spoken ONCE by session.say() at call start (agent.py). If the system
+    # prompt ALSO instructs "open with a warm greeting" on turn-1, the LLM re-greets
+    # → live-proven DOUBLE greeting. So when OPENER_ALREADY_SAID is in effect (the
+    # default now, matching agent.py:451), the OPENER section becomes a "you already
+    # opened — do NOT re-greet" note; turn-1 is a pure response/identity-confirm, NOT
+    # a second greeting. Same env flag agent.py reads → single source of truth.
+    _opener_already_said = os.getenv("OPENER_ALREADY_SAID", "1") in ("1", "true", "True")
+    if _opener_already_said:
+        opener_section = (
+            "=== तुम पहले ही OPEN कर चुकी/चुके हो (पहला turn — दोबारा greet मत करो!) ===\n"
+            "Call की शुरुआत में तुम greeting + अपना naam + company + किस {product} के बारे में call — "
+            "यह सब पहले ही बोल चुकी/चुके हो। इसलिए अब अपने turn में दोबारा 'नमस्ते'/'namaste'/greeting "
+            "मत करना और अपना naam/परिचय दोबारा मत दोहराना। सीधे caller के जवाब से आगे बढ़ो: उसकी बात का "
+            "छोटा जवाब दो या naam confirm कर के एक छोटा permission/अगला सवाल पूछो। कभी अपने आप को "
+            "'AI'/'assistant'/'bot'/'automated' मत कहना।"
+        ).replace("{product}", product)
+    else:
+        opener_section = (
+            '=== OPENER (पहला turn — छोटा, एक साँस में! pitch मत करो) ===\n'
+            'सिर्फ़ एक छोटी line (15-25 शब्द): warm greeting + (naam पता हो तो naam) + अपना naam "' + agent + '" + '
+            + disclosure_clause + ' + company "' + company + '" + "' + product + ' के बारे में call किया था" + naam confirm '
+            + '("क्या मैं आपसे बात ' + am_m + '?") या "क्या अभी दो minute बात हो सकती है?" '
+            + 'फिर रुक जाओ। Price, size, details — पहले turn में बिलकुल मत बताओ। एकदम छोटा, जैसे: '
+            + '"नमस्ते जी…! मैं ' + agent + ', ' + company + ' ' + verbs['ex_role'] + ' ' + verbs['speaking']
+            + '। ' + product + ' के बारे में बात करनी थी — अभी दो minute हैं?"'
+        )
+
     return f"""\
 ### TOP PRIORITY — these three rules override everything below ###
 1. LANGUAGE: UNDERSTAND the caller in WHATEVER language they speak. For your REPLY, use the
@@ -452,7 +482,8 @@ def build_system_prompt(f: dict) -> str:
      detail, then pause for the caller. A reply that takes more than ~5-6 seconds to speak is
      too long — cut it to one beat. If the caller cuts in ("रुको", "फटाफट", "हाँ हाँ") you were
      talking too much — STOP instantly and reply in ONE line. Speak, pause, go back-and-forth.
-3. FOLLOW THE PROVEN TELECALLER FLOW (below): warm greet → confirm name → ASK PERMISSION (2 min?)
+3. FOLLOW THE PROVEN TELECALLER FLOW (below): (you ALREADY greeted in the spoken opener — do NOT
+   re-greet) → confirm name → ASK PERMISSION (2 min?)
    → brief intro → credibility → key details (only as relevant) → EOI/soft-urgency → value →
    ONE qualification question → DUAL-OFFER close (two options, which suits?) → interested/exploring
    branch. Deliver each step as ONE short beat (rule 2), then PAUSE and let the caller react before
@@ -465,12 +496,7 @@ def build_system_prompt(f: dict) -> str:
 permission ले कर, सोच-समझ कर, एक बार में एक बात।
 {gender_note}{persona_block}
 
-=== OPENER (पहला turn — छोटा, एक साँस में! pitch मत करो) ===
-सिर्फ़ एक छोटी line (15-25 शब्द): warm greeting + (naam पता हो तो naam) + अपना naam "{agent}" + \
-{disclosure_clause} + company "{company}" + "{product} के बारे में call किया था" + naam confirm \
-("क्या मैं आपसे बात {am_m}?") या "क्या अभी दो minute बात हो सकती है?" \
-फिर रुक जाओ। Price, size, details — पहले turn में बिलकुल मत बताओ। एकदम छोटा, जैसे: \
-"नमस्ते जी…! मैं {agent}, {company} {verbs['ex_role']} {verbs['speaking']}। {product} के बारे में बात करनी थी — अभी दो minute हैं?"
+{opener_section}
 
 {flow}
 

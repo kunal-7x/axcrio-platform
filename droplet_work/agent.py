@@ -469,10 +469,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # section + FLOW step-1 make the LLM re-greet on turn 1 (live-proven double "नमस्ते
     # {name}"). This one-line behavioral instruction (no hardcoded name/company) tells the
     # model it has already opened → never greet/repeat the naam again. Cache-safe (in the
-    # one-time prefix, not per-turn). Gated + reversible. Default "0" so a deployed-but-not-
-    # yet-flagged build is BYTE-IDENTICAL to today; Cycle-2 sets OPENER_ALREADY_SAID=1 (with
-    # OPENER_IN_CTX=0) to enable the fix.
-    if os.getenv("OPENER_ALREADY_SAID", "0") in ("1", "true", "True"):
+    # one-time prefix, not per-turn). Gated + reversible. DEFAULT FLIPPED to "1" (W-VOICE-FIX):
+    # the double-greeting was a live regression, so the fix ships ON by default now (paired with
+    # OPENER_IN_CTX=0 below). Set OPENER_ALREADY_SAID=0 to revert to the old re-greet behaviour.
+    if os.getenv("OPENER_ALREADY_SAID", "1") in ("1", "true", "True"):
         base_instructions += (
             "\n\n=== तुम पहले ही OPEN कर चुके हो (ज़रूरी) ===\n"
             "Call की शुरुआत में तुम greet कर के अपना परिचय (naam + company + किस product के "
@@ -590,17 +590,19 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         model=os.getenv("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5"),
         language=_init_tts_lang,
         apply_text_normalization=_el_text_norm,
-        # Realtime-warm voice settings (verified from ElevenLabs docs):
-        # low stability = expressive, style=0 (style adds 20-50ms), speaker_boost off.
+        # NEUTRAL/consistent voice settings (W-VOICE-FIX BUG4). The founder wants normal,
+        # consistent pace + loudness — NOT max-expressive call-to-call variation.
+        # stability 0.65 = consistent yet still natural (0.9-1.0 is robotic/flat; 0.45 was
+        # over-expressive → swinging pace/loudness). style=0 (style adds 20-50ms + exaggerates),
+        # speaker_boost off (no loudness pumping). Env still overrides for live tuning.
         voice_settings=VoiceSettings(
-            stability=float(os.getenv("EL_STABILITY", "0.45")),
+            stability=float(os.getenv("EL_STABILITY", "0.65")),
             similarity_boost=float(os.getenv("EL_SIMILARITY", "0.80")),
             style=0.0,
             use_speaker_boost=False,
-            # VOICEFIX: nudge speaking rate up slightly. The opener (~30 words) took ~18s to
-            # speak at 1.0 (~1.7 words/s — unnaturally slow for a phone agent). 1.08 trims every
-            # utterance ~8% and feels snappier with no content change. Tune via EL_SPEED.
-            speed=float(os.getenv("EL_SPEED", "1.08")),
+            # NEUTRAL speaking rate. 1.08 (old) ran 8% fast → "sometimes too fast". 1.0 is true
+            # neutral. (If the ~18s slow-opener ever returns, nudge to 1.04 via EL_SPEED — env wins.)
+            speed=float(os.getenv("EL_SPEED", "1.0")),
         ),
         auto_mode=True,                          # sentence-level streaming = fast first audio
     )
@@ -903,8 +905,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # context as a prior assistant turn — so the model SEES its own opener and (told by the
     # prompt to "open with a greeting") re-greets on turn 1. OPENER_IN_CTX=0 suppresses that
     # echo so there is no greeting for the model to repeat; the system-prompt persona still
-    # holds its identity for "kaun bol raha hai?". Default "1" = byte-identical. Reversible.
-    _opener_in_ctx = os.getenv("OPENER_IN_CTX", "1") not in ("0", "false", "False")
+    # holds its identity for "kaun bol raha hai?". DEFAULT FLIPPED to "0" (W-VOICE-FIX): the
+    # opener is no longer echoed as a copy-able turn, so the model never re-greets. Reversible
+    # (OPENER_IN_CTX=1 restores the old echo).
+    _opener_in_ctx = os.getenv("OPENER_IN_CTX", "0") not in ("0", "false", "False")
     await session.say(opener, allow_interruptions=True, add_to_chat_ctx=_opener_in_ctx)
 
 
