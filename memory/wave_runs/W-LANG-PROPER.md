@@ -56,3 +56,76 @@ KEEP the prior turn's language (NO English-only failure mode). Preserve W5 casua
   (flash can't speak gu) but is understood — matches box langdetect.py contract.
 - Soft directive stays the existing `USER LANGUAGE: <lang> — mirror it.` in _render_turn_layer;
   we simply feed it the RESOLVED (sticky) lang instead of a possibly-blank raw value.
+
+## Phase: VERIFY + COMMIT + REDEPLOY-INBOUND (2026-06-18)
+**STATUS: ✅ DONE — committed `1610ed5` (BUILD already in HEAD; this phase = VERIFY + redeploy
+INBOUND so the seam is LIVE, not inert). Inbound `aim-voice-agent` restarted with the new
+`voice_kernel/`; earner `famit-agent` NEVER touched.**
+
+### Red-team verdict folded
+SHIP the kernel module — it was INERT in prod until the inbound agent had it. Confirmed:
+`UserInputTranscribedEvent.language` exists + is populated from `SpeechData.language` (Sarvam
+per-utterance `language_code`), so the detection path is real; the live agent's `on_turn` is
+wired to pass `ev.language` → `on_turn(detected_lang=...)` and apply `tts_lang`. The five
+red-team questions all clear (both-ways switch w/ no hysteresis; NO path defaults to English —
+every give-up branch carries PRIOR lang; truly soft single suffix line, no forcing/lock;
+STT-auto-detect dependency has a safe fallback chain blank→text-classify→carry-prior; W5
+casual-Hinglish/no-half-words untouched). One real point: "re-deploys INBOUND" only changes
+behavior once the box has the new tree — which this phase did.
+
+### VERIFY (local)
+- `python -m pytest voice_kernel/` = **340 passed**. `test_language.py` + off-identity
+  (`test_adapter_off_identity` + `test_events_off_identity`) = **42 passed**.
+- Synthetic both-ways: Hindi(stt hi-IN)→hindi/hi-IN; switch(stt en-IN)→english/en-IN
+  switched=True; back→hindi/hi-IN switched=True; short "ok" w/ blank STT → source=`carried`,
+  keeps PRIOR lang (NOT English). The English-only trap is closed.
+- gitleaks `detect --log-opts="-1 1610ed5"` = **0 leaks** (38.7 KB scanned).
+- EARNER source `droplet_work/agent.py` md5 = `98655dbf` (tree golden, frozen, untouched).
+
+### EARNER GATE — before / after (box `famit@168.144.153.145`)
+Box-deployed earner md5 = `480d23c3f2e1daf4814b9a3a9c9695d4` (the live KERNEL_OUTBOUND=1 build).
+| Phase | agent.py md5 | famit-agent | famit-agent MainPID | caller /health | aim-voice-agent |
+|---|---|---|---|---|---|
+| BEFORE | `480d23c3` ✅ | active | 3979046 (uptime 14:44:47Z) | 200 | active |
+| AFTER  | `480d23c3` ✅ UNCHANGED | active | **3979046 (uptime 14:44:47Z — NOT restarted)** | 200 | active (NEW pid 3988655) |
+- ZERO drift. famit-agent MainPID + uptime identical before/after = earner never restarted/touched.
+- NO outbound ring placed.
+
+### REDEPLOY INBOUND (aim-voice-agent only)
+- Flag already ON: drop-in `/etc/systemd/system/aim-voice-agent.service.d/kernel-inbound.conf`
+  = `KERNEL_INBOUND=1` (unchanged; lives ONLY in the drop-in, never the shared `.env`).
+- No Sarvam STT config change needed: STT already runs `language="unknown"` (auto-detect) in the
+  inbound agent — the seam consumes the per-utterance detected lang; no hi-IN lock to remove.
+- Shipped `voice_kernel/` via tar-over-ssh, ATOMIC swap with timestamped backup:
+  - box backup of prior tree → `/opt/famit-agent/voice_kernel.LANGbak.20260618-152053`
+  - LIVE `voice_kernel/language.py` md5 on box = `b1c05080f5a41cd510c8be0084dba63c`
+  - (box had NO `language.py` before — confirms the seam was committed but inert in prod.)
+- Pre-restart box import check (box python): `import voice_kernel.language` + `...integrations.inbound`
+  OK, `on_turn` present, synthetic resolve correct (Hindi→hindi, switch→english, carry→prior).
+- `sudo systemctl restart aim-voice-agent` ONLY. New MainPID 3988655, all 4 workers
+  `process initialized` + `AIM prewarm: Silero VAD loaded`, HTTP :8091, `registered worker
+  agent_name="manager" id=AW_zD59Xv2uKwGJ`. Journal new generation = **0** Traceback/ImportError.
+  (The 15:23:14 `Failed to kill control group`/`result 'timeout'` lines = OLD-gen teardown during
+  the stop phase, not a flag-ON error.)
+
+### ROLLBACK (instant)
+- Disable kernel: flip the drop-in to `KERNEL_INBOUND=0` + `daemon-reload` + restart `aim-voice-agent`.
+- Or restore the prior tree: `sudo rm -rf /opt/famit-agent/voice_kernel && sudo mv
+  /opt/famit-agent/voice_kernel.LANGbak.20260618-152053 /opt/famit-agent/voice_kernel && sudo
+  systemctl restart aim-voice-agent`.
+- Either path touches `aim-voice-agent` ONLY; `famit-agent`/`agent.py` never affected.
+
+### FOUNDER RE-TEST
+Call **+918071583488**. Start in **Hindi**, then **switch to English mid-call** — the agent must
+follow your language both ways (and back). A short "ok"/"haan" must NOT flip it to English.
+
+### GATED OUTBOUND-REDEPLOY PLAN (ship the same fix to the earner LATER)
+The flag is already ON for outbound (`KERNEL_OUTBOUND=1`, agent.py `480d23c3`), so the earner
+already routes through `voice_kernel.integrations.outbound.on_turn` — which is wired to the same
+resolver. To give the OUTBOUND earner this language fix: ship the SAME new `voice_kernel/` to the
+box (it is shared — this redeploy already put `language.py` there, so outbound picks it up on its
+NEXT restart), then by EARNER LAW do a super-gated `famit-agent` redeploy as its OWN founder step:
+backup-record `480d23c3`, restart `famit-agent` ONLY during a quiet window, EARNER GATE before/after,
+and the FOUNDER places ONE real outbound ring on his own number (Hindi→English switch) to confirm.
+Instant rollback = `KERNEL_OUTBOUND=0` + restart, or restore `agent.py.WOUTbak.1781793303`. Do NOT
+restart `famit-agent` in this wave (founder is testing the earner).
