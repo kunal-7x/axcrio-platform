@@ -393,7 +393,13 @@ def test_on_tts_error_off_returns_elevenlabs(monkeypatch):
 def test_on_turn_off_is_inert(monkeypatch):
     _off(monkeypatch)
     out = asyncio.run(ob.on_turn(None, user_text="hi", detected_lang="hi"))
-    assert out == {"reply_lang": "hi", "rag_suffix": None, "speech_plan": None}
+    assert out == {
+        "reply_lang": "hi",
+        "tts_lang": "",
+        "lang_switched": False,
+        "rag_suffix": None,
+        "speech_plan": None,
+    }
 
 
 def test_on_turn_on_returns_plain_dict(monkeypatch):
@@ -403,10 +409,40 @@ def test_on_turn_on_returns_plain_dict(monkeypatch):
     out = asyncio.run(
         ob.on_turn(ik, user_text="kitne ka hai", detected_lang="hi", history_len=2)
     )
-    assert set(out.keys()) == {"reply_lang", "rag_suffix", "speech_plan"}
-    assert out["reply_lang"] == "hi"
+    assert set(out.keys()) == {
+        "reply_lang", "tts_lang", "lang_switched", "rag_suffix", "speech_plan",
+    }
+    assert out["reply_lang"] == "hindi"
+    assert out["tts_lang"] == "hi-IN"
     assert out["speech_plan"] is None  # speech plan deferred per the plan
     assert out["rag_suffix"] is None or isinstance(out["rag_suffix"], str)
+
+
+# --------------------------------------------------------------------------- #
+# ADAPTIVE LANGUAGE (the W-LANG-PROPER seam) — symmetric with inbound: follow the
+# caller each turn, both ways, NEVER force English; uncertain -> keep prior lang.
+# --------------------------------------------------------------------------- #
+def test_on_turn_adapts_language_both_ways_and_keeps_prior_on_uncertain(monkeypatch):
+    ik = _build_on(monkeypatch)
+
+    t1 = asyncio.run(ob.on_turn(ik, user_text="मुझे price बताइए", detected_lang="hi-IN"))
+    assert t1["reply_lang"] == "hindi"
+    assert t1["tts_lang"] == "hi-IN"
+
+    t2 = asyncio.run(
+        ob.on_turn(ik, user_text="what is the price and how does it work", detected_lang="")
+    )
+    assert t2["reply_lang"] == "english"
+    assert t2["tts_lang"] == "en-IN"
+    assert t2["lang_switched"] is True
+
+    t3 = asyncio.run(ob.on_turn(ik, user_text="ok", detected_lang=""))
+    assert t3["reply_lang"] == "english"  # kept prior, not forced to flip
+    assert t3["lang_switched"] is False
+
+    t4 = asyncio.run(ob.on_turn(ik, user_text="हाँ ठीक है मुझे चाहिए", detected_lang="hi-IN"))
+    assert t4["reply_lang"] == "hindi"
+    assert t4["tts_lang"] == "hi-IN"
 
 
 def test_persist_post_call_off_is_noop(monkeypatch):

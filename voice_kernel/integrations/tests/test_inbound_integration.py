@@ -339,7 +339,13 @@ def test_on_tts_error_off_returns_elevenlabs(monkeypatch):
 def test_on_turn_off_is_inert(monkeypatch):
     _off(monkeypatch)
     out = asyncio.run(ib.on_turn(None, user_text="hi", detected_lang="hi"))
-    assert out == {"reply_lang": "hi", "rag_suffix": None, "speech_plan": None}
+    assert out == {
+        "reply_lang": "hi",
+        "tts_lang": "",
+        "lang_switched": False,
+        "rag_suffix": None,
+        "speech_plan": None,
+    }
 
 
 def test_on_turn_on_returns_plain_dict(monkeypatch):
@@ -349,11 +355,58 @@ def test_on_turn_on_returns_plain_dict(monkeypatch):
     out = asyncio.run(
         ib.on_turn(ik, user_text="kitne ka hai", detected_lang="hi", history_len=2)
     )
-    assert set(out.keys()) == {"reply_lang", "rag_suffix", "speech_plan"}
-    assert out["reply_lang"] == "hi"
+    assert set(out.keys()) == {
+        "reply_lang", "tts_lang", "lang_switched", "rag_suffix", "speech_plan",
+    }
+    # a real STT 'hi' code resolves to the canonical 'hindi' label + hi-IN TTS.
+    assert out["reply_lang"] == "hindi"
+    assert out["tts_lang"] == "hi-IN"
     assert out["speech_plan"] is None  # speech plan deferred per the plan
     # rag_suffix is a str (e.g. STAGE/lang line) or None — never a kernel object.
     assert out["rag_suffix"] is None or isinstance(out["rag_suffix"], str)
+
+
+# --------------------------------------------------------------------------- #
+# ADAPTIVE LANGUAGE (the W-LANG-PROPER seam) — follow the caller each turn, both
+# ways, NEVER force English; uncertain/short -> keep the prior turn's language.
+# --------------------------------------------------------------------------- #
+def test_on_turn_adapts_language_both_ways_and_keeps_prior_on_uncertain(monkeypatch):
+    ik = _build_on(monkeypatch)
+
+    # 1) Hindi turn -> reply hindi + TTS hi-IN; soft mirror directive present.
+    t1 = asyncio.run(ib.on_turn(ik, user_text="मुझे price बताइए", detected_lang="hi-IN"))
+    assert t1["reply_lang"] == "hindi"
+    assert t1["tts_lang"] == "hi-IN"
+    if t1["rag_suffix"]:
+        assert "USER LANGUAGE: hindi" in t1["rag_suffix"]
+
+    # 2) English turn -> switch to english + en-IN (no STT code -> text classify).
+    t2 = asyncio.run(
+        ib.on_turn(ik, user_text="what is the price and how does it work", detected_lang="")
+    )
+    assert t2["reply_lang"] == "english"
+    assert t2["tts_lang"] == "en-IN"
+    assert t2["lang_switched"] is True
+
+    # 3) Uncertain SHORT utterance ("ok") -> KEEP english (prior), NEVER force a flip.
+    t3 = asyncio.run(ib.on_turn(ik, user_text="ok", detected_lang=""))
+    assert t3["reply_lang"] == "english"
+    assert t3["tts_lang"] == "en-IN"
+    assert t3["lang_switched"] is False
+
+    # 4) Switch back to Hindi -> hindi + hi-IN again.
+    t4 = asyncio.run(ib.on_turn(ik, user_text="हाँ ठीक है मुझे चाहिए", detected_lang="hi-IN"))
+    assert t4["reply_lang"] == "hindi"
+    assert t4["tts_lang"] == "hi-IN"
+
+
+def test_on_turn_uncertain_first_turn_never_defaults_english(monkeypatch):
+    """The English-only failure mode guard: an uncertain FIRST turn (blank STT,
+    short text) must NOT resolve to English — it keeps the Hinglish/hi seed."""
+    ik = _build_on(monkeypatch)
+    out = asyncio.run(ib.on_turn(ik, user_text="hmm", detected_lang=""))
+    assert out["reply_lang"] != "english"
+    assert out["tts_lang"] == "hi-IN"
 
 
 def test_persist_post_call_off_is_noop(monkeypatch):

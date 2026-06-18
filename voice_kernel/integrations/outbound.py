@@ -76,6 +76,7 @@ class OutboundKernel:
     session: Any  # KernelSession
     base_ctx: Any  # CallContext
     _provider_choice: Any = None  # cached ProviderChoice
+    _lang_resolver: Any = None  # per-call TurnLanguageResolver (sticky, adaptive, lazy)
 
 
 # --------------------------------------------------------------------------- #
@@ -307,6 +308,22 @@ def assemble_outbound_instructions(
         return legacy_render()
 
 
+def _lang_resolver_for(ik: "OutboundKernel"):
+    """Return (lazily constructing) the per-call TurnLanguageResolver, seeded from
+    the call locale (default Hinglish — NEVER English). Stored on the façade so the
+    sticky 'keep prior on uncertain' state survives across turns of one call."""
+    if ik._lang_resolver is None:
+        from voice_kernel.language import TurnLanguageResolver
+
+        locale = ""
+        try:
+            locale = ik.base_ctx.meta.locale or ""
+        except Exception:
+            locale = ""
+        ik._lang_resolver = TurnLanguageResolver(seed_locale=locale)
+    return ik._lang_resolver
+
+
 async def on_turn(
     ik: Optional[OutboundKernel],
     *,
@@ -318,22 +335,41 @@ async def on_turn(
     """HOT path, per turn. Returns a plain dict the agent can use WITHOUT importing
     kernel types:
 
-        {"reply_lang": str, "rag_suffix": str|None, "speech_plan": None}
+        {"reply_lang": str, "tts_lang": str, "lang_switched": bool,
+         "rag_suffix": str|None, "speech_plan": None}
+
+    LANGUAGE (the founder's correct adaptive spec): `detected_lang` is the RAW
+    Sarvam STT language for this utterance (or "" / "unknown" when STT auto-detect
+    did not surface one). We resolve it ADAPTIVELY each turn — prefer the real STT
+    code, else light-classify the transcript text, else (uncertain/short) KEEP the
+    PRIOR turn's language. We NEVER force English. The resolved language is fed
+    BOTH into the LLM (the soft `USER LANGUAGE: <lang> — mirror it.` turn directive,
+    via TurnContext.detected_lang) AND back to the agent as `tts_lang` (the
+    SPEAKABLE TTS code, e.g. hi-IN / en-IN) so the agent sets the per-turn TTS code.
 
     Never blocks beyond the RAG hard deadline (retrieve runs parallel to the LLM
     start; on timeout it returns empty). On OFF / None ik it returns an inert dict
-    (all empties) so the agent's legacy turn is unchanged.
+    so the agent's legacy turn is unchanged (the earner is protected).
     """
     if ik is None:
-        return {"reply_lang": detected_lang, "rag_suffix": None, "speech_plan": None}
+        return {
+            "reply_lang": detected_lang,
+            "tts_lang": "",
+            "lang_switched": False,
+            "rag_suffix": None,
+            "speech_plan": None,
+        }
     try:
         from voice_kernel.contracts import TurnContext
         from voice_kernel.packet import Stage
 
+        # ADAPTIVE per-turn language resolution (sticky, never-force-English).
+        resolved = _lang_resolver_for(ik).resolve(stt_lang=detected_lang, user_text=user_text)
+
         turn = TurnContext(
             call_id=ik.session.call_id,
             user_text=user_text,
-            detected_lang=detected_lang,
+            detected_lang=resolved.lang,  # RESOLVED (sticky) -> the soft mirror directive
             stage=stage or Stage.GREET,
             history_len=history_len,
         )
@@ -344,13 +380,21 @@ async def on_turn(
             log.warning("on_turn rag/assemble failed (-> no L5): %r", exc)
             rag_suffix = None
         return {
-            "reply_lang": detected_lang or turn.detected_lang,
+            "reply_lang": resolved.lang,
+            "tts_lang": resolved.tts_lang,
+            "lang_switched": resolved.switched,
             "rag_suffix": rag_suffix,
             "speech_plan": None,
         }
     except Exception as exc:  # any setup failure -> inert turn
         log.warning("on_turn failed (-> inert): %r", exc)
-        return {"reply_lang": detected_lang, "rag_suffix": None, "speech_plan": None}
+        return {
+            "reply_lang": detected_lang,
+            "tts_lang": "",
+            "lang_switched": False,
+            "rag_suffix": None,
+            "speech_plan": None,
+        }
 
 
 def plan_speech(ik: Optional[OutboundKernel], *, raw_text: str, lang: str):
