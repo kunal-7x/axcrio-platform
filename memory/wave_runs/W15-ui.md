@@ -79,3 +79,46 @@ Never invented a component. Each unit: `npx tsc --noEmit` + `npm run build` EXIT
 - `famit-panel/app/analytics/page.tsx` (Reports)
 - `famit-panel/app/leads/page.tsx`, `famit-panel/app/crm/page.tsx`
 - `famit-panel/W15_UI_STATE.md` (state ledger)
+
+---
+
+## CONSISTENCY POLISH PASS — secondary pages (2026-06-18, commit `f63e2e1`)
+
+Goal: make the SECONDARY pages (Bookings, Knowledge, WhatsApp, AI Manager, Creative Studio, Billing,
+Settings, Run-Campaign) consistent with the new shell + Core_2 components + Build-phase typography.
+Reuse-only, additive — did NOT break the Build-phase shell/pages.
+
+### Ground truth (explore)
+A prior ui-overhaul wave + the W15 Build phase had already normalized MOST surfaces:
+every page is on a single `<Layout title>` (bespoke `PageHeader` fully retired — **0** `<PageHeader`
+usages), Core_2 `Card`/`Tabs`/`Table`/`Modal`/`Badge` + token classes + calm empty states; AI Manager
+already 7→4 tabs; Billing already a tabbed hub; Settings on the `SettingsPage` menu archetype. So the
+remaining gaps were NARROW, not a rebuild.
+
+### What shipped
+- **Run-Campaign** (founder's explicit #5 — "cramped fonts", "no raw scores"):
+  - Manual-picker raw `ScoreBadge` ("82 hot") → business-friendly **`LeadBadge`** (Hot/Warm/Cold/
+    Dead/Booked/Callback/Interested word). Column header "Score" → "Status". One badge vocabulary now
+    on Run too (matches Dashboard/Leads/Calls/CRM).
+  - Cramped `text-caption text-t-tertiary` PRIMARY guidance → readable `text-body-2 text-t-secondary`
+    on the audience-compose, temperature-legend, pacing-caps and calling-window helper lines.
+- **Knowledge Base**: sub-readable hardcoded `fontSize:10`/`text-0` micro-text (chunk-rank pill,
+  "asks" label) → token `text-caption`.
+- **Bookings / WhatsApp / AI Manager / Creative / Billing / Settings**: VERIFIED already consistent
+  (single Layout title, Core_2 chrome, token type, calm states) — no edits needed.
+
+### Verification
+- `npx tsc --noEmit` EXIT 0.
+- `npm run build` EXIT 0 — all routes compiled (/run 21.4 kB, /knowledge 5.55 kB).
+- gitleaks staged scan: 0 leaks.
+
+### Honest scope notes
+- Bookings status `Tabs` already consistent; deferred mounting GlobalFilters there (dormant module,
+  list not date-range driven yet — would need URL-param wiring; out of the additive remit).
+- Workflows editor/preview micro-text is in the BUILD nav group, not a secondary page — left untouched.
+- No box deploy (FORTRESS panel deploy is a later gated step). No `.py` touched.
+
+### Files changed (polish pass)
+- `famit-panel/app/run/page.tsx`
+- `famit-panel/app/knowledge/page.tsx`
+- `famit-panel/W15_POLISH_STATE.md` (new ledger)
