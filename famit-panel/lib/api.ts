@@ -1,4 +1,7 @@
-const BASE =
+// W15: exported (additive) so the reporting client (lib/report.ts) can hit the
+// W14 /report* seam through the SAME base + auth as every other call. No behaviour
+// change — these were already the module-internal base/auth used everywhere.
+export const BASE =
     typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
         ? process.env.NEXT_PUBLIC_API_BASE
         : "/api";
@@ -8,7 +11,7 @@ function getToken(): string | null {
     return localStorage.getItem("famit_token");
 }
 
-function authHeaders(): HeadersInit {
+export function authHeaders(): HeadersInit {
     const token = getToken();
     return token ? { "X-Auth": token } : {};
 }

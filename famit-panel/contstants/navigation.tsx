@@ -6,28 +6,26 @@
 //     Click the parent -> it EXPANDS to its children (same mechanism the Billing
 //     group has always used). The whole rail now reads as organized sections.
 //
-// INFORMATION ARCHITECTURE — the canonical 8-section IA from
-// `MASTER_PLATFORM_ROADMAP.md §0a` (P5 = "the §7 sidebar regroup"). Every section
-// is a collapsible parent (no `href` + a `list`). The regroup is NON-BREAKING by
-// construction: every previously-live route is absorbed verbatim into a section —
-// no live page is orphaned, no href is rewritten. The new module pages (built this
-// wave: ai-manager, ads, funnels, forms, crm, support, booking, workflows,
-// payments) slot into their roadmap section alongside the routes they extend.
+// W15 INFORMATION ARCHITECTURE (design/W15-UI-IA-PLAN.md §2) — the SCATTER KILL.
+// The same concern used to live in 2–4 places (calls in 4 surfaces, lead scores in
+// 3, analytics in 2, money in 6, AI-Manager as 9 dead-redirect children). W15
+// consolidates to ONE obvious home per concern and regroups the rail into plain
+// task language:
 //
-//   A Command      — Dashboard, AI Manager
-//   B Grow         — Campaigns, Ad Automation, Funnels, Form Builder
-//   C Sell         — Leads, CRM
-//   D Engage       — Run, Call Logs, Callbacks, WhatsApp, Customer Support, Booking
-//   E Automate     — Workflows, Webhooks
-//   F Money        — Payments, Billing (Overview/Vendor Costs/Spending/Audit/Plan)
-//   G Intelligence — Analytics
-//   H Foundation   — Do-Not-Call (Compliance), Vendors (Admin)
+//   WORK          — Dashboard, Leads & CRM, Call Logs (Callbacks=tab), Bookings, AI Manager
+//   GROW          — Campaigns, Run, Creative Studio, Ad Automation, Funnels, Form Builder
+//   MESSAGE       — WhatsApp (Communication folds in as channel tabs), Customer Support
+//   INTELLIGENCE  — Reports (=/analytics, the deep drill-down), Knowledge Base
+//   MONEY         — Billing (tabbed hub: Overview/Vendor Costs/Spending/Audit/Plan), Payments
+//   BUILD         — Workflows, Webhooks, Integrations
+//   SETTINGS      — (navigationUser footer) Settings + Do-Not-Call + Vendors(admin) as sections
+//   SUPER ADMIN   — admin-only control plane (UNCHANGED, role-gated)
 //
-// W1 nav cleanup (design/ui-design-principles.md jargon glossary): plain-language
-// labels (Test Console→Try it, Authorized Users→Team, Cost Explorer→Spending,
-// Plan & Ledger→Plan, Run a Campaign→Run, billing Vendors→Vendor Costs to
-// de-dupe vs the admin Vendors page) and the unbuilt "Create Studio" coming-soon
-// stub group removed entirely.
+// NON-BREAKING by construction: every previously-live route still resolves. The
+// folded routes (Callbacks, Communication, the AI-Manager sub-pages, the
+// Do-Not-Call / admin-Vendors pages) survive as real routes reachable via an
+// in-page tab or a grouped Settings/utility section — no live page is orphaned,
+// no href is rewritten. We only change WHERE the rail points and the GROUPING.
 //
 // `roles` (optional) gates an entry by the current user's role:
 //   "admin"   -> only admins see it
@@ -41,8 +39,7 @@
 // stays broad; only spend/command-sensitive entries carry a `manager` nav gate.
 //
 // `comingSoon: true` on a child marks a FUTURE feature: Dropdown renders it as a
-// dimmed, non-clickable row with a "Soon" pill (NOT a <Link>, so it can never
-// 404). Used for the "Create Studio" group — the pages are intentionally NOT built.
+// dimmed, non-clickable row with a "Soon" pill (NOT a <Link>, so it can never 404).
 //
 // CL-F0 — `feature_key` (CONTROL LAYER): every module GROUP carries its module
 // registry key and every CHILD carries its page key (the SAME keys the backend
@@ -51,177 +48,139 @@
 // a key resolving to HIDE drops the entry, LOCK dims it ("Locked" pill); a group
 // whose module key is HIDE drops the whole section. Keys are AUTHORED here (not
 // derived at runtime) so the static nav stays a plain data module. CORE surfaces
-// stay UNKEYED so they can never be hidden: Command/Dashboard, the Billing
-// children + Settings (core), and the whole admin-only "Super Admin" group
-// (role-gated, never entitlement-gated). The vendor `/me/entitlements` map is the
-// authoritative key list; this is the cosmetic mirror — the backend 404/402 is the
-// real boundary.
+// stay UNKEYED so they can never be hidden: WORK/Dashboard, the Billing children +
+// Settings (core), and the whole admin-only "Super Admin" group (role-gated, never
+// entitlement-gated). The vendor `/me/entitlements` map is the authoritative key
+// list; this is the cosmetic mirror — the backend 404/402 is the real boundary.
+//
+// W15 NOTE — keys are PRESERVED VERBATIM through the regroup: the module GROUP keys
+// (mod.grow / mod.sell / mod.engage / mod.automate / mod.intelligence / mod.ai_manager)
+// move WITH their children to the new task-group they live under. A child keeps the
+// SAME feature_key it always had regardless of which visual section now hosts it
+// (the key gates the PAGE, not the rail group). AI-Manager collapses from 9 children
+// to a single link — its in-page tabs (Overview/Live/Handoff/Try-it/Commands/
+// Approvals/Capabilities/Setup/Team) own the sub-routes now; the group key
+// `mod.ai_manager` rides the single link so the whole surface still hides/locks as
+// one entitlement.
 export const navigation = [
     {
-        // A — Command. The operator's command layer. Dashboard lives here (per
-        // roadmap §0a) so the section is ALWAYS present — even for a read-only
-        // agent who can't see the manager-gated AI Manager child. CORE module —
-        // intentionally UNKEYED (command/dashboard can never be hidden).
-        title: "Command",
+        // WORK — the daily operating surface: the cockpit + the people + the calls +
+        // the bookings + the inbound brain. Everything you DO lives here so the
+        // operator stops hopping between Command/Sell/Engage. The GROUP is UNKEYED so
+        // the core Dashboard can never be hidden; per-child keys preserve the old
+        // sell.* / engage.* / mod.ai_manager gates verbatim.
+        title: "Work",
         icon: "grid",
         list: [
+            // CORE — Dashboard (the consolidated Today-first cockpit). UNKEYED.
             { title: "Dashboard", href: "/" },
+            // Leads & CRM — ONE people-surface. /leads folds in as a "Dialing queue"
+            // tab inside /crm; the CRM link is the home. Keep BOTH keys live so an
+            // entitlement that hides either page still resolves (the page self-gates).
+            { title: "Leads & CRM", href: "/crm", feature_key: "sell.crm" },
+            // Call Logs — ONE call surface. /callbacks folds in as a "Callbacks" tab.
+            { title: "Call Logs", href: "/calls", feature_key: "engage.calls" },
+            { title: "Bookings", href: "/booking", feature_key: "engage.booking" },
+            // AI Manager — collapsed from 9 sidebar children to ONE link; the page
+            // owns Overview/Live/Handoff/Try-it/Commands/Approvals/Capabilities/Setup/
+            // Team as in-page tabs. Manager-gated; the group key rides the link so the
+            // whole inbound-command surface hides/locks as one entitlement.
+            { title: "AI Manager", href: "/ai-manager", roles: "manager", feature_key: "mod.ai_manager" },
         ],
     },
     {
-        // A2 — AI Manager. Promoted from a single Command link to its own
-        // collapsible section (master AI-Manager spec §1): the voice/chat command
-        // center is now a multi-route surface, so each sub-page is a child here.
-        // The whole group is manager-gated (read-only agents never see it); every
-        // page additionally self-gates writes (canWrite) + is firewall-gated
-        // server-side. Routes that 404 today degrade to a premium dormant view, so
-        // no child can land on an error wall. Sub-pages owned across F-waves:
-        // Overview / Test Console (F1), Command History / Approvals / Capabilities
-        // (F3), Setup / Authorized Users (F2). NOTE: no `href` on the group — the
-        // Sidebar renders an entry WITH an href as a flat NavLink (hiding the
-        // children); a group needs `list` + NO `href` to collapse. /ai-manager
-        // itself redirects to Overview, which is the first child here.
-        title: "AI Manager",
-        icon: "chat-think",
-        roles: "manager",
-        feature_key: "mod.ai_manager",
-        list: [
-            { title: "Overview", href: "/ai-manager/overview", feature_key: "ai_manager.overview" },
-            { title: "Live Calls", href: "/ai-manager/live" },
-            { title: "Handoff Team", href: "/ai-manager/handoff" },
-            { title: "Try it", href: "/ai-manager/test", feature_key: "ai_manager.test" },
-            { title: "Command History", href: "/ai-manager/commands", feature_key: "ai_manager.commands" },
-            { title: "Pending Approvals", href: "/ai-manager/approvals", feature_key: "ai_manager.approvals" },
-            { title: "Capabilities", href: "/ai-manager/capabilities", feature_key: "ai_manager.capabilities" },
-            { title: "Setup", href: "/ai-manager/setup", feature_key: "ai_manager.setup" },
-            { title: "Team", href: "/ai-manager/users", feature_key: "ai_manager.users" },
-        ],
-    },
-    {
-        // B — Grow (Marketing). Acquisition: campaigns, ads, funnels, forms.
+        // GROW — acquisition: turn ad spend + audiences into dialled leads. Campaigns
+        // and Run sit together (build the campaign, then run it), with the Creative
+        // Studio design engine and the ad/funnel/form tools. Group UNKEYED (mixed core
+        // + keyed children); each child keeps its grow.* / engage.run key verbatim.
         title: "Grow",
         icon: "promote",
         feature_key: "mod.grow",
         list: [
             { title: "Campaigns", href: "/campaigns", feature_key: "grow.campaigns" },
+            // Run — the founder's named multi-card audience+config launcher. Lives in
+            // GROW next to Campaigns (build → run) instead of buried in the old Engage.
+            { title: "Run", href: "/run", feature_key: "engage.run" },
+            // Creative Studio — the campaign-aware AI design engine. Promoted to a
+            // single link; Studio/Video/Library/Brand are in-page tabs of /creative.
+            // (Was its own 4-child group; the sub-pages remain real routes.)
+            { title: "Creative Studio", href: "/creative" },
             { title: "Ad Automation", href: "/ads", roles: "manager", feature_key: "grow.ads" },
             { title: "Funnels", href: "/funnels", feature_key: "grow.funnels" },
             { title: "Form Builder", href: "/forms", feature_key: "grow.forms" },
         ],
     },
     {
-        // B2 — Creative Studio. The campaign-aware AI design engine (AI designer +
-        // copywriter + ad strategist): tell it what you need, watch angle-labelled
-        // banners stream in, pick / edit / approve / reuse everywhere. Three plain-
-        // noun children (cs-workspace §1): Studio (create), Library (the reusable
-        // store), Brand Kit (the look the AI honours). The whole surface is dormant-
-        // safe behind GET /api/assets/status — every page renders a calm coming-soon
-        // card when AIASSET_ENABLED is off for the tenant, never an error wall.
-        title: "Creative Studio",
-        icon: "magic-pencil",
-        list: [
-            { title: "Studio", href: "/creative" },
-            // Video Studio — the campaign-aware AI video engine (composite-cheap by
-            // default + AI-motion tiers). Dormant-safe behind the studio probe; the
-            // whole /creative/video surface 404s when FEATURE_VIDEO_STUDIO is OFF.
-            { title: "Video Studio", href: "/creative/video" },
-            { title: "Library", href: "/creative/library" },
-            { title: "Brand Kit", href: "/creative/brand" },
-        ],
-    },
-    {
-        // C — Sell (Revenue). The system of record.
-        title: "Sell",
-        icon: "usd-circle",
-        feature_key: "mod.sell",
-        list: [
-            { title: "Leads", href: "/leads", feature_key: "sell.leads" },
-            { title: "CRM", href: "/crm", feature_key: "sell.crm" },
-        ],
-    },
-    {
-        // D — Engage (Conversations). Everything that talks to a customer.
-        title: "Engage",
+        // MESSAGE — every channel that talks to a customer outside the call. WhatsApp
+        // is the home; Communication (Telegram/Email/SMS-soon) folds in as channel
+        // tabs of /whatsapp. Customer Support shares the section. Group UNKEYED (mixed
+        // core support + keyed channels); per-child keys preserved verbatim.
+        title: "Message",
         icon: "chat",
         feature_key: "mod.engage",
         list: [
-            { title: "Run", href: "/run", feature_key: "engage.run" },
-            { title: "Call Logs", href: "/calls", feature_key: "engage.calls" },
-            { title: "Callbacks", href: "/callbacks", feature_key: "engage.callbacks" },
             { title: "WhatsApp", href: "/whatsapp", roles: "manager", feature_key: "engage.whatsapp" },
-            // Communication — the omnichannel tab (Telegram live; Email/SMS coming).
-            // Mirrors + exceeds WhatsApp: builder + unified inbox + the LLM brain +
-            // founder hot-lead alert + post-call auto-summary. Manager-gated (it
-            // sends on the contact's behalf). Dormant-safe: COMM_ENABLED off ->
-            // every /comm route 404s -> the page renders a calm coming-soon card.
-            { title: "Communication", href: "/communication", roles: "manager", feature_key: "engage.communication" },
             { title: "Customer Support", href: "/support", feature_key: "engage.support" },
-            { title: "Booking", href: "/booking", feature_key: "engage.booking" },
         ],
     },
     {
-        // E — Automate. Workflow orchestration + outbound integrations.
-        title: "Automate",
+        // INTELLIGENCE — where the data turns into decisions. Reports (=/analytics) is
+        // now the DEEP drill-down the Dashboard links INTO (the Dashboard owns the
+        // consolidated top-line analytics). Knowledge Base sits alongside. The old
+        // standalone "Analytics" label becomes "Reports". Keys preserved verbatim.
+        title: "Intelligence",
+        icon: "chart",
+        feature_key: "mod.intelligence",
+        list: [
+            { title: "Reports", href: "/analytics", feature_key: "intelligence.analytics" },
+            { title: "Knowledge Base", href: "/knowledge", feature_key: "intelligence.knowledge" },
+        ],
+    },
+    {
+        // MONEY — the whole money story. Billing is the hub (Overview/Vendor Costs/
+        // Spending/Audit/Plan as tabs); Payments is the collections page. The GROUP is
+        // intentionally UNKEYED: Money contains the CORE Billing surface
+        // (money.billing, is_core), so hiding the module must NEVER drop Billing. Only
+        // the non-core Payments child carries a key. All /billing/* children map to the
+        // single core money.billing page → left UNKEYED (never hidden).
+        title: "Money",
+        icon: "wallet",
+        list: [
+            { title: "Billing Overview", href: "/billing/overview" },
+            { title: "Vendor Costs", href: "/billing/vendors" },
+            { title: "Spending", href: "/billing/explorer" },
+            { title: "Audit", href: "/billing/audit" },
+            { title: "Plan", href: "/billing/plan" },
+            { title: "Payments", href: "/payments", roles: "manager", feature_key: "money.payments" },
+        ],
+    },
+    {
+        // BUILD — automation + the connector substrate. Workflow orchestration,
+        // outbound webhooks, and the universal provider/connector registry. Group
+        // UNKEYED (mixed); per-child keys (automate.* / integrations.providers)
+        // preserved verbatim. (Was the old "Automate" group + the loose Integrations.)
+        title: "Build",
         icon: "layers",
         feature_key: "mod.automate",
         list: [
             { title: "Workflows", href: "/workflows", feature_key: "automate.workflows" },
             { title: "Webhooks", href: "/webhooks", roles: "manager", feature_key: "automate.webhooks" },
             // Universal Provider / Connector registry — add any AI model + key,
-            // self-host a model, or wire a tool, all from the UI. Video Studio is
-            // its first consumer. Manager-gated (BYO-key is spend-sensitive).
+            // self-host a model, or wire a tool, all from the UI. Manager-gated
+            // (BYO-key is spend-sensitive).
             { title: "Integrations", href: "/integrations", roles: "manager", feature_key: "integrations.providers" },
-        ],
-    },
-    {
-        // F — Money. Collections + the vendor-cost billing surface. The GROUP is
-        // intentionally UNKEYED: the Money module contains the CORE Billing surface
-        // (money.billing, is_core), so hiding the module must NEVER drop Billing.
-        // Only the non-core Payments child carries a key. All /billing/* children
-        // map to the single core money.billing page → left UNKEYED (never hidden).
-        title: "Money",
-        icon: "wallet",
-        list: [
-            { title: "Payments", href: "/payments", roles: "manager", feature_key: "money.payments" },
-            { title: "Billing Overview", href: "/billing/overview" },
-            { title: "Vendor Costs", href: "/billing/vendors" },
-            { title: "Spending", href: "/billing/explorer" },
-            { title: "Audit", href: "/billing/audit" },
-            { title: "Plan", href: "/billing/plan" },
-        ],
-    },
-    {
-        // G — Intelligence. Where the data turns into decisions.
-        title: "Intelligence",
-        icon: "chart",
-        feature_key: "mod.intelligence",
-        list: [
-            { title: "Analytics", href: "/analytics", feature_key: "intelligence.analytics" },
-            { title: "Knowledge Base", href: "/knowledge", feature_key: "intelligence.knowledge" },
-        ],
-    },
-    {
-        // H — Foundation. Operator-facing config of the foundational systems. The
-        // GROUP is UNKEYED: foundation is a CORE module (foundation.settings core)
-        // → never entitlement-hidden. Only the non-core Do-Not-Call child carries a
-        // key; the admin "Vendors" page is role-gated (admin), not entitlement-gated.
-        title: "Foundation",
-        icon: "profile",
-        list: [
-            { title: "Do-Not-Call", href: "/suppression", feature_key: "foundation.suppression" },
-            { title: "Vendors", href: "/vendors", roles: "admin" },
         ],
     },
     {
         // SUPER ADMIN — the Control Center (CL-F1, design/control-ui.md §1). The
         // founder/super-admin's tier-0 admin plane: fleet command, per-vendor
         // workspaces, entitlement flags, plans, fleet usage and the immutable
-        // control-audit. The WHOLE group is `roles:"admin"` so resolveNav drops
-        // it for every vendor (a vendor never receives this group in their nav
-        // tree). Each child also carries `roles:"admin"` for defense-in-depth.
-        // COSMETIC ONLY — the backend require_super_admin (which EXCLUDES the
-        // legacy static-password auth, the #1 security finding) is the real
-        // boundary; HIDDEN=404 / LOCKED=402 / unknown=DENY, fail-closed.
+        // control-audit. The WHOLE group is `roles:"admin"` so resolveNav drops it for
+        // every vendor (a vendor never receives this group in their nav tree). Each
+        // child also carries `roles:"admin"` for defense-in-depth. COSMETIC ONLY — the
+        // backend require_super_admin (which EXCLUDES the legacy static-password auth,
+        // the #1 security finding) is the real boundary; HIDDEN=404 / LOCKED=402 /
+        // unknown=DENY, fail-closed. UNCHANGED by W15 (out of consolidation scope).
         title: "Super Admin",
         icon: "lock",
         roles: "admin",
@@ -237,10 +196,16 @@ export const navigation = [
     },
 ];
 
+// SETTINGS (footer, navigationUser — the avatar dropdown). FLAT links only:
+// `components/Header/User` maps each as `{title, icon, href}`. W15 folds the thin
+// "Foundation" group (Do-Not-Call + admin Vendors) IN HERE as additional footer
+// links so those 1–2-item groups stop cluttering the main rail, while the routes
+// stay reachable (no orphan). Keys/roles preserved verbatim: Do-Not-Call keeps
+// `foundation.suppression`; admin Vendors keeps `roles:"admin"` (the User menu does
+// not role-filter, but the page itself is admin-gated server-side + the rail-level
+// gate is preserved for parity). Settings remains the home.
 export const navigationUser = [
-    {
-        title: "Settings",
-        icon: "edit-profile",
-        href: "/settings",
-    },
+    { title: "Settings", icon: "edit-profile", href: "/settings" },
+    { title: "Do-Not-Call", icon: "profile", href: "/suppression", feature_key: "foundation.suppression" },
+    { title: "Vendors", icon: "wallet", href: "/vendors", roles: "admin" },
 ];

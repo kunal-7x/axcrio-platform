@@ -1,0 +1,400 @@
+// W15 — the panel's reporting client (design/W14-REPORTING-AIM-SEAM.md §5/§7).
+//
+// The W14 wave built a real-time reporting read-model (`voice_ops/reporting`) with a
+// query API (`/report?preset=…`, `/report/funnel`, `/report/hot-leads`, …). Those
+// routes are NOT mounted on the live box yet (W14 is a SEAM NOTE — the wiring is a
+// separate founder-signed wave). The LIVE routes today are `/stats`, `/analytics`,
+// `/calls`, `/leads`, `/callbacks`.
+//
+// So this client is DORMANT-SAFE and FORWARD-COMPATIBLE in one shape:
+//   1. It first TRIES the real `GET /report?preset=…` (and the sibling routes). If
+//      the box has them mounted, the dashboard gets true range-aware, event-fed,
+//      real-time numbers for free — no UI change needed.
+//   2. If they 404 / error (today), it COMPOSES the same W14 §7 report shape from
+//      the live `/stats` + `/analytics` + `/leads` endpoints, so the consolidated
+//      dashboard renders REAL data now and seamlessly upgrades when the seam lands.
+//
+// The returned `Report` matches the W14 §7 UI contract the components bind to:
+// `range`, `totals`, `funnel`, `timeline`, `by_status`, `hot_leads`. No backend or
+// route signature is changed here (founder rule). Every fetch is tenant-token
+// scoped via `authHeaders()` (mirrors lib/api.ts).
+
+import {
+    getStats,
+    getAnalytics,
+    getLeads,
+    BASE,
+    authHeaders,
+    type Lead,
+} from "@/lib/api";
+
+// ── Range model (W14 §7 — default Today) ────────────────────────────────────
+export type RangePreset =
+    | "today"
+    | "yesterday"
+    | "7d"
+    | "30d"
+    | "this-month"
+    | "prev-month"
+    | "custom";
+
+export type ResolvedRange = {
+    preset: RangePreset;
+    from: string; // YYYY-MM-DD (vendor-local, inclusive)
+    to: string; // YYYY-MM-DD (inclusive)
+    tz: string;
+};
+
+export const RANGE_PRESETS: { id: RangePreset; label: string }[] = [
+    { id: "today", label: "Today" },
+    { id: "yesterday", label: "Yesterday" },
+    { id: "7d", label: "Last 7 days" },
+    { id: "30d", label: "Last 30 days" },
+    { id: "this-month", label: "This month" },
+    { id: "prev-month", label: "Last month" },
+    { id: "custom", label: "Custom" },
+];
+
+const TZ = "Asia/Kolkata";
+
+// Vendor-local YYYY-MM-DD for a Date (the W14 "render in IST" rule, JS mirror of
+// timeutil.to_vendor). Always operate on vendor-local day boundaries.
+function ymd(d: Date): string {
+    // en-CA gives ISO-ish YYYY-MM-DD; timeZone pins it to IST.
+    return new Intl.DateTimeFormat("en-CA", {
+        timeZone: TZ,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).format(d);
+}
+
+function addDays(ymdStr: string, days: number): string {
+    const d = new Date(`${ymdStr}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+        d.getDate()
+    ).padStart(2, "0")}`;
+}
+
+// preset (+ optional custom from/to) -> resolved [from,to] inclusive, vendor-local.
+export function resolveRange(
+    preset: RangePreset,
+    custom?: { from?: string; to?: string }
+): ResolvedRange {
+    const now = new Date();
+    const today = ymd(now);
+    let from = today;
+    let to = today;
+    switch (preset) {
+        case "today":
+            break;
+        case "yesterday":
+            from = addDays(today, -1);
+            to = from;
+            break;
+        case "7d":
+            from = addDays(today, -6);
+            break;
+        case "30d":
+            from = addDays(today, -29);
+            break;
+        case "this-month": {
+            const [y, m] = today.split("-");
+            from = `${y}-${m}-01`;
+            break;
+        }
+        case "prev-month": {
+            const d = new Date(`${today}T00:00:00`);
+            const first = new Date(d.getFullYear(), d.getMonth(), 1);
+            const prevLast = new Date(first.getTime() - 86400000);
+            const py = prevLast.getFullYear();
+            const pm = String(prevLast.getMonth() + 1).padStart(2, "0");
+            from = `${py}-${pm}-01`;
+            to = `${py}-${pm}-${String(prevLast.getDate()).padStart(2, "0")}`;
+            break;
+        }
+        case "custom":
+            from = custom?.from || today;
+            to = custom?.to || from;
+            break;
+    }
+    return { preset, from, to, tz: TZ };
+}
+
+export function rangeLabel(preset: RangePreset): string {
+    return RANGE_PRESETS.find((p) => p.id === preset)?.label ?? "Today";
+}
+
+// ── The W14 §7 report shape the UI binds to ─────────────────────────────────
+export type ReportTotals = {
+    calls: number;
+    connected: number;
+    connect_rate: number; // 0..100
+    interested: number;
+    booked: number;
+    converted: number;
+    hot: number;
+    warm: number;
+    cold: number;
+    dead: number;
+    callbacks: number;
+    whatsapp_sent: number;
+    handoff: number;
+    avg_talk_time_s: number;
+    conversion_rate: number; // 0..100
+};
+
+export type FunnelStage = {
+    stage: string;
+    count: number;
+    pct_of_top: number; // 0..100
+    step_conv: number; // 0..100 vs previous stage
+};
+
+export type TimelinePoint = {
+    date: string; // YYYY-MM-DD vendor-local
+    calls: number;
+    connected: number;
+    booked: number;
+    converted: number;
+};
+
+export type HotLeadRow = {
+    call_id: string;
+    name: string;
+    phone_masked: string;
+    campaign_id?: string;
+    source?: string;
+    booked?: boolean;
+    conversion_prob?: number; // 0..1
+    summary?: string;
+    next_action?: string;
+    ts_iso?: string;
+};
+
+export type Report = {
+    range: ResolvedRange;
+    totals: ReportTotals;
+    funnel: FunnelStage[];
+    timeline: TimelinePoint[];
+    by_status: { hot: number; warm: number; cold: number; dead: number };
+    hot_leads: HotLeadRow[];
+    // true when the numbers came from the real W14 /report seam; false = composed
+    // from the live /stats+/analytics fallback (still REAL data, coarser range).
+    live_seam: boolean;
+};
+
+export type ReportFilters = {
+    campaign?: string;
+    lead_status?: string;
+    source?: string;
+    agent?: string;
+    call_status?: string;
+    booking_status?: string;
+};
+
+function rangeQuery(range: ResolvedRange, filters?: ReportFilters): string {
+    const p = new URLSearchParams();
+    p.set("preset", range.preset);
+    if (range.preset === "custom") {
+        p.set("from", range.from);
+        p.set("to", range.to);
+    }
+    if (filters?.campaign) p.set("campaign", filters.campaign);
+    if (filters?.lead_status) p.set("lead_status", filters.lead_status);
+    if (filters?.source) p.set("source", filters.source);
+    if (filters?.agent) p.set("agent", filters.agent);
+    if (filters?.call_status) p.set("call_status", filters.call_status);
+    if (filters?.booking_status) p.set("booking_status", filters.booking_status);
+    return p.toString();
+}
+
+// ── 1. Try the real W14 seam ────────────────────────────────────────────────
+async function tryLiveReport(
+    range: ResolvedRange,
+    filters?: ReportFilters
+): Promise<Report | null> {
+    try {
+        const res = await fetch(`${BASE}/report?${rangeQuery(range, filters)}`, {
+            headers: authHeaders(),
+        });
+        if (!res.ok) return null; // 404 today -> fall back
+        const data = (await res.json()) as Partial<Report> & {
+            totals?: ReportTotals;
+        };
+        if (!data || !data.totals) return null;
+        return {
+            range: (data.range as ResolvedRange) ?? range,
+            totals: data.totals,
+            funnel: data.funnel ?? [],
+            timeline: data.timeline ?? [],
+            by_status:
+                data.by_status ?? {
+                    hot: data.totals.hot ?? 0,
+                    warm: data.totals.warm ?? 0,
+                    cold: data.totals.cold ?? 0,
+                    dead: data.totals.dead ?? 0,
+                },
+            hot_leads: data.hot_leads ?? [],
+            live_seam: true,
+        };
+    } catch {
+        return null;
+    }
+}
+
+// ── 2. Compose the same shape from the live endpoints (today's path) ────────
+const FUNNEL_ORDER = [
+    "uploaded",
+    "dialed",
+    "connected",
+    "interested",
+    "warm",
+    "hot",
+    "booked",
+    "converted",
+];
+
+async function composeReport(
+    range: ResolvedRange,
+    filters?: ReportFilters
+): Promise<Report> {
+    // The live /stats + /analytics are NOT range-parameterised on the box yet, so
+    // the composed report is whole-history coarse (honest: we mark live_seam=false
+    // and the UI shows the active range chip + a "all-time" note where relevant).
+    const [stats, analytics, leadsPage] = await Promise.all([
+        getStats().catch(() => null),
+        getAnalytics(
+            filters?.campaign ? { campaign_id: filters.campaign } : undefined
+        ).catch(() => null),
+        getLeads({ limit: 500 }).catch(() => ({ leads: [] as Lead[] })),
+    ]);
+
+    const leads = leadsPage?.leads ?? [];
+    // Classify leads into tiers using the SAME logic the badge uses (kept inline to
+    // avoid a JSX import in this .ts module).
+    let hot = 0,
+        warm = 0,
+        cold = 0,
+        dead = 0,
+        booked = 0,
+        interested = 0,
+        callbacks = 0;
+    for (const l of leads) {
+        const st = (l.status ?? "").toLowerCase();
+        const oc = (l.last_outcome ?? "").toLowerCase();
+        const s = l.score;
+        if (
+            st.includes("opt_out") ||
+            st.includes("not_interested") ||
+            oc.includes("not_interested")
+        ) {
+            dead++;
+        } else if (st.includes("booked") || st.includes("won")) {
+            booked++;
+        } else if (st.includes("interested") || oc.includes("interested")) {
+            interested++;
+            if (l.hot || (s ?? 0) >= 70) hot++;
+            else warm++;
+        } else if (st.includes("callback") || oc.includes("callback")) {
+            callbacks++;
+            warm++;
+        } else if (l.hot || (s ?? 0) >= 70) {
+            hot++;
+        } else if ((s ?? 0) >= 40) {
+            warm++;
+        } else {
+            cold++;
+        }
+    }
+
+    const total = stats?.total ?? 0;
+    const connected = analytics?.connected ?? stats?.answered ?? 0;
+    const a = analytics;
+    const aInterested = a?.interested ?? interested;
+    const connectRate = total > 0 ? Math.round((connected / total) * 100) : 0;
+
+    const totals: ReportTotals = {
+        calls: total,
+        connected,
+        connect_rate: connectRate,
+        interested: aInterested,
+        booked,
+        converted: booked, // until a true conversion event exists (W14 §3)
+        hot,
+        warm,
+        cold,
+        dead,
+        callbacks: a?.callback ?? callbacks,
+        whatsapp_sent: 0,
+        handoff: 0,
+        avg_talk_time_s: 0,
+        conversion_rate: total > 0 ? Math.round((booked / total) * 100) : 0,
+    };
+
+    // Funnel — prefer the live /analytics funnel; map onto the 8 canonical stages.
+    const fSource: Record<string, number> = {
+        uploaded: leads.length || total,
+        dialed: a?.dialed ?? total,
+        connected,
+        interested: aInterested,
+        warm,
+        hot,
+        booked,
+        converted: booked,
+    };
+    const top = fSource.uploaded || 1;
+    const funnel: FunnelStage[] = FUNNEL_ORDER.map((stage, i) => {
+        const count = fSource[stage] ?? 0;
+        const prev = i === 0 ? count : fSource[FUNNEL_ORDER[i - 1]] ?? 0;
+        return {
+            stage,
+            count,
+            pct_of_top: Math.round((count / top) * 100),
+            step_conv: prev > 0 ? Math.round((count / prev) * 100) : 0,
+        };
+    });
+
+    // Timeline — reuse the real /stats series (per-bucket call volume) as the
+    // call-volume timeline. connected/booked/converted are not per-bucket in the
+    // legacy endpoint, so they stay 0 until the W14 seam lands (honest).
+    const timeline: TimelinePoint[] = (stats?.series ?? []).map((pt) => ({
+        date: pt.name,
+        calls: pt.amt,
+        connected: 0,
+        booked: 0,
+        converted: 0,
+    }));
+
+    const hot_leads: HotLeadRow[] = leads
+        .filter((l) => l.hot || (l.score ?? 0) >= 70)
+        .slice(0, 10)
+        .map((l) => ({
+            call_id: l.id,
+            name: l.name,
+            phone_masked: l.phone,
+            conversion_prob: l.score != null ? l.score / 100 : undefined,
+            ts_iso: l.last_call_at ?? l.added_at,
+        }));
+
+    return {
+        range,
+        totals,
+        funnel,
+        timeline,
+        by_status: { hot, warm, cold, dead },
+        hot_leads,
+        live_seam: false,
+    };
+}
+
+// ── Public: the dashboard/reports binder ────────────────────────────────────
+export async function getReport(
+    range: ResolvedRange,
+    filters?: ReportFilters
+): Promise<Report> {
+    const live = await tryLiveReport(range, filters);
+    if (live) return live;
+    return composeReport(range, filters);
+}
