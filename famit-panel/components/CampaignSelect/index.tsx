@@ -62,17 +62,25 @@ const CampaignSelect = ({
         };
     }, []);
 
+    // W-FRONTEND-RECONCILE §3 Fix 4 — a synthetic "All campaigns" reset row at
+    // id 1. Real campaigns shift to ids 2..N+1 (so id-1 indexing still maps, with
+    // id 1 reserved for the reset). Picking it emits an EMPTY-id campaign which
+    // GlobalFilters reads as "clear the campaign param".
+    const ALL_CAMPAIGNS: Campaign = { id: "", name: "All campaigns" } as Campaign;
     // SelectOption ids are positional (1-based) so the premium Select stays generic;
     // we map back to the real Campaign by index on change.
     const options: SelectOption[] = useMemo(
-        () => campaigns.map((c, i) => ({ id: i + 1, name: c.name })),
+        () => [
+            { id: 1, name: "All campaigns" },
+            ...campaigns.map((c, i) => ({ id: i + 2, name: c.name })),
+        ],
         [campaigns]
     );
 
     const selected: SelectOption | null = useMemo(() => {
-        if (!value) return null;
+        if (!value) return { id: 1, name: "All campaigns" };
         const idx = campaigns.findIndex((c) => c.id === value);
-        return idx >= 0 ? { id: idx + 1, name: campaigns[idx].name } : null;
+        return idx >= 0 ? { id: idx + 2, name: campaigns[idx].name } : null;
     }, [value, campaigns]);
 
     const emit = (campaign: Campaign) => {
@@ -86,7 +94,13 @@ const CampaignSelect = ({
     };
 
     const handleChange = (opt: SelectOption) => {
-        const campaign = campaigns[opt.id - 1];
+        // id 1 = the synthetic "All campaigns" reset → emit the empty-id sentinel
+        // (no detail fetch); real campaigns are at id 2..N+1.
+        if (opt.id === 1) {
+            onSelect(ALL_CAMPAIGNS, { campaign_id: "", facts: [] });
+            return;
+        }
+        const campaign = campaigns[opt.id - 2];
         if (campaign) emit(campaign);
     };
 

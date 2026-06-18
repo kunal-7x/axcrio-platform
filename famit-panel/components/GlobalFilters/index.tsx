@@ -133,8 +133,10 @@ const GlobalFilters = ({ show, className }: GlobalFiltersProps) => {
     };
 
     // ── Campaign select (reuses the live CampaignSelect) ──
+    // W-FRONTEND-RECONCILE §3 Fix 4 — the empty-id "All campaigns" row clears the
+    // URL param so the campaign filter can RESET (previously it stuck once picked).
     const onCampaign = (c: Campaign) => {
-        patch({ campaign: c.id });
+        patch({ campaign: c.id ? c.id : null });
     };
 
     return (

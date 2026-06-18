@@ -562,6 +562,14 @@ export async function getLeads(opts?: {
     batch?: string;
     limit?: number;
     offset?: number;
+    // W-FRONTEND-RECONCILE §3 Fix 2 — dashboard GlobalFilters forward these so
+    // the box can narrow server-side. Safe if the live /leads ignores any it
+    // doesn't support (extra query params are dropped, not errored); the
+    // composeReport client-side post-filter is the guaranteed fallback.
+    from?: string;
+    to?: string;
+    campaign_id?: string;
+    status?: string;
 }): Promise<LeadsPage> {
     const params = new URLSearchParams();
     if (opts?.hot) params.set("hot", "1");
@@ -569,6 +577,10 @@ export async function getLeads(opts?: {
     if (opts?.batch) params.set("batch", opts.batch);
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     if (opts?.offset != null && opts.offset > 0) params.set("offset", String(opts.offset));
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
+    if (opts?.status) params.set("status", opts.status);
     const qs = params.toString();
     const res = await fetch(`${BASE}/leads${qs ? `?${qs}` : ""}`, {
         headers: authHeaders(),

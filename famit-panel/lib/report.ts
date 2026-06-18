@@ -256,6 +256,62 @@ const FUNNEL_ORDER = [
     "converted",
 ];
 
+// W-FRONTEND-RECONCILE §3 Fix 2b — classify ONE lead into the GlobalFilters
+// status vocabulary (hot/warm/cold/dead/booked/callback/interested), using the
+// SAME precedence as the KPI classification loop below so the dropdown filter
+// and the tile counts agree.
+function leadTier(l: Lead): string {
+    const st = (l.status ?? "").toLowerCase();
+    const oc = (l.last_outcome ?? "").toLowerCase();
+    const s = l.score;
+    if (st.includes("opt_out") || st.includes("not_interested") || oc.includes("not_interested")) return "dead";
+    if (st.includes("booked") || st.includes("won")) return "booked";
+    if (st.includes("interested") || oc.includes("interested")) {
+        return l.hot || (s ?? 0) >= 70 ? "hot" : "warm";
+    }
+    if (st.includes("callback") || oc.includes("callback")) return "callback";
+    if (l.hot || (s ?? 0) >= 70) return "hot";
+    if ((s ?? 0) >= 40) return "warm";
+    return "cold";
+}
+
+// Guaranteed client-side post-filter (so dropdowns visibly narrow even when the
+// box ignores the params). Date filter is inclusive on last_call_at ?? added_at
+// (compared on the YYYY-MM-DD prefix, matching ResolvedRange's vendor-local
+// dates). A missing date passes the date filter (don't drop activity-less rows
+// for the all-time-ish default). "interested" matches the booked OR warm/hot
+// interested tiers; the rest match the tier exactly.
+function postFilterLeads(
+    leads: Lead[],
+    range: ResolvedRange,
+    leadStatus?: string
+): Lead[] {
+    const from = range.from || "";
+    const to = range.to || "";
+    const wantStatus = (leadStatus || "").toLowerCase();
+    return leads.filter((l) => {
+        // date narrowing
+        const raw = l.last_call_at ?? l.added_at ?? "";
+        if (raw) {
+            const day = raw.slice(0, 10); // YYYY-MM-DD
+            if (from && day < from) return false;
+            if (to && day > to) return false;
+        }
+        // status narrowing
+        if (wantStatus) {
+            const tier = leadTier(l);
+            if (wantStatus === "interested") {
+                const oc = (l.last_outcome ?? "").toLowerCase();
+                const stt = (l.status ?? "").toLowerCase();
+                if (!(stt.includes("interested") || oc.includes("interested"))) return false;
+            } else if (tier !== wantStatus) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
 async function composeReport(
     range: ResolvedRange,
     filters?: ReportFilters
@@ -265,13 +321,32 @@ async function composeReport(
     // and the UI shows the active range chip + a "all-time" note where relevant).
     const [stats, analytics, leadsPage] = await Promise.all([
         getStats().catch(() => null),
-        getAnalytics(
-            filters?.campaign ? { campaign_id: filters.campaign } : undefined
-        ).catch(() => null),
-        getLeads({ limit: 500 }).catch(() => ({ leads: [] as Lead[] })),
+        // W-FRONTEND-RECONCILE §3 Fix 1 — forward the active range (getAnalytics
+        // already accepts from/to) so the funnel + connected/interested/booked
+        // counts become date-range-aware, plus the campaign filter.
+        getAnalytics({
+            ...(filters?.campaign ? { campaign_id: filters.campaign } : {}),
+            ...(range.from ? { from: range.from } : {}),
+            ...(range.to ? { to: range.to } : {}),
+        }).catch(() => null),
+        // §3 Fix 2b — forward range/campaign/status to /leads (box narrows where
+        // it supports them; the post-filter below guarantees the dropdowns work
+        // even on an un-upgraded box).
+        getLeads({
+            limit: 500,
+            ...(range.from ? { from: range.from } : {}),
+            ...(range.to ? { to: range.to } : {}),
+            ...(filters?.campaign ? { campaign_id: filters.campaign } : {}),
+            ...(filters?.lead_status ? { status: filters.lead_status } : {}),
+        }).catch(() => ({ leads: [] as Lead[] })),
     ]);
 
-    const leads = leadsPage?.leads ?? [];
+    // §3 Fix 2b — GUARANTEED client-side post-filter. Even if the live /leads
+    // ignores the query params, narrow the in-memory set by date (on
+    // last_call_at ?? added_at) and by the status-tier the dropdown picked, so
+    // the KPIs + hot-leads visibly move with every filter change.
+    const allLeads = leadsPage?.leads ?? [];
+    const leads = postFilterLeads(allLeads, range, filters?.lead_status);
     // Classify leads into tiers using the SAME logic the badge uses (kept inline to
     // avoid a JSX import in this .ts module).
     let hot = 0,
