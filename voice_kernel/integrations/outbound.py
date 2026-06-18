@@ -76,7 +76,6 @@ class OutboundKernel:
     session: Any  # KernelSession
     base_ctx: Any  # CallContext
     _provider_choice: Any = None  # cached ProviderChoice
-    _lang_tracker: Any = None  # per-call voice_kernel.language.LanguageTracker (lazy)
 
 
 # --------------------------------------------------------------------------- #
@@ -308,25 +307,6 @@ def assemble_outbound_instructions(
         return legacy_render()
 
 
-def _mirror_for_turn(ik: "OutboundKernel", user_text: str, seed_lang: str):
-    """PER-TURN ADAPTIVE LANGUAGE MIRROR (this IS the live outbound earner's proven
-    behaviour, now shared in the kernel).
-
-    Lazily creates the per-call LanguageTracker (seeded from `seed_lang`, NOT a
-    hardcoded constant) on first use, re-detects the caller's language from THIS
-    utterance every turn, and returns the voice_kernel.language.MirrorDecision
-    (reply_language NAME + speakable tts_lang_code + changed + instruction).
-    Adaptive: a mid-call switch (Hindi->English->Hindi) flips it immediately.
-    Never raises into the call (the earner is protected)."""
-    from voice_kernel import language as lang
-
-    if ik._lang_tracker is None:
-        seed = (seed_lang or "").strip() or lang.DEFAULT_LANG
-        seed = {"hi": "hindi", "en": "english"}.get(seed, seed)
-        ik._lang_tracker = lang.LanguageTracker(default=seed)
-    return lang.mirror_turn(user_text, ik._lang_tracker)
-
-
 async def on_turn(
     ik: Optional[OutboundKernel],
     *,
@@ -340,17 +320,6 @@ async def on_turn(
 
         {"reply_lang": str, "rag_suffix": str|None, "speech_plan": None}
 
-    PER-TURN LANGUAGE MIRROR (shared with inbound; the proven earner behaviour):
-    we RE-DETECT the caller's language from THIS utterance via the self-contained
-    voice_kernel.language mirror instead of trusting a single dial-time
-    `detected_lang`. The detected LANGUAGE NAME flows into the kernel TurnContext
-    so the kernel renders the TURN-SCOPED `USER LANGUAGE: <lang> — mirror it.`
-    directive plus the casual-Hinglish per-turn reply instruction — appended AFTER
-    the cached stable prefix (cache-safe; the stable prefix is NEVER rewritten).
-    `reply_lang` is the SPEAKABLE TTS code (hi|en; gujarati clamps to hi). The W5
-    Speech Planner still renders casual + no-half-words; the mirror only chooses
-    the LANGUAGE.
-
     Never blocks beyond the RAG hard deadline (retrieve runs parallel to the LLM
     start; on timeout it returns empty). On OFF / None ik it returns an inert dict
     (all empties) so the agent's legacy turn is unchanged.
@@ -361,42 +330,21 @@ async def on_turn(
         from voice_kernel.contracts import TurnContext
         from voice_kernel.packet import Stage
 
-        # --- adaptive per-turn mirror (re-detect from THIS utterance) ----------
-        try:
-            decision = _mirror_for_turn(ik, user_text, detected_lang)
-            reply_language = decision.reply_language     # language NAME for the kernel directive
-            reply_lang_code = decision.tts_lang_code      # speakable TTS code (hi|en)
-            lang_instruction = decision.instruction       # per-turn casual-Hinglish steer
-            lang_changed = decision.changed
-        except Exception as exc:  # mirror must never break the earner's turn
-            log.warning("on_turn mirror failed (-> passthrough lang): %r", exc)
-            reply_language = detected_lang
-            reply_lang_code = detected_lang
-            lang_instruction = ""
-            lang_changed = False
-
         turn = TurnContext(
             call_id=ik.session.call_id,
             user_text=user_text,
-            detected_lang=reply_language or detected_lang,  # NAME -> kernel L5 directive
+            detected_lang=detected_lang,
             stage=stage or Stage.GREET,
             history_len=history_len,
         )
         try:
             rag_layer = await ik.kernel.retrieve_turn_layer(turn)  # hard-deadline, never raises
             rag_suffix = ik.kernel.assemble_turn(turn, rag_layer=rag_layer)  # in-memory, no await
-            # Append the per-turn casual-Hinglish reply directive (turn-scoped,
-            # cache-safe — L5 suffix only; the cached stable prefix is untouched).
-            if lang_instruction:
-                rag_suffix = (
-                    f"{rag_suffix}\nMIRROR: {lang_instruction}" if rag_suffix
-                    else f"MIRROR: {lang_instruction}"
-                )
         except Exception as exc:
             log.warning("on_turn rag/assemble failed (-> no L5): %r", exc)
-            rag_suffix = (f"MIRROR: {lang_instruction}" if lang_instruction else None)
+            rag_suffix = None
         return {
-            "reply_lang": reply_lang_code or turn.detected_lang,
+            "reply_lang": detected_lang or turn.detected_lang,
             "rag_suffix": rag_suffix,
             "speech_plan": None,
         }
