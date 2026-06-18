@@ -1,0 +1,30 @@
+# Famit Studio services — deployed on famit-hatchet (68.183.94.38).
+# Managed by infra/studio/setup.sh via the studio-deploy GH Action.
+#
+#  openvscode  — OpenVSCode Server (web VS Code).  Port 8080 (public).
+#                Workspace: /data/studio/workspace (clones repo on first boot).
+#                Auth token: VSCODE_TOKEN env var (required).
+#
+# Coolify ships its own compose (installed by curl | bash); this file only
+# manages the services that sit alongside it.
+name: famit-studio
+services:
+  openvscode:
+    image: ghcr.io/gitpod-io/openvscode-server:latest
+    container_name: famit-openvscode
+    restart: unless-stopped
+    ports:
+      - "8080:3000"
+    environment:
+      CONNECTION_TOKEN: "${VSCODE_TOKEN}"
+    volumes:
+      - /data/studio/workspace:/home/workspace:cached
+      - openvscode_extensions:/home/.openvscode-server/extensions
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+volumes:
+  openvscode_extensions:

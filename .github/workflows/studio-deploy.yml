@@ -1,0 +1,142 @@
+# Famit Studio auto-deploy — installs Coolify + OpenVSCode Server on
+# famit-hatchet (68.183.94.38) and wires the env vars into the panel on
+# famit-panel-2 (143.110.247.249), then rebuilds the panel.
+#
+# Trigger: manual dispatch (Actions → studio-deploy → Run workflow).
+# Required GitHub secrets:
+#   SSH_PRIVATE_KEY        — private key for both servers (root@)
+#   VSCODE_TOKEN           — random secret token for OpenVSCode connection auth
+#   COOLIFY_ADMIN_EMAIL    — initial Coolify admin e-mail (default: admin@famit.in)
+#   COOLIFY_ADMIN_PASSWORD — initial Coolify admin password (strong random)
+#   STUDIO_REPO            — HTTPS clone URL for the Famit repo (for workspace)
+name: studio-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_reinstall:
+        description: "Force reinstall even if already provisioned"
+        type: boolean
+        default: false
+
+jobs:
+  provision-hatchet:
+    name: Provision famit-hatchet
+    runs-on: ubuntu-latest
+    outputs:
+      coolify_url: ${{ steps.parse.outputs.coolify_url }}
+      coolify_key: ${{ steps.parse.outputs.coolify_key }}
+      vscode_url:  ${{ steps.parse.outputs.vscode_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add hatchet to known_hosts
+        run: ssh-keyscan -H 68.183.94.38 >> ~/.ssh/known_hosts
+
+      - name: Upload setup files to hatchet
+        run: |
+          scp infra/studio/setup.sh          root@68.183.94.38:/tmp/studio-setup.sh
+          scp infra/studio/docker-compose.yml root@68.183.94.38:/tmp/studio-compose.yml
+          ssh root@68.183.94.38 "chmod +x /tmp/studio-setup.sh; mkdir -p /opt/famit-studio"
+          ssh root@68.183.94.38 "cp /tmp/studio-compose.yml /opt/famit-studio/docker-compose.yml"
+
+      - name: Run provisioner on hatchet
+        id: run_setup
+        env:
+          VSCODE_TOKEN:           ${{ secrets.VSCODE_TOKEN }}
+          COOLIFY_ADMIN_EMAIL:    ${{ secrets.COOLIFY_ADMIN_EMAIL }}
+          COOLIFY_ADMIN_PASSWORD: ${{ secrets.COOLIFY_ADMIN_PASSWORD }}
+          STUDIO_REPO:            ${{ secrets.STUDIO_REPO }}
+          FORCE:                  ${{ github.event.inputs.force_reinstall }}
+        run: |
+          ssh root@68.183.94.38 "
+            export VSCODE_TOKEN='$VSCODE_TOKEN'
+            export COOLIFY_ADMIN_EMAIL='$COOLIFY_ADMIN_EMAIL'
+            export COOLIFY_ADMIN_PASSWORD='$COOLIFY_ADMIN_PASSWORD'
+            export STUDIO_REPO='$STUDIO_REPO'
+            export FORCE='$FORCE'
+            bash /tmp/studio-setup.sh 2>&1
+          " | tee /tmp/setup.log
+          grep '^STUDIO_ENV_JSON=' /tmp/setup.log | head -1 >> "$GITHUB_OUTPUT"
+
+      - name: Parse env vars
+        id: parse
+        run: |
+          JSON=$(grep '^STUDIO_ENV_JSON=' "$GITHUB_OUTPUT" | cut -d= -f2-)
+          echo "coolify_url=$(echo "$JSON" | jq -r '.COOLIFY_URL')"   >> "$GITHUB_OUTPUT"
+          echo "coolify_key=$(echo "$JSON" | jq -r '.COOLIFY_API_KEY')" >> "$GITHUB_OUTPUT"
+          echo "vscode_url=$(echo "$JSON" | jq -r '.NEXT_PUBLIC_OPENVSCODE_URL')" >> "$GITHUB_OUTPUT"
+
+  wire-panel:
+    name: Wire panel env + rebuild
+    runs-on: ubuntu-latest
+    needs: provision-hatchet
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add panel server to known_hosts
+        run: ssh-keyscan -H 143.110.247.249 >> ~/.ssh/known_hosts
+
+      - name: Inject studio env into panel and rebuild
+        env:
+          COOLIFY_URL:              ${{ needs.provision-hatchet.outputs.coolify_url }}
+          COOLIFY_API_KEY:          ${{ needs.provision-hatchet.outputs.coolify_key }}
+          NEXT_PUBLIC_OPENVSCODE_URL: ${{ needs.provision-hatchet.outputs.vscode_url }}
+        run: |
+          ssh root@143.110.247.249 bash <<'REMOTE'
+            # Locate the panel root (looks for .next build dir)
+            PANEL_DIR=$(find /root /var/www /opt /srv -maxdepth 3 -name ".next" -type d 2>/dev/null | head -1 | xargs -I{} dirname {})
+            if [[ -z "$PANEL_DIR" ]]; then
+              echo "ERROR: cannot find famit-panel directory on this server"
+              exit 1
+            fi
+            echo "Panel root: $PANEL_DIR"
+            ENV_FILE="$PANEL_DIR/.env.local"
+
+            # Patch / insert the studio vars without touching others
+            for VAR in COOLIFY_URL COOLIFY_API_KEY NEXT_PUBLIC_OPENVSCODE_URL; do
+              sed -i "/^${VAR}=/d" "$ENV_FILE" 2>/dev/null || true
+            done
+
+            cat >> "$ENV_FILE" <<VARS
+          COOLIFY_URL=${COOLIFY_URL}
+          COOLIFY_API_KEY=${COOLIFY_API_KEY}
+          NEXT_PUBLIC_OPENVSCODE_URL=${NEXT_PUBLIC_OPENVSCODE_URL}
+          VARS
+
+            echo "env vars written to $ENV_FILE"
+
+            # Rebuild and restart panel
+            cd "$PANEL_DIR"
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            corepack enable 2>/dev/null || true
+            pnpm install --frozen-lockfile
+            pnpm build
+            # Restart whichever process manager is running the panel
+            pm2 restart famit-panel 2>/dev/null \
+              || pm2 restart all 2>/dev/null \
+              || systemctl restart famit-panel 2>/dev/null \
+              || echo "INFO: restart manually — pm2/systemctl not found"
+          REMOTE
+
+      - name: Smoke-check Studio page
+        run: |
+          sleep 8
+          HTTP=$(curl -so /dev/null -w "%{http_code}" https://panel.famit.in/studio || true)
+          echo "GET /studio → $HTTP"
+          if [[ "$HTTP" != "200" ]]; then
+            echo "WARNING: /studio returned $HTTP (panel may still be restarting)"
+          fi

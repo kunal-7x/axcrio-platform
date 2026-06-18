@@ -69,6 +69,76 @@ export const navigation = [
         ],
     },
     {
+        // Alpha — the autonomous agent-builder runtime (famit-alpha-spec §11). Give it a
+        // goal; it plans, governs spend (Credit Governor), runs the L0–L4 approval ladder,
+        // and executes in the Famit cloud. CORE surface (no roles/feature_key) so it's
+        // visible to everyone; in-page writes self-gate on canWrite. A flat top-level link
+        // (href, no list) → rendered by NavLink. Placed near the top, beside Command.
+        title: "Alpha",
+        icon: "cube",
+        href: "/alpha",
+    },
+    {
+        // Studio — the integrated developer console: Coolify PaaS deployment plane (deploy
+        // Next.js, React, Python, DBs from within Famit) + OpenVSCode Server code editor
+        // (full VS Code in an iframe). Both are self-hosted; config via COOLIFY_URL /
+        // COOLIFY_API_KEY / NEXT_PUBLIC_OPENVSCODE_URL. Dormant-safe (setup card when not
+        // configured). CORE surface (visible to everyone); writes self-gate on canWrite.
+        title: "Studio",
+        icon: "desktop",
+        href: "/studio",
+    },
+    {
+        // Swarm — the governed AI revenue TEAM (design/famit-swarm-spec.md). A manager agent
+        // ("the conductor") orchestrates a team of Alpha runs: a Researcher + Analyst gather, a
+        // Strategist proposes a concrete growth play, a Critic verifies it, and the one money
+        // action parks at a step-up Approve/Reject gate (P4 — the swarm can never bypass it). A
+        // live "war room" board. COMPOSES Alpha — it adds zero money-touching primitives. CORE
+        // surface (no roles/feature_key) so it's visible to everyone; in-page writes self-gate on
+        // canWrite. A flat top-level link (href, no list) → rendered by NavLink, beside Alpha. The
+        // page is dormant-safe: a missing /swarm backend renders a calm "being set up" card.
+        title: "Swarm",
+        icon: "dots",
+        href: "/swarm",
+    },
+    {
+        // Famit Cloud — the compute/orchestration control plane (services/famit-cloud). Declare
+        // workloads (service = 24/7 daemon | cron = scheduled | job = one-shot); the cloud supervises
+        // them around the clock (restart/backoff/crashloop), schedules, scales, and self-heals across
+        // pluggable runtimes (local process, self-hosted containers). The executor/scheduler/optimizer
+        // and even core run ON it. A flat top-level link (NavLink), beside Alpha. CORE surface
+        // (visible to everyone); in-page writes self-gate.
+        title: "Famit Cloud",
+        icon: "layers",
+        href: "/famit-cloud",
+    },
+    {
+        // Connect — the interconnection hub. A live map of the whole platform: every module wired to
+        // Famit Cloud and to each other (the revenue loop + the intelligence loop). Projection of
+        // lib/platform-graph; the universal <Connect/> affordance on every page links back here.
+        // CORE surface (visible to everyone), beside Famit Cloud. Flat NavLink.
+        title: "Connect",
+        icon: "link",
+        href: "/connect",
+    },
+    {
+        // Security — the platform's guardian + credential controls, grouped into one
+        // section. Cybertroic (the dedicated security hub: the Optimizer's Sentinel
+        // hands security-shaped events here for tiered-model triage → remediate → brief)
+        // sits beside the Vault (the encrypted credential hub — save any service/API key
+        // once, behind a security code, and use it everywhere). Module key `mod.security`
+        // (registry "Guardian"); each child carries its page key. Manager-gated (read
+        // broad; writes self-gate on canWrite + route through the step-up firewall).
+        title: "Security",
+        icon: "shield",
+        roles: "manager",
+        feature_key: "mod.security",
+        list: [
+            { title: "Cybertroic", href: "/cybertroic", feature_key: "security.cybertroic" },
+            { title: "Vault", href: "/vault", feature_key: "security.vault" },
+        ],
+    },
+    {
         // A2 — AI Manager. Promoted from a single Command link to its own
         // collapsible section (master AI-Manager spec §1): the voice/chat command
         // center is now a multi-route surface, so each sub-page is a child here.
@@ -154,6 +224,7 @@ export const navigation = [
         feature_key: "mod.automate",
         list: [
             { title: "Workflows", href: "/workflows", feature_key: "automate.workflows" },
+            { title: "Integrations", href: "/integrations", roles: "manager" },
             { title: "Webhooks", href: "/webhooks", roles: "manager", feature_key: "automate.webhooks" },
         ],
     },
@@ -167,6 +238,8 @@ export const navigation = [
         icon: "wallet",
         list: [
             { title: "Payments", href: "/payments", roles: "manager", feature_key: "money.payments" },
+            { title: "Add Credit", href: "/billing/topup" },
+            { title: "Treasury", href: "/treasury", roles: "admin" },
             { title: "Billing Overview", href: "/billing/overview" },
             { title: "Vendor Costs", href: "/billing/vendors" },
             { title: "Spending", href: "/billing/explorer" },
@@ -179,7 +252,16 @@ export const navigation = [
         title: "Intelligence",
         icon: "chart",
         feature_key: "mod.intelligence",
-        list: [{ title: "Analytics", href: "/analytics", feature_key: "intelligence.analytics" }],
+        list: [
+            { title: "Analytics", href: "/analytics", feature_key: "intelligence.analytics" },
+            { title: "Optimizer", href: "/optimizer", feature_key: "intelligence.optimizer" },
+            // Grow Connect — the self-improvement / reinforcement-learning engine. The
+            // meta-learning layer above the Optimizer: per-tenant Thompson-sampling
+            // policies across every domain, with a premium reward-curve + safe-
+            // exploration analytics surface. Manager-gated like Optimizer/Ads (read
+            // broad, writes self-gate); proposals route through the AI-Manager firewall.
+            { title: "Grow Connect", href: "/grow-connect", roles: "manager", feature_key: "intelligence.connect" },
+        ],
     },
     {
         // H — Foundation. Operator-facing config of the foundational systems. The

@@ -19,6 +19,7 @@ id_rsa.*
 **/cred.md
 **/credentials*
 **/secret
+infra/studio/.vscode-token
 # AI Manager telephony creds — contain Vobiz auth + our chosen SIP username/password. NEVER COMMIT.
 ai_manager_cred.md
 **/ai_manager_cred.md
@@ -140,3 +141,4 @@ groq_api.md
 **/app_id_secret*
 **/*_CONFIG_RESULT.md
 infra/logto/LOGTO_CONFIG_RESULT.md
+local-dev/logs/
