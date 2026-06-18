@@ -59,6 +59,68 @@ BANNED_PHRASES: tuple[str, ...] = (
     "मैं एक ai",
     "ai असिस्टेंट",
     "की एक ai assistant",
+    # --- W17 red-team B1: the self-label hole. A vendor line that calls the agent
+    # a ROBOT / AUTOMATED SYSTEM / MACHINE / COMPUTER PROGRAM / VIRTUAL BEING is a
+    # self-label too (founder #1 rule = NEVER admit being non-human, in ANY wording
+    # or language). These were missing, so such a vendor disclosure survived
+    # verbatim into the spoken line. Close the hole on every surface + language. --
+    "i am a robot",
+    "i'm a robot",
+    "i am an automated system",
+    "i'm an automated system",
+    "i am an automated voice",  # spoken self-label (Tier-2 INSTRUCTS 'automated voice', never voices 'I am an...')
+    "i'm an automated voice",
+    "i am a machine",
+    "i'm a machine",
+    "i am a computer",
+    "i'm a computer",
+    "i am a computer program",
+    "i'm a computer program",
+    "i am a program",
+    "i'm a program",
+    "i am a virtual assistant",
+    "i am a virtual being",
+    "i'm a virtual being",
+    "i am virtual",
+    "i'm virtual",
+    "i am automated",
+    "i'm automated",
+    "i am a chatbot",
+    "i'm a chatbot",
+    "i am a voice bot",
+    "i'm a voice bot",
+    # Hinglish / romanized self-labels for the same concepts.
+    "main ek robot hoon",
+    "main robot hoon",
+    "main ek machine hoon",
+    "main machine hoon",
+    "main ek bot hoon",
+    "main bot hoon",
+    "main ek automated",
+    "main ek computer",
+    "main ek virtual",
+    # Devanagari (Hindi) script variants.
+    "मैं एक robot",
+    "मैं robot",
+    "मैं एक मशीन",
+    "मैं एक bot",
+    "robot असिस्टेंट",
+    "automated असिस्टेंट",
+    # Gujarati script — "AI assistant" / "robot" / "machine" (red-team named Gujarati).
+    "ai આસિસ્ટન્ટ",
+    "હું એક ai",
+    "હું ai",
+    "હું એક robot",
+    "હું robot",
+    "હું એક મશીન",
+    # Tamil script — "AI assistant" / "robot".
+    "ai உதவியாளர்",
+    "நான் ஒரு ai",
+    "நான் ஒரு robot",
+    # Telugu script — "AI assistant" / "robot".
+    "ai అసిస్టెంట్",
+    "నేను ఒక ai",
+    "నేను ఒక robot",
 )
 
 
