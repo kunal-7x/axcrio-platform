@@ -184,6 +184,61 @@ def test_context_engine_folds_vendor_script_into_card():
 
 
 # --------------------------------------------------------------------------- #
+# (a) RED-TEAM BLOCKER 1 — the WHOLE vendor flow reaches the prompt, not just the
+# opening three stages. QUALIFY/PITCH/OBJECTION/CLOSE must all be present.
+# --------------------------------------------------------------------------- #
+def test_full_vendor_flow_reaches_rendered_prompt_blocker1():
+    vs = VendorScriptEngineImpl()
+    vs.register("c1", _VENDOR_SCRIPT, variables={
+        "lead_name": "Sharma", "agent_name": "Riya", "company": "Godrej", "product": "Emerald Heights",
+    })
+    compiled = compile_campaign(tenant_id="t", campaign_id="c1", brief=_long_realestate_brief(), fields=_RE_FIELDS)
+    ce = ContextEngineImpl({"c1": compiled}, vendor_script=vs, safety_rules="SAFETY")
+    prefix = ce.build_packet(_ctx(_RE_FIELDS)).render_stable_prefix()
+    # opener/permission/intro (were already present)
+    assert "Namaste" in prefix and "do minute" in prefix
+    # the back half of the vendor's authoritative flow now reaches the prompt too:
+    assert "2BHK" in prefix, "QUALIFY blueprint missing from prompt"
+    assert "metro ke paas" in prefix, "PITCH blueprint missing from prompt"
+    assert "EOI offer" in prefix, "OBJECTION blueprint missing from prompt"
+    assert "site visit book" in prefix, "CLOSE blueprint missing from prompt"
+
+
+def test_vendor_blueprint_does_not_evict_vendor_talking_points_blocker2():
+    """A vendor script (opener flow) merged with the vendor's OWN authored
+    talking_points must keep BOTH — neither evicts the other at the cap."""
+    fields = dict(_RE_FIELDS, talking_points=[
+        "VENDOR-TP-1 prime location", "VENDOR-TP-2 RERA approved",
+        "VENDOR-TP-3 home loan help", "VENDOR-TP-4 pool and clubhouse",
+    ])
+    vs = VendorScriptEngineImpl()
+    vs.register("c1", _VENDOR_SCRIPT, variables={
+        "lead_name": "Sharma", "agent_name": "Riya", "company": "Godrej", "product": "Emerald Heights",
+    })
+    compiled = compile_campaign(tenant_id="t", campaign_id="c1", brief="", fields=fields)
+    ce = ContextEngineImpl({"c1": compiled}, vendor_script=vs, safety_rules="SAFETY")
+    pkt = ce.build_packet(_ctx(fields))
+    tps = pkt.card.talking_points
+    # vendor flow leads (authoritative), and at least one of the vendor's own
+    # authored talking points survives the merge+clamp (BLOCKER 2 — no silent drop).
+    assert any("Namaste" in tp for tp in tps), "vendor opener flow must lead"
+    assert any("VENDOR-TP" in tp for tp in tps), "vendor-authored talking points evicted"
+
+
+def test_unsegmented_vendor_script_does_not_duplicate_opener():
+    """A script with NO stage headings is authoritative but unsegmented — the
+    whole text surfaces once, not three times across greet/permission/intro."""
+    unsegmented = "Namaste ji, main Riya bol rahi hoon Godrej se. 2 minute baat karein?"
+    vs = VendorScriptEngineImpl()
+    vs.register("c2", unsegmented)
+    compiled = compile_campaign(tenant_id="t", campaign_id="c2", brief="", fields=_RE_FIELDS)
+    ce = ContextEngineImpl({"c2": compiled}, vendor_script=vs, safety_rules="SAFETY")
+    card = ce.build_card(_ctx(_RE_FIELDS, campaign_id="c2"))
+    namaste_points = [tp for tp in card.talking_points if "Namaste ji" in tp]
+    assert len(namaste_points) == 1, f"opener duplicated across stages: {namaste_points}"
+
+
+# --------------------------------------------------------------------------- #
 # C3 — fences present + safety ABOVE untrusted content BY POSITION
 # --------------------------------------------------------------------------- #
 def test_fences_present_and_safety_above_by_position():

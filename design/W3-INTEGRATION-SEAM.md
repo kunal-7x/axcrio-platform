@@ -174,3 +174,22 @@ DDL, admin-GUC. This note does not create it (no live mutation this wave).
 - `voice_kernel.context.VendorScriptEngineImpl(scripts=, variables=)` — `VendorScriptEngine` Protocol; `.register(cid, raw, variables=, greeting_hint=)`
 - `voice_kernel.context.{compile_script, parse_script, render_vars, sanitize}`
 - registration: `build_kernel(cfg, context=ce, vendor_script=vs)` (alias `context`→`context_engine` added in `kernel.py`)
+
+---
+
+## VERIFY red-team note — where the AUTHORITATIVE vendor flow surfaces
+
+The red-team caught that only GREET/PERMISSION/INTRO reached the prompt. Fixed by
+folding the WHOLE vendor flow into the card at CALL-ASSEMBLY time (`build_packet`
+→ `_apply_vendor_overrides`), each stage into its natural card slot
+(QUALIFY→qualifying_questions, OBJECTION→objections, CLOSE→closing_lines,
+GREET+PERMISSION+INTRO→talking_points). It therefore reaches the model in the
+STABLE PREFIX (`render_stable_prefix`) — the cached, every-turn part of the prompt
+— so no per-turn `stage_excerpt` call is required on the HOT path for the vendor
+to be authoritative end-to-end. `vendor_script.stage_excerpt(stage)` and
+`full_blueprint(cid)` remain available for an OPTIONAL future L5 enhancement (inject
+ONLY the current-stage excerpt per turn to save prefix tokens), but they are NOT on
+the critical path — the integration seam does not need to wire a per-turn vendor
+fold for correctness. If a later wave wants the per-turn slice, it must fence it as
+`SourceTrust.CAMPAIGN_BRIEF`/`RETRIEVED_KNOWLEDGE` positionally BELOW L0 (same C3
+rule the stable prefix already obeys).

@@ -51,3 +51,42 @@ the LATER flag-gated cutover for INBOUND_PROV_LOCK Sarvam-silence (aim_voice_age
 :2437/:2446/:424-439/:451), GROQ_MAX_TOKENS raise (agent.py:617), and semantic
 turn-detection (aim_voice_agent.py:367; agent.py:630 earner-deferred), with file:line,
 flags, and one-env reverts.
+
+## Phase: VERIFY+COMMIT (2026-06-18)
+
+RECONCILE-FIRST: the W5 modules (`voice_kernel/speech/` 5 files + `voice_kernel/
+providers/` 3 files) were already in HEAD via a prior session + the red-team fold
+commit `2cb06ac` (half-word / paise-drop / bare-number-leak / Devanagari-corruption
+blockers fixed in disjoint edits to speech/ only). This VERIFY phase re-ran every
+gate against that tree; the only NEW commit here folds the seam note + this wave log.
+
+Gates (all GREEN):
+- `python -m pytest voice_kernel/` = **212 passed / 0 failed** (was 178 at red-team
+  time; suite grew, none weakened). The 7 `context/` Stage.PITCH failures the
+  red-team flagged as a different wave's bug are now resolved in HEAD.
+- W5-scoped subset (speech/provider/planner/normalize/hinglish/prosody/segment/
+  parity/identity/router/keypool) = **55 passed**.
+- `test_adapter_off_identity.py` ran for REAL (not skipped) = **12/12 PASSED**
+  (outbound+inbound × field-sets) — flag-OFF byte-identity invariant intact;
+  default `build_kernel` still binds Null impls.
+- EARNER LAW: `md5sum droplet_work/agent.py` = `98655dbfc71d5c3da36bcfe3f848082c`
+  (branch-baseline snapshot, UNCHANGED); `aim_voice_agent.py` / `caller.py` not
+  edited; `git status droplet_work/` clean.
+- **0 leaked imports**: no executable `import droplet_work.agent` / `.caller` /
+  `aim_voice_agent` anywhere in `voice_kernel/` (the 3 hits are comments / the
+  isolated-load docstring in `rag/backends.py`, not live imports).
+- gitleaks: `protect --staged` = 0 + `detect` over the staged seam note + wave log
+  = 0.
+- Staged ONLY: `design/W5-SARVAM-AND-SPEECH-SEAM.md`, `memory/wave_runs/
+  W5-speech-provider.md`, `WORKFLOW_LEDGER.md` (never `git add -A`).
+
+FROZEN W5 PUBLIC SURFACE (bound to the W1 contracts, now implemented):
+- `SpeechPlanner.plan` (sync, HOT-path) → `DefaultSpeechPlanner` in
+  `voice_kernel/speech/planner.py`; FAIL-OPEN (raw text on any error, never drops a
+  turn). Returns `SpeechPlan`.
+- `ProviderRouter` (fail-LOUD) → `DefaultProviderRouter` in
+  `voice_kernel/providers/router.py`; `resolve`/`on_error` log every fallback (never
+  a silent EL swap), `ProviderDiagnostics.silent_swap` anomaly flag, `SARVAM_WS_
+  CONTRACT`. Returns `ProviderChoice`. Health-scored `keypool.py` (429 demote +
+  cooldown recover; exhausted → explicit None).
+- Both register via `build_kernel(cfg, speech=impl, provider_router=impl)`.
