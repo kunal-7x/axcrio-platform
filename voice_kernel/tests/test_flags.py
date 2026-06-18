@@ -1,5 +1,6 @@
 """KernelConfig flag tests: default OFF for EVERY direction with no env set;
-scoped inbound flag does not enable outbound; shadow never enables replacement."""
+scoped inbound flag does not enable outbound; scoped outbound flag does not
+enable inbound; shadow never enables replacement."""
 from __future__ import annotations
 
 import pytest
@@ -7,7 +8,10 @@ import pytest
 from voice_kernel.config import KernelConfig
 from voice_kernel.errors import ConfigError
 
-_FLAG_VARS = ["KERNEL_ENABLED", "KERNEL_INBOUND", "KERNEL_OUTBOUND_SHADOW", "KERNEL_MAX_TOTAL_TOKENS"]
+_FLAG_VARS = [
+    "KERNEL_ENABLED", "KERNEL_INBOUND", "KERNEL_OUTBOUND",
+    "KERNEL_OUTBOUND_SHADOW", "KERNEL_MAX_TOTAL_TOKENS",
+]
 
 
 @pytest.fixture
@@ -21,6 +25,7 @@ def test_unset_env_is_off_for_every_direction(clean_env):
     cfg = KernelConfig.from_env()
     assert cfg.enabled is False
     assert cfg.inbound is False
+    assert cfg.outbound is False
     assert cfg.outbound_shadow is False
     for direction in ("outbound", "inbound", "", "OUTBOUND", None):
         assert cfg.enabled_for(direction) is False
@@ -31,6 +36,16 @@ def test_inbound_flag_enables_inbound_only(clean_env):
     cfg = KernelConfig.from_env()
     assert cfg.enabled_for("inbound") is True
     assert cfg.enabled_for("outbound") is False  # earner stays OFF
+
+
+def test_outbound_flag_enables_outbound_only(clean_env):
+    # The KERNEL_OUTBOUND twin of KERNEL_INBOUND: flips the earner live WITHOUT
+    # the master switch, and does NOT enable inbound.
+    clean_env.setenv("KERNEL_OUTBOUND", "1")
+    cfg = KernelConfig.from_env()
+    assert cfg.outbound is True
+    assert cfg.enabled_for("outbound") is True
+    assert cfg.enabled_for("inbound") is False  # inbound stays OFF
 
 
 def test_master_flag_enables_both(clean_env):
