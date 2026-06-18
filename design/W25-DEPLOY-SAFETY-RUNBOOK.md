@@ -36,7 +36,7 @@ box interaction goes through an injected `ExecTransport`; tests inject a fake).
 | `closure.py` | `DeployClosure` = `{relpath → md5}` manifest (CRLF-normalized, matches the box `_verifydeploy.py` idiom). `compute_intended_md5(golden, patch)` = apply a unified diff locally → `py_compile` gate → md5 = the **INTENDED-NEW-CLOSURE**. Fails closed on a wrong golden / stale patch / broken syntax. |
 | `plan.py` | The deploy engine. `EarnerGate.assert_ok` (md5==golden + MainPID present + /health 200). `backup()` (cp aside + verify backup md5). `stage_and_assert()` (write to release dir, **assert landed md5 == intended-new-closure**, refuse to swap otherwise). `atomic_swap()` (`flock` + `ln -sfn …tmp && mv -T …tmp current` = atomic rename). `deploy_flag_off()` runs preflight→backup→stage→swap in the invariant order. |
 | `drift.py` | `DriftChecker` builds the box's current closure and diffs it against the expected local closure → added/removed/changed with md5s. `assert_no_drift()` is a hard pre-deploy gate. |
-| `drain.py` | `DrainOrchestrator.drain_then_restart()` = SIGTERM-to-main (enters SDK drain, NOT `systemctl stop`) → **poll in-flight until 0** (deadline-bounded) → restart. `metrics_inflight_probe` reads the active-jobs gauge and **fails closed** on a curl error (never assumes idle). `TwoWorkerPlan` generates the templated systemd unit + the rolling-drain runbook (see §5). |
+| `drain.py` | `DrainOrchestrator.drain_then_restart()` = SIGTERM-to-main (enters SDK drain, NOT `systemctl stop`) → **poll in-flight until 0** (deadline-bounded) → restart. `metrics_inflight_probe` reads the active-jobs gauge and **fails closed on BOTH a curl error AND an ABSENT gauge** (B2): only an explicit `<metric> 0` line concludes idle — a freshly-restarted worker whose gauge isn't registered yet is treated as UNKNOWN, never idle, so its live call is never cut. `TwoWorkerPlan` generates the templated systemd unit + the rolling-drain runbook (see §5). |
 | `canary.py` | `SyntheticCanary` = greeting render (+ optional md5-equality) + tool dry-run + DB deep-health. **Fails closed** (an exception or any non-OK check = FAIL). **NEVER dials PSTN** — there is no SIP/telephony call anywhere in the module, by construction. |
 | `healthwatch.py` | `HealthWatcher.watch()` runs the held canary first, then watches health for a settle window. On canary FAIL or `fail_threshold` consecutive non-200s, **fires the auto-rollback** and verifies the earner is back to golden md5. A single intermittent blip is tolerated (`fail_threshold`). |
 | `rollback.py` | `RollbackGenerator` → a single idempotent one-command bash script (restore backup/symlink + force flag OFF + daemon-reload + restart + re-assert golden md5 & /health 200). `execute()` runs it through the transport (the auto-rollback path). |
@@ -56,11 +56,20 @@ guard asserting **no droplet / agent / heavy-SDK module is imported**.
 
 1. **PREFLIGHT EARNER GATE** — assert box `agent.py` md5 == frozen golden
    `98655dbfc71d5c3da36bcfe3f848082c`, `famit-agent` MainPID present, `/health`
-   200. Hard abort on any mismatch (nothing mutated yet).
+   200. Hard abort on any mismatch (nothing mutated yet). **Construct the gate
+   with `EarnerGate(..., earner_golden_md5=EARNER_GOLDEN_MD5)`** so `expected_md5`
+   is itself asserted == the frozen constant (B1): the caller-supplied baseline,
+   the box file, and the constant are all tied together — a baseline that isn't
+   the known golden fails closed before any box fact is read.
 2. **BACKUP FIRST** — `cp -p agent.py agent.py.WOUTbak.<ts>`; verify backup md5 ==
    current target md5.
 3. **COMPUTE INTENDED-NEW-CLOSURE md5 LOCALLY** — golden + unified-diff patch →
-   `py_compile` → md5. Done off-box, before any upload.
+   `py_compile` → md5. Done off-box, before any upload. **Pass
+   `compute_intended_md5(golden_bytes, patch, expected_golden_md5=EARNER_GOLDEN_MD5)`**
+   so the golden bytes are asserted == the frozen earner BEFORE patching (B1): a
+   patch that applies cleanly against the WRONG golden can't produce a wrong
+   intended md5. The diff applier also validates each hunk body against its `@@`
+   line-counts, so a garbled patch that silently inserts/drops lines fails closed.
 4. **UPLOAD FLAG-OFF** — stage into the release dir; **assert landed md5 ==
    intended-new-closure**. Refuse to swap on any mismatch (catches a wrong /
    truncated file).
@@ -76,7 +85,12 @@ guard asserting **no droplet / agent / heavy-SDK module is imported**.
 9. **HELD SYNTHETIC CANARY** (no PSTN) — greeting render + tool dry-run + DB
    deep-health. Fail-closed → triggers auto-rollback.
 10. **HEALTH WATCH + AUTO-ROLLBACK** — watch the unit for the settle window; on
-    non-200 (≥ fail_threshold) OR canary fail, fire the staged rollback.
+    non-200 (≥ fail_threshold) OR canary fail, fire the staged rollback. Pass
+    `HealthWatcher(..., golden_md5=EARNER_GOLDEN_MD5)`; the outcome's
+    **`rollback_verified`** proves the restored md5 == golden. If the rollback is
+    INCOMPLETE (`restored != golden`), the watcher **raises `RollbackIncompleteError`**
+    (B3) — the earner is in an UNKNOWN state needing manual intervention; a caller
+    must check `rollback_verified`, not just `rolled_back`, before trusting recovery.
 11. **POSTFLIGHT EARNER GATE** — md5 on box == intended-new-closure, PIDs healthy,
     `/health` 200.
 12. **ONE-COMMAND ROLLBACK** is staged **before** step 8 and always ready.

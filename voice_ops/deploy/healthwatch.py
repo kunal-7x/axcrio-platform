@@ -39,6 +39,11 @@ def http_health_probe(url: str = "http://127.0.0.1:8209/health?deep=0") -> Healt
     return _probe
 
 
+class RollbackIncompleteError(RuntimeError):
+    """Auto-rollback ran but did NOT provably restore the earner to golden md5.
+    The earner is in an UNKNOWN state — escalate hard, never report success."""
+
+
 @dataclass(frozen=True)
 class WatchOutcome:
     healthy: bool
@@ -47,12 +52,23 @@ class WatchOutcome:
     polls: int
     canary: CanaryVerdict | None = None
     restored_md5: str | None = None
+    # B3: was the restored md5 PROVEN == golden? None = no golden was supplied to
+    # verify against (cannot prove). A caller must check this, NOT just
+    # `rolled_back`, before trusting the earner is back.
+    rollback_verified: bool | None = None
 
     def render(self) -> str:
         verdict = "ACCEPTED (healthy)" if self.healthy else "REJECTED"
         tail = ""
         if self.rolled_back:
-            tail = f" -> AUTO-ROLLBACK fired (restored md5={self.restored_md5})"
+            vf = (
+                "VERIFIED" if self.rollback_verified
+                else ("UNVERIFIED" if self.rollback_verified is None else "INCOMPLETE")
+            )
+            tail = (
+                f" -> AUTO-ROLLBACK fired (restored md5={self.restored_md5}, "
+                f"{vf})"
+            )
         return f"healthwatch: {verdict} after {self.polls} poll(s): {self.reason}{tail}"
 
 
@@ -70,11 +86,21 @@ class HealthWatcher:
 
     def _auto_rollback(self, reason: str, *, canary: CanaryVerdict | None) -> WatchOutcome:
         restored = self.rollback.execute(self.transport)
-        if self.golden_md5 is not None and restored != self.golden_md5:
-            # rollback itself did not restore golden — surface loudly
-            reason = (
+        # B3: verify the rollback PROVABLY restored golden. None => no golden to
+        # check against (cannot prove). True/False => proven match/mismatch.
+        verified: bool | None
+        if self.golden_md5 is None:
+            verified = None
+        else:
+            verified = restored == self.golden_md5
+        if verified is False:
+            # rollback itself did not restore golden — the earner is in an
+            # UNKNOWN state. Do NOT return rolled_back=True as if it succeeded;
+            # ESCALATE so a caller checking only `.rolled_back` can't miss it.
+            raise RollbackIncompleteError(
                 f"{reason}; AUTO-ROLLBACK INCOMPLETE: restored md5 {restored} "
-                f"!= golden {self.golden_md5}"
+                f"!= golden {self.golden_md5} — earner in UNKNOWN state, "
+                f"manual intervention required"
             )
         return WatchOutcome(
             healthy=False,
@@ -83,6 +109,7 @@ class HealthWatcher:
             polls=0,
             canary=canary,
             restored_md5=restored,
+            rollback_verified=verified,
         )
 
     def watch(self) -> WatchOutcome:

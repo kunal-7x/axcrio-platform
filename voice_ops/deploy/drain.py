@@ -51,9 +51,15 @@ def metrics_inflight_probe(
     metric_name: str = "livekit_active_jobs",
 ) -> InFlightProbe:
     """Build a probe that curls a Prometheus metrics endpoint and reads the
-    active-jobs gauge. Falls back to 0 only if the metric line is ABSENT *and*
-    the curl succeeded; a curl failure raises (fail-closed: we must not assume
-    idle just because we couldn't read)."""
+    active-jobs gauge.
+
+    FAIL-CLOSED on BOTH failure modes (B2): a curl failure raises, AND an ABSENT
+    gauge line raises. A missing gauge is UNKNOWN, never "idle" — a freshly
+    (re)started worker, a renamed metric, or a worker whose gauge isn't
+    registered until its first job would otherwise read as 0 and let
+    `drain_then_restart` fire immediately, cutting a live call. Only an EXPLICIT
+    `<metric_name> 0` line means idle; absence means we could not prove idle, so
+    we refuse to conclude it."""
 
     def _probe(t: ExecTransport) -> int:
         res = t.run(f"curl -s {metrics_url}")
@@ -65,7 +71,11 @@ def metrics_inflight_probe(
                 m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*$", line)
                 if m:
                     return int(float(m.group(1)))
-        return 0
+        # gauge ABSENT -> UNKNOWN, fail closed. Do NOT assume idle.
+        raise DrainError(
+            f"in-flight gauge {metric_name!r} ABSENT at {metrics_url} — cannot "
+            f"prove the worker is idle; refusing to treat missing as 0 (B2)"
+        )
 
     return _probe
 

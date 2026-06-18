@@ -53,17 +53,31 @@ class BoxLayout:
 
 @dataclass
 class EarnerGate:
-    """The frozen-golden assertion target for the preflight/postflight gate."""
+    """The frozen-golden assertion target for the preflight/postflight gate.
+
+    When `earner_golden_md5` is set (callers deploying the real earner MUST set
+    it to deploy.EARNER_GOLDEN_MD5), `expected_md5` is asserted == it at gate
+    time — so the caller-supplied baseline, the box file, and the frozen-golden
+    constant are all tied together (B1/B3). A mismatch fails closed before any
+    box fact is read."""
 
     expected_md5: str
     target_path: str
     health_url: str
     unit: str
+    earner_golden_md5: str | None = None
 
     def assert_ok(self, t: ExecTransport, *, phase: str) -> dict:
         """Assert md5 + PID-present + /health 200. Returns the observed facts.
         Raises EarnerGateError on any mismatch (fail-closed)."""
         facts: dict = {"phase": phase}
+        # 0. (B1/B3) tie the caller-supplied baseline to the frozen-golden const.
+        if self.earner_golden_md5 is not None and self.expected_md5 != self.earner_golden_md5:
+            raise EarnerGateError(
+                f"[{phase}] gate expected_md5 {self.expected_md5} != frozen "
+                f"EARNER_GOLDEN_MD5 {self.earner_golden_md5} — refusing to gate "
+                f"against a baseline that is not the known earner golden"
+            )
         # 1. md5 of the live target
         got = t.md5(self.target_path)
         facts["md5"] = got

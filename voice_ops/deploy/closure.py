@@ -112,6 +112,31 @@ class PatchError(ValueError):
     """The unified diff did not apply cleanly against the golden bytes."""
 
 
+def _parse_hunk_header(line: str) -> tuple[int, int, int]:
+    """Parse `@@ -l,s +l,s @@` -> (old_start, old_count, new_count).
+
+    A count is optional in unified-diff (`-l` means `-l,1`). We need the counts
+    so the body can be validated against the header (B1)."""
+    try:
+        # `@@ -1,2 +1,3 @@ optional trailer`
+        body = line.split("@@")[1].strip()        # "-1,2 +1,3"
+        old_part, new_part = body.split(" ")[0], body.split(" ")[1]
+        if not old_part.startswith("-") or not new_part.startswith("+"):
+            raise ValueError("missing -/+ ranges")
+
+        def _ls(part: str) -> tuple[int, int]:
+            nums = part[1:].split(",")
+            start = int(nums[0])
+            count = int(nums[1]) if len(nums) > 1 else 1
+            return start, count
+
+        old_start, old_count = _ls(old_part)
+        _new_start, new_count = _ls(new_part)
+    except (IndexError, ValueError) as e:
+        raise PatchError(f"bad hunk header: {line!r}") from e
+    return old_start, old_count, new_count
+
+
 def apply_unified_diff(golden: str, diff_text: str) -> str:
     """Apply a single-file unified diff (the @@ hunks) to `golden`.
 
@@ -132,12 +157,11 @@ def apply_unified_diff(golden: str, diff_text: str) -> str:
             continue
         if line.startswith("@@"):
             saw_hunk = True
-            # @@ -l,s +l,s @@  -> source start (1-based)
-            try:
-                old_part = line.split(" ")[1]            # -l,s
-                old_start = int(old_part[1:].split(",")[0])
-            except (IndexError, ValueError) as e:  # pragma: no cover - malformed header
-                raise PatchError(f"bad hunk header: {line!r}") from e
+            # @@ -l,s +l,s @@  -> source start + counts (1-based). We parse BOTH
+            # the old and new line-counts so a garbled patch whose hunk body does
+            # not match its declared @@ counts fails closed (B1: an honest patch
+            # never silently inserts/drops lines past its own header).
+            old_start, old_count, new_count = _parse_hunk_header(line)
             # copy unchanged src up to the hunk start
             hunk_src0 = old_start - 1
             if hunk_src0 < si:
@@ -145,6 +169,8 @@ def apply_unified_diff(golden: str, diff_text: str) -> str:
             out.extend(src[si:hunk_src0])
             si = hunk_src0
             li += 1
+            seen_old = 0  # context + removed lines consumed from src this hunk
+            seen_new = 0  # context + added lines emitted to out this hunk
             # consume hunk body
             while li < len(lines):
                 bl = lines[li]
@@ -164,6 +190,8 @@ def apply_unified_diff(golden: str, diff_text: str) -> str:
                         )
                     out.append(src[si])
                     si += 1
+                    seen_old += 1
+                    seen_new += 1
                 elif tag == "-":
                     if si >= len(src) or src[si] != content:
                         raise PatchError(
@@ -172,14 +200,24 @@ def apply_unified_diff(golden: str, diff_text: str) -> str:
                             f"{src[si] if si < len(src) else '<EOF>'!r}"
                         )
                     si += 1
+                    seen_old += 1
                 elif tag == "+":
                     out.append(content)
+                    seen_new += 1
                 elif tag == "\\":
                     # "\ No newline at end of file" — ignore
                     pass
                 else:  # pragma: no cover - unknown tag
                     raise PatchError(f"unknown diff line: {bl!r}")
                 li += 1
+            # B1: the hunk body MUST consume/emit exactly the counts its @@ header
+            # declared — otherwise a garbled patch silently inserts/drops lines.
+            if seen_old != old_count or seen_new != new_count:
+                raise PatchError(
+                    f"hunk body does not match @@ header: header declared "
+                    f"-{old_start},{old_count} +.,{new_count} but body had "
+                    f"{seen_old} old / {seen_new} new line(s)"
+                )
         else:
             li += 1
     if not saw_hunk:
@@ -204,14 +242,22 @@ def compute_intended_md5(
     golden_bytes: bytes,
     diff_text: str,
     *,
+    expected_golden_md5: str | None = None,
     syntax_check: bool = True,
     filename_hint: str = "agent_intended.py",
 ) -> IntendedClosure:
     """Golden bytes + unified diff -> (new_text, intended-new md5).
 
     Steps (this is the gate the box later asserts against):
+      0. (B1) if `expected_golden_md5` is given, assert md5_norm(golden_bytes)
+         == it FIRST. A patch that applies cleanly against the WRONG golden would
+         otherwise compute a wrong intended.md5 that stage_and_assert happily
+         honours — so we make the golden itself an asserted input. Callers that
+         deploy the real earner MUST pass EARNER_GOLDEN_MD5 here (and the same
+         value as the gate.expected_md5) so all three are tied together.
       1. CRLF-normalize golden so the patch matches regardless of line endings.
-      2. apply_unified_diff (fails closed on any context/removed mismatch).
+      2. apply_unified_diff (fails closed on any context/removed mismatch AND on
+         a hunk body that does not match its @@ counts).
       3. (optional) py_compile the result — a syntactically broken patch can
          never become an intended closure.
       4. md5_norm the new text.
@@ -220,6 +266,13 @@ def compute_intended_md5(
     we still write to a temp file with a neutral name so even an importable
     side-effect is impossible.
     """
+    if expected_golden_md5 is not None:
+        got_golden = md5_norm(golden_bytes)
+        if got_golden != expected_golden_md5:
+            raise PatchError(
+                f"golden md5 {got_golden} != expected {expected_golden_md5} "
+                f"— refusing to patch the wrong baseline (B1 guard)"
+            )
     golden = golden_bytes.replace(b"\r\n", b"\n").decode()
     new_text = apply_unified_diff(golden, diff_text)
     if syntax_check:

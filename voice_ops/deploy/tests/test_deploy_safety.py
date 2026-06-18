@@ -37,7 +37,11 @@ from voice_ops.deploy.drain import (
     metrics_inflight_probe,
 )
 from voice_ops.deploy.drift import DriftChecker, DriftError
-from voice_ops.deploy.healthwatch import HealthWatcher, http_health_probe
+from voice_ops.deploy.healthwatch import (
+    HealthWatcher,
+    RollbackIncompleteError,
+    http_health_probe,
+)
 from voice_ops.deploy.plan import (
     BoxLayout,
     DeployError,
@@ -297,10 +301,15 @@ def test_metrics_inflight_probe_parses_gauge_and_fails_closed():
          stdout="# HELP\nlivekit_active_jobs 3\nother 9\n")
     probe = metrics_inflight_probe()
     assert probe(t) == 3
-    # absent metric but successful curl -> 0
+    # explicit `... 0` line -> idle (0)
+    t0 = FakeTransport()
+    t0.on("curl -s http://127.0.0.1:8090/metrics", stdout="# HELP\nlivekit_active_jobs 0\n")
+    assert metrics_inflight_probe()(t0) == 0
+    # B2: absent metric (even with successful curl) -> RAISE, never assume idle.
     t2 = FakeTransport()
     t2.on("curl -s http://127.0.0.1:8090/metrics", stdout="other 9\n")
-    assert metrics_inflight_probe()(t2) == 0
+    with pytest.raises(DrainError, match="ABSENT"):
+        metrics_inflight_probe()(t2)
     # curl FAILURE -> raise (must NOT assume idle)
     t3 = FakeTransport()
     t3.on("curl -s http://127.0.0.1:8090/metrics", rc=7)
@@ -608,3 +617,151 @@ def test_no_droplet_or_heavy_sdk_imports_loaded():
     }
     hits = {m for m in loaded if m.split(".")[0] in forbidden}
     assert not hits, f"forbidden modules imported by voice_ops.deploy: {hits}"
+
+
+# --------------------------------------------------------------------------- #
+# RED-TEAM REGRESSION FIXES (W25 verify pass) — B1 / B2 / B3
+# --------------------------------------------------------------------------- #
+# B1: a patch that applies cleanly against the WRONG golden must NOT silently
+# produce an intended.md5. compute_intended_md5(expected_golden_md5=...) ties the
+# golden bytes to a known hash before patching.
+def test_b1_compute_intended_rejects_wrong_golden_when_md5_pinned():
+    # A patch that touches a line both goldens share, so it APPLIES against the
+    # wrong golden too — only the md5 pin catches the swap.
+    shared_patch = (
+        "--- a/agent.py\n+++ b/agent.py\n@@ -1,1 +1,2 @@\n"
+        " def greet():\n+    pass\n"
+    )
+    right = b"def greet():\n"
+    wrong = b"def greet():\n"  # same bytes here; the point is the PIN, not content
+    # pinning the CORRECT md5 -> ok
+    ok = compute_intended_md5(right, shared_patch, expected_golden_md5=md5_norm(right))
+    assert ok.md5 == md5_norm(ok.as_bytes())
+    # pinning a DIFFERENT md5 than the supplied golden -> fail closed
+    with pytest.raises(PatchError, match="golden md5"):
+        compute_intended_md5(wrong, shared_patch, expected_golden_md5="deadbeef" * 4)
+
+
+# B1: a garbled patch whose hunk body does not match its @@ line-counts must
+# fail closed (it would otherwise silently insert/drop lines).
+def test_b1_garbled_hunk_count_fails_closed():
+    # header claims -2,1 (1 old line) but the body removes 1 AND adds 2 = the
+    # new-count is wrong (declared +.,1 but body emits 2). Must raise.
+    garbled = (
+        "--- a/agent.py\n+++ b/agent.py\n@@ -1,1 +1,1 @@\n"
+        "-def greet():\n+def greet():\n+    extra = 1\n"
+    )
+    with pytest.raises(PatchError, match="hunk body does not match"):
+        apply_unified_diff("def greet():\n", garbled)
+
+
+def test_b1_valid_hunk_counts_still_apply():
+    # the canonical PATCH fixture has matching counts and must still apply.
+    new = apply_unified_diff(GOLDEN.decode(), PATCH)
+    assert 'return "Namaste ji"' in new
+
+
+# B1: the EarnerGate ties expected_md5 to the frozen EARNER_GOLDEN_MD5 when the
+# constant is supplied — a baseline that isn't the known golden fails closed
+# BEFORE any box fact is read.
+def test_b1_earner_gate_ties_expected_to_frozen_golden():
+    from voice_ops.deploy import EARNER_GOLDEN_MD5 as GMD5
+
+    t = _healthy_box(GOLDEN)
+    engine = DeployPlanEngine(transport=t)
+    bad_gate = EarnerGate(
+        expected_md5=md5_norm(GOLDEN),   # not the frozen earner golden
+        target_path="/opt/famit-agent/agent.py",
+        health_url="http://127.0.0.1:8209/health?deep=0",
+        unit="famit-agent",
+        earner_golden_md5=GMD5,
+    )
+    with pytest.raises(EarnerGateError, match="EARNER_GOLDEN_MD5"):
+        engine.preflight_gate(bad_gate)
+
+
+# B2: an ABSENT in-flight gauge must NOT read as idle (0) — a freshly-restarted
+# worker whose gauge isn't registered yet would otherwise be drained mid-call.
+def test_b2_absent_gauge_is_unknown_not_idle():
+    t = FakeTransport()
+    t.on("curl -s http://127.0.0.1:8090/metrics", stdout="# HELP\nsome_other 1\n")
+    with pytest.raises(DrainError, match="ABSENT"):
+        metrics_inflight_probe()(t)
+
+
+def test_b2_drain_does_not_restart_when_gauge_absent():
+    """End-to-end: with the real metrics probe and an absent gauge, the drain
+    orchestrator raises and NEVER issues a restart (no live call cut)."""
+    t = FakeTransport()
+    t.on("curl -s http://127.0.0.1:8090/metrics", stdout="other 9\n")
+    orch = DrainOrchestrator(
+        transport=t,
+        unit="famit-agent",
+        inflight_probe=metrics_inflight_probe(),
+        _now=lambda: 0.0,
+        _sleep=lambda s: None,
+    )
+    with pytest.raises(DrainError):
+        orch.drain_then_restart(deadline_seconds=1000, poll_seconds=5)
+    assert "systemctl restart" not in " ".join(t.commands())
+
+
+# B3: an INCOMPLETE auto-rollback (restored md5 != golden) must ESCALATE, not be
+# silently reported as rolled_back=True/success.
+def test_b3_incomplete_rollback_escalates():
+    new_code = GOLDEN + b"# new (bad)\n"
+    # restore_to is DELIBERATELY not golden: the backup is corrupt, so the
+    # restored md5 will not equal the golden we assert against.
+    corrupt_backup = b"def greet():\n    return 'corrupted backup'\n"
+    t, rb = _rollback_box(new_code, restore_to=corrupt_backup)
+    t.on('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8209/health?deep=0', stdout="500")
+    watcher = HealthWatcher(
+        transport=t,
+        rollback=rb,
+        fail_threshold=2,
+        settle_polls=6,
+        _sleep=lambda s: None,
+        golden_md5=md5_norm(GOLDEN),     # backup will NOT match this
+    )
+    with pytest.raises(RollbackIncompleteError, match="INCOMPLETE"):
+        watcher.watch()
+
+
+# B3: a SUCCESSFUL auto-rollback exposes rollback_verified=True so a caller can
+# trust the earner is provably back (not just `rolled_back`).
+def test_b3_verified_rollback_sets_flag_true():
+    new_code = GOLDEN + b"# new (bad)\n"
+    t, rb = _rollback_box(new_code, restore_to=GOLDEN)
+    t.on('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8209/health?deep=0', stdout="500")
+    watcher = HealthWatcher(
+        transport=t,
+        rollback=rb,
+        fail_threshold=2,
+        settle_polls=6,
+        _sleep=lambda s: None,
+        golden_md5=md5_norm(GOLDEN),
+    )
+    out = watcher.watch()
+    assert out.rolled_back is True
+    assert out.rollback_verified is True
+    assert "VERIFIED" in out.render()
+
+
+# B3: with NO golden supplied, rollback_verified is None (cannot prove) — and
+# the render makes the un-provability explicit rather than implying success.
+def test_b3_rollback_without_golden_is_unverified_not_success():
+    new_code = GOLDEN + b"# new (bad)\n"
+    t, rb = _rollback_box(new_code, restore_to=GOLDEN)
+    t.on('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8209/health?deep=0', stdout="500")
+    watcher = HealthWatcher(
+        transport=t,
+        rollback=rb,
+        fail_threshold=2,
+        settle_polls=6,
+        _sleep=lambda s: None,
+        golden_md5=None,                 # nothing to verify against
+    )
+    out = watcher.watch()
+    assert out.rolled_back is True
+    assert out.rollback_verified is None
+    assert "UNVERIFIED" in out.render()

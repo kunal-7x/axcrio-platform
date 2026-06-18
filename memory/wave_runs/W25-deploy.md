@@ -44,3 +44,27 @@ drain + held canary + health-watch auto-rollback + one-cmd rollback + runbook. P
 - Invariants verified: 0 box mutation, 0 `agent.py` import, 0 livekit/boto3/redis/paramiko/
   droplet_work import at load (guarded by a test + an isolated-process check).
 - Frozen golden constant `EARNER_GOLDEN_MD5 == 98655dbfc71d5c3da36bcfe3f848082c` (matches law).
+
+## VERIFY+COMMIT pass (red-team fold) — B1/B2/B3 fixed
+Red-team found the brief's five failure modes were documented-not-enforced. SHIP-WITH-FIXES.
+Three blockers folded in (the tooling still mutates NOTHING on the box; fixes are deploy-time
+correctness, scoped "before first real use"):
+- **B1 — wrong-closure / undetected golden drift.** (a) `compute_intended_md5(...,
+  expected_golden_md5=)` now asserts `md5_norm(golden_bytes) == expected` BEFORE patching, so a
+  patch that applies against the WRONG golden fails closed; callers deploying the real earner
+  pass `EARNER_GOLDEN_MD5`. (b) `EarnerGate(earner_golden_md5=)` ties `expected_md5` to the
+  frozen constant at gate time (all three: caller baseline = box file = constant). (c)
+  `apply_unified_diff` now validates each hunk BODY against its `@@` line-counts — a garbled
+  patch that silently inserts/drops lines raises `PatchError`.
+- **B2 — false-idle drain.** `metrics_inflight_probe` now treats an ABSENT gauge line as UNKNOWN
+  and RAISES `DrainError` (was: `return 0` = "idle"). Only an explicit `<metric> 0` line concludes
+  idle, so a freshly-restarted worker can't be drained mid-call.
+- **B3 — unverified / incomplete rollback reported as success.** `WatchOutcome.rollback_verified:
+  bool|None` added (True=proven golden, None=no golden to check, False→escalate). `_auto_rollback`
+  now RAISES `RollbackIncompleteError` when `restored != golden_md5` instead of returning
+  `rolled_back=True` with only a string note — a caller checking `.rolled_back` can no longer miss
+  an earner left in an unknown state.
+- Tests: +9 B1/B2/B3 regression tests. `voice_ops/deploy/` = **40 passed** (was 31).
+  `pytest voice_ops/` = **412 passed**, `voice_kernel/` = **367 passed**. 0 fail.
+- Changes confined to `voice_ops/deploy/{closure,drain,healthwatch,plan}.py` + its test file.
+  Still 0 `agent.py`/`caller.py`/`aim_voice_agent.py` import, 0 box mutation, 0 PSTN dial.
