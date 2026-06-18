@@ -170,3 +170,38 @@
 **Red-team:** 5/5 PASS (media tenant-isolation, audience fail-closed, delivery monotone, dormant-safe, frontend reuse).
 
 **Full output:** `memory/wave_runs/W16-whatsapp.md`
+
+---
+
+## W-SEC — Voice-kernel security: W19 egress + W21 firewall + W22 routes-CI + W23 key-management (red-team fold + keys landing)
+**Branch:** `fix/realtime-voice-kernel-v2` · **2026-06-18** · VERDICT: **SHIP, no blockers**
+
+DISJOINT tracked code only; NO live box / agent.py / caller.py / auth.py / W20 legacy_gate touched
+(earner OUTBOUND live=76a93f0a honored). Red-teamed all four axes by direct adversarial probing.
+
+- **W19 EGRESS** `voice_ops/concurrency/{budget,slots,admission}.py` — hard toll-fraud / denial-of-wallet
+  cap; refund-loop can't mint free budget; refused admit fully rolls back the LLM token; reserve→release
+  can't mint free calls; cap not bypassable by lease-id collision. (Gap: cap only bites once the dial-loop
+  SEAM calls it — `CONCURRENCY_ENABLED` default OFF; module has no bypass.)
+- **W21 FIREWALL** `voice_ops/security/{legacy_gate,principal}.py` — `legacy_pw` on `/admin/*` rejected in
+  every mode; unknown mode fails CLOSED to OFF; both retirement legs closed (bearer + password→token mint);
+  real JWT/Logto/service still pass.
+- **W22 ROUTES-CI** `voice_ops/security/route_auth_assert.py` — negative controls PASS (LEGACY_PW route &
+  `requires_tenant_auth=False` both CAUGHT); 21/21 legacy-denied + 21/21 JWT-allowed on the real surface.
+- **W23 KEYS** `voice_ops/security/keys/` (NEW) — HKDF purpose-key split: a JWT key can't forge a step-up/
+  service token; version-confusion + alg-confusion + purpose-downgrade rejected; empty master → error (no
+  weak fallback); no plaintext secret in any repr/record/fingerprint; oauth_vault cross-tenant/cross-provider
+  ciphertext non-portable (InvalidTag); 200 tokens → 200 distinct jti.
+
+**RESIDUAL (documented, not a flaw):** service tokens are stateless-replayable within ≤600s TTL —
+receivers (caller/hatchet) MUST mandate jti-dedup within the TTL window (in the patch DOC).
+
+**Verification:** `voice_ops/security/ + concurrency/` = **153/153**; full `voice_ops/` = **509**;
+`voice_kernel/` = **367**. agent.py md5 `6c577b9b…` UNCHANGED; caller.py/auth.py no working-tree change;
+gitleaks 0. Staged ONLY keys/ + `design/W-SEC-keys-SEAM.md` + `memory/wave_runs/W-SEC.md` + this append.
+
+**Ops actions:** apply W23 split family-by-family behind `KEYS_SPLIT_ENABLED` (firewall step-up last);
+mandate jti-dedup at receivers; land the dial-loop admission seam (else live loop uncapped); vault
+OAuth/WABA refresh tokens; per-purpose rotation runbook ready (`runbook.py`).
+
+**Full output:** `memory/wave_runs/W-SEC.md`
