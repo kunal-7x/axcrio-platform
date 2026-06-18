@@ -14,7 +14,7 @@ import Search from "@/components/Search";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import Badge from "@/components/Badge";
-import { StatusBadge, ScoreBadge } from "@/lib/badges";
+import { StatusBadge, LeadBadge } from "@/lib/badges";
 import {
     getCampaigns,
     getLeads,
@@ -631,7 +631,7 @@ export default function RunPage() {
                                                 : "Select a campaign"
                                         }
                                     />
-                                    <div className="mt-3 flex items-center gap-2 text-caption text-t-tertiary">
+                                    <div className="mt-3 flex items-center gap-2 text-body-2 text-t-secondary">
                                         <Icon
                                             name="clock"
                                             className="size-4 fill-t-tertiary shrink-0"
@@ -656,7 +656,7 @@ export default function RunPage() {
                                         className="flex-wrap"
                                         classButton="!h-10 !px-4 text-button"
                                     />
-                                    <p className="mt-3 text-caption text-t-tertiary">
+                                    <p className="mt-3 text-body-2 text-t-secondary">
                                         Filters compose — pick a temperature
                                         and/or a file, then hand-pick if you
                                         want. The preview always reflects exactly
@@ -844,7 +844,7 @@ export default function RunPage() {
                                                     );
                                                 })}
                                             </div>
-                                            <p className="text-caption text-t-tertiary">
+                                            <p className="text-body-2 text-t-secondary">
                                                 Hot 70+ · Warm 40–69 · Cold under
                                                 40 / unscored. Pick one or more.
                                             </p>
@@ -938,7 +938,7 @@ export default function RunPage() {
                                                             <>
                                                                 <th>Lead</th>
                                                                 <th className="text-right">
-                                                                    Score
+                                                                    Status
                                                                 </th>
                                                             </>
                                                         }
@@ -988,10 +988,8 @@ export default function RunPage() {
                                                                     </div>
                                                                 </td>
                                                                 <td className="text-right">
-                                                                    <ScoreBadge
-                                                                        score={
-                                                                            l.score
-                                                                        }
+                                                                    <LeadBadge
+                                                                        lead={l}
                                                                     />
                                                                 </td>
                                                             </TableRow>
@@ -999,7 +997,7 @@ export default function RunPage() {
                                                     </Table>
                                                 </div>
                                             )}
-                                            <p className="pt-3 text-caption text-t-tertiary">
+                                            <p className="pt-3 text-body-2 text-t-secondary">
                                                 {manualSelected.size > 0
                                                     ? `${manualSelected.size} hand-picked — these exact leads will be dialed.`
                                                     : "Tick rows to dial an exact subset, or leave empty to call everything that passed the filters."}
@@ -1108,7 +1106,7 @@ export default function RunPage() {
                                             }
                                         />
                                     </div>
-                                    <p className="mt-3 text-caption text-t-tertiary">
+                                    <p className="mt-3 text-body-2 text-t-secondary">
                                         Concurrency caps simultaneous calls;
                                         hourly / daily caps throttle volume. Leave
                                         a cap at 0 for no limit.

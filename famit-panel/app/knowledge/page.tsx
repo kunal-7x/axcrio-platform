@@ -462,7 +462,7 @@ function ChunkCard({ chunk, rank }: { chunk: KbChunk; rank: number }) {
         <div className="rounded-xl bg-b-surface2 border border-s-subtle p-4 space-y-2.5">
             <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2">
-                    <span className="w-5 h-5 rounded-full bg-b-primary flex items-center justify-center text-t-light text-0 font-semibold shrink-0" style={{ fontSize: 10 }}>
+                    <span className="w-5 h-5 rounded-full bg-b-primary flex items-center justify-center text-t-light text-caption font-semibold shrink-0">
                         {rank}
                     </span>
                     {chunk.section && (
@@ -569,7 +569,7 @@ function GapRow({ gap }: { gap: KbGap }) {
             {/* frequency badge */}
             <div className="shrink-0 text-center min-w-[2.5rem]">
                 <span className="text-h6 text-primary-03 font-semibold">{gap.count}</span>
-                <p className="text-0 text-t-tertiary leading-none" style={{ fontSize: 10 }}>asks</p>
+                <p className="text-caption text-t-tertiary leading-none">asks</p>
             </div>
 
             <div className="flex-1 min-w-0">
