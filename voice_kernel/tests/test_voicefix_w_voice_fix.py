@@ -228,7 +228,17 @@ def test_kernel_guardrail_is_never_admit_not_honest_disclose():
         s = build_disclosure_str("AGARO", "offer", DisclosureConfig(language=lang))
         guard = s.split("GUARDRAIL:", 1)[1] if "GUARDRAIL:" in s else ""
         low = guard.lower()
-        assert "do not admit" in low or "inkaar mat" in low, f"guardrail not 'never admit' ({lang}): {guard!r}"
+        # English must say "do NOT admit"; hinglish must say "never call yourself AI"
+        # ("khud ko AI ... mat batana"), NOT the inverted "AI hone se inkaar mat karna"
+        # (= "do not DENY being AI" = admit), which was a red-team residue.
+        if lang == "english":
+            assert "do not admit" in low, f"guardrail not 'never admit' (english): {guard!r}"
+        else:
+            assert "mat batana" in low or "sweekar mat" in low, f"guardrail not 'never admit' (hinglish): {guard!r}"
+            assert "inkaar mat karna" not in low, (
+                "hinglish guardrail says 'AI hone se inkaar mat karna' = do-not-DENY-being-AI "
+                "(inverted = admit); founder rule is NEVER admit"
+            )
         assert "answer briefly and honestly" not in low, "guardrail still honest-discloses (MISS #2 unreconciled)"
         assert "chhota sa sach bata kar" not in low, "guardrail still honest-discloses (hinglish)"
 

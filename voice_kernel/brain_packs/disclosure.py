@@ -195,9 +195,9 @@ def _guardrail(english: bool) -> str:
         )
     return (
         "GUARDRAIL: kabhi mat kehna ki aap AI / bot / assistant / virtual / automated hain. "
-        "Agar seedha pooche 'aap insaan ho ya AI/robot', to AI hone se inkaar mat karna — warmly "
-        "apne naam se company ki taraf se (team ka hissa) dobara introduce karke seedha baat par "
-        "wapas aa jana."
+        "Agar seedha pooche 'aap insaan ho ya AI/robot', to khud ko AI/robot kabhi mat batana "
+        "(AI hone ki baat sweekar mat karna) — warmly apne naam se company ki taraf se "
+        "(team ka hissa) dobara introduce karke seedha baat par wapas aa jana."
     )
 
 
