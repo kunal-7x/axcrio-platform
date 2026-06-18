@@ -105,3 +105,23 @@ Wave-start tripwire artifact:
 - The integration wave (NOT this one) wires instructions_provider into aim_voice_agent.py:1436 under KERNEL_INBOUND via the systemd drop-in, then verifies /proc/<pid>/environ shows the earner clean.
 - Downstream W2-W8 each implement one Protocol from contracts.py and register via build_kernel(cfg, <name>=impl); until then the null impls run (logged as null).
 - NOTE for VERIFY: test_adapter_off_identity SKIPS if droplet_work/prompt.py is absent (CI checkout w/o the gitignored tree) — on this box it is present and the gate runs for real.
+
+## Phase: VERIFY
+
+**Status:** DONE. Commit `718f569` (`feat(kernel): W1 RealtimeVoiceKernel v2 core + service contracts (flag-OFF, earner-safe)`) on branch `fix/realtime-voice-kernel-v2`. The kernel core landed earlier in `a1a3c58`; `718f569` adds `design/W1-KERNEL-ARCH.md` (the binding architecture/decision log) and this VERIFY log.
+
+**Gate results (all GREEN):**
+1. **Branch** = `fix/realtime-voice-kernel-v2` (confirmed via `git rev-parse --abbrev-ref HEAD`).
+2. **Tests** = `python -m pytest voice_kernel/` -> **50 passed, 0 failed** (0.40s). No tests weakened/skipped to pass.
+3. **OFF-is-identity** = `test_adapter_off_identity` ran for REAL (NOT skipped): 10/10 parametrized cases PASSED (outbound+inbound × default_godrej/variant_override/recap/minimal/empty), each asserting the flag-OFF kernel render is byte-identical to the actual `droplet_work/prompt.py build_system_prompt(fields)`.
+4. **Flag default OFF** = `KernelConfig.from_env()` with no env -> `enabled=False`, `inbound=False`.
+5. **Zero earner import** = `import voice_kernel` pulls **0** `droplet_work`/`agent` modules AND **0** third-party top-level deps (stdlib-only core) — proven at runtime, not just by grep. The only `agent.py`/`droplet_work` textual references in the package are comments, docstrings, and NEGATIVE test assertions (`test_contracts.py` asserts no `droplet_work` module is imported).
+6. **Earner byte-identical** = `droplet_work/agent.py` shows ZERO changes vs HEAD (`git status` clean, `git diff --quiet` clean). md5 of the tracked tree copy = `98655dbf...` (the branch baseline snapshot from `683b0e5`); the EARNER-LAW md5 `9150fabe` is the BOX-truth md5 (LEARNINGS §1: local disk agent.py is a stale snapshot, the box is live truth). The real gate — agent.py UNTOUCHED by this build — holds. We did NOT "restore" the tree to `9150fabe` (that would revert the founder-bug commits — LEARNINGS §2-tree-tripwire).
+7. **gitleaks** = `gitleaks protect --staged` = **0 leaks**; `gitleaks detect --no-git` over `voice_kernel/` (321 KB) and `design/W1-KERNEL-ARCH.md` = **0 leaks**; pre-commit hook gitleaks scan also clean. Staged ONLY the three required paths — never `git add -A`.
+
+**Contract surface now FROZEN for W2-W8** (public API in `voice_kernel/__init__.py`, contracts in `contracts.py`):
+- `ContextPacket` + 6 layers (`IdentityLayer` L0, `ModeLayer` L1, `IndustryLayer` L2, `CampaignCard` L3, `LeadMemory` L4, `TurnLayer` L5) + `TokenBudget`, `Stage`, `UseCase`, `Lifecycle`, `Objection`, `RagSnippet`, `PacketMeta`.
+- 9 `@runtime_checkable` Protocols + owner waves: `ContextEngine` (W1+W3), `VendorScriptEngine` (W3), `BrainPackProvider` (W2), `RagRuntime` (W4, async, timeout-bounded, degrade-to-empty), `SpeechPlanner` (W5, sync HOT-path), `ProviderRouter` (W5, fail-loud), `MemoryService` (W7, async, PG/RLS), `EventBus` (W8, async, fire-and-forget), `DialoguePolicy` (W6, sync).
+- Shared request/result dataclasses: `CallContext`, `TurnContext`, `SpeechPlan`, `ProviderChoice`, `Event`.
+- Wiring: `build_kernel(cfg, <name>=impl)` + `KernelServices`; `RealtimeVoiceKernel`; `instructions_provider` (the OFF-is-identity seam); `DialogueFSM`/`ModePolicy`/`policy_for`; prompt-cache helpers (`split_for_cache`, `cache_breakpoint`, `is_cacheable_model`). `null_impls.py` ships a conformant logged-null for each Protocol so the kernel runs end-to-end before any W2-W8 lands.
+- **How W2-W8 plug in:** each implements ONE Protocol from `contracts.py` and registers it via `build_kernel(cfg, <name>=impl)`; until a real impl lands, the null impl runs (logged as null, never silent). Integration into `aim_voice_agent.py:1436` is a LATER wave, gated `KERNEL_INBOUND` via a systemd drop-in — `agent.py` (the earner) is NEVER touched.
