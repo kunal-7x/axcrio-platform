@@ -367,15 +367,21 @@ def test_no_droplet_or_agent_imports():
     import sys
     import importlib
 
-    # fresh import of the package + submodules
+    # Measure the DELTA caused by importing voice_ops.config — not the global
+    # sys.modules (which an earlier test in the same run may have polluted with a
+    # heavy SDK). The contract is "importing voice_ops.config pulls ZERO droplet/
+    # agent modules and ZERO heavy SDKs", so we snapshot before, drop the package,
+    # re-import, and inspect only what that import newly added.
+    before = set(sys.modules)
     for m in list(sys.modules):
         if m.startswith("voice_ops.config"):
             del sys.modules[m]
     importlib.import_module("voice_ops.config")
-    bad = [m for m in sys.modules
+    added = set(sys.modules) - before
+    bad = [m for m in added
            if m.split(".")[0] in ("agent", "caller", "droplet_work")
            or m.startswith("droplet_work")]
     assert bad == [], f"voice_ops.config pulled forbidden modules: {bad}"
-    # and no heavy SDKs at import time
-    heavy = [m for m in sys.modules if m in ("redis", "boto3", "sqlalchemy", "livekit")]
+    # and no heavy SDKs newly pulled at import time (delta, not global state).
+    heavy = [m for m in added if m in ("redis", "boto3", "sqlalchemy", "livekit")]
     assert heavy == [], f"voice_ops.config pulled heavy SDKs at import: {heavy}"
