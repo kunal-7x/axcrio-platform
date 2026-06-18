@@ -70,10 +70,19 @@ if _KERNEL_INBOUND:
     try:
         from voice_kernel.integrations import inbound as _ki
         _cid = str((cust_fields or {}).get("_campaign_id", "")) if cust_fields else ""
+        # C2 cross-check: the campaign record's TRUE owning tenant comes from the
+        # contact lookup (`resolve_contact_by_phone` returns the campaign owner's
+        # tenant_id, :2178). For the manager / no-contact path there is no separate
+        # campaign owner, so fall back to the server tenant (the check then proves
+        # the server tenant is internally consistent). Passing the SAME value twice
+        # would DISARM the cross-check — always pass the campaign-derived owner when
+        # one exists so a contact whose campaign belongs to tenant B can never be
+        # served under server tenant A.
+        _camp_owner = (contact.get("tenant_id") or "").strip() or tenant_id
         _IK = _ki.build_for_call(
             tenant_id=tenant_id,            # SERVER-resolved (DID/contact/ADMIN_TENANT)
             call_id=room_name, caller_id=caller_id,
-            campaign_id=_cid, campaign_tenant_id=tenant_id,
+            campaign_id=_cid, campaign_tenant_id=_camp_owner,
             fields=cust_fields, recap=cust_recap, pg_memory=cust_pg_memory,
             is_manager=is_manager,
         )
@@ -83,8 +92,22 @@ if _KERNEL_INBOUND:
 ```
 
 `tenant_id` here is the SERVER-RESOLVED value, never a caller-supplied body field
-(C2). `build_for_call` stamps a fail-closed `KernelSession` and returns None on
-the OFF flag or ANY error ⇒ legacy path.
+(C2). `campaign_tenant_id` is the campaign record's OWNING tenant from the contact
+lookup (`contact.get("tenant_id")`, :2178) — NOT `tenant_id` re-passed, so the
+`session.assert_matches_campaign(...)` cross-check is ARMED: if the resolved server
+tenant and the campaign's owner disagree it raises `TenantIdentityError` → caught →
+`_IK = None` → legacy path (the call still proceeds, kernel disengages, logged LOUD).
+`build_for_call` stamps a fail-closed `KernelSession` and returns None on the OFF
+flag or ANY error ⇒ legacy path.
+
+> WHY this is the right anchor: at :2178 the server ADOPTS the contact's tenant
+> (`tenant_id = contact.get("tenant_id") or tenant_id`), so by the time we build the
+> façade `tenant_id` already equals the campaign owner on the returning-lead path —
+> the cross-check is a consistency assertion there. Its TEETH are on any future path
+> where the campaign owner is resolved independently of `tenant_id` (e.g. a campaign
+> passed in `cust_fields` whose owner differs from the DID/contact tenant): then
+> `_camp_owner` ≠ `tenant_id` and the kernel fail-closes instead of serving a
+> cross-tenant persona. Do NOT collapse `_camp_owner` back to `tenant_id`.
 
 ---
 
