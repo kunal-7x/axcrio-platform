@@ -60,6 +60,7 @@ from .model import (
 from .objection import (
     OBJECTION_HOOKS,
     UNIVERSAL_OBJECTION_STANCE,
+    hooks_for,
     render_objection_directive,
     stance_for,
 )
@@ -110,6 +111,7 @@ __all__ = [
     "UNIVERSAL_OBJECTION_STANCE",
     "OBJECTION_HOOKS",
     "stance_for",
+    "hooks_for",
     "render_objection_directive",
     "language_directive",
     "BANNED_LITERARY",

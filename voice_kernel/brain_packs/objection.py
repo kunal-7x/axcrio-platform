@@ -71,6 +71,28 @@ OBJECTION_HOOKS: dict[str, str] = {
     ),
 }
 
+# Hooks that coach a SALES MOVE (price-framing, competitor-reframe, scarcity).
+# They belong ONLY to revenue-advancing modes. Surfacing them in a support /
+# complaint / reminder / feedback call would inject sell-coaching into a no-push
+# mode — the exact cross-vertical leak the founder forbids. Non-pushing modes get
+# the universal hooks only (trust, respect, routing, honest retrieval); the
+# sales-only hooks below are filtered OUT for them. (Behavior-only; no campaign
+# content; parallel to the step-5 re-close swap in `stance_for`.)
+_SALES_ONLY_HOOKS: frozenset[str] = frozenset({"price", "competitor", "urgency"})
+
+
+def hooks_for(use_case: UseCase) -> dict[str, str]:
+    """The objection hooks for a mode. Revenue-advancing modes get the full menu;
+    service modes (pushes_sale False) get the universal hooks ONLY — the sales-
+    coaching hooks (price/competitor/urgency) are dropped so no sell move leaks
+    into support/complaint/reminder/feedback."""
+    from .packs_data import get_use_case_pack  # local import avoids a cycle
+
+    pack = get_use_case_pack(use_case)
+    if pack.stance.pushes_sale:
+        return dict(OBJECTION_HOOKS)
+    return {k: v for k, v in OBJECTION_HOOKS.items() if k not in _SALES_ONLY_HOOKS}
+
 
 def stance_for(use_case: UseCase) -> tuple[str, ...]:
     """Return the objection stance, tilted by mode.
@@ -96,5 +118,5 @@ def render_objection_directive(use_case: UseCase) -> str:
     """A compact one-block directive (stance + hook menu) for the prompt. The
     model picks the relevant hook live; we never pre-select a reply."""
     steps = "; ".join(f"{i+1}) {s}" for i, s in enumerate(stance_for(use_case)))
-    hooks = "; ".join(f"{k}: {v}" for k, v in OBJECTION_HOOKS.items())
+    hooks = "; ".join(f"{k}: {v}" for k, v in hooks_for(use_case).items())
     return f"OBJECTION STANCE: {steps}. CONTEXT HOOKS (reason live, do not recite): {hooks}."

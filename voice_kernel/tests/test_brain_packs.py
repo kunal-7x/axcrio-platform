@@ -91,6 +91,31 @@ def test_complaint_and_feedback_do_not_push_sale():
         assert get_use_case_pack(uc).stance.pushes_sale is False
 
 
+def test_service_modes_objective_carries_no_sales_coaching_hook():
+    """RED-TEAM regression: the objection HOOK MENU (not just the 5-step stance)
+    must not inject sales-coaching ('establish VALUE before price', 'break price
+    into EMI/appreciation', 'reframe on differentiators', fabricate scarcity) into
+    a no-push mode. Previously every mode dumped the full hook menu, leaking sell
+    moves into support/complaint/reminder/feedback."""
+    prov = build_brain_packs()
+    sell_phrases = (
+        "establish value before price",
+        "break price into",
+        "cost-of-inaction",
+        "defer discounts",
+        "reframe on the campaign's genuine differentiators",
+        "scarcity",
+    )
+    for uc in (UseCase.SUPPORT, UseCase.COMPLAINT, UseCase.REMINDER, UseCase.FEEDBACK, UseCase.AFTER_SALES, UseCase.ONBOARDING):
+        low = prov.use_case_layer(uc, {"company_name": "Acme", "goal": "help the customer"}).objective_str.lower()
+        leaked = [p for p in sell_phrases if p in low]
+        assert not leaked, f"{uc.value} objective leaked sales-coaching hooks: {leaked}"
+    # the revenue modes STILL carry the full sell menu (not over-filtered)
+    for uc in (UseCase.SALES, UseCase.RENEWAL):
+        low = prov.use_case_layer(uc, {"company_name": "Acme"}).objective_str.lower()
+        assert "establish value before price" in low, f"{uc.value} lost its sales hooks"
+
+
 # --------------------------------------------------------------------------- #
 # 3. Real-estate vocabulary NEVER leaks cross-vertical.
 # --------------------------------------------------------------------------- #
