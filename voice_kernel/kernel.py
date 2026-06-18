@@ -236,12 +236,29 @@ def _render_turn_layer(layer: TurnLayer, turn: TurnContext) -> str:
     return "\n".join(parts)
 
 
+# Friendly aliases for the keyword-override registration surface. The FROZEN
+# registration spec is `build_kernel(cfg, context=impl, vendor_script=impl)`, but
+# the dataclass field is `context_engine`. We accept the short, ergonomic names
+# (and the field names) so callers can register either way. Additive — the
+# existing `rag=`/`memory=` field-name overrides keep working unchanged.
+_IMPL_ALIASES = {
+    "context": "context_engine",
+    "context_engine": "context_engine",
+    "vendor_script": "vendor_script",
+    "vendor": "vendor_script",
+    "brain_packs": "brain_packs",
+    "brain": "brain_packs",
+}
+
+
 def build_kernel(cfg: Optional[KernelConfig] = None, services: Optional[KernelServices] = None, **impls) -> RealtimeVoiceKernel:
     """Factory. `cfg` defaults to KernelConfig.from_env() (default OFF).
     Downstream waves register their impls either via a KernelServices instance
-    or as keyword overrides, e.g. build_kernel(cfg, rag=MyRag())."""
+    or as keyword overrides, e.g. build_kernel(cfg, rag=MyRag()) or the FROZEN
+    spec form build_kernel(cfg, context=ce, vendor_script=vs)."""
     cfg = cfg or KernelConfig.from_env()
     svc = services or KernelServices()
     if impls:
-        svc = replace(svc, **impls)
+        normalized = {_IMPL_ALIASES.get(k, k): v for k, v in impls.items()}
+        svc = replace(svc, **normalized)
     return RealtimeVoiceKernel(cfg, svc)
