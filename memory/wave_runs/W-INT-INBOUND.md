@@ -97,3 +97,54 @@ memory write), restart ONLY `aim-voice-agent`, agent.py/famit-agent NEVER touche
 one-command rollback (`KERNEL_INBOUND=0` + restart). The earner gate (outbound
 agent.py md5 `98655dbf`, PIDs, /health, no ring) is unaffected by this wave because
 nothing outbound was changed.
+
+---
+
+## Phase: VERIFY+COMMIT (W-INT-INBOUND)
+
+RECONCILE-FIRST: the BUILD already landed in HEAD as `e9f569d`
+(`feat(voice-kernel): W-INT inbound integration façade (flag-gated, default-OFF)` —
+integration module + 28 tests + both design docs + wave log + systemd drop-in).
+This VERIFY phase re-ran every gate against that tree and folded the red-team's
+ONE actionable note (#1, the disarmed C2 cross-check) into the patch doc.
+
+### Gates (all green)
+- `python -m pytest voice_kernel/` = **240 passed / 0 failed** (212 prior + 28 integration).
+- OFF-parity ran for REAL: the OFF byte-identity test loads the actual
+  `droplet_work/prompt.py` and asserts byte-for-byte equality; `enabled_for("inbound")`
+  False with no env ⇒ `build_for_call` returns None ⇒ legacy path. 43 targeted
+  (off/identical/tenant_mismatch/cross_tenant/import) tests pass.
+- C2 ARMED-behavior proven: `test_on_tenant_mismatch_disengages_no_cross_tenant`
+  (campaign owned by tenantB vs server tenantA ⇒ `build_for_call` returns None,
+  kernel disengages, never serves a cross-tenant packet).
+
+### EARNER LAW — HELD
+- Outbound earner `droplet_work/agent.py` md5 `98655dbfc71d5c3da36bcfe3f848082c`
+  UNCHANGED (re-checked after all edits). NOT edited / imported / restarted.
+- Local inbound `aim_voice_agent.py` has **0** `voice_kernel`/`integrations` refs
+  (doc-only hook honored; gitignored, NOT committed; the tracked deliverable is the
+  integration module + the patch doc).
+- `import voice_kernel.integrations.inbound` from a clean interpreter pulls **0**
+  `droplet_work`/`agent`/`aim_voice_agent` modules (22 voice_kernel modules, 0 leaks).
+- gitleaks `protect --staged` = **0** (no leaks found).
+
+### Red-team note #1 FOLDED (commit `06397f1`)
+Patch B in `design/W-INT-INBOUND-PATCH.md` passed `campaign_tenant_id=tenant_id`
+(the SAME server tenant twice) → `session.assert_matches_campaign(...)` was always
+`tenant_id == tenant_id` (true) = a no-op. FIX: pass the campaign record's REAL
+owning tenant from the contact lookup (`contact.get("tenant_id")`, :2178), falling
+back to the server tenant only when no separate campaign owner exists. The check is
+now ARMED — a contact whose campaign belongs to tenant B can never be served under
+server tenant A (kernel fail-closes → None → legacy). Doc-only; the integration
+module was always correct (it accepts `campaign_tenant_id` as a distinct param and
+the armed behavior is already test-proven). Note #2 (ON-path import latency, not OFF)
+left for the deploy wave — not a ship blocker.
+
+### DEPLOY-READINESS (founder-gated, separate wave)
+Deployable = box golden `1614be09` + the §2 patch hunks (now with the armed C2
+cross-check) applied on top + ship tracked `voice_kernel/integrations/` to the box
+venv (inert without the flag). Order: flag-OFF smoke (prove inert/byte-identical) →
+flag-ON synthetic canary on a LEAN/STANDARD tenant (Sarvam audio + kernel prompt +
+tenant-scoped memory write). Restart ONLY `aim-voice-agent`; agent.py/famit-agent
+NEVER touched. Rollback = `KERNEL_INBOUND=0` + restart (or restore the `1614be09`
+backup). Earner gate (outbound md5 `98655dbf`, /health, no ring) unaffected.
