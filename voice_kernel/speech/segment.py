@@ -39,8 +39,9 @@ def repair_truncation(text: str) -> str:
     """If the text ends mid-sentence (no terminal punctuation), DROP the dangling
     final clause back to the last complete sentence boundary so the TTS never
     speaks a half-word. If there is no earlier complete sentence (the whole thing
-    is one unfinished clause), we close it with a period rather than chop it to
-    nothing — a complete-sounding short line beats a guillotined word."""
+    is one unfinished clause), drop the suspect FINAL (likely-cut) word when the
+    clause is long enough to survive it, then close cleanly — a complete-sounding
+    short line beats a guillotined word."""
     if not text:
         return text
     stripped = text.rstrip()
@@ -53,12 +54,19 @@ def repair_truncation(text: str) -> str:
         kept = stripped[: idx + 1].rstrip()
         if kept:
             return kept
-    # no earlier complete sentence: strip a dangling trailing comma/connector and
-    # close cleanly so it sounds finished.
+    # no earlier complete sentence: strip a dangling trailing comma/connector.
     cleaned = re.sub(r"[,\s–—\-]+$", "", stripped)
-    # if it ends on a clearly-partial token (a single short fragment after the
-    # last space and no vowel-completed look), still close it — TTS reads a
-    # closed line cleanly. We add a full-stop.
+    # The upstream cause is a token-cut (GROQ_MAX_TOKENS), so the LAST word is the
+    # one most likely sliced mid-token. If the clause still has enough words to
+    # stand on its own (>=4 words) AND it ends on a bare word (no punctuation),
+    # DROP that suspect final word so the TTS never voices a half-word like
+    # 'spaci'/'discou'. Short clauses (<=3 words, e.g. 'Haan ji theek') are kept
+    # whole — a brief complete beat is fine and dropping would gut the turn.
+    words = cleaned.split()
+    if len(words) >= 4 and cleaned and cleaned[-1] not in _SENT_END and cleaned[-1].isalnum():
+        cleaned = " ".join(words[:-1])
+    # close cleanly so a residual bare-word line still sounds finished.
+    cleaned = re.sub(r"[,\s–—\-]+$", "", cleaned)
     if cleaned and cleaned[-1] not in _SENT_END:
         cleaned += "."
     return cleaned

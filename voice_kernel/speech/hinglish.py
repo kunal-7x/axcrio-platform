@@ -75,10 +75,17 @@ def _preserve_case(src: str, repl: str) -> str:
 
 # precompile a single alternation, longest-key-first so multi-word keys win.
 _KEYS = sorted(_LITERARY_TO_CASUAL, key=len, reverse=True)
+# Devanagari block (letters + matras/signs/nukta). `\b` is ASCII-only in `re`, so
+# a raw Devanagari key would match INSIDE a longer word (आवश्यक inside आवश्यकता ->
+# "zarooriता"). We emulate a Devanagari word-boundary with lookaround: the key
+# must NOT be flanked by another Devanagari character.
+_DEVA = r"ऀ-ॿ"
+_DEVA_LB = rf"(?<![{_DEVA}])"   # no Devanagari char immediately before
+_DEVA_LA = rf"(?![{_DEVA}])"    # no Devanagari char immediately after
 _PATTERN = re.compile(
     "|".join(
-        # word-boundary only for Latin keys; Devanagari has no \b, match raw.
-        (r"\b" + re.escape(k) + r"\b") if k.isascii() else re.escape(k)
+        (r"\b" + re.escape(k) + r"\b") if k.isascii()
+        else (_DEVA_LB + re.escape(k) + _DEVA_LA)
         for k in _KEYS
     ),
     re.IGNORECASE,

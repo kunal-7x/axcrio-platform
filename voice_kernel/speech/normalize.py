@@ -161,17 +161,33 @@ def _money_unit(num_str: str, unit: str, hinglish: bool) -> str:
     return f"{head} {unit}".strip()
 
 
+def _paise_words(frac: str, hinglish: bool) -> str:
+    """Render the fractional rupee part as PAISE (1-2 significant digits).
+    '99' -> 99 paise, '5' -> 50 paise, '50' -> 50 paise."""
+    frac = (frac + "00")[:2]          # pad/truncate to exactly 2 paise digits
+    val = int(frac)
+    if val == 0:
+        return ""
+    head = _hi_cardinal(val) if hinglish else _int_to_words_en(val)
+    return f" and {head} paise"
+
+
 def _normalize_currency(text: str, hinglish: bool) -> str:
     def repl(m: re.Match) -> str:
         num, unit = m.group(1), m.group(2)
         rupees = "rupaye" if hinglish else "rupees"
+        # the regex eats trailing whitespace after the (optional) unit; re-add a
+        # space so the following word never fuses ('rupayeper month').
+        tail = " " if (m.end() < len(m.string) and m.string[m.end() - 1:m.end()] == " ") else ""
         if unit:
-            return _money_unit(num, unit, hinglish) + " " + rupees
+            return _money_unit(num, unit, hinglish) + " " + rupees + tail
         raw = _strip_commas(num)
         if "." in raw:
-            whole = int(float(raw))
-            return (f"{_hi_cardinal(whole) if hinglish else _int_to_words_en(whole)} {rupees}")
-        return (f"{_hi_cardinal(int(raw)) if hinglish else _int_to_words_en(int(raw))} {rupees}")
+            whole_str, frac = raw.split(".", 1)
+            whole = int(whole_str or "0")
+            wword = _hi_cardinal(whole) if hinglish else _int_to_words_en(whole)
+            return f"{wword} {rupees}{_paise_words(frac, hinglish)}{tail}"
+        return (f"{_hi_cardinal(int(raw)) if hinglish else _int_to_words_en(int(raw))} {rupees}{tail}")
 
     out = _CUR_RE.sub(repl, text)
 
@@ -285,7 +301,17 @@ def _normalize_date(text: str, hinglish: bool) -> str:
 # percent, units, acronyms, bare integers
 # --------------------------------------------------------------------------- #
 _PCT_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*%")
-_BARE_INT_RE = re.compile(r"(?<![\w.])(\d{1,3})(?![\w.\d])")
+# 1-3 digit bare integers -> a cardinal word (do, teen / forty-two).
+# Trailing guard: reject a following word-char OR a decimal point (period+digit),
+# but ALLOW a sentence-final period ('Total 100.' must still normalize). The old
+# `(?![\w.\d])` blocked EVERY number before a full-stop -> end-of-sentence leak.
+_BARE_INT_RE = re.compile(r"(?<![\w.])(\d{1,3})(?!\w|\.\d)")
+# 4+ digit bare numbers with NO currency/phone/date/percent context survived the
+# earlier passes (year, area, pincode, account/code). A normalizer-OFF TTS reads
+# raw digits wrong, so we MUST render them. With no semantic context a bare long
+# run is safest read digit-by-digit (a real telecaller spells a code/pincode/
+# account), never a giant cardinal ("five thousand and twenty-four" for a year).
+_BARE_LONG_RE = re.compile(r"(?<![\w.])(\d{4,})(?!\w|\.\d)")
 
 
 def _normalize_percent(text: str, hinglish: bool) -> str:
@@ -328,6 +354,16 @@ def _normalize_acronyms(text: str) -> str:
     return re.sub(r"\b[A-Za-z]{2,5}\b", repl, text)
 
 
+def _normalize_bare_long(text: str, hinglish: bool) -> str:
+    """4+ digit bare runs with no semantic context -> digit-by-digit spoken words
+    (years/pincodes/codes/account numbers). Must run BEFORE the 1-3 digit pass so
+    its digits aren't half-consumed."""
+    def repl(m: re.Match) -> str:
+        return _speak_digits(m.group(1), hinglish)
+
+    return _BARE_LONG_RE.sub(repl, text)
+
+
 def _normalize_bare_ints(text: str, hinglish: bool) -> str:
     def repl(m: re.Match) -> str:
         n = int(m.group(1))
@@ -358,6 +394,7 @@ def normalize_text(text: str, lang: str = "en") -> str:
     out = _normalize_units(out)
     out = _split_digit_acronym(out)            # '2BHK' -> '2 BHK' before both passes
     out = _normalize_acronyms(out)
-    out = _normalize_bare_ints(out, hinglish)  # whatever digits remain
+    out = _normalize_bare_long(out, hinglish)  # 4+ digit codes/years -> digit-by-digit
+    out = _normalize_bare_ints(out, hinglish)  # 1-3 digit remainder -> cardinal
     out = re.sub(r"\s{2,}", " ", out).strip()
     return out
