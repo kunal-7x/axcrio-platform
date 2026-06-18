@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Optional
 
+from ..brain_packs.disclosure import build_structural_identity
 from ..contracts import CallContext, ContextEngine, VendorScriptEngine
 from ..packet import (
     CampaignCard,
@@ -35,6 +36,7 @@ from ..packet import (
     IndustryLayer,
     LeadMemory,
     ModeLayer,
+    Objection,
     Stage,
     TokenBudget,
     TurnLayer,
@@ -117,13 +119,7 @@ class ContextEngineImpl:
         card = self._apply_vendor_overrides(ctx, compiled.card)
         und = compiled.understanding
 
-        identity = IdentityLayer(
-            agent_name=str(f.get("agent_name", "")).strip() or "Riya",
-            company_name=str(f.get("company_name", "")).strip(),
-            disclose_ai=bool(f.get("disclose_ai", True)),
-            ai_disclosure_str=str(f.get("ai_disclosure", "")).strip(),
-            safety_rules=self._safety_rules,  # L0 PLATFORM safety, never fenced, first
-        )
+        identity = build_structural_identity(f, safety_rules=self._safety_rules)
 
         mode = ModeLayer(
             use_case=und.use_case,
@@ -149,31 +145,82 @@ class ContextEngineImpl:
         return pkt.clamp()
 
     # -- vendor-script authoritative overrides ------------------------------
+    # The FLOW stages the vendor authors and where each lands on the card so the
+    # WHOLE blueprint (greet→permission→intro→qualify→pitch→objection→close)
+    # reaches the rendered prompt — not just the opening three (RED-TEAM BLOCKER 1
+    # fix). Each stage is surfaced through its NATURAL card slot so the packet
+    # renderer already prints it (_render_card_body): TALKING POINTS / QUALIFY /
+    # OBJECTIONS / CLOSE. The card is fenced below the PLATFORM safety layer, so
+    # authoritative-on-flow never means authoritative-over-safety (C3 holds).
+    _FLOW_TO_TALKING = (Stage.GREET, Stage.PERMISSION, Stage.INTRO)
+
     def _apply_vendor_overrides(self, ctx: CallContext, card: CampaignCard) -> CampaignCard:
         """When a vendor script exists, it is the AUTHORITATIVE blueprint. We fold
-        its card-level overrides (greeting/opener) and surface its GREET/INTRO
-        blueprint as a leading talking point so the model follows the vendor's
-        flow ordering. The script text remains UNTRUSTED — it lands inside the
-        card, which the packet renderer fences below the PLATFORM safety layer."""
+        the FULL ordered flow into the card's matching fields so the model follows
+        the vendor's stage ordering end-to-end — opener→permission→intro into the
+        talking points, QUALIFY into the qualifying questions, PITCH appended to
+        the talking points, OBJECTION into the objections, CLOSE into the closing
+        lines. The script text stays UNTRUSTED — it lands inside the card, which
+        the packet renderer fences below the PLATFORM safety layer.
+
+        Two RED-TEAM fixes folded here:
+          - BLOCKER 1: QUALIFY/PITCH/OBJECTION/CLOSE are no longer dropped — each
+            reaches the prompt through its own card slot.
+          - BLOCKER 2: vendor blueprint is MERGED with (never evicts) the vendor's
+            own authored card content — vendor content leads, dedup avoids repeats,
+            and packet.clamp() (not a raw slice here) does the final cap so the
+            authoritative head always survives.
+        """
         if self._vendor is None:
             return card
         cid = ctx.meta.campaign_id
-        overrides = self._vendor.card_overrides(cid) or {}
         new = card
+
+        overrides = self._vendor.card_overrides(cid) or {}
         greeting = overrides.get("greeting")
         if greeting:
             new = replace(new, greeting=greeting)
-        # surface the opening blueprint (greet+intro) as the FIRST talking points,
-        # so the flow ordering the vendor wrote takes precedence over the default.
-        blueprint_bits: list[str] = []
-        for stage in (Stage.GREET, Stage.PERMISSION, Stage.INTRO):
-            ex = self._vendor.stage_excerpt(cid, stage, max_chars=240)
-            if ex:
-                blueprint_bits.append(ex)
-        if blueprint_bits:
-            # prepend blueprint (authoritative) ahead of any existing talking points.
-            merged = tuple(blueprint_bits) + tuple(new.talking_points)
-            new = replace(new, talking_points=merged[:5])
+
+        # 1. opener + value-prop flow (greet+permission+intro) leads the talking
+        # points. The vendor's PITCH/value-prop has no separate Stage enum member;
+        # vendors write it under an "intro/reason/why-calling" heading (mapped to
+        # Stage.INTRO) or it rides into the QUALIFY segment — either way it reaches
+        # the prompt (INTRO -> talking_points here, QUALIFY -> qualifying below).
+        talking_lead = [
+            ex
+            for stage in self._FLOW_TO_TALKING
+            if (ex := self._vendor.stage_excerpt(cid, stage, max_chars=240))
+        ]
+        if talking_lead:
+            # vendor flow FIRST, then the vendor-authored talking_points — merge,
+            # don't evict (BLOCKER 2). clamp() applies the final cap downstream.
+            new = replace(
+                new,
+                talking_points=_merge_unique(talking_lead, new.talking_points),
+            )
+
+        # 3. QUALIFY -> qualifying_questions (vendor's discovery flow, leading).
+        qualify = self._vendor.stage_excerpt(cid, Stage.QUALIFY, max_chars=240)
+        if qualify:
+            new = replace(
+                new,
+                qualifying_questions=_merge_unique([qualify], new.qualifying_questions),
+            )
+
+        # 4. OBJECTION -> objections (the vendor's rebuttal blueprint, leading).
+        objection = self._vendor.stage_excerpt(cid, Stage.OBJECTION, max_chars=300)
+        if objection:
+            vendor_obj = Objection(q="(vendor-scripted objection handling)", a=objection)
+            existing = tuple(o for o in new.objections if o.a != objection)
+            new = replace(new, objections=(vendor_obj,) + existing)
+
+        # 5. CLOSE -> closing_lines (the vendor's authored ask, leading).
+        close = self._vendor.stage_excerpt(cid, Stage.CLOSE, max_chars=240)
+        if close:
+            new = replace(
+                new,
+                closing_lines=_merge_unique([close], new.closing_lines),
+            )
         return new
 
     # -- helpers ------------------------------------------------------------
@@ -195,6 +242,33 @@ class ContextEngineImpl:
         glossary — so it stays campaign-faithful."""
         terms = tuple(t for t in und.industry_scores.keys())
         return terms[:8]
+
+
+def _merge_unique(lead, existing) -> tuple[str, ...]:
+    """Merge `lead` (authoritative vendor flow, kept FIRST) ahead of `existing`
+    (the vendor's own authored card content, kept after) WITHOUT evicting either
+    (RED-TEAM BLOCKER 2) and WITHOUT duplicating a line that already appears
+    (the unsegmented-opener duplicate bug). Dedup is whitespace/case-insensitive
+    and substring-aware: an `existing` item that is already wholly contained in a
+    leading blueprint excerpt is dropped (the blueprint says it better/in-order).
+    The final per-field cap is applied later by packet.clamp(), so the
+    authoritative head always survives the trim."""
+    out: list[str] = []
+    seen: list[str] = []  # normalized forms already emitted
+
+    def _norm(s: str) -> str:
+        return " ".join(str(s).split()).casefold()
+
+    for item in list(lead) + list(existing):
+        s = (item or "").strip()
+        if not s:
+            continue
+        n = _norm(s)
+        if any(n == k or n in k or k in n for k in seen):
+            continue
+        seen.append(n)
+        out.append(s)
+    return tuple(out)
 
 
 # Sanity: the impl conforms to the Protocol surface (build_card + build_packet).

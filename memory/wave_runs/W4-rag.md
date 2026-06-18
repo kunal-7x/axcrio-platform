@@ -84,3 +84,30 @@ does not change the W3 behaviour; RAG+W3 in fixed order = 37/37). Flagged for th
 W3 owner; out of scope for this RAG red-team.
 
 VERDICT: 1 RAG blocker found + FIXED + verified. SHIP the RAG module.
+
+## Phase: VERIFY+COMMIT (2026-06-18, reconcile pass)
+RESUME found HEAD had advanced (concurrent session) — the full W4 rag package +
+B1 fence-escape fix were ALREADY committed:
+  - `6fa3f09` fix(voice-kernel): RED-TEAM — seal fence break-out at the render
+    choke point (packet.FencedText.render -> defang_fences via leaf voice_kernel/
+    fences.py; text_hygiene re-exports; +9 test_redteam_injection tests).
+  - `bbd3442` fix(rag): W4 red-team — repair dead precompute warm (seed-key).
+  - rag package (runtime/backends/config/stores/ingest/__init__/RESEARCH + the
+    test + design/W4-RAG-SEAM.md) all present in HEAD tree.
+B1 SHIP-BLOCKER (RAG snippet escaping <retrieved_knowledge> via forged closing
+tag) is CLOSED — fixed at the render choke point (superior to the verdict's
+_to_snippets suggestion: one place covers ALL untrusted sources — brief/RAG/
+lead-memory/caller). Verified on CLEAN HEAD (uncommitted W2/W7 working-tree edits
+stashed out):
+  - test_rag_runtime.py        = 22 passed
+  - test_redteam_injection.py  =  9 passed
+  - test_adapter_off_identity  = 12 passed (>=10/10 required)
+  - import voice_kernel.rag    = 0 droplet modules leaked
+  - gitleaks protect --staged  = 0 leaks
+  - EARNER LAW: droplet_work/agent.py md5 98655dbf UNCHANGED.
+The 4 in-suite isolation FAILs (..._pulls_no_droplet_modules) are the documented
+PRE-EXISTING cross-test sys.modules pollution from the memory suite (loads
+droplet_work.db.engine); each file is GREEN in a clean process. NOT a W4 defect.
+VERDICT: W4 SHIP — committed + verified green on clean HEAD. No new commit needed
+(work already in HEAD via the concurrent session); uncommitted W2/W7 working-tree
+files belong to other in-flight waves and were correctly NOT staged.

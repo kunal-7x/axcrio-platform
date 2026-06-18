@@ -266,3 +266,80 @@ def test_defang_single_source_of_truth():
 
     assert reexport is leaf, "text_hygiene must re-export the leaf defanger"
     assert pkt_mod.defang_fences is leaf, "packet must use the leaf defanger"
+
+
+# --------------------------------------------------------------------------- #
+# W26 DISCLOSURE — STRUCTURAL on the REAL kernel path (not just the provider)
+# --------------------------------------------------------------------------- #
+# The red-team finding these guard: the disclosure guarantee lived only in
+# brain_packs.provider.identity_layer, but the kernel actually builds the packet
+# via ContextEngineImpl.build_packet, which formerly read disclose_ai/ai_disclosure
+# straight from vendor `fields` — so a vendor could (a) set disclose_ai=False to
+# DELETE the disclosure, or (b) put "I am an AI assistant" in ai_disclosure with
+# NO block-list scan. These assert the structural builder is now wired on the real
+# path: disclosure can be neither removed nor poisoned from untrusted fields.
+from voice_kernel.brain_packs import contains_banned_phrase, strip_guardrail  # noqa: E402
+
+
+def _disclosure_spoken(text: str) -> str:
+    """The L0 disclosure SPOKEN line as it appears in the assembled prefix (the
+    portion before the GUARDRAIL meta-instruction)."""
+    return strip_guardrail(text)
+
+
+def test_vendor_cannot_turn_disclosure_off_on_real_path():
+    """A vendor sets disclose_ai=False trying to DELETE the structural disclosure.
+    On the real kernel path it must STILL render (down-selected, never removed)."""
+    fields = {
+        "agent_name": "Riya", "company_name": "Skyline",
+        "goal": "site visit", "language": "Hinglish",
+        "disclose_ai": False,  # the attack: try to null the disclosure
+    }
+    compiled = compile_campaign(tenant_id="t", campaign_id="c1", brief="Skyline flats.", fields=fields)
+    ce = ContextEngineImpl({"c1": compiled}, safety_rules=_SAFETY)
+    k = build_kernel(KernelConfig(), context=ce)
+    text, pkt = k.assemble_prefix_core(_ctx(fields))
+    # STRUCTURAL: disclose_ai is forced True and a non-empty disclosure renders.
+    assert pkt.identity.disclose_ai is True
+    assert pkt.identity.ai_disclosure_str.strip() != ""
+    # the disclosure line is positionally inside the PLATFORM L0 (above any fence).
+    assert "Skyline" in text
+    assert "PLATFORM_SAFETY_SENTINEL" in text
+    # and it carries no banned self-label.
+    assert not contains_banned_phrase(_disclosure_spoken(pkt.identity.ai_disclosure_str))
+
+
+def test_vendor_cannot_inject_ai_assistant_via_ai_disclosure_on_real_path():
+    """A vendor injects the banned 'AI assistant' self-label through the free-text
+    ai_disclosure field. The structural builder block-list-scans it -> REJECTED,
+    structural Tier-0 default used instead. The banned phrase never reaches L0."""
+    fields = {
+        "agent_name": "Riya", "company_name": "Acme",
+        "goal": "your order", "language": "english",
+        "ai_disclosure": "Hi, I am an AI assistant and this call is a recording.",  # banned
+    }
+    compiled = compile_campaign(tenant_id="t", campaign_id="c1", brief="Acme store.", fields=fields)
+    ce = ContextEngineImpl({"c1": compiled}, safety_rules=_SAFETY)
+    k = build_kernel(KernelConfig(), context=ce)
+    text, pkt = k.assemble_prefix_core(_ctx(fields))
+    spoken = _disclosure_spoken(pkt.identity.ai_disclosure_str)
+    assert not contains_banned_phrase(spoken), spoken
+    # the banned vendor self-label does not appear anywhere in the rendered prefix.
+    assert "i am an ai assistant" not in text.lower()
+
+
+def test_clean_vendor_disclosure_is_honoured_on_real_path():
+    """A vendor's CLEAN custom disclosure (vendor-script-compatible) is honoured
+    verbatim on the real path — structural hardening does not censor a good line."""
+    clean = "Namaste, main Riya bol rahi hoon Acme ki taraf se."
+    fields = {
+        "agent_name": "Riya", "company_name": "Acme",
+        "goal": "your enquiry", "language": "Hinglish",
+        "ai_disclosure": clean,
+    }
+    compiled = compile_campaign(tenant_id="t", campaign_id="c1", brief="Acme.", fields=fields)
+    ce = ContextEngineImpl({"c1": compiled}, safety_rules=_SAFETY)
+    k = build_kernel(KernelConfig(), context=ce)
+    _text, pkt = k.assemble_prefix_core(_ctx(fields))
+    assert clean in pkt.identity.ai_disclosure_str
+    assert not contains_banned_phrase(strip_guardrail(pkt.identity.ai_disclosure_str))

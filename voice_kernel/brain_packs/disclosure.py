@@ -199,3 +199,63 @@ def strip_guardrail(disclosure_str: str) -> str:
     if not disclosure_str:
         return ""
     return disclosure_str.split("GUARDRAIL:", 1)[0].strip()
+
+
+def _tier_from_fields(f: dict) -> DisclosureTier:
+    """Resolve the disclosure tier from campaign fields.
+
+    STRUCTURAL RULE (W26 red-team fix): `disclose_ai=False` no longer NULLS the
+    disclosure — it can only DOWN-select the tier, never remove the structural
+    line. A vendor/campaign (or the inbound seam) that sets disclose_ai=False
+    gets Tier 0 (brand-identity opener: brand + purpose + record cue, no AI
+    label) — the leanest in-force-compliant disclosure — NOT silence. An explicit
+    `disclosure_tier` (0/1/2) wins. The banned 'AI assistant' default can NEVER
+    be reached, and disclosure can NEVER be turned off from untrusted fields."""
+    raw = f.get("disclosure_tier", None)
+    if raw is not None:
+        try:
+            return DisclosureTier(int(raw))
+        except Exception:
+            pass
+    # legacy disclose_ai bool: True -> default tier; False -> Tier 0 (still on).
+    return DisclosureTier.BRAND_IDENTITY
+
+
+def build_structural_identity(fields: dict, *, safety_rules: str = "", agent_name_default: str = "Riya"):
+    """Build the L0 IdentityLayer with a STRUCTURAL, vendor-unremovable disclosure.
+
+    This is the SINGLE entry the kernel's packet builders (ContextEngineImpl /
+    NullContextEngine) call so the disclosure is identical and structural on the
+    REAL path — not just on the brain-pack provider's branch. It guarantees:
+
+      * disclose_ai is ALWAYS True (a vendor field can NEVER turn it off);
+      * ai_disclosure_str is ALWAYS non-empty and free of every banned phrase;
+      * a vendor's free-text `ai_disclosure` is routed through the block-list
+        scan (vendor_script_disclosure): a CLEAN line is honoured verbatim, a
+        BANNED one ('I am an AI assistant', etc.) is REJECTED and the structural
+        Tier-0 default is used instead — disclosure cannot be weakened.
+
+    Imports IdentityLayer lazily to keep packet.py free of any brain_packs import.
+    """
+    from ..packet import IdentityLayer  # local import: avoids any import cycle
+
+    f = fields or {}
+    brand = str(f.get("company_name", "")).strip()
+    purpose = str(f.get("purpose", "")).strip() or str(f.get("goal", "")).strip()
+    lang = str(f.get("language", "")).strip().lower()
+    cfg = DisclosureConfig(
+        tier=_tier_from_fields(f),
+        record_consent=bool(f.get("record_consent", True)),
+        channel=str(f.get("direction", "outbound")).strip() or "outbound",
+        language="english" if lang.startswith("eng") else "hinglish",
+        # vendor free-text disclosure is UNTRUSTED -> block-list-scanned, not trusted verbatim.
+        vendor_script_disclosure=str(f.get("ai_disclosure", "")).strip(),
+    )
+    disclosure = build_disclosure_str(brand, purpose, cfg)
+    return IdentityLayer(
+        agent_name=str(f.get("agent_name", "")).strip() or agent_name_default,
+        company_name=brand,
+        disclose_ai=True,  # STRUCTURAL — always on; tier controls HOW, never WHETHER
+        ai_disclosure_str=disclosure,
+        safety_rules=safety_rules,
+    )

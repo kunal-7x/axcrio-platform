@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
+from .brain_packs.disclosure import build_structural_identity
 from .contracts import (
     CallContext,
     Event,
@@ -85,13 +86,11 @@ class NullContextEngine:
     def build_packet(self, ctx: CallContext) -> ContextPacket:
         f = dict(ctx.fields or {})
         card = self.build_card(ctx)
-        identity = IdentityLayer(
-            agent_name=str(f.get("agent_name", "")).strip() or "Riya",
-            company_name=str(f.get("company_name", "")).strip(),
-            disclose_ai=bool(f.get("disclose_ai", True)),
-            ai_disclosure_str=str(f.get("ai_disclosure", "")).strip(),
-            safety_rules="",  # W1 fills SHARED_RULES verbatim at wiring; null = empty
-        )
+        # STRUCTURAL disclosure (W26 red-team fix): disclose_ai is forced True and
+        # the line is block-list-scanned — a vendor field can neither turn it off
+        # nor inject a banned 'AI assistant' self-label. (W1 wiring passes
+        # SHARED_RULES as safety_rules; null path leaves it empty.)
+        identity = build_structural_identity(f, safety_rules="")
         pkt = ContextPacket(
             meta=ctx.meta,
             identity=identity,
