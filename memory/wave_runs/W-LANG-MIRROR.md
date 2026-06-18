@@ -63,3 +63,17 @@ Build in SHARED tracked voice_kernel/. Flag-OFF byte-identity must stay green.
 ### FOUNDER RE-TEST
 - Call +918071583488. Speak HINDI first (agent replies Hindi), then SWITCH to ENGLISH mid-call
   -> agent must follow to English on the next turn, then switch BACK to Hindi -> agent follows back.
+
+## Phase: REVERTED (2026-06-18) — lang-mirror caused English-only regression
+
+- FOUNDER REAL-CALL VERDICT: the per-turn LanguageTracker forcing made the LIVE language WORSE
+  (English-only). The forced LANGUAGE directive overrode the perfect-call brain's natural mirroring.
+- ACTION: `git revert --no-edit c08d2346` on branch fix/realtime-voice-kernel-v2 (NO conflicts —
+  lang-mirror only touched voice_kernel/language/ + integrations/{inbound,outbound}.py + a test,
+  disjoint from concurrent W9 voice_ops/recording).
+- RESULT: revert commit `1aa9ccb`. voice_kernel/language/ deleted + stale __pycache__ purged
+  (module now unimportable). integrations/{inbound,outbound}.py byte-identical to pre-lang-mirror
+  cdabe84 (empty diff) — NO forced language directive. `python -m pytest voice_kernel/` = 321 passed
+  / 0 fail (the 36 lang-mirror tests removed by the revert; off-identity + integration tests green).
+- KERNEL STATE: back to the founder's PERFECT-call behavior. No forced per-turn language.
+- NEXT: proper STT-auto-detect fix to follow (let STT detect the spoken language; do NOT force it).
