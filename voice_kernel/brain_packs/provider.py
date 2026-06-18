@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..packet import IdentityLayer, IndustryLayer, ModeLayer, Stage, UseCase
+from .delivery import delivery_directive
 from .disclosure import DisclosureConfig, DisclosureTier, build_disclosure_str
 from .language import language_directive
 from .model import NEUTRAL_INDUSTRY, IndustryPack, UseCasePack
@@ -62,6 +63,7 @@ def _use_case_pack_from_version(body: dict) -> Optional[UseCasePack]:
             objective_template=str(body.get("objective_template", "")),
             success_criteria=str(body.get("success_criteria", "")),
             opening_style=str(body.get("opening_style", "")),
+            closing_style=str(body.get("closing_style", "")),
             data_to_collect=tuple(body.get("data_to_collect", ())),
             push_stop_handoff=str(body.get("push_stop_handoff", "")),
             memory_fields=tuple(body.get("memory_fields", ())),
@@ -138,8 +140,15 @@ class BrainPacks:
         directives = [objective]
         if pack.opening_style:
             directives.append(f"OPENING: {pack.opening_style}")
+        if pack.closing_style:
+            directives.append(f"CLOSING: {pack.closing_style}")
         directives.append(render_objection_directive(use_case))
         directives.append(language_directive())
+        # W-VOICE-HEART: human-delivery rules — exactly ONE greeting (no re-greet/
+        # double-intro) + the name said sparingly at constant, un-emphasised volume.
+        # These are the PROMPT-side guarantees that ride with the worker-opener
+        # suppression so the kernel-ON outbound never re-greets or shouts the name.
+        directives.append(delivery_directive())
         objective_str = " ".join(d for d in directives if d).strip()
 
         return ModeLayer(

@@ -68,6 +68,7 @@ class UseCasePack:
     objective_template: str  # abstract behavioral objective (no campaign nouns)
     success_criteria: str  # the terminal-state definition (aligns with fsm terminal)
     opening_style: str  # how to open (full skeleton / inverted / apology-first ...)
+    closing_style: str = ""  # how to CLOSE (warm LLM goodbye per outcome; never a canned line)
     data_to_collect: tuple[str, ...] = ()  # generic fields (need/budget/ticket_id ...)
     push_stop_handoff: str = ""  # when to push / stop / hand off (behavioral)
     memory_fields: tuple[str, ...] = ()  # which lead-memory keys this mode writes
