@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 
+from .errors import TenantIdentityError
 from .packet import (
     CampaignCard,
     ContextPacket,
@@ -32,16 +33,75 @@ from .packet import (
 
 
 # --------------------------------------------------------------------------- #
+# C2 — TENANT IDENTITY (fail-closed, server-stamped, immutable)
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class KernelSession:
+    """The immutable, SERVER-STAMPED tenant identity for one call (W18 C2).
+
+    `tenant_id` + `call_id` are MANDATORY and non-empty — the kernel refuses to
+    run a call without them. This object is stamped server-side from the resolved
+    campaign owner (`get_campaign_for(cid, tenant)` shape), NEVER from a
+    caller-supplied dispatch body — that is the whole point: a guessed/forged
+    `campaign_id` in the body cannot smuggle in a tenant.
+
+    Frozen = immutable: once stamped it cannot be mutated downstream. Every
+    service Protocol that needs tenant scoping (RagRuntime, MemoryService,
+    EventBus, ContextEngine, BrainPackProvider) receives this session, so none of
+    them can operate cross-tenant by accident.
+
+    Fail-closed: an empty/missing `tenant_id` or `call_id` raises
+    TenantIdentityError at construction. The orchestrator additionally asserts
+    `session.tenant_id == campaign.tenant_id` before assembling — a mismatch is a
+    hard hang-up, not a warning.
+    """
+
+    tenant_id: str
+    call_id: str
+    direction: str = "outbound"  # outbound | inbound (mirrors PacketMeta.direction)
+    stamped_by: str = "server"  # provenance marker; never "caller_body"
+
+    def __post_init__(self) -> None:
+        if not (self.tenant_id or "").strip():
+            raise TenantIdentityError("KernelSession.tenant_id is required (server-stamped, fail-closed)")
+        if not (self.call_id or "").strip():
+            raise TenantIdentityError("KernelSession.call_id is required (server-stamped, fail-closed)")
+
+    def assert_matches_campaign(self, campaign_tenant_id: str) -> None:
+        """Fail-closed cross-check: the session tenant MUST equal the campaign's
+        owning tenant. A mismatch (or a missing campaign tenant) is a hard
+        refusal — the call must hang up, never serve a cross-tenant packet."""
+        ct = (campaign_tenant_id or "").strip()
+        if not ct:
+            raise TenantIdentityError(
+                f"campaign has no tenant_id to verify against session "
+                f"{self.tenant_id!r} — refusing (fail-closed)"
+            )
+        if ct != self.tenant_id:
+            raise TenantIdentityError(
+                f"tenant mismatch: session={self.tenant_id!r} != campaign={ct!r} — "
+                f"refusing cross-tenant assembly (call must hang up)"
+            )
+
+
+# --------------------------------------------------------------------------- #
 # request/result dataclasses shared by the contracts
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class CallContext:
-    """Everything known at dial time (the WARM-path seed)."""
+    """Everything known at dial time (the WARM-path seed).
+
+    `session` (C2) is the server-stamped tenant identity. It is OPTIONAL on the
+    dataclass ONLY so the OFF / shadow / legacy paths that never enter the kernel
+    orchestrator can still construct a CallContext. The kernel's ON entry points
+    REQUIRE it (fail-closed) — see RealtimeVoiceKernel._require_session.
+    """
 
     meta: PacketMeta
     fields: dict  # the live campaign `fields` dict (prompt.py shape)
     fields_override: Optional[dict] = None  # A/B variant merge (agent.py:426)
     recap: str = ""  # legacy recap string (back-compat)
+    session: Optional[KernelSession] = None  # C2 server-stamped tenant identity
 
 
 @dataclass(frozen=True)

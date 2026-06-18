@@ -125,3 +125,51 @@ Wave-start tripwire artifact:
 - Shared request/result dataclasses: `CallContext`, `TurnContext`, `SpeechPlan`, `ProviderChoice`, `Event`.
 - Wiring: `build_kernel(cfg, <name>=impl)` + `KernelServices`; `RealtimeVoiceKernel`; `instructions_provider` (the OFF-is-identity seam); `DialogueFSM`/`ModePolicy`/`policy_for`; prompt-cache helpers (`split_for_cache`, `cache_breakpoint`, `is_cacheable_model`). `null_impls.py` ships a conformant logged-null for each Protocol so the kernel runs end-to-end before any W2-W8 lands.
 - **How W2-W8 plug in:** each implements ONE Protocol from `contracts.py` and registers it via `build_kernel(cfg, <name>=impl)`; until a real impl lands, the null impl runs (logged as null, never silent). Integration into `aim_voice_agent.py:1436` is a LATER wave, gated `KERNEL_INBOUND` via a systemd drop-in — `agent.py` (the earner) is NEVER touched.
+
+---
+
+## Phase: AMEND (W1.5)
+
+**Status:** DONE (2026-06-18). The three W18 red-team CRITICALs (C2/C3/H13) folded into the FROZEN W1
+contracts, additively, BEFORE W2–W8 bind. Branch `fix/realtime-voice-kernel-v2`. EARNER LAW held:
+`droplet_work/agent.py` md5 = `98655dbfc71d5c3da36bcfe3f848082c` (unchanged); agent.py/prompt.py/
+aim_voice_agent.py byte-identical vs HEAD (`git diff --quiet` clean). OFF earner gate
+`test_adapter_off_identity` = **10/10 byte-identical, STILL passing** (the OFF path delegates to
+`droplet_work/prompt.py build_system_prompt` and does NOT require a tenant_id — the session is enforced
+only on the kernel ON path, which the adapter never reaches when OFF).
+
+### Files changed (6 source + 2 test + 2 doc)
+- `voice_kernel/errors.py` — NEW `TenantIdentityError` (fail-closed tenant violation).
+- `voice_kernel/contracts.py` — NEW frozen `KernelSession` (mandatory non-empty `tenant_id`+`call_id`,
+  `__post_init__` raises, `assert_matches_campaign` cross-check); `CallContext` gains optional
+  `session` field.
+- `voice_kernel/packet.py` — C3: `SourceTrust` enum + `FencedText` + `fence()` helper; renders L0
+  PLATFORM first, L3 card / L4 lead / L5 RAG wrapped in typed fences (safety-above-by-POSITION). H13:
+  `render_cache_split()` → (L0+L1+L2 stable, L3+L4+L5 volatile); `CampaignCard` gains
+  `full_product_summary`/`full_usps`/`summary_overflow`/`usps_overflow`; `clamp()` does
+  retrieval-over-truncation (full text kept losslessly + overflow flag, NEVER dropped) and stays
+  idempotent.
+- `voice_kernel/kernel.py` — `_require_session(ctx)` fail-closed precondition at the top of
+  `assemble_prefix_core`; `_render_turn_layer` fences RAG identically to the packet renderer.
+- `voice_kernel/__init__.py` — export `KernelSession`, `SourceTrust`, `FencedText`, `fence`,
+  `TenantIdentityError`.
+- `voice_kernel/shadow/runner.py` — stamps a `KernelSession` from the SERVER-SIDE dispatch metadata
+  (out-of-band, never a caller body) so the shadow ON path satisfies C2.
+- `voice_kernel/tests/test_contracts.py` — `_ctx()` now stamps a matching `KernelSession`.
+- `voice_kernel/tests/test_amend_w18.py` — NEW: 17 tests (C2 required/mismatch/immutable/fail-closed;
+  C3 fenced layers present + safety-above-by-position + caller-utterance fence + PLATFORM-refused;
+  H13 cache stable/volatile split + retrieval-over-truncation lossless + overflow flag + idempotent).
+
+### Test result
+`python -m pytest voice_kernel/` → **67 passed** (was 50; +17 new). OFF-identity 10/10 ran for REAL
+(not skipped). `import voice_kernel` pulls **0** droplet modules (clean-interpreter check).
+
+### New public surface (binding for W2–W8)
+- `KernelSession` (server-stamped tenant identity; ON path REQUIRES it) · `CallContext.session`
+  (NEW optional) · `TenantIdentityError`.
+- `SourceTrust` {PLATFORM, CAMPAIGN_BRIEF, RETRIEVED_KNOWLEDGE, LEAD_MEMORY, CALLER_UTTERANCE} ·
+  `FencedText` · `fence(trust, content, label)` (refuses PLATFORM) — W3/W4/W7 carry untrusted text
+  through this so they can't forget to fence.
+- `ContextPacket.render_cache_split() -> (stable, volatile)` (H13) · `CampaignCard.full_product_summary
+  /full_usps/summary_overflow/usps_overflow` (retrieval-over-truncation — W4 indexes the full text).
+- `RealtimeVoiceKernel.assemble_prefix_core/assemble_prefix` now fail-closed without a matching session.

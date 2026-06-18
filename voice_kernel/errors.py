@@ -35,3 +35,15 @@ class ContractViolationError(KernelError):
 
 class ConfigError(KernelError):
     """KernelConfig was constructed with contradictory / invalid flags."""
+
+
+class TenantIdentityError(KernelError):
+    """Fail-closed tenant-identity violation (W18 C2).
+
+    Raised when the mandatory server-stamped tenant identity is missing or does
+    not match the campaign's owning tenant. The orchestrator raises this rather
+    than proceeding — the live call must HANG UP, never serve a packet under an
+    unverified or cross-tenant identity. This is a control-flow precondition, not
+    a docstring suggestion: an empty/missing `tenant_id` or `call_id`, or a
+    `session.tenant_id != campaign.tenant_id` mismatch, is a hard refusal.
+    """

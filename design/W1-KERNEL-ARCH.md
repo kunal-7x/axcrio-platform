@@ -584,3 +584,61 @@ gitleaks 0.
 All nine are defined in `voice_kernel/contracts.py`; each downstream wave imports its Protocol,
 ships an impl, and registers it via `build_kernel(cfg, **impls)`. Until a wave lands, the kernel
 uses the corresponding `null_impls` default (logged as null, never a silent no-op).
+
+---
+
+## 9. AMENDMENT (W1.5) — W18 red-team CRITICALs folded into the FROZEN contracts
+
+> Date 2026-06-18. Additive; the OFF earner gate (`test_adapter_off_identity`, 10/10 byte-identical)
+> is UNCHANGED and still green. `agent.py` md5 unchanged (`98655dbf…`). These three amendments
+> CLOSE C2/C3/H13 from `design/W18-BLINDSPOT-AND-REDTEAM.md` BEFORE W2–W8 bind. New public surface
+> is additive — nothing was removed.
+
+### C2 — Tenant identity (fail-closed) — `contracts.py`
+- **NEW `KernelSession`** (frozen/immutable): mandatory non-empty `tenant_id` + `call_id`
+  (+ `direction`, `stamped_by="server"`). `__post_init__` RAISES `TenantIdentityError` on a missing
+  tenant/call id. `assert_matches_campaign(campaign_tenant_id)` is the fail-closed cross-check
+  (empty campaign tenant OR mismatch ⇒ raise). **Server-stamped only** — never from a caller body.
+- **`CallContext` gains `session: Optional[KernelSession] = None`.** Optional ONLY so the OFF / shadow /
+  legacy constructors still build a context; the kernel ON path REQUIRES it.
+- **`RealtimeVoiceKernel._require_session(ctx)`** is a control-flow PRECONDITION at the top of
+  `assemble_prefix_core` (hence `assemble_prefix`): no session ⇒ raise; `session.tenant_id !=
+  meta.tenant_id` ⇒ raise; `call_id` mismatch ⇒ raise. The live call must **hang up**, not warm a
+  packet. The OFF path never reaches this (the adapter returns the legacy string before the kernel
+  is built). **NEW error `TenantIdentityError`** in `errors.py`.
+
+### C3 — One trust boundary (structural, by position) — `packet.py`
+- **NEW `SourceTrust` enum**: `PLATFORM` (trusted, authored) → `CAMPAIGN_BRIEF`, `RETRIEVED_KNOWLEDGE`,
+  `LEAD_MEMORY`, `CALLER_UTTERANCE` (all UNTRUSTED).
+- **NEW `FencedText(trust, content, label)`** + **`fence(trust, content, label)` helper** (refuses to
+  fence PLATFORM). `render()` wraps untrusted text in a typed tag (`<campaign_brief>…`, etc.) so the
+  model treats it as DATA, not instructions. Downstream W3/W4/W7 + the live-mic seam call `fence(...)`
+  so they **cannot forget**.
+- **Position, not priority:** `render_stable_prefix()` now renders **L0 PLATFORM first**, then L1/L2,
+  then the **L3 card wrapped in a `<campaign_brief>` fence**. `render_call_suffix()` fences lead memory
+  (`<lead_memory>`), `render_turn_suffix()` fences RAG (`<retrieved_knowledge>`). The HOT-path
+  `kernel._render_turn_layer` fences RAG identically. Safety is the FIRST text in the prompt by
+  character position (asserted in tests), above all fenced content.
+
+### H13 — Cache + retrieval — `packet.py`
+- **NEW `render_cache_split() -> (stable_prefix, volatile_suffix)`**: `stable_prefix = L0+L1+L2`
+  (identity/safety/mode/industry — **CAMPAIGN-STABLE**, the cache breakpoint); `volatile_suffix =
+  L3 card (fenced) + L4 lead (fenced) + L5 turn (fenced)`. Feeds `prompt_cache.split_for_cache`.
+  (`render_stable_prefix` keeps the legacy L0..L3 grouping for whole-block callers.)
+- **Retrieval-over-truncation** replaces the lossy 600c / usps≤5 hard-clamp. `CampaignCard` gains
+  `full_product_summary` + `full_usps` (carried **losslessly** for W4 to index) and
+  `summary_overflow` / `usps_overflow` flags. `clamp()` shortens the in-prompt copy but NEVER drops
+  the full text; when overflow is flagged and `raw_script_ref` is set, the rendered card advertises
+  "more on request — recall from <ref>". `clamp()` stays **idempotent** (double-render safe).
+
+### New / changed public surface (so W2–W8 bind correctly)
+- `voice_kernel.KernelSession` (NEW) · `CallContext.session` (NEW optional field) ·
+  `TenantIdentityError` (NEW) · `SourceTrust`, `FencedText`, `fence` (NEW, C3) ·
+  `ContextPacket.render_cache_split()` (NEW, H13) ·
+  `CampaignCard.{full_product_summary, summary_overflow, full_usps, usps_overflow}` (NEW fields) ·
+  `RealtimeVoiceKernel.assemble_prefix*` now **require a KernelSession** on the ON path.
+- **W2 (BrainPackProvider) / W3 (Vendor+Context) / W4 (Rag) / W7 (Memory) / W8 (EventBus):** receive
+  the tenant via `ctx.session`; scope every read/write to `session.tenant_id`; carry every untrusted
+  text as `fence(SourceTrust.…, text)`; index the FULL `full_product_summary` / `full_usps` for the
+  retrieval-over-truncation recall. W5 prompt-cache sender uses `render_cache_split()` +
+  `split_for_cache`.

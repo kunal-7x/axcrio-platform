@@ -27,6 +27,7 @@ from .contracts import (
     DialoguePolicy,
     Event,
     EventBus,
+    KernelSession,
     MemoryService,
     ProviderChoice,
     ProviderRouter,
@@ -42,12 +43,14 @@ from .errors import (
     ConfigError,
     ContractViolationError,
     KernelError,
+    TenantIdentityError,
 )
 from .fsm import DialogueFSM, ModePolicy, policy_for
 from .kernel import KernelServices, RealtimeVoiceKernel, build_kernel
 from .packet import (
     CampaignCard,
     ContextPacket,
+    FencedText,
     IdentityLayer,
     IndustryLayer,
     LeadMemory,
@@ -56,10 +59,12 @@ from .packet import (
     Objection,
     PacketMeta,
     RagSnippet,
+    SourceTrust,
     Stage,
     TokenBudget,
     TurnLayer,
     UseCase,
+    fence,
 )
 from .prompt_cache import CacheSplit, cache_breakpoint, is_cacheable_model, split_for_cache
 
@@ -80,6 +85,10 @@ __all__ = [
     "UseCase",
     "Lifecycle",
     "Stage",
+    # trust boundary (C3)
+    "SourceTrust",
+    "FencedText",
+    "fence",
     # contracts
     "ContextEngine",
     "VendorScriptEngine",
@@ -91,6 +100,7 @@ __all__ = [
     "EventBus",
     "DialoguePolicy",
     "CallContext",
+    "KernelSession",
     "TurnContext",
     "SpeechPlan",
     "ProviderChoice",
@@ -118,4 +128,5 @@ __all__ = [
     "ClampError",
     "ContractViolationError",
     "ConfigError",
+    "TenantIdentityError",
 ]

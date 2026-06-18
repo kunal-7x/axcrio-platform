@@ -15,7 +15,7 @@ import logging
 from typing import Optional
 
 from ..config import KernelConfig
-from ..contracts import CallContext
+from ..contracts import CallContext, KernelSession
 from ..kernel import build_kernel
 from ..packet import PacketMeta
 
@@ -41,15 +41,22 @@ def shadow_compute(
     if not cfg.shadow_active():
         return report
     try:
+        tenant_id = str(dispatch_meta.get("tenant_id", ""))
+        call_id = str(dispatch_meta.get("call_id", ""))
         meta = PacketMeta(
-            tenant_id=str(dispatch_meta.get("tenant_id", "")),
+            tenant_id=tenant_id,
             campaign_id=str(dispatch_meta.get("campaign_id", "")),
-            call_id=str(dispatch_meta.get("call_id", "")),
+            call_id=call_id,
             room=str(dispatch_meta.get("room", "")),
             lead_phone=str(dispatch_meta.get("lead_phone", "")),
             direction="outbound",
         )
-        ctx = CallContext(meta=meta, fields=dict(fields or {}))
+        # C2: the dispatcher hands us SERVER-SIDE metadata it already resolved
+        # (it is out-of-band, never a caller body) — so we stamp the KernelSession
+        # here. A missing tenant_id/call_id raises (fail-closed) and the shadow
+        # report records the error without ever touching the live path.
+        session = KernelSession(tenant_id=tenant_id, call_id=call_id, direction="outbound")
+        ctx = CallContext(meta=meta, fields=dict(fields or {}), session=session)
         prefix = build_kernel(cfg).assemble_prefix(ctx)
         report.update(
             ok=True,

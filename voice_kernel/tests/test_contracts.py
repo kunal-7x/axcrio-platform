@@ -19,7 +19,7 @@ from voice_kernel import (
     build_kernel,
 )
 from voice_kernel.config import KernelConfig
-from voice_kernel.contracts import CallContext, Event, TurnContext
+from voice_kernel.contracts import CallContext, Event, KernelSession, TurnContext
 from voice_kernel.null_impls import (
     NullBrainPackProvider,
     NullContextEngine,
@@ -58,7 +58,9 @@ def _ctx(direction="outbound"):
         "language": "Hinglish",
         "goal": "book a site visit",
     }
-    return CallContext(meta=meta, fields=fields)
+    # C2: server-stamped tenant identity, matching the campaign/meta tenant.
+    session = KernelSession(tenant_id="t", call_id="x", direction=direction)
+    return CallContext(meta=meta, fields=fields, session=session)
 
 
 def test_kernel_constructs_and_assembles_with_nulls():

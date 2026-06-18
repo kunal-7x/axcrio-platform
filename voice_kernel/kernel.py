@@ -40,6 +40,7 @@ from .contracts import (
     ContextEngine,
     DialoguePolicy,
     EventBus,
+    KernelSession,
     MemoryService,
     ProviderRouter,
     RagRuntime,
@@ -47,7 +48,7 @@ from .contracts import (
     TurnContext,
     VendorScriptEngine,
 )
-from .errors import KernelError
+from .errors import KernelError, TenantIdentityError
 from .null_impls import (
     NullBrainPackProvider,
     NullContextEngine,
@@ -88,12 +89,41 @@ class RealtimeVoiceKernel:
         self.cfg = cfg
         self.svc = services or KernelServices()
 
+    # --------------------------------------------------------- C2 fail-closed #
+    @staticmethod
+    def _require_session(ctx: CallContext) -> KernelSession:
+        """C2 PRECONDITION (control-flow, not a docstring): the kernel ON path
+        REFUSES to assemble without a server-stamped tenant identity, and refuses
+        if the session tenant does not match the campaign's owning tenant. A
+        violation raises TenantIdentityError — the live call must hang up. This is
+        the structural fail-closed gate; it is NOT reached on the OFF path (the
+        adapter returns the legacy string before the kernel is ever built)."""
+        sess = ctx.session
+        if sess is None:
+            raise TenantIdentityError(
+                "kernel ON path requires a server-stamped KernelSession "
+                "(tenant_id + call_id) — refusing to assemble (fail-closed)"
+            )
+        # cross-check the session tenant against the campaign/meta tenant.
+        sess.assert_matches_campaign(ctx.meta.tenant_id)
+        # call_id must be coherent across the session and the packet meta.
+        if (ctx.meta.call_id or "").strip() and ctx.meta.call_id != sess.call_id:
+            raise TenantIdentityError(
+                f"call_id mismatch: session={sess.call_id!r} != meta={ctx.meta.call_id!r} "
+                f"— refusing (fail-closed)"
+            )
+        return sess
+
     # ----------------------------------------------------------------- WARM #
     def assemble_prefix_core(self, ctx: CallContext) -> tuple[str, ContextPacket]:
         """SYNC, await-free. Builds L0..L3 (+ empty L4) and returns
         (prefix_text, packet). Used to construct the Agent and fire the opener
         WITHOUT waiting on any network I/O. Returns the packet so the caller can
-        enrich it with L4 afterwards."""
+        enrich it with L4 afterwards.
+
+        C2: enforces the server-stamped tenant identity FIRST (fail-closed) — no
+        packet is assembled under a missing or mismatched tenant."""
+        self._require_session(ctx)  # C2 fail-closed precondition (raises -> hang up)
         packet = self.svc.context_engine.build_packet(ctx)
         # brain packs (L1/L2) are pure/sync — fold them in if a provider landed.
         try:
@@ -180,10 +210,11 @@ class RealtimeVoiceKernel:
 
 def _render_turn_layer(layer: TurnLayer, turn: TurnContext) -> str:
     """Pure helper: render an L5 TurnLayer to its suffix string with the SAME
-    hard clamp as ContextPacket.render_turn_suffix (red-team: clamp on the HOT
-    path too). Standalone so assemble_turn needs no full packet per turn."""
+    hard clamp AND the SAME C3 fence as ContextPacket.render_turn_suffix
+    (red-team: clamp + fence on the HOT path too). Standalone so assemble_turn
+    needs no full packet per turn."""
     from .tokens import clamp_chars
-    from .packet import _RAG_MAX, _RAG_TEXT_CHARS  # reuse the central caps
+    from .packet import _RAG_MAX, _RAG_TEXT_CHARS, FencedText, SourceTrust  # central caps + fence
 
     parts: list[str] = []
     stage = layer.stage or turn.stage
@@ -198,7 +229,8 @@ def _render_turn_layer(layer: TurnLayer, turn: TurnContext) -> str:
             f"[{s.source}] {clamp_chars(s.text, _RAG_TEXT_CHARS)}" for s in snips if s.text
         )
         if rendered:
-            parts.append("RELEVANT: " + rendered)
+            # C3: retrieved knowledge is untrusted — fence it (data, not commands).
+            parts.append(FencedText(SourceTrust.RETRIEVED_KNOWLEDGE, "RELEVANT: " + rendered).render())
     if layer.barge_in_hint:
         parts.append(layer.barge_in_hint)
     return "\n".join(parts)
