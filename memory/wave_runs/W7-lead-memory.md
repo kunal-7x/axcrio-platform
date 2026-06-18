@@ -89,3 +89,39 @@ GUC-scoped reads, WITH-CHECK rejects forged-tenant writes) + `test_memory_servic
   failures; `find … -name '*.pyc' -delete` clears them → 212/0.
 - An empty `LeadMemoryCache` is falsy by `len`; `service.__init__` uses an explicit
   `is not None` check (not `cache or …`) so an injected empty cache is honoured.
+
+## Phase: VERIFY (red-team fold + green gates)
+
+Red-team verdict on the built module = **SHIP** (multi-tenant isolation sound;
+2 minor hardening notes, neither a blocker). Both folded in this VERIFY commit:
+
+- **S1 — erasure defense-in-depth (`erasure.py`).** The erase DELETEs previously
+  relied SOLELY on the RLS GUC for tenant scope (unlike `load`/`persist` which
+  also carry an explicit `tenant_id = :t` seatbelt). Added `AND tenant_id = :t`
+  to `_LEAD_DELETES` and `WHERE tenant_id = :t` to `_TENANT_DELETES`, threading
+  `:t` into both param dicts. Now a bare `DELETE FROM lead_memory` can NEVER wipe
+  all tenants even in an (impossible-on-box) FORCE-RLS misconfig — belt-and-braces,
+  consistent with the S1 posture on `load`/`persist`. The RLS-fake's per-lead vs
+  whole-tenant branch detection updated to key on the `lead_phone` token (the SQL
+  now leads with `tenant_id = :t`, so the old `"where lead_phone"` substring no
+  longer matched).
+- **S2 — prob side-table no longer keyed by `id()` (`extraction.py`).** Replaced
+  the `dict[int,int]` keyed by `id(mem)` with a `WeakKeyDictionary[LeadMemory,int]`
+  keyed by the LeadMemory OBJECT. A GC'd LeadMemory's entry now vanishes
+  automatically, so a recycled `id()` can never mis-attribute a stale (non-PII,
+  0..100) conversion_prob score. `LeadMemory` is a non-slotted frozen dataclass →
+  weak-referenceable. Consumer API unchanged: `prob_for(mem)` still pops the score.
+
+### Gates (all green)
+- `python -m pytest voice_kernel/` = **212 passed / 0 failed** (27 in memory;
+  no test weakened). Memory erasure-cascade + forged-tenant-rejected +
+  tenant-blast-radius tests pass under the new explicit-predicate DELETEs.
+- `test_adapter_off_identity` ran for REAL (NOT skipped) = **12/12 PASSED** —
+  flag-OFF kernel render byte-identical to the live `droplet_work/prompt.py`.
+- EARNER LAW: `droplet_work/agent.py` md5 = `98655dbf` UNCHANGED;
+  `agent.py`/`caller.py`/`aim_voice_agent.py` NOT edited; **0** real
+  `droplet_work.(agent|caller)`/`aim_voice_agent` import lines in `voice_kernel/`
+  (only the lazy `droplet_work.db.engine.asession` RLS shim — the proven box
+  substrate — plus docstrings/comments/negative-test regexes).
+- Branch `fix/realtime-voice-kernel-v2`; staged ONLY the W7 paths (never
+  `git add -A`).

@@ -63,13 +63,20 @@ class LeadMemoryEraser:
 
     # The child->parent order matters only for FK integrity; with RLS-scoped
     # independent tables we delete the history leg first, then the head.
+    #
+    # Defense-in-depth (red-team S1): every DELETE carries an EXPLICIT
+    # `tenant_id = :t` predicate IN ADDITION to the RLS GUC — identical to the
+    # seatbelt on load()/persist(). On the live box RLS already bounds the
+    # statement; the explicit predicate makes erasure non-catastrophic even in a
+    # misconfig where FORCE-RLS is somehow not applied (a bare
+    # `DELETE FROM lead_memory` would otherwise wipe ALL tenants). Belt-and-braces.
     _LEAD_DELETES = (
-        "DELETE FROM lead_memory_summary WHERE lead_phone = :p",
-        "DELETE FROM lead_memory WHERE lead_phone = :p",
+        "DELETE FROM lead_memory_summary WHERE tenant_id = :t AND lead_phone = :p",
+        "DELETE FROM lead_memory WHERE tenant_id = :t AND lead_phone = :p",
     )
     _TENANT_DELETES = (
-        "DELETE FROM lead_memory_summary",
-        "DELETE FROM lead_memory",
+        "DELETE FROM lead_memory_summary WHERE tenant_id = :t",
+        "DELETE FROM lead_memory WHERE tenant_id = :t",
     )
 
     _UNSET = object()
@@ -108,7 +115,7 @@ class LeadMemoryEraser:
         tenant_id = (tenant_id or "").strip()
         if not tenant_id:
             raise ValueError("erase_lead requires a tenant_id (fail-closed)")
-        rows = await self._delete(tenant_id, self._LEAD_DELETES, {"p": lead_phone})
+        rows = await self._delete(tenant_id, self._LEAD_DELETES, {"t": tenant_id, "p": lead_phone})
         purged = self._purge_caches(lambda s: s.delete_by_lead(tenant_id, lead_phone))
         await self._emit_audit("lead_erased", tenant_id, lead_phone, rows, purged)
         return {"db_rows": rows, "cache_purged": purged, "ref": _hash_ref(tenant_id, lead_phone)}
@@ -119,7 +126,7 @@ class LeadMemoryEraser:
         tenant_id = (tenant_id or "").strip()
         if not tenant_id:
             raise ValueError("erase_tenant requires a tenant_id (fail-closed)")
-        rows = await self._delete(tenant_id, self._TENANT_DELETES, {})
+        rows = await self._delete(tenant_id, self._TENANT_DELETES, {"t": tenant_id})
         purged = self._purge_caches(lambda s: s.delete_by_tenant(tenant_id))
         await self._emit_audit("tenant_erased", tenant_id, "", rows, purged)
         return {"db_rows": rows, "cache_purged": purged, "tenant_id": tenant_id}

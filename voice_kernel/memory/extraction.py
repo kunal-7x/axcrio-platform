@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from typing import Awaitable, Callable, Optional, Sequence
+from weakref import WeakKeyDictionary
 
 from ..packet import Lifecycle, LeadMemory
 from .hygiene import sanitize
@@ -237,20 +238,27 @@ class _Extraction:
         self.conversion_prob = conversion_prob
 
     def memory_with_prob(self) -> LeadMemory:
-        _PROB_SIDE_TABLE[id(self.memory)] = self.conversion_prob
+        _PROB_SIDE_TABLE[self.memory] = self.conversion_prob
         return self.memory
 
 
 # Object-identity side table: maps an extracted LeadMemory -> its internal
 # conversion_prob (0..100). The service reads it via `prob_for(mem)` right after
-# extraction (same process, same object) and persists it to the column. Bounded:
-# entries are popped on read. This keeps the FROZEN LeadMemory contract un-widened.
-_PROB_SIDE_TABLE: dict[int, int] = {}
+# extraction (same process, same object) and persists it to the column.
+#
+# Red-team hardening (S2): a WeakKeyDictionary keyed by the LeadMemory OBJECT
+# itself, NOT by id(mem). With a plain id() table a GC'd LeadMemory could let its
+# integer id be reused by a *different* object and mis-attribute a stale score.
+# The weak table holds no strong ref, so when a LeadMemory is collected its entry
+# vanishes automatically — id() reuse can never collide with a stale prob. The
+# FROZEN LeadMemory is a (non-slotted) dataclass, so it is weak-referenceable.
+# Consumers' API is unchanged: prob_for(mem) still pops the score (0 if none).
+_PROB_SIDE_TABLE: "WeakKeyDictionary[LeadMemory, int]" = WeakKeyDictionary()
 
 
 def prob_for(mem: LeadMemory) -> int:
     """Pop the internal conversion_prob derived for `mem` (0 if none)."""
-    return _PROB_SIDE_TABLE.pop(id(mem), 0)
+    return _PROB_SIDE_TABLE.pop(mem, 0)
 
 
 async def extract_with_llm(
@@ -273,7 +281,7 @@ async def extract_with_llm(
     draft = extract_rules(turns=turns, prior=prior, raw_summary=raw_summary, name=name)
     prob = prob_for(draft)  # preserve across the refine
     if llm is None:
-        _PROB_SIDE_TABLE[id(draft)] = prob
+        _PROB_SIDE_TABLE[draft] = prob
         return draft
     try:
         prompt = (
@@ -288,5 +296,5 @@ async def extract_with_llm(
             draft = replace(draft, last_call_summary=refined)
     except Exception:
         pass  # degrade to the deterministic draft (never raise into the lifecycle)
-    _PROB_SIDE_TABLE[id(draft)] = prob
+    _PROB_SIDE_TABLE[draft] = prob
     return draft

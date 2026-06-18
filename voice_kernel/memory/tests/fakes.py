@@ -85,7 +85,10 @@ class FakeRLSSession:
         if low.startswith("delete from lead_memory_summary"):
             hist = self.store.get("_history", [])
             before = len(hist)
-            if "where lead_phone" in low:
+            # per-lead deletes scope by lead_phone; whole-tenant deletes do not.
+            # (The erasure SQL leads with `tenant_id = :t`, so detect the phone
+            # predicate by the lead_phone token, not a fixed "where lead_phone".)
+            if "lead_phone" in low:
                 p = params.get("p")
                 self.store["_history"] = [
                     h for h in hist
@@ -105,7 +108,7 @@ class FakeRLSSession:
                 t, p = key
                 if not self._visible(t):
                     continue  # RLS: cannot touch another tenant's row
-                if "where lead_phone" in low and p != params.get("p"):
+                if "lead_phone" in low and p != params.get("p"):
                     continue
                 self.store.pop(key, None)
                 removed += 1
