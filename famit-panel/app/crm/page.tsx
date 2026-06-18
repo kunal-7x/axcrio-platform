@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import Link from "next/link";
 import Layout from "@/components/Layout";
@@ -43,9 +44,27 @@ const HOT_TABS = [
 const tableHead = ["Contact", "Stage", "Score", "Last Outcome", "Last Activity"];
 
 export default function CrmWorkspacePage() {
+    return (
+        <Suspense fallback={<Layout title="CRM"><div /></Layout>}>
+            <CrmWorkspaceInner />
+        </Suspense>
+    );
+}
+
+function CrmWorkspaceInner() {
+    // W15 — honor the shared ?status= deep-link (the Dashboard "Hot leads" + the
+    // Leads page link here with ?status=hot). status=hot lands on the Hot view;
+    // other tier words map onto the nearest stage tab where one exists.
+    const params = useSearchParams();
+    const statusParam = (params.get("status") || "").toLowerCase();
+
     // Filters (server-driven so they reflect the real read-model once mounted).
-    const [stageTab, setStageTab] = useState(STAGE_TABS[0]);
-    const [hotTab, setHotTab] = useState(HOT_TABS[0]);
+    const [stageTab, setStageTab] = useState(
+        () => STAGE_TABS.find((t) => t.key === statusParam) ?? STAGE_TABS[0]
+    );
+    const [hotTab, setHotTab] = useState(
+        statusParam === "hot" ? HOT_TABS[1] : HOT_TABS[0]
+    );
     const [segment, setSegment] = useState<{ id: number; name: string } | null>(
         null
     );

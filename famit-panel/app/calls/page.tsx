@@ -1,19 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Layout from "@/components/Layout";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
+import Button from "@/components/Button";
 import Search from "@/components/Search";
 import Table from "@/components/Table";
+import TableRow from "@/components/TableRow";
+import Tabs from "@/components/Tabs";
 import VirtualRows from "@/components/VirtualRows";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import { useCallsInfinite } from "@/lib/queries";
 import {
     getCallDetail,
+    getCallbacks,
+    cancelCallback,
     type CallLog,
     type CallDetail,
+    type CallbackEntry,
 } from "@/lib/api";
+import { type TabsOption } from "@/types/tabs";
 
 /* ------------------------------------------------------------------ */
 /* Formatting helpers                                                  */
@@ -405,7 +413,45 @@ function StatChip({
 /* LIST PAGE                                                           */
 /* ================================================================== */
 
+// W15 — Call Logs is the ONE call surface. /callbacks folds in here as a tab
+// (design/W15-UI-IA-PLAN.md §1, dest #3). The tab is URL-driven (?tab=callbacks)
+// so deep-links + the /callbacks redirect alias resolve to the right view.
+const CALL_TABS: TabsOption[] = [
+    { id: 1, name: "Calls" },
+    { id: 2, name: "Callbacks" },
+];
+
 export default function CallLogsPage() {
+    return (
+        <Suspense fallback={<Layout title="Call logs"><div /></Layout>}>
+            <CallLogsInner />
+        </Suspense>
+    );
+}
+
+function CallLogsInner() {
+    const router = useRouter();
+    const params = useSearchParams();
+    const tab = params.get("tab") === "callbacks" ? CALL_TABS[1] : CALL_TABS[0];
+    const setTab = (t: TabsOption) => {
+        const sp = new URLSearchParams(params.toString());
+        if (t.id === 2) sp.set("tab", "callbacks");
+        else sp.delete("tab");
+        const qs = sp.toString();
+        router.replace(qs ? `/calls?${qs}` : "/calls", { scroll: false });
+    };
+
+    return (
+        <Layout title="Call logs">
+            <div className="mb-3 flex items-center">
+                <Tabs items={CALL_TABS} value={tab} setValue={setTab} />
+            </div>
+            {tab.id === 2 ? <CallbacksPanel /> : <CallsListPanel />}
+        </Layout>
+    );
+}
+
+function CallsListPanel() {
     const [query, setQuery] = useState("");
     const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
     // The bounded scroll box the table virtualizes against (sticky <thead> on top).
@@ -465,7 +511,7 @@ export default function CallLogsPage() {
     );
 
     return (
-        <Layout title="Call logs">
+        <>
             {selectedCallId && (
                 <CallDetailModal
                     callId={selectedCallId}
@@ -567,7 +613,152 @@ export default function CallLogsPage() {
                     )}
                 </div>
             </div>
-        </Layout>
+        </>
+    );
+}
+
+// W15 — Callbacks panel (folded in from the old /callbacks page). Same Core_2
+// Card + Tabs + Table chrome; the scheduled callbacks/retries the dialer queued.
+function CallbacksPanel() {
+    const [items, setItems] = useState<CallbackEntry[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [showAll, setShowAll] = useState(false);
+    const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
+    const VIEWS: TabsOption[] = useMemo(
+        () => [
+            { id: 1, name: "Callbacks" },
+            { id: 2, name: "All retries" },
+        ],
+        []
+    );
+    const view = showAll ? VIEWS[1] : VIEWS[0];
+
+    const showToast = (msg: string, ok = true) => {
+        setToast({ msg, ok });
+        setTimeout(() => setToast(null), 4000);
+    };
+
+    const load = useCallback(() => {
+        setLoading(true);
+        getCallbacks(showAll)
+            .then((r) => setItems(r.items))
+            .catch(() => {})
+            .finally(() => setLoading(false));
+    }, [showAll]);
+
+    useEffect(() => {
+        load();
+    }, [load]);
+
+    async function handleCancel(id: string) {
+        if (!confirm("Cancel this scheduled callback/retry?")) return;
+        try {
+            await cancelCallback(id);
+            showToast("Cancelled");
+            load();
+        } catch {
+            showToast("Failed to cancel", false);
+        }
+    }
+
+    const tableHead = (
+        <>
+            <th>Name</th>
+            <th>Phone</th>
+            <th className="max-lg:hidden">Campaign</th>
+            <th>Scheduled for</th>
+            <th className="max-md:hidden">Reason</th>
+            <th className="max-lg:hidden">Attempts</th>
+            <th className="text-right">Action</th>
+        </>
+    );
+
+    return (
+        <>
+            {toast && (
+                <div
+                    className={`mb-3 flex items-center gap-2 p-3.5 rounded-3xl text-body-2 ${
+                        toast.ok
+                            ? "bg-primary-02/8 text-primary-02"
+                            : "bg-primary-03/8 text-primary-03"
+                    }`}
+                >
+                    <Icon
+                        name={toast.ok ? "check-circle" : "info"}
+                        className={`size-4 shrink-0 ${toast.ok ? "fill-primary-02" : "fill-primary-03"}`}
+                    />
+                    {toast.msg}
+                </div>
+            )}
+
+            <div className="card">
+                <div className="flex items-center min-h-12 max-md:flex-wrap">
+                    <div className="mr-auto pl-5 text-h6 max-lg:pl-3">Scheduled callbacks</div>
+                    <Tabs items={VIEWS} value={view} setValue={(t) => setShowAll(t.id === 2)} />
+                </div>
+
+                <div className="pt-3 overflow-x-auto">
+                    {loading ? (
+                        <div className="px-1 max-lg:px-0">
+                            <Table cellsThead={tableHead}>
+                                {[...Array(4)].map((_, i) => (
+                                    <TableRow key={i}>
+                                        {[...Array(7)].map((__, j) => (
+                                            <td key={j}>
+                                                <div className="skeleton h-4 w-20" />
+                                            </td>
+                                        ))}
+                                    </TableRow>
+                                ))}
+                            </Table>
+                        </div>
+                    ) : items.length === 0 ? (
+                        <div className="state-block">
+                            <span className="state-glyph">
+                                <Icon name="calendar" className="fill-inherit" />
+                            </span>
+                            <div className="state-title">No scheduled callbacks</div>
+                            <div className="state-sub">
+                                Callbacks and automatic retries scheduled by the dialer appear here.
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="px-1 max-lg:px-0">
+                            <Table cellsThead={tableHead}>
+                                {items.map((item) => (
+                                    <TableRow key={item.id}>
+                                        <td className="text-sub-title-1">{item.name || "—"}</td>
+                                        <td className="text-t-secondary td-num">{item.phone}</td>
+                                        <td className="text-t-secondary text-caption max-lg:hidden">
+                                            {item.campaign_id}
+                                        </td>
+                                        <td className="text-t-secondary whitespace-nowrap">
+                                            {fmtShort(item.next_attempt_at)}
+                                        </td>
+                                        <td className="max-md:hidden">
+                                            <StatusBadge status={item.reason} />
+                                        </td>
+                                        <td className="text-t-secondary td-num max-lg:hidden">
+                                            {item.attempts} / {item.max_attempts}
+                                        </td>
+                                        <td className="text-right">
+                                            <Button
+                                                isStroke
+                                                className="!h-9 !px-4"
+                                                onClick={() => handleCancel(item.id)}
+                                            >
+                                                Cancel
+                                            </Button>
+                                        </td>
+                                    </TableRow>
+                                ))}
+                            </Table>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </>
     );
 }
 

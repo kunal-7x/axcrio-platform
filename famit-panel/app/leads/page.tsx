@@ -12,7 +12,7 @@ import Table from "@/components/Table";
 import Select from "@/components/Select";
 import Modal from "@/components/Modal";
 import VirtualRows from "@/components/VirtualRows";
-import { StatusBadge, ScoreBadge } from "@/lib/badges";
+import { StatusBadge, LeadBadge } from "@/lib/badges";
 import {
     addLeads,
     deleteLead,
@@ -236,7 +236,7 @@ export default function LeadsPage() {
             <th>Name</th>
             <th>Phone</th>
             <th>Status</th>
-            <th>Score</th>
+            <th>Lead</th>
             <th className="max-lg:hidden">Last outcome</th>
             <th className="text-right">Added</th>
             {writable && <th className="w-12 text-right" />}
@@ -429,7 +429,7 @@ export default function LeadsPage() {
                                             <th>Name</th>
                                             <th>Phone</th>
                                             <th>Status</th>
-                                            <th>Score</th>
+                                            <th>Lead</th>
                                             <th className="max-lg:hidden">Last outcome</th>
                                             <th className="text-right">Added</th>
                                             {writable && <th className="w-12 text-right" />}
@@ -658,7 +658,8 @@ function renderLeadRow(
                 <StatusBadge status={l.status} />
             </td>
             <td>
-                <ScoreBadge score={l.score} />
+                {/* W15 §4 — business-friendly tier (Hot/Warm/Cold/…), not a raw score */}
+                <LeadBadge lead={l} />
             </td>
             <td className="text-t-secondary text-caption capitalize max-lg:hidden">
                 {l.last_outcome ? l.last_outcome.replace(/_/g, " ") : "—"}

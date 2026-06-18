@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useState, useCallback } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Spinner from "@/components/Spinner";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
+import GlobalFilters, { useGlobalFilters } from "@/components/GlobalFilters";
 import { getAnalytics, getCampaigns, type AnalyticsFunnel, type Campaign } from "@/lib/api";
 import { SelectOption } from "@/types/select";
 import {
@@ -32,19 +33,32 @@ const FUNNEL_COLORS = [
 
 const ALL_CAMPAIGNS: SelectOption = { id: 0, name: "All campaigns" };
 
+// W15 — "Reports": the DEEP drill-down the Dashboard links INTO. Same funnel
+// showpiece (Core_2 chart cards), now driven by the SHARED GlobalFilters URL
+// params (?range/campaign/status) so the Dashboard → Reports hop carries the
+// operator's window with it (design/W15-UI-IA-PLAN.md §1, dest #9).
 export default function AnalyticsPage() {
+    return (
+        <Suspense fallback={<Layout title="Reports"><div className="py-24"><Spinner /></div></Layout>}>
+            <ReportsInner />
+        </Suspense>
+    );
+}
+
+function ReportsInner() {
+    const { campaign: urlCampaign } = useGlobalFilters();
     const [data, setData] = useState<AnalyticsFunnel | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-    const [campaign, setCampaign] = useState<SelectOption>(ALL_CAMPAIGNS);
 
-    const campaignOptions = useMemo<SelectOption[]>(
-        () => [ALL_CAMPAIGNS, ...campaigns.map((c, i) => ({ id: i + 1, name: c.name, _id: c.id } as SelectOption & { _id: string }))],
-        [campaigns]
+    // The campaign filter is the shared URL param (set by GlobalFilters). Reports
+    // does not own its own campaign select anymore — it reads the global one.
+    const selectedCampaignId = urlCampaign || "";
+    const selectedCampaignName = useMemo(
+        () => campaigns.find((c) => c.id === selectedCampaignId)?.name ?? "All campaigns",
+        [campaigns, selectedCampaignId]
     );
-    const selectedCampaignId =
-        campaign.id === 0 ? "" : (campaignOptions.find((o) => o.id === campaign.id) as { _id?: string })?._id ?? "";
 
     const load = useCallback(() => {
         setLoading(true);
@@ -97,7 +111,7 @@ export default function AnalyticsPage() {
         : [];
 
     return (
-        <Layout title="Analytics">
+        <Layout title="Reports">
             {error && (
                 <div className="mb-4 flex items-center gap-3 p-4 rounded-3xl bg-b-surface2 border border-primary-03/40 text-body-2 text-t-secondary">
                     <Icon className="shrink-0 fill-primary-03" name="info" />
@@ -109,8 +123,11 @@ export default function AnalyticsPage() {
                 <div className="py-24"><Spinner /></div>
             ) : (
                 <div className="flex flex-col gap-3">
-                    {/* KPI strip */}
-                    <Card title="Overview">
+                    {/* KPI strip — shared GlobalFilters bar in the head row */}
+                    <Card
+                        title="Overview"
+                        headContent={<GlobalFilters show={{ range: true, campaign: true, status: false }} />}
+                    >
                         <div className="flex max-md:flex-col px-5 pb-2 max-lg:px-3">
                             {kpis.map((k, i) => (
                                 <div
@@ -125,12 +142,12 @@ export default function AnalyticsPage() {
                         </div>
                     </Card>
 
-                    {/* Funnel chart */}
+                    {/* Funnel chart — scope shown via the shared campaign filter */}
                     <Card
                         title="Conversion funnel"
-                        selectOptions={campaignOptions as { id: number; name: string }[]}
-                        selectValue={campaign as { id: number; name: string }}
-                        selectOnChange={(v) => setCampaign(v)}
+                        headContent={
+                            <span className="mr-3 text-caption text-t-tertiary">{selectedCampaignName}</span>
+                        }
                     >
                         {funnelData.length > 0 ? (
                             <div className="px-4 pb-4 h-80">
