@@ -60,6 +60,12 @@ class EventName(str, Enum):
     PROVIDER_FAILED = "provider_failed"  # stt/llm/tts/sip provider error (routing)
     DAILY_REPORT = "daily_report"        # scheduled rollup ready
 
+    # --- real-time config (W13) ------------------------------------------- #
+    CONFIG_CHANGED = "config_changed"        # a tenant's config doc changed (version bumped)
+    PROVIDER_KEY_ADDED = "provider_key_added"    # a new API key joined the rotation pool
+    PROVIDER_KEY_REVOKED = "provider_key_revoked"  # a key was removed/disabled
+    KEY_POOL_EXHAUSTED = "key_pool_exhausted"    # a provider's pool has NO healthy key (LOUD)
+
 
 # Lifecycle string -> lead event name (the memory layer hands us a Lifecycle).
 _LIFECYCLE_TO_EVENT = {
@@ -172,6 +178,41 @@ def whatsapp_sent(call_id: str, tenant_id: str, template: str = "", **extra) -> 
 
 def provider_failed(call_id: str, tenant_id: str, provider: str = "", code: Optional[int] = None, **extra) -> Event:
     return make_event(EventName.PROVIDER_FAILED, call_id, tenant_id, {"provider": provider or None, "code": code, **extra})
+
+
+def config_changed(tenant_id: str, namespace: str = "", version: Optional[int] = None,
+                   updated_by: str = "", **extra) -> Event:
+    """A tenant's config doc changed (vendor profile / provider keys / retention). Carries the new
+    `version` so a consumer can drop a stale cache without refetching the whole blob. Tenant-scoped,
+    not call-scoped: call_id = the namespace so the stream id stays meaningful + dedup is per
+    (tenant, namespace, version)."""
+    return make_event(
+        EventName.CONFIG_CHANGED, f"config:{namespace or 'all'}", tenant_id,
+        {"namespace": namespace or None, "version": version, "updated_by": updated_by or None, **extra},
+    )
+
+
+def provider_key_added(tenant_id: str, provider: str = "", fingerprint: str = "", **extra) -> Event:
+    """A new API key joined the rotation pool (fingerprint only — NEVER the secret)."""
+    return make_event(
+        EventName.PROVIDER_KEY_ADDED, f"key:{provider or '?'}", tenant_id,
+        {"provider": provider or None, "fingerprint": fingerprint or None, **extra},
+    )
+
+
+def provider_key_revoked(tenant_id: str, provider: str = "", fingerprint: str = "", **extra) -> Event:
+    return make_event(
+        EventName.PROVIDER_KEY_REVOKED, f"key:{provider or '?'}", tenant_id,
+        {"provider": provider or None, "fingerprint": fingerprint or None, **extra},
+    )
+
+
+def key_pool_exhausted(tenant_id: str, provider: str = "", **extra) -> Event:
+    """A provider's pool has NO healthy key — the LOUD operational alarm the founder asked for."""
+    return make_event(
+        EventName.KEY_POOL_EXHAUSTED, f"pool:{provider or '?'}", tenant_id,
+        {"provider": provider or None, **extra},
+    )
 
 
 def daily_report(tenant_id: str, report_date: str = "", **extra) -> Event:
