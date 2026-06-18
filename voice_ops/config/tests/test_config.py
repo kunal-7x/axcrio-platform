@@ -157,6 +157,29 @@ def test_unhealthy_key_skipped_and_failover_logged(caplog):
            any("circuit OPEN" in d.detail for d in pool.last_decisions)
 
 
+def test_decrypt_failure_fails_closed_not_crash(bus, monkeypatch):
+    """A key whose ciphertext can no longer be decrypted (master-secret ROTATED, on-disk tamper, or
+    the master secret missing from this worker's env) must FAIL CLOSED + LOUD via found=False +
+    key_pool_exhausted — NEVER an uncaught InvalidTag/VaultError that crashes the live voice path.
+    Regression guard for the red-team finding (resolve_key did not wrap the call-time decrypt)."""
+    ks = ProviderKeyStore()
+    ks.add_key("orgA", "groq", "gsk_rotation_victim_123456", added_by="f")
+    kr = KeyRouter("orgA", ks)
+    # the founder rotates the platform master secret — the old ciphertext no longer decrypts.
+    monkeypatch.setenv("FAMIT_KEYSTORE_SECRET", "a-DIFFERENT-rotated-master-secret")
+    cfg_store.ConfigStore.invalidate_all()
+    r = kr.resolve_key("groq")           # must NOT raise
+    assert r.found is False and r.plaintext == ""
+    assert "gsk_rotation_victim" not in r.reason  # no plaintext in the loud signal
+    assert EventName.KEY_POOL_EXHAUSTED.value in {e.name for e in bus.all_events("orgA")}
+    # and the same is true if the master secret is GONE entirely (worker env not loaded)
+    for env in ("PROVIDER_REGISTRY_KEYSTORE_SECRET", "PROVIDER_KEYSTORE_SECRET",
+                "FAMIT_KEYSTORE_SECRET", "CONFIG_VAULT_SECRET"):
+        monkeypatch.delenv(env, raising=False)
+    cfg_store.ConfigStore.invalidate_all()
+    assert kr.resolve_key("groq").found is False  # still no crash
+
+
 def test_pool_exhaustion_is_loud(bus):
     now = _clock()
     ks = ProviderKeyStore()

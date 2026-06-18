@@ -171,12 +171,27 @@ class ProviderKeyStore:
     def decrypt(self, tenant_id: str, provider: str, fingerprint: str, *, is_admin: bool = False) -> Optional[str]:
         """The ONLY place a plaintext secret is materialized — at CALL TIME, for the chosen key. The
         router asks the health pool for the healthiest fingerprint, then asks here for its plaintext.
-        Returns None if the fingerprint is unknown/disabled. Cross-tenant ciphertext fails closed
-        (InvalidTag) because the AAD is recomputed from THIS tenant+provider."""
+
+        Returns None — never raises — when the key is unknown/disabled OR when its ciphertext cannot
+        be decrypted (cross-tenant paste, on-disk tamper, a ROTATED/changed master keystore secret, or
+        a missing master secret in this worker's env). A crypto failure is fail-CLOSED *and* fail-SOFT:
+        it never yields plaintext, never crashes the live voice path, and is logged LOUD (fingerprint
+        only, NEVER the secret) so the router turns the None into a logged failover / pool-exhausted
+        alarm. (Before this guard a master-secret rotation or a corrupt row raised InvalidTag/VaultError
+        straight through resolve_key and crashed every call instead of failing over.)"""
         provider = (provider or "").strip().lower()
         doc, _ = self._load(tenant_id, is_admin=is_admin)
         for r in (doc.get(provider) or []):
             if r.get("fingerprint") == fingerprint and r.get("status", "active") == "active":
-                ct = base64.b64decode(r["ciphertext_b64"])
-                return _vault.decrypt_secret(tenant_id, provider, ct, int(r.get("key_version", 1)))
+                try:
+                    ct = base64.b64decode(r["ciphertext_b64"])
+                    return _vault.decrypt_secret(tenant_id, provider, ct, int(r.get("key_version", 1)))
+                except Exception as exc:  # noqa: BLE001  — InvalidTag / VaultError / bad b64 / bad row
+                    # LOUD but secret-safe: fingerprint + error TYPE only, never the ciphertext/plaintext.
+                    log.warning(
+                        "decrypt FAILED tenant=%s provider=%s fp=%s err=%s — key unusable, "
+                        "failing CLOSED (check master keystore secret / rotation / row integrity)",
+                        tenant_id, provider, fingerprint, type(exc).__name__,
+                    )
+                    return None
         return None
