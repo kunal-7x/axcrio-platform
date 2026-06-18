@@ -25,6 +25,11 @@ from livekit.plugins.elevenlabs import VoiceSettings
 
 import memory as mem
 from prompt import SYSTEM_PROMPT, GODREJ_FIELDS, build_system_prompt, _gender_of
+# Founder #1 rule (NEVER self-label as AI/assistant/bot): reuse prompt.py's
+# banned-phrase check (which itself prefers the voice_kernel block-list, single
+# source of truth). Used to SCRUB the generated opener at the output boundary so a
+# hallucinated "AI assistant" line can never reach the wire.
+from prompt import _contains_banned_self_label as _opener_has_banned_label
 
 # P2: per-turn language auto-detect + mirror (cheap heuristic; never breaks a call).
 try:
@@ -215,8 +220,12 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
     campaign-configurable (kept by default for TRAI; `disclose=False` drops it)."""
     name_part = f"{lead_name} जी, " if lead_name else ""
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
-    disc_phrase = (disclosure_phrase or f"{company} की एक AI assistant").strip()
-    # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
+    # Founder #1 rule: NEVER self-label as "AI"/"assistant". The default disclosure is
+    # brand-human framing ("{company} की तरफ़ से") — a campaign MAY pass a custom phrase,
+    # but it is SCRUBBED below (a banned self-label collapses to the clean brand form).
+    _raw_disc = (disclosure_phrase or f"{company} की तरफ़ से").strip()
+    disc_phrase = _raw_disc if not _opener_has_banned_label(_raw_disc) else f"{company} की तरफ़ से"
+    # Fallback line (used if the LLM opener call fails) — gender-correct + brand-human disclosure.
     if disclose:
         fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {disc_phrase} {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
@@ -228,16 +237,22 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                          "('बोल रहा हूँ', 'बताता हूँ')। ") if gender == "male" else (
                          "Hindi में अपने बारे में स्त्रीलिंग (feminine) रूप इस्तेमाल करो "
                          "('बोल रही हूँ', 'बताती हूँ')। ")
-        disc_clause = (f"अपना naam {agent_name} बताओ और एक छोटा सा natural disclosure दो कि तुम "
-                       f"{disc_phrase} हो (छोटा रखो, robotic नहीं), और "
+        disc_clause = (f"अपना naam {agent_name} बता कर {disc_phrase}, एक warm इंसान की तरह अपना परिचय "
+                       f"दो (छोटा रखो, robotic नहीं) — कभी अपने आप को 'AI'/'assistant'/'bot'/'automated' "
+                       f"मत कहना, और "
                        if disclose else
-                       f"अपना naam {agent_name} बताओ और natural रहो, फिर ")
+                       f"अपना naam {agent_name} बता कर {disc_phrase} natural रहो — कभी 'AI'/'assistant'/"
+                       f"'bot'/'automated' मत कहना, फिर ")
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
             f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। " + gender_clause
             + (f"caller का naam '{lead_name}' लेकर greet करो (जैसे 'नमस्ते {lead_name} जी…')। " if lead_name else "")
             + disc_clause
-            + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
+            # BUG3 (grammar): PIN the subject as first-person — this is an OUTBOUND call, WE
+            # called THEM. Without pinning, a temp-0.5 model attaches "आपने" -> inbound grammar
+            # ("aapne call kiya"). Never let it flip the direction.
+            + f"पहला-purush में कहो कि 'हमने आपको {product} के बारे में call किया है' (कभी 'आपने call किया' "
+            f"मत कहना — यह OUTBOUND call है, तुमने caller को फ़ोन किया है), फिर पूछो 'क्या अभी दो minute बात हो "
             f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
             f"Price/size/details बिलकुल मत बताओ।"
         )
@@ -255,7 +270,16 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             timeout=8,
         )
         text = r.json()["choices"][0]["message"]["content"].strip()
-        return text or fallback
+        if not text:
+            return fallback
+        # OUTPUT-BOUNDARY SCRUB (founder #1 rule, defense-in-depth): even a perfectly
+        # instructed model can hallucinate "AI assistant". If the generated opener trips
+        # the banned block-list, DISCARD it and speak the clean brand-human fallback —
+        # the wire can NEVER carry an AI self-label.
+        if _opener_has_banned_label(text):
+            logger.warning("opener tripped banned self-label scrub -> clean fallback: %r", text[:120])
+            return fallback
+        return text
     except Exception as exc:  # noqa: BLE001
         logger.warning("opener generation failed, using fallback: %r", exc)
         return fallback

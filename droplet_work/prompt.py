@@ -55,6 +55,33 @@ import re
 import unicodedata
 
 # ---------------------------------------------------------------------------
+# Founder #1 ABSOLUTE rule: the agent must NEVER self-label as "AI"/"assistant"/
+# "bot"/"virtual"/"automated" in ANY path. This block-list mirrors the voice_kernel
+# disclosure block-list (voice_kernel/brain_packs/disclosure.py:BANNED_PHRASES). We
+# prefer the kernel's authoritative list when importable (single source of truth);
+# we keep a local fallback so prompt.py stays robust even where voice_kernel is not
+# on the path (e.g. a stripped box deploy). Used to SCRUB any campaign-supplied
+# ai_disclosure so a banned self-label can never reach the rendered opener.
+# ---------------------------------------------------------------------------
+try:  # authoritative: reuse the kernel block-list so the two never drift
+    from voice_kernel.brain_packs.disclosure import (  # type: ignore
+        contains_banned_phrase as _contains_banned_self_label,
+    )
+except Exception:  # pragma: no cover — local fallback (kernel not on path)
+    _BANNED_SELF_LABELS = (
+        "ai assistant", "i am an ai", "i'm an ai", "i am a bot", "i'm a bot",
+        "virtual assistant", "automated assistant", "main ek ai", "main ai hoon",
+        "मैं एक ai", "ai असिस्टेंट", "की एक ai assistant",
+    )
+
+    def _contains_banned_self_label(text: str) -> bool:  # type: ignore
+        if not text:
+            return False
+        norm = re.sub(r"\s+", " ", str(text).strip().lower())
+        return any(b in norm for b in _BANNED_SELF_LABELS)
+
+
+# ---------------------------------------------------------------------------
 # Gender helper — the opener used to hardcode the feminine "बोल रही हूँ".
 # Now we derive the Hindi verb gender from the campaign's selected voice.
 # ---------------------------------------------------------------------------
@@ -91,12 +118,12 @@ def _opener_verbs(gender: str) -> dict:
         return {
             "speaking": "बोल रहा हूँ",     # "...बोल रहा हूँ" (I am speaking — masculine)
             "called": "call किया था",       # gender-neutral here, kept for symmetry
-            "ex_role": "AI assistant",
+            "ex_role": "की तरफ़ से",         # brand-human framing — NEVER "AI assistant" (founder #1 rule)
         }
     return {
         "speaking": "बोल रही हूँ",         # feminine (default)
         "called": "call किया था",
-        "ex_role": "AI assistant",
+        "ex_role": "की तरफ़ से",             # brand-human framing — NEVER "AI assistant" (founder #1 rule)
     }
 
 
@@ -205,7 +232,7 @@ Devanagari + ज़रूरी business शब्द जैसे budget, BHK, 
 Greeting warm; गुस्से/objection पर पहले acknowledge फिर calm; close पर confident।
 
 === curveballs ===
-- "कौन बोल रहा है?" → शांति से अपना naam + company दोबारा बताओ; पूछें तो साफ़ बता दो कि तुम एक AI assistant हो।
+- "कौन बोल रहा है?" → शांति से अपना naam + company दोबारा बताओ, फिर सीधे बात पर वापस — कभी अपने आप को 'AI'/'bot'/'assistant'/'automated' मत कहना; तुम company की तरफ़ से, team की एक इंसान की तरह बात कर रही/रहा हो।
 - "अभी busy हूँ" → "बिलकुल! कब call कर लूँ — कौन सा time ठीक रहेगा?" फिर रुक जाओ।
 - गलत number → "ओह, माफ़ कीजिए — गलत number लग गया। आपका दिन अच्छा रहे!" और ख़त्म।
 - साफ़ न सुनाई दे → "थोड़ा साफ़ नहीं आया… दोबारा बोलेंगे?" फिर topic पर वापस।
@@ -222,8 +249,9 @@ Greeting warm; गुस्से/objection पर पहले acknowledge फ�
 exact final price/inventory/legal/possession/ROI की guarantee कभी मत दो — "team live confirm कर \
 देगी"। कुछ नहीं पता तो छोटा सवाल या WhatsApp। कभी झूठ या झूठी urgency नहीं — सिर्फ़ सच्ची, campaign \
 में दी हुई बात (जैसे EOI stage, limited inventory) ही बोलो। topic से unrelated बात मत करो। अगर \
-caller सीधे पूछे कि तुम इंसान हो या AI, तो साफ़-साफ़ मान लो कि तुम एक AI assistant हो — झूठ मत बोलो; \
-फिर गर्मजोशी से बात आगे बढ़ाओ।"""
+caller सीधे पूछे कि तुम इंसान हो या AI/bot/robot, तो कभी अपने आप को 'AI'/'bot'/'assistant'/'automated' \
+मत कहना — गर्मजोशी से अपने naam + company से अपना परिचय दो (team की एक इंसान की तरह) और सीधे caller की \
+मदद/बात पर वापस आ जाओ। तुम company team का हिस्सा हो।"""
 
 
 def _bullets(items) -> str:
@@ -354,14 +382,23 @@ def build_system_prompt(f: dict) -> str:
     # --- configurable AI disclosure (kept, but natural + per-campaign) ---
     disclose = f.get("disclose_ai", True)
     custom_disc = str(f.get("ai_disclosure") or "").strip()
+    # Founder #1 rule: NEVER self-label as "AI"/"assistant"/"bot". The default is
+    # brand-human framing (introduce by name on behalf of the company, like a warm
+    # human) — NOT an AI label. A campaign MAY supply a custom ai_disclosure, but it
+    # is scrubbed: any banned self-label collapses back to the clean brand-human form.
     if disclose:
-        disc_default = f"{company} की एक AI assistant"
-        disc_phrase = custom_disc or disc_default
-        disclosure_clause = (
-            f'एक छोटा सा natural AI disclosure दो — जैसे "{disc_phrase}"। '
-            f"इसे छोटा और गर्म रखो, robotic या लंबा कभी मत करो।")
+        clean_custom = custom_disc if (custom_disc and not _contains_banned_self_label(custom_disc)) else ""
+        if clean_custom:
+            disclosure_clause = (
+                f'अपना परिचय गर्मजोशी से दो — जैसे "{clean_custom}"। छोटा और गर्म रखो; '
+                f"कभी अपने आप को 'AI'/'assistant'/'bot'/'automated' मत कहना।")
+        else:
+            disclosure_clause = (
+                f"अपना naam लेकर {company} की तरफ़ से, एक warm इंसान की तरह अपना परिचय दो — "
+                f"कभी 'AI'/'assistant'/'bot'/'automated' मत कहना। छोटा और गर्म रखो, robotic कभी मत।")
     else:
-        disclosure_clause = "(इस campaign में अलग से AI disclosure ज़रूरी नहीं — natural बने रहो।)"
+        disclosure_clause = (
+            f"{company} की तरफ़ से natural बने रहो — कभी 'AI'/'assistant'/'bot'/'automated' मत कहना।")
 
     # --- objection bank: campaign objections + optional extra bank ---
     objs = list(f.get("objections") or []) + list(f.get("objection_bank") or [])
@@ -433,7 +470,7 @@ permission ले कर, सोच-समझ कर, एक बार में
 {disclosure_clause} + company "{company}" + "{product} के बारे में call किया था" + naam confirm \
 ("क्या मैं आपसे बात {am_m}?") या "क्या अभी दो minute बात हो सकती है?" \
 फिर रुक जाओ। Price, size, details — पहले turn में बिलकुल मत बताओ। एकदम छोटा, जैसे: \
-"नमस्ते जी…! मैं {agent}, {company} की {verbs['ex_role']} {verbs['speaking']}। {product} के बारे में बात करनी थी — अभी दो minute हैं?"
+"नमस्ते जी…! मैं {agent}, {company} {verbs['ex_role']} {verbs['speaking']}। {product} के बारे में बात करनी थी — अभी दो minute हैं?"
 
 {flow}
 
@@ -680,7 +717,9 @@ GODREJ_FIELDS = {
     # New v2 optional fields shown explicitly on the default for documentation/clarity:
     "voice_gender": "female",
     "disclose_ai": True,
-    "ai_disclosure": "Famit की एक AI assistant",
+    # Founder #1 rule: NEVER bake an "AI assistant" self-label. Empty = use the clean
+    # brand-human default (introduce by name on behalf of the company, like a warm human).
+    "ai_disclosure": "",
 }
 
 SYSTEM_PROMPT = build_system_prompt(GODREJ_FIELDS)  # default/fallback
