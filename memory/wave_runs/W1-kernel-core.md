@@ -173,3 +173,53 @@ only on the kernel ON path, which the adapter never reaches when OFF).
 - `ContextPacket.render_cache_split() -> (stable, volatile)` (H13) · `CampaignCard.full_product_summary
   /full_usps/summary_overflow/usps_overflow` (retrieval-over-truncation — W4 indexes the full text).
 - `RealtimeVoiceKernel.assemble_prefix_core/assemble_prefix` now fail-closed without a matching session.
+
+## Phase: VERIFY (W1.5) (2026-06-18, commit 05cb505, branch fix/realtime-voice-kernel-v2)
+
+Independent VERIFY of the W1.5 contract amendment (the BUILD/AMEND was committed by a prior
+session as `05cb505`; this phase re-ran every gate against that commit's tree — no re-commit,
+no test weakened, crash-safe RESUME).
+
+### Gates (all GREEN)
+- **Branch:** `fix/realtime-voice-kernel-v2` ✓.
+- **Tests:** `python -m pytest voice_kernel/` → **67 passed / 0 failed**. `test_adapter_off_identity`
+  ran for REAL (not skipped): the 10 `test_off_is_byte_identical_to_real_legacy` params (outbound +
+  inbound × {default_godrej, variant_override, recap_present, minimal, empty}) = **10/10 PASS**, plus
+  `test_off_does_not_invoke_kernel` + `test_on_failure_falls_back_to_legacy_not_silent`. Flag-OFF
+  byte-identity invariant intact after the amendment.
+- **Earner law:** `droplet_work/agent.py` byte-identical vs HEAD (`git diff --quiet` clean); NOT in
+  the `05cb505` file list; tree md5 `98655dbfc71d5c3da36bcfe3f848082c` == the EARNER-LAW box truth.
+  Import isolation: `import voice_kernel` from a clean interpreter pulls **0** `agent`/`droplet_work`
+  modules (146 new modules, 0 leaked).
+- **gitleaks:** `detect --no-git --source voice_kernel/` (≈416 KB) = **0 leaks**; `protect --staged` = 0;
+  diff scan of `05cb505~1..05cb505` (37.8 KB) = **0 leaks**.
+
+### FINAL FROZEN PUBLIC SURFACE (binding for W2/W3/W4/W5/W7/W8)
+Re-exported from `voice_kernel/__init__.py` (`__all__`, version 0.1.0). Downstream waves implement
+ONE `@runtime_checkable` Protocol and register via `build_kernel(cfg, <name>=impl)`.
+
+- **9 service Protocols** (`contracts.py`): `ContextEngine` (W1/W3) · `VendorScriptEngine` (W3) ·
+  `BrainPackProvider` (W2) · `RagRuntime` (W4) · `SpeechPlanner` (W5) · `ProviderRouter` (W5) ·
+  `MemoryService` (W7) · `EventBus` (W8) · `DialoguePolicy` (W6).
+- **Request/result dataclasses** (`contracts.py`): `CallContext{meta,fields,fields_override,recap,session}` ·
+  `TurnContext` · `SpeechPlan` · `ProviderChoice` · `Event`.
+- **C2 tenant identity:** `KernelSession{tenant_id,call_id,direction,stamped_by}` (frozen, fail-closed
+  `__post_init__` + `assert_matches_campaign`) · `CallContext.session` (Optional; ON path REQUIRES it
+  via `RealtimeVoiceKernel._require_session`) · `TenantIdentityError`.
+- **C3 trust fences:** `SourceTrust` {PLATFORM, CAMPAIGN_BRIEF, RETRIEVED_KNOWLEDGE, LEAD_MEMORY,
+  CALLER_UTTERANCE} · `FencedText{trust,content,label}.render()` · `fence(trust, content, label="")`
+  (refuses PLATFORM). W3/W4/W7 + live-mic seam carry untrusted text through `fence()`.
+- **Packet + layers** (`packet.py`): `ContextPacket` (+ `render_stable_prefix`, `render_call_suffix`,
+  `render_turn_suffix`, `render_cache_split() -> (stable, volatile)` H13, `clamp`, `token_estimate`) ·
+  `PacketMeta` · `IdentityLayer` (L0) · `ModeLayer` (L1) · `IndustryLayer` (L2) · `CampaignCard` (L3,
+  with **H13 lossless** `full_product_summary` / `full_usps` / `summary_overflow` / `usps_overflow`) ·
+  `Objection` · `LeadMemory` (L4) · `RagSnippet` · `TurnLayer` (L5) · `TokenBudget` · enums `UseCase` /
+  `Lifecycle` / `Stage`.
+- **Kernel + factory** (`kernel.py`): `RealtimeVoiceKernel` (entry points `assemble_prefix_core` /
+  `assemble_prefix` / `enrich_prefix` / `precompute` / `assemble_turn` / `retrieve_turn_layer` /
+  `persist_summary`; both prefix entries now fail-closed without a matching `KernelSession`) ·
+  `KernelServices` (9 fields, each defaulting to its null impl) · `build_kernel(cfg, services, **impls)`.
+- **Adapter / FSM / cache / config / errors:** `instructions_provider` (the OFF-is-identity seam) ·
+  `DialogueFSM` / `ModePolicy` / `policy_for` · `CacheSplit` / `cache_breakpoint` / `is_cacheable_model`
+  / `split_for_cache` · `KernelConfig` (default OFF) · errors `KernelError` / `BudgetExceededError` /
+  `ClampError` / `ContractViolationError` / `ConfigError` / `TenantIdentityError`.
