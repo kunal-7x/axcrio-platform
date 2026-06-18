@@ -114,6 +114,19 @@ status passthrough with `build_recording_view(...)` so a row still stuck at
 `"completed"` + presigned on read (no egress_id needed). Mirror of the inbound
 self-heal that already exists at `caller.py:5370`.
 
+⚠️ **Wiring constraint (red-team W9, do NOT skip):** the wiring wave must write
+back to `recording_status` ONLY in response to the emitted `recording_ready`
+event — it must **never** persist the poller's *internal* `FinalizeResult.status`
+strings (`"timeout"` / `"failed"`) onto the row. Those two strings are returned
+in-process for logging/observability only and are deliberately NOT emitted as
+events. A genuinely slow LiveKit finalize (the founder's 20–60 min tail) must be
+left at `recording_status="recording"`, because that value is in `build_recording_view`'s
+`_IN_PROGRESS` self-heal set — so the next panel read HEAD-checks the deterministic
+key and flips it to `completed` once the object lands. Persisting `"timeout"`/
+`"failed"` would take the row OUT of the self-heal set and strand a recording that
+actually finalized minutes later. The reconciliation sweep at `caller.py:7251` is
+the second net behind this read self-heal.
+
 ## 4. INBOUND seam — `ai_manager/recorder.py` + the read path
 
 Inbound already stores `egress_id` (`recorder.start()` returns it) and already has
