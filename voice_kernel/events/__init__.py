@@ -50,6 +50,10 @@ from .taxonomy import (
     site_visit_booked,
     summary_ready,
     transcript_ready,
+    whatsapp_delivered,
+    whatsapp_failed,
+    whatsapp_opted_out,
+    whatsapp_read,
     whatsapp_sent,
 )
 from .timeutil import (
@@ -91,6 +95,10 @@ __all__ = [
     "handoff_requested",
     "handoff_done",
     "whatsapp_sent",
+    "whatsapp_delivered",
+    "whatsapp_read",
+    "whatsapp_failed",
+    "whatsapp_opted_out",
     "provider_failed",
     "daily_report",
     "config_changed",

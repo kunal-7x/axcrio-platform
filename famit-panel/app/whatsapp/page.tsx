@@ -33,6 +33,8 @@ import CampaignStep from "./_steps/CampaignStep";
 import TemplatesStep from "./_steps/TemplatesStep";
 import CreativeStep from "./_steps/CreativeStep";
 import BannerStep from "./_steps/BannerStep";
+import MediaStep from "./_steps/MediaStep";
+import BrochureStep from "./_steps/BrochureStep";
 import PreviewStep from "./_steps/PreviewStep";
 import ApprovalStep from "./_steps/ApprovalStep";
 import AudienceStep from "./_steps/AudienceStep";
@@ -48,6 +50,8 @@ const STEP_COMPONENTS: Record<StepKey, React.ComponentType<StepCtx>> = {
     templates: TemplatesStep,
     creative: CreativeStep,
     banner: BannerStep,
+    media: MediaStep,
+    brochure: BrochureStep,
     preview: PreviewStep,
     approval: ApprovalStep,
     audience: AudienceStep,

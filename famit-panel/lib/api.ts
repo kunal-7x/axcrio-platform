@@ -2222,6 +2222,15 @@ export type WhatsAppLogEntry = {
     // present on failed rows when the backend recorded Meta's reason
     error?: string;
     meta_error?: MetaError;
+    // W16 delivery funnel (additive, back-compat) — populated once the
+    // voice_ops/whatsapp delivery tracker + Meta status webhook are wired. Legacy
+    // rows omit these; the delivery view falls back to `ok`/`status`.
+    delivery_status?: "queued" | "sent" | "delivered" | "read" | "failed" | "opted_out" | "skipped_no_config";
+    delivered_at?: string;
+    read_at?: string;
+    failed_at?: string;
+    opted_out?: boolean;
+    campaign_id?: string;
 };
 
 export async function getWhatsAppLog(): Promise<{ log: WhatsAppLogEntry[] }> {

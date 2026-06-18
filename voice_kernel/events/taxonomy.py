@@ -56,6 +56,16 @@ class EventName(str, Enum):
     HANDOFF_DONE = "handoff_done"               # human accepted / completed
     WHATSAPP_SENT = "whatsapp_sent"             # follow-up message dispatched
 
+    # --- WhatsApp delivery lifecycle (W16) -------------------------------- #
+    # The full per-message delivery funnel the founder asked for. `whatsapp_sent`
+    # above is the dispatch fact; these are the Meta webhook status transitions a
+    # message goes through after dispatch. call_id = the WhatsApp message id so the
+    # delivery store keys latest-wins per message.
+    WHATSAPP_DELIVERED = "whatsapp_delivered"   # Meta confirmed handset delivery
+    WHATSAPP_READ = "whatsapp_read"             # recipient opened the message
+    WHATSAPP_FAILED = "whatsapp_failed"         # Meta rejected / undeliverable
+    WHATSAPP_OPTED_OUT = "whatsapp_opted_out"   # recipient replied STOP / opted out
+
     # --- ops / reliability ------------------------------------------------ #
     PROVIDER_FAILED = "provider_failed"  # stt/llm/tts/sip provider error (routing)
     DAILY_REPORT = "daily_report"        # scheduled rollup ready
@@ -174,6 +184,42 @@ def handoff_done(call_id: str, tenant_id: str, agent: str = "", **extra) -> Even
 
 def whatsapp_sent(call_id: str, tenant_id: str, template: str = "", **extra) -> Event:
     return make_event(EventName.WHATSAPP_SENT, call_id, tenant_id, {"template": template or None, **extra})
+
+
+# --- WhatsApp delivery lifecycle (W16) ----------------------------------- #
+# `call_id` here is the WhatsApp MESSAGE id (Meta `wamid…`) so the delivery store
+# keys latest-wins per message. `template`/`campaign_id` carried for the panel
+# delivery view; phone is expected masked (PII-light, mirrors whatsapp_sent).
+def whatsapp_delivered(message_id: str, tenant_id: str, *, campaign_id: str = "",
+                       template: str = "", phone_masked: str = "", **extra) -> Event:
+    """Meta confirmed the message reached the recipient's handset (delivered)."""
+    return make_event(EventName.WHATSAPP_DELIVERED, message_id, tenant_id, {
+        "campaign_id": campaign_id or None, "template": template or None,
+        "phone_masked": phone_masked or None, **extra})
+
+
+def whatsapp_read(message_id: str, tenant_id: str, *, campaign_id: str = "",
+                  template: str = "", phone_masked: str = "", **extra) -> Event:
+    """The recipient OPENED the message (blue ticks)."""
+    return make_event(EventName.WHATSAPP_READ, message_id, tenant_id, {
+        "campaign_id": campaign_id or None, "template": template or None,
+        "phone_masked": phone_masked or None, **extra})
+
+
+def whatsapp_failed(message_id: str, tenant_id: str, *, campaign_id: str = "",
+                    template: str = "", reason: str = "", phone_masked: str = "", **extra) -> Event:
+    """Meta could not deliver (invalid number / 24h-window / template error). `reason`
+    carries Meta's own message verbatim for the delivery table."""
+    return make_event(EventName.WHATSAPP_FAILED, message_id, tenant_id, {
+        "campaign_id": campaign_id or None, "template": template or None,
+        "reason": reason or None, "phone_masked": phone_masked or None, **extra})
+
+
+def whatsapp_opted_out(message_id: str, tenant_id: str, *, campaign_id: str = "",
+                       phone_masked: str = "", **extra) -> Event:
+    """Recipient replied STOP / opted out — the number is suppressed for future sends."""
+    return make_event(EventName.WHATSAPP_OPTED_OUT, message_id, tenant_id, {
+        "campaign_id": campaign_id or None, "phone_masked": phone_masked or None, **extra})
 
 
 def provider_failed(call_id: str, tenant_id: str, provider: str = "", code: Optional[int] = None, **extra) -> Event:

@@ -12,6 +12,8 @@ export type StepKey =
     | "templates"
     | "creative"
     | "banner"
+    | "media"
+    | "brochure"
     | "preview"
     | "approval"
     | "audience"
@@ -24,18 +26,23 @@ export type StepDef = TabsOption & { key: StepKey; live: boolean };
 // `live: true`  → the surface works today (send/log/campaign/audience/preview).
 // `live: false` → DORMANT-SAFE: degrades to a premium coming-soon card on 404/503
 //                  until the parallel whatsapp-builder + creative-attach wave lands.
+// W16: the media-library + brochure steps are LIVE-as-UI (upload from device,
+// preview, pick saved) but DORMANT-SAFE against the WA media backend — until the
+// voice_ops/whatsapp media API is mounted, saved assets degrade to local preview.
 export const STEPS: StepDef[] = [
     { id: 1, key: "launchpad", name: "Launchpad", live: true },
     { id: 2, key: "campaign", name: "Campaign", live: true },
     { id: 3, key: "templates", name: "AI Templates", live: false },
     { id: 4, key: "creative", name: "Creative", live: false },
     { id: 5, key: "banner", name: "Banner Studio", live: false },
-    { id: 6, key: "preview", name: "Preview", live: true },
-    { id: 7, key: "approval", name: "Approval", live: false },
-    { id: 8, key: "audience", name: "Audience", live: true },
-    { id: 9, key: "schedule", name: "Schedule", live: true },
-    { id: 10, key: "delivery", name: "Delivery", live: true },
-    { id: 11, key: "analytics", name: "Analytics", live: false },
+    { id: 6, key: "media", name: "Media", live: true },
+    { id: 7, key: "brochure", name: "Brochure", live: true },
+    { id: 8, key: "preview", name: "Preview", live: true },
+    { id: 9, key: "approval", name: "Approval", live: false },
+    { id: 10, key: "audience", name: "Audience", live: true },
+    { id: 11, key: "schedule", name: "Schedule", live: true },
+    { id: 12, key: "delivery", name: "Delivery", live: true },
+    { id: 13, key: "analytics", name: "Analytics", live: false },
 ];
 
 // ── The campaign-context the AI reads (master "Campaign Context Panel") ──────
@@ -99,6 +106,27 @@ export type TemplateSuggestion = {
     canSubmit?: boolean;
 };
 
+// ── A WhatsApp media asset (W16 media library) ──────────────────────────────
+// kind: banner|image|video|brochure. `local` = an in-session upload not yet saved
+// to the backend (preview-only while the WA media API is dormant). Mirrors the
+// voice_ops/whatsapp MediaAsset shape (only the fields this UI reads).
+export type WaMediaKind = "banner" | "image" | "video" | "brochure";
+
+export type WaMedia = {
+    id: string;
+    kind: WaMediaKind;
+    title?: string;
+    url?: string; // presigned preview / CDN url (phone-mock thumb + viewer)
+    content_type?: string;
+    size_bytes?: number;
+    page_count?: number; // brochures
+    duration_s?: number; // video
+    used_count?: number;
+    tags?: string[];
+    local?: boolean; // uploaded this session, not yet persisted (dormant backend)
+    source?: "uploaded" | "generated";
+};
+
 // ── The draft template being assembled (carried across steps) ───────────────
 export type TemplateDraft = {
     name?: string;
@@ -113,6 +141,10 @@ export type TemplateDraft = {
     asset_id?: string;
     asset_url?: string; // preview only
     campaign_id?: string;
+    // W16 multi-step media: ordered banner -> images -> video, each a WaMedia ref.
+    media?: WaMedia[];
+    // W16 brochure (PDF) — its OWN step / field (critical in real estate).
+    brochure?: WaMedia | null;
     // gates (surfaced as chips on ⑦/⑨)
     asset_approved?: boolean;
     meta_template_status?: "none" | "pending" | "approved" | "rejected";

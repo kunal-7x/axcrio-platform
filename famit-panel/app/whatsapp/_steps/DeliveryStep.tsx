@@ -28,11 +28,38 @@ function fmt(d: string) {
     }
 }
 
-function statusVariant(l: WhatsAppLogEntry): "success" | "warning" | "danger" | "neutral" {
-    if (l.ok) return "success";
-    if (l.status === "skipped_no_config") return "warning";
-    return "danger";
+// W16: derive the per-row delivery stage from the funnel fields when present,
+// else fall back to the legacy ok/status. This is what the founder sees per row.
+type Stage = "sent" | "delivered" | "read" | "failed" | "opted_out" | "skipped";
+function stageOf(l: WhatsAppLogEntry): Stage {
+    if (l.opted_out || l.delivery_status === "opted_out") return "opted_out";
+    if (l.delivery_status) {
+        if (l.delivery_status === "skipped_no_config") return "skipped";
+        if (["read", "delivered", "sent", "failed"].includes(l.delivery_status)) return l.delivery_status as Stage;
+    }
+    if (l.read_at) return "read";
+    if (l.delivered_at) return "delivered";
+    if (l.status === "skipped_no_config") return "skipped";
+    if (!l.ok) return "failed";
+    return "sent";
 }
+
+const STAGE_VARIANT: Record<Stage, "success" | "warning" | "danger" | "neutral"> = {
+    read: "success",
+    delivered: "success",
+    sent: "neutral",
+    skipped: "warning",
+    opted_out: "warning",
+    failed: "danger",
+};
+const STAGE_LABEL: Record<Stage, string> = {
+    read: "Read",
+    delivered: "Delivered",
+    sent: "Sent",
+    skipped: "Pending creds",
+    opted_out: "Opted out",
+    failed: "Failed",
+};
 
 export default function DeliveryStep({ goTo }: StepCtx) {
     const [log, setLog] = useState<WhatsAppLogEntry[]>([]);
@@ -51,11 +78,17 @@ export default function DeliveryStep({ goTo }: StepCtx) {
 
     useEffect(() => { load(); }, [load]);
 
-    const sent = log.length;
-    const delivered = log.filter((l) => l.ok).length;
-    const readRate = sent ? Math.round((delivered / sent) * 100) : 0;
+    // W16 delivery funnel counts (sent/delivered/read/failed/opt-out).
+    const stages = useMemo(() => log.map(stageOf), [log]);
+    const went = stages.filter((s) => s === "sent" || s === "delivered" || s === "read").length;
+    const deliveredN = stages.filter((s) => s === "delivered" || s === "read").length;
+    const readN = stages.filter((s) => s === "read").length;
+    const failedN = stages.filter((s) => s === "failed").length;
+    const optedN = stages.filter((s) => s === "opted_out").length;
+    const sent = went || log.length;
+    const readRate = went ? Math.round((readN / went) * 100) : 0;
     // A real successful send proves WhatsApp delivers today (not just "wired").
-    const delivers = delivered > 0;
+    const delivers = deliveredN > 0;
     // Surface the MOST RECENT failed row's real Meta reason (log is newest-first
     // server-side; fall back to a scan). Skipped-no-config rows are the only ones
     // that mean "no provider"; everything else is a real Meta error worth showing.
@@ -89,11 +122,13 @@ export default function DeliveryStep({ goTo }: StepCtx) {
                 <MetaReadinessHint delivers={delivers} />
             )}
 
-            <div className="flex gap-3 max-md:flex-col">
-                <KpiCard className="flex-1" label="Sent" value={sent} icon="send" tone="neutral" />
-                <KpiCard className="flex-1" label="Delivered" value={delivered} icon="check-circle" tone="success" />
-                <KpiCard className="flex-1" label="Read rate" value={`${readRate}%`} icon="arrow-percent" tone="success" meter={readRate / 100} />
-                <KpiCard className="flex-1" label="Failed" value={log.filter((l) => !l.ok && l.status !== "skipped_no_config").length} icon="block" tone="danger" />
+            <div className="flex gap-3 max-md:flex-col flex-wrap">
+                <KpiCard className="flex-1 min-w-36" label="Sent" value={sent} icon="send" tone="neutral" />
+                <KpiCard className="flex-1 min-w-36" label="Delivered" value={deliveredN} icon="check-circle" tone="success" />
+                <KpiCard className="flex-1 min-w-36" label="Read" value={readN} icon="search" tone="success" />
+                <KpiCard className="flex-1 min-w-36" label="Read rate" value={`${readRate}%`} icon="arrow-percent" tone="success" meter={readRate / 100} />
+                <KpiCard className="flex-1 min-w-36" label="Failed" value={failedN} icon="block" tone="danger" />
+                <KpiCard className="flex-1 min-w-36" label="Opted out" value={optedN} icon="profile" tone="warning" />
             </div>
 
             <Card
@@ -123,16 +158,23 @@ export default function DeliveryStep({ goTo }: StepCtx) {
                     </div>
                 ) : (
                     <div className="p-1 pt-3 max-lg:px-0">
-                        <Table cellsThead={<><th>When</th><th>Phone</th><th>Template</th><th>Kind</th><th>Status</th></>}>
-                            {filtered.map((l, i) => (
-                                <TableRow key={i}>
-                                    <td className="text-t-secondary whitespace-nowrap">{fmt(l.at)}</td>
-                                    <td className="text-t-primary tabular-nums">{l.phone}</td>
-                                    <td className="text-t-secondary">{l.template || "—"}</td>
-                                    <td><Badge variant="neutral">{l.kind}</Badge></td>
-                                    <td><Badge variant={statusVariant(l)}>{l.status}</Badge></td>
-                                </TableRow>
-                            ))}
+                        <Table cellsThead={<><th>When</th><th>Phone</th><th>Template</th><th>Delivery</th><th>Detail</th></>}>
+                            {filtered.map((l, i) => {
+                                const st = stageOf(l);
+                                return (
+                                    <TableRow key={i}>
+                                        <td className="text-t-secondary whitespace-nowrap">{fmt(l.at)}</td>
+                                        <td className="text-t-primary tabular-nums">{l.phone}</td>
+                                        <td className="text-t-secondary">{l.template || "—"}</td>
+                                        <td><Badge variant={STAGE_VARIANT[st]}>{STAGE_LABEL[st]}</Badge></td>
+                                        <td className="text-t-tertiary max-w-72 truncate" title={l.error || ""}>
+                                            {st === "failed" ? (l.meta_error?.error_user_msg || l.error || "Delivery failed") :
+                                             st === "read" ? fmt(l.read_at || "") :
+                                             st === "delivered" ? fmt(l.delivered_at || "") : "—"}
+                                        </td>
+                                    </TableRow>
+                                );
+                            })}
                         </Table>
                     </div>
                 )}
