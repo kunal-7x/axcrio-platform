@@ -52,3 +52,41 @@ store: build_kernel(cfg, brain_packs=build_brain_packs(store=JsonBrainPackStore(
 LATER (not this wave): wire identity_layer/SHARED_RULES into NullContextEngine's
 build_packet at the integration seam (flag-gated); PG-back the store; W4 consumes
 behavior_pack_ids for micro-pack RAG.
+
+## Phase: VERIFY+COMMIT (2026-06-18)
+
+RECONCILE-FIRST (crash-safe RESUME): the W2 brain_packs package was already in HEAD
+via prior sessions — `39304ba` (BUILD: swappable use-case + industry packs binding
+BrainPackProvider), `ce5eddc` (RED-TEAM: stop sales-coaching hooks leaking into the
+9 no-push modes — `hooks_for(use_case)` drops price/competitor/urgency for
+pushes_sale=False), `637bb86` (order-independent droplet-isolation test), and the
+disclosure red-team `build_structural_identity` (in `6db7dcf`, disclosure.py +
+context_engine.py + null_impls.py + test_redteam_injection.py). This VERIFY phase
+re-ran every gate against that committed tree — NO test weakened, NO re-build.
+
+GATES (all GREEN on clean HEAD tree):
+- `python -m pytest voice_kernel/` = **212 passed / 0 failed**.
+- `test_adapter_off_identity` ran for REAL (NOT skipped) = **12/12 PASSED**
+  (>=10 required) — flag-OFF kernel render byte-identical to droplet_work prompt.
+- Droplet isolation: `import voice_kernel` + `voice_kernel.brain_packs` +
+  `voice_kernel.contracts` from a clean interpreter pulls **0** agent / droplet_work
+  / caller modules.
+- W2 brain_packs files (provider/registry/model/packs_data/objection/language/
+  disclosure/__init__) all committed, clean vs HEAD.
+
+EARNER LAW HELD: `droplet_work/agent.py` md5 `98655dbfc71d5c3da36bcfe3f848082c`
+(branch-baseline snapshot) UNCHANGED — `git diff --quiet -- droplet_work/agent.py`
+clean; NOT edited/imported; `caller.py` / `aim_voice_agent.py` NOT touched.
+
+gitleaks: `detect --no-git --source voice_kernel/brain_packs` (164 KB) = **0 leaks**;
+`protect --staged` = **0**.
+
+Red-team verdict folded: SHIP. The one cross-vertical leak (sales-coaching hooks in
+no-push modes) was FIXED + regression-locked in `ce5eddc`; the disclosure
+break-out/injection fence was sealed via `build_structural_identity` (`6db7dcf` /
+`6fa3f09`). The W3 `Stage.PITCH` AttributeError the red-team reported is a concurrent
+W3 wave's file (context_engine.py) and is resolved in HEAD (full suite green) — not a
+brain_packs defect.
+
+Staged ONLY memory/wave_runs/W2-brain-packs.md + WORKFLOW_LEDGER.md for this VERIFY
+commit (brain_packs already committed). NEVER `git add -A`.
