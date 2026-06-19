@@ -29,6 +29,11 @@ const BILLING_TABS = [
     { label: "Spending", href: "/billing/explorer" },
     { label: "Plan", href: "/billing/plan" },
     { label: "Audit", href: "/billing/audit" },
+    // ROUND-2 §1b — Money is now ONE rail entry; Payments (collections) joins the
+    // billing tab hub instead of being a separate rail child. /payments mounts
+    // <BillingTabs /> so it lives inside this same strip; active-state keys off
+    // pathname below (exact `/payments` match — it is not under /billing/*).
+    { label: "Payments", href: "/payments" },
 ];
 
 export function BillingTabs() {

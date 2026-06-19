@@ -102,13 +102,39 @@ function sortLeads(rows: Lead[], key: string): Lead[] {
     }
 }
 
-// The four steps of the Run flow. Pure labels — the stepper is presentational.
+// The five steps of the Run flow. Pure labels — the stepper is presentational.
 const STEPS: Step[] = [
     { label: "Campaign & Audience", hint: "Who gets called" },
     { label: "Voice & Providers", hint: "Quality & cost" },
     { label: "Pacing & Handoff", hint: "Speed & escalation" },
+    { label: "Retention & Storage", hint: "Recordings & transcripts" },
     { label: "Review & Launch", hint: "Confirm & dial" },
 ];
+
+// 0-based step indices for the steps whose logic is referenced by name (the
+// retention step and the always-last launch step). Earlier steps keep their
+// literal indices in the render switch above.
+const STEP_RETENTION = 3;
+const STEP_LAUNCH = STEPS.length - 1; // 4
+
+// Retention duration choices for recordings + transcripts.
+//   days > 0  → auto-trash after that many days
+//   days = -1 → keep forever (never auto-trash)
+//   "Don't store" is expressed by the store toggle being OFF (days = 0).
+const RETENTION_OPTS: (SelectOption & { days: number })[] = [
+    { id: 7, name: "7 days", days: 7 },
+    { id: 30, name: "30 days", days: 30 },
+    { id: 90, name: "90 days", days: 90 },
+    { id: 365, name: "1 year", days: 365 },
+    { id: -1, name: "Keep forever", days: -1 },
+];
+const RETENTION_DEFAULT = RETENTION_OPTS[1]; // 30 days
+
+function retentionNote(days: number): string {
+    if (days === 0) return "Not stored — discarded as soon as the call ends.";
+    if (days < 0) return "Kept forever — never auto-deleted.";
+    return `Auto-deleted ${days} day${days === 1 ? "" : "s"} after each call — no manual cleanup needed.`;
+}
 
 export default function RunPage() {
     // ── Campaign ──
@@ -148,6 +174,17 @@ export default function RunPage() {
     const [concurrency, setConcurrency] = useState(1);
     const [hourlyCap, setHourlyCap] = useState(0);
     const [dailyCap, setDailyCap] = useState(0);
+
+    // ── Retention & storage (recordings + transcripts) ──
+    // Compliance-friendly default: store both, auto-trash after 30 days. The
+    // toggles + duration selects resolve to recording_retention_days /
+    // transcript_retention_days in the run payload (0 = don't store, -1 = forever).
+    const [storeRecording, setStoreRecording] = useState(true);
+    const [recordingRetention, setRecordingRetention] =
+        useState<SelectOption>(RETENTION_DEFAULT);
+    const [storeTranscript, setStoreTranscript] = useState(true);
+    const [transcriptRetention, setTranscriptRetention] =
+        useState<SelectOption>(RETENTION_DEFAULT);
 
     // ── Run / live status ──
     const [starting, setStarting] = useState(false);
@@ -411,6 +448,19 @@ export default function RunPage() {
         }
     }
 
+    // Resolve toggles + duration selects → day counts the backend understands.
+    //   OFF                → 0   (don't store; discard at call end)
+    //   ON + "Keep forever" → -1  (never auto-trash)
+    //   ON + N days        → N   (auto-trash after N days)
+    const recordingRetentionDays = storeRecording
+        ? (RETENTION_OPTS.find((o) => o.id === recordingRetention.id)?.days ??
+          RETENTION_DEFAULT.days)
+        : 0;
+    const transcriptRetentionDays = storeTranscript
+        ? (RETENTION_OPTS.find((o) => o.id === transcriptRetention.id)?.days ??
+          RETENTION_DEFAULT.days)
+        : 0;
+
     function buildRunPayload(force?: boolean) {
         const ids = audience.map((l) => l.id).filter(Boolean);
         return {
@@ -427,6 +477,12 @@ export default function RunPage() {
             concurrency: concurrency || undefined,
             hourly_cap: hourlyCap || undefined,
             daily_cap: dailyCap || undefined,
+            // Retention policy (0=don't store, -1=forever, N=auto-trash after N days).
+            // Forwarded to the backend so it can configure Egress + transcript
+            // persistence + the auto-delete sweep. Degrades safely: if the server
+            // ignores these fields, the run still launches with the prior defaults.
+            recording_retention_days: recordingRetentionDays,
+            transcript_retention_days: transcriptRetentionDays,
             force,
         };
     }
@@ -449,7 +505,7 @@ export default function RunPage() {
         setQueuedResult(null);
         setInsufficient(false);
         // Launching always lands on Review & Launch so live status is in view.
-        setStep(3);
+        setStep(STEP_LAUNCH);
         try {
             const result = await run(buildRunPayload());
             setJobId(result.job_id);
@@ -1122,9 +1178,96 @@ export default function RunPage() {
                         </div>
                     )}
 
-                    {/* ④ Review & Launch ─────────────────────────────────── */}
-                    {step === 3 && (
-                        <div key="step-3" className="step-reveal flex flex-col gap-4">
+                    {/* ④ Retention & Storage ─────────────────────────────── */}
+                    {step === STEP_RETENTION && (
+                        <div
+                            key="step-retention"
+                            className="step-reveal flex flex-col gap-4"
+                        >
+                            <Card title="Recordings">
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <RetentionToggle
+                                        title="Store call recordings"
+                                        desc="Keep an audio recording of each call for QA, training and dispute resolution."
+                                        on={storeRecording}
+                                        onToggle={() =>
+                                            setStoreRecording((v) => !v)
+                                        }
+                                        disabled={!writable}
+                                    />
+                                    {storeRecording && (
+                                        <div className="mt-4">
+                                            <Select
+                                                label="Keep recordings for"
+                                                value={recordingRetention}
+                                                onChange={setRecordingRetention}
+                                                options={RETENTION_OPTS}
+                                            />
+                                        </div>
+                                    )}
+                                    <p className="mt-3 flex items-start gap-2 text-body-2 text-t-secondary">
+                                        <Icon
+                                            name="trash"
+                                            className="size-4 fill-t-tertiary shrink-0 mt-0.5"
+                                        />
+                                        {retentionNote(recordingRetentionDays)}
+                                    </p>
+                                </div>
+                            </Card>
+
+                            <Card title="Transcripts">
+                                <div className="px-5 pb-5 max-lg:px-3">
+                                    <RetentionToggle
+                                        title="Store call transcripts"
+                                        desc="Keep the text transcript of each conversation, feeding lead scoring and the CRM timeline."
+                                        on={storeTranscript}
+                                        onToggle={() =>
+                                            setStoreTranscript((v) => !v)
+                                        }
+                                        disabled={!writable}
+                                    />
+                                    {storeTranscript && (
+                                        <div className="mt-4">
+                                            <Select
+                                                label="Keep transcripts for"
+                                                value={transcriptRetention}
+                                                onChange={
+                                                    setTranscriptRetention
+                                                }
+                                                options={RETENTION_OPTS}
+                                            />
+                                        </div>
+                                    )}
+                                    <p className="mt-3 flex items-start gap-2 text-body-2 text-t-secondary">
+                                        <Icon
+                                            name="trash"
+                                            className="size-4 fill-t-tertiary shrink-0 mt-0.5"
+                                        />
+                                        {retentionNote(transcriptRetentionDays)}
+                                    </p>
+                                </div>
+                            </Card>
+
+                            <div className="flex items-start gap-2 p-3.5 rounded-3xl surface text-body-2 text-t-secondary">
+                                <Icon
+                                    name="clock"
+                                    className="size-4 fill-t-tertiary shrink-0 mt-0.5"
+                                />
+                                <span>
+                                    Storage is auto-managed: anything past its
+                                    keep-for window is permanently deleted on a
+                                    daily sweep, so you never pay to hoard old
+                                    media or breach a customer&apos;s
+                                    data-retention expectations. Turn a toggle
+                                    off to avoid storing that media entirely.
+                                </span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ⑤ Review & Launch ─────────────────────────────────── */}
+                    {step === STEP_LAUNCH && (
+                        <div key="step-launch" className="step-reveal flex flex-col gap-4">
                             <Card title="Review">
                                 <div className="px-5 pb-5 max-lg:px-3">
                                     <div className="grid grid-cols-2 gap-px rounded-2xl overflow-hidden border border-s-subtle bg-s-subtle max-md:grid-cols-1">
@@ -1176,6 +1319,20 @@ export default function RunPage() {
                                             ]
                                                 .filter(Boolean)
                                                 .join(" · ") || "no caps"}
+                                        />
+                                        <ReviewCell
+                                            label="Storage"
+                                            value={`Rec: ${retentionShort(
+                                                recordingRetentionDays
+                                            )} · Txt: ${retentionShort(
+                                                transcriptRetentionDays
+                                            )}`}
+                                            sub={
+                                                recordingRetentionDays === 0 &&
+                                                transcriptRetentionDays === 0
+                                                    ? "Nothing stored"
+                                                    : "Auto-trashed on schedule"
+                                            }
                                         />
                                     </div>
 
@@ -1326,7 +1483,7 @@ export default function RunPage() {
                     )}
 
                     {/* ── Step nav (Back / Next) — hidden on the launch step ── */}
-                    {step < 3 && (
+                    {step < STEP_LAUNCH && (
                         <div className="mt-4 flex items-center justify-between gap-3 max-lg:hidden">
                             <button
                                 type="button"
@@ -1346,7 +1503,7 @@ export default function RunPage() {
                                 onClick={goNext}
                                 disabled={step === 0 && !step0Valid}
                             >
-                                {step === 2 ? "Review" : "Continue"}
+                                {step === STEP_RETENTION ? "Review" : "Continue"}
                             </Button>
                         </div>
                     )}
@@ -1467,6 +1624,63 @@ export default function RunPage() {
             {/* spacer so the mobile bottom bar never covers content */}
             <div className="lg:hidden h-20" aria-hidden />
         </Layout>
+    );
+}
+
+// Compact retention label for the review grid ("Off" / "Forever" / "30d").
+function retentionShort(days: number): string {
+    if (days === 0) return "Off";
+    if (days < 0) return "Forever";
+    if (days >= 365 && days % 365 === 0)
+        return `${days / 365}y`;
+    return `${days}d`;
+}
+
+// ── retention store toggle (reuses the WAVE-C pill-switch idiom) ──
+function RetentionToggle({
+    title,
+    desc,
+    on,
+    onToggle,
+    disabled,
+}: {
+    title: string;
+    desc: string;
+    on: boolean;
+    onToggle: () => void;
+    disabled?: boolean;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            disabled={disabled}
+            className={`flex items-center gap-3 w-full p-3 rounded-2xl border text-left transition-colors disabled:opacity-50 disabled:pointer-events-none ${
+                on
+                    ? "border-primary-01/40 bg-primary-01/8"
+                    : "border-s-subtle bg-b-surface1 hover:border-s-stroke2 dark:bg-shade-04/30"
+            }`}
+        >
+            <span
+                className={`relative shrink-0 w-9 h-5 rounded-full transition-colors ${
+                    on ? "bg-primary-01" : "bg-s-stroke2"
+                }`}
+            >
+                <span
+                    className={`absolute top-0.5 size-4 rounded-full bg-b-surface2 transition-transform ${
+                        on ? "translate-x-4" : "translate-x-0.5"
+                    }`}
+                />
+            </span>
+            <span className="min-w-0">
+                <span className="block text-button text-t-primary">
+                    {title}
+                </span>
+                <span className="block text-caption text-t-tertiary">
+                    {desc}
+                </span>
+            </span>
+        </button>
     );
 }
 

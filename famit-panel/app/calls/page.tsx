@@ -6,6 +6,9 @@ import Layout from "@/components/Layout";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
+import Card from "@/components/Card";
+import Field from "@/components/Field";
+import Spinner from "@/components/Spinner";
 import Search from "@/components/Search";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
@@ -17,9 +20,14 @@ import {
     getCallDetail,
     getCallbacks,
     cancelCallback,
+    getSuppression,
+    addSuppression,
+    deleteSuppression,
     type CallLog,
     type CallDetail,
     type CallbackEntry,
+    type CallTranscriptTurn,
+    type SuppressionEntry,
 } from "@/lib/api";
 import { type TabsOption } from "@/types/tabs";
 
@@ -27,10 +35,26 @@ import { type TabsOption } from "@/types/tabs";
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
 
+// Backend timestamps are frequently NAIVE (no timezone, stored as UTC but
+// serialized without a `Z`). `new Date("2026-06-19T09:00:00")` is parsed as
+// LOCAL time by JS — which shifts every call several hours and breaks the
+// "Xh ago" relative line. toUTC() appends `Z` to a naive ISO string so it is
+// parsed as UTC (CRM + dashboard already apply this exact fix).
+function toUTC(d: string): string {
+    if (!d) return d;
+    // Already has an explicit zone (Z, +05:30, -0800 …) → leave it alone.
+    if (/[zZ]$/.test(d) || /[+-]\d{2}:?\d{2}$/.test(d)) return d;
+    // Looks like a bare ISO datetime (date + time, no zone) → mark it UTC.
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(d)) {
+        return d.replace(" ", "T") + "Z";
+    }
+    return d;
+}
+
 // Compact "Jun 9, 3:42 PM" — calmer than a full locale string in dense cells.
 function fmtShort(d: string) {
     if (!d) return "—";
-    const dt = new Date(d);
+    const dt = new Date(toUTC(d));
     if (isNaN(dt.getTime())) return d;
     return dt.toLocaleString(undefined, {
         month: "short",
@@ -51,10 +75,21 @@ function fmtDuration(s?: number | null) {
     return `${h}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
-// Relative "2h ago" for recency — purely from real timestamps.
+// "0:48" / "3:12" / "1:04:09" — mm:ss clock for the audio player / recording cell.
+function fmtClock(s?: number | null) {
+    if (s == null || s < 0 || isNaN(s)) return "0:00";
+    const total = Math.floor(s);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+    return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+// Relative "2h ago" for recency — purely from real timestamps (UTC-corrected).
 function fmtRelative(d: string) {
     if (!d) return "";
-    const dt = new Date(d).getTime();
+    const dt = new Date(toUTC(d)).getTime();
     if (isNaN(dt)) return "";
     const diff = Date.now() - dt;
     if (diff < 0) return "";
@@ -70,6 +105,36 @@ function fmtRelative(d: string) {
 
 const LIVE = new Set(["calling", "in_progress"]);
 
+/* ------------------------------------------------------------------ */
+/* Recording + transcript-timing helpers (additive / back-compat)      */
+/* ------------------------------------------------------------------ */
+
+// The backend will (eventually) attach a presigned recording URL to a call.
+// It may live on the slim CallLog row or on the call object inside CallDetail.
+// We read it defensively off whatever shape the backend ships — the UI degrades
+// silently (no Recording cell / no player) when it is absent. See "BACKEND
+// DEPENDENCY" note at the bottom of this file.
+function recordingUrlOf(c?: Partial<CallLog> | null): string | null {
+    if (!c) return null;
+    const rec = c as Record<string, unknown>;
+    const url =
+        rec.recording_url ?? rec.recordingUrl ?? rec.audio_url ?? rec.recording;
+    return typeof url === "string" && url.length > 0 ? url : null;
+}
+
+// Karaoke needs per-turn timing. Turns MAY carry optional t0/t1 (seconds) once
+// the backend emits them; until then this returns null and we render the plain
+// (non-synced) bubble list. A turn is "timed" only if it has a numeric t0.
+type TimedTurn = CallTranscriptTurn & { t0?: number; t1?: number };
+function turnStart(turn: TimedTurn): number | null {
+    const t0 = (turn as Record<string, unknown>).t0;
+    return typeof t0 === "number" && !isNaN(t0) ? t0 : null;
+}
+function turnEnd(turn: TimedTurn): number | null {
+    const t1 = (turn as Record<string, unknown>).t1;
+    return typeof t1 === "number" && !isNaN(t1) ? t1 : null;
+}
+
 /* ================================================================== */
 /* DETAIL MODAL                                                        */
 /* ================================================================== */
@@ -84,6 +149,10 @@ function CallDetailModal({
     const [detail, setDetail] = useState<CallDetail | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+
+    // Audio playback state drives the karaoke highlight + auto-scroll.
+    const audioRef = useRef<HTMLAudioElement>(null);
+    const [playhead, setPlayhead] = useState(0);
 
     useEffect(() => {
         getCallDetail(callId)
@@ -108,7 +177,62 @@ function CallDetailModal({
 
     const call = detail?.call;
     const t = detail?.transcript;
-    const turnCount = t?.turns?.length ?? 0;
+    const turns = (t?.turns ?? []) as TimedTurn[];
+    const turnCount = turns.length;
+    const recordingUrl = recordingUrlOf(call);
+
+    // Karaoke is available ONLY when we have audio AND every turn carries a
+    // numeric t0. Otherwise we render the existing (non-synced) bubble list.
+    const karaokeReady =
+        !!recordingUrl &&
+        turnCount > 0 &&
+        turns.every((turn) => turnStart(turn) != null);
+
+    // Which turn is "active" for the current playhead (last turn whose t0 <= now,
+    // bounded by t1 when present). -1 = none yet.
+    const activeIdx = useMemo(() => {
+        if (!karaokeReady) return -1;
+        let idx = -1;
+        for (let i = 0; i < turns.length; i++) {
+            const start = turnStart(turns[i]);
+            if (start == null) continue;
+            if (start <= playhead + 0.15) {
+                const end = turnEnd(turns[i]);
+                // If we have an end and we're past it AND a later turn has started,
+                // the later turn wins (handled naturally by the loop overwriting idx).
+                if (end != null && playhead > end + 0.5) {
+                    // keep as candidate only if no later turn starts before now
+                    idx = i;
+                } else {
+                    idx = i;
+                }
+            } else {
+                break;
+            }
+        }
+        return idx;
+    }, [karaokeReady, turns, playhead]);
+
+    // Auto-scroll the active turn into view as the audio plays.
+    const turnRefs = useRef<(HTMLDivElement | null)[]>([]);
+    useEffect(() => {
+        if (activeIdx < 0) return;
+        const el = turnRefs.current[activeIdx];
+        if (el)
+            el.scrollIntoView({
+                behavior: "smooth",
+                block: "nearest",
+            });
+    }, [activeIdx]);
+
+    // Click a turn → seek the audio to its start (karaoke is two-way).
+    const seekTo = useCallback((sec: number | null) => {
+        if (sec == null || !audioRef.current) return;
+        audioRef.current.currentTime = sec;
+        setPlayhead(sec);
+        void audioRef.current.play().catch(() => {});
+    }, []);
+
     const initials = call?.name
         ? call.name
               .split(" ")
@@ -240,6 +364,59 @@ function CallDetailModal({
                                 />
                             </div>
 
+                            {/* ---- Recording playback row ---- */}
+                            {/* Appears as soon as the backend exposes a recording URL.
+                                Native <audio> drives the karaoke highlight via timeupdate. */}
+                            {recordingUrl ? (
+                                <div className="p-4 rounded-2xl bg-b-surface1/70 dark:bg-shade-04/30">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Icon
+                                            name="video"
+                                            className="size-3.5 fill-t-tertiary"
+                                        />
+                                        <div className="eyebrow">Recording</div>
+                                        {karaokeReady && (
+                                            <span className="ml-auto inline-flex items-center gap-1.5 text-caption text-primary-01">
+                                                <span className="size-1.5 rounded-full bg-primary-01" />
+                                                Synced transcript
+                                            </span>
+                                        )}
+                                    </div>
+                                    <audio
+                                        ref={audioRef}
+                                        src={recordingUrl}
+                                        controls
+                                        preload="metadata"
+                                        className="w-full"
+                                        onTimeUpdate={(e) =>
+                                            setPlayhead(
+                                                e.currentTarget.currentTime
+                                            )
+                                        }
+                                        onSeeked={(e) =>
+                                            setPlayhead(
+                                                e.currentTarget.currentTime
+                                            )
+                                        }
+                                    >
+                                        Your browser does not support audio
+                                        playback.
+                                    </audio>
+                                </div>
+                            ) : (
+                                // Recording not (yet) attached to this call.
+                                !loading && (
+                                    <div className="flex items-center gap-2.5 p-3.5 rounded-2xl bg-b-surface1/50 dark:bg-shade-04/20 text-caption text-t-tertiary">
+                                        <Icon
+                                            name="clock"
+                                            className="size-3.5 fill-t-tertiary shrink-0"
+                                        />
+                                        Recording not available yet — it appears
+                                        here automatically once processed.
+                                    </div>
+                                )
+                            )}
+
                             {/* AI Summary */}
                             {t?.summary && (
                                 <div className="p-4 rounded-2xl bg-b-surface1/70 dark:bg-shade-04/30">
@@ -276,18 +453,25 @@ function CallDetailModal({
                                 </div>
                             )}
 
-                            {/* Transcript */}
-                            {t?.turns && t.turns.length > 0 && (
+                            {/* Transcript — karaoke when timed, plain bubbles else */}
+                            {turns.length > 0 && (
                                 <div>
                                     <div className="flex items-center justify-between mb-3">
-                                        <div className="eyebrow">Transcript</div>
+                                        <div className="eyebrow">
+                                            Transcript
+                                            {karaokeReady && (
+                                                <span className="ml-2 normal-case tracking-normal text-caption text-t-tertiary">
+                                                    tap a line to jump there
+                                                </span>
+                                            )}
+                                        </div>
                                         <span className="text-caption text-t-tertiary tabular-nums">
                                             {turnCount} turn
                                             {turnCount === 1 ? "" : "s"}
                                         </span>
                                     </div>
                                     <div className="relative space-y-3 pl-1">
-                                        {t.turns.map((turn, i) => {
+                                        {turns.map((turn, i) => {
                                             // Backend normalises roles to `ai`/`customer`
                                             // (also accept agent/assistant + user/caller/lead).
                                             // AI → LEFT, customer/lead → RIGHT (mirrors the
@@ -303,13 +487,40 @@ function CallDetailModal({
                                             const isAI = !isCustomer;
                                             const custLabel =
                                                 call?.name || "Customer";
+                                            const start = turnStart(turn);
+                                            const isActive =
+                                                karaokeReady && i === activeIdx;
+                                            const isPast =
+                                                karaokeReady &&
+                                                activeIdx >= 0 &&
+                                                i < activeIdx;
                                             return (
                                                 <div
                                                     key={i}
-                                                    className={`flex gap-2.5 ${
+                                                    ref={(el) => {
+                                                        turnRefs.current[i] = el;
+                                                    }}
+                                                    onClick={
+                                                        karaokeReady
+                                                            ? () => seekTo(start)
+                                                            : undefined
+                                                    }
+                                                    className={`flex gap-2.5 rounded-3xl transition-all duration-300 ${
                                                         isAI
                                                             ? "flex-row"
                                                             : "flex-row-reverse"
+                                                    } ${
+                                                        karaokeReady
+                                                            ? "cursor-pointer px-1.5 py-1 -mx-1.5"
+                                                            : ""
+                                                    } ${
+                                                        isActive
+                                                            ? "bg-primary-01/[0.06] ring-1 ring-primary-01/20"
+                                                            : ""
+                                                    } ${
+                                                        isPast && !isActive
+                                                            ? "opacity-60"
+                                                            : ""
                                                     }`}
                                                 >
                                                     <span
@@ -336,10 +547,20 @@ function CallDetailModal({
                                                                 : "items-end"
                                                         }`}
                                                     >
-                                                        <div className="px-1 text-caption text-t-tertiary">
-                                                            {isAI
-                                                                ? "AI agent"
-                                                                : custLabel}
+                                                        <div className="flex items-center gap-2 px-1 text-caption text-t-tertiary">
+                                                            <span>
+                                                                {isAI
+                                                                    ? "AI agent"
+                                                                    : custLabel}
+                                                            </span>
+                                                            {karaokeReady &&
+                                                                start != null && (
+                                                                    <span className="tabular-nums text-t-tertiary/70">
+                                                                        {fmtClock(
+                                                                            start
+                                                                        )}
+                                                                    </span>
+                                                                )}
                                                         </div>
                                                         <div
                                                             className={`px-3.5 py-2.5 text-body-2 text-t-primary leading-relaxed whitespace-pre-wrap break-words ${
@@ -414,11 +635,13 @@ function StatChip({
 /* ================================================================== */
 
 // W15 — Call Logs is the ONE call surface. /callbacks folds in here as a tab
-// (design/W15-UI-IA-PLAN.md §1, dest #3). The tab is URL-driven (?tab=callbacks)
-// so deep-links + the /callbacks redirect alias resolve to the right view.
+// (design/W15-UI-IA-PLAN.md §1, dest #3). Do-Not-Call (the old /suppression
+// page) folds in as the 3rd tab. Tabs are URL-driven (?tab=callbacks|dnc) so
+// deep-links + the /callbacks & /suppression redirect aliases resolve here.
 const CALL_TABS: TabsOption[] = [
     { id: 1, name: "Calls" },
     { id: 2, name: "Callbacks" },
+    { id: 3, name: "Do-Not-Call" },
 ];
 
 export default function CallLogsPage() {
@@ -432,10 +655,17 @@ export default function CallLogsPage() {
 function CallLogsInner() {
     const router = useRouter();
     const params = useSearchParams();
-    const tab = params.get("tab") === "callbacks" ? CALL_TABS[1] : CALL_TABS[0];
+    const tabParam = params.get("tab");
+    const tab =
+        tabParam === "callbacks"
+            ? CALL_TABS[1]
+            : tabParam === "dnc" || tabParam === "do-not-call"
+              ? CALL_TABS[2]
+              : CALL_TABS[0];
     const setTab = (t: TabsOption) => {
         const sp = new URLSearchParams(params.toString());
         if (t.id === 2) sp.set("tab", "callbacks");
+        else if (t.id === 3) sp.set("tab", "dnc");
         else sp.delete("tab");
         const qs = sp.toString();
         router.replace(qs ? `/calls?${qs}` : "/calls", { scroll: false });
@@ -446,14 +676,92 @@ function CallLogsInner() {
             <div className="mb-3 flex items-center">
                 <Tabs items={CALL_TABS} value={tab} setValue={setTab} />
             </div>
-            {tab.id === 2 ? <CallbacksPanel /> : <CallsListPanel />}
+            {tab.id === 2 ? (
+                <CallbacksPanel />
+            ) : tab.id === 3 ? (
+                <DoNotCallPanel />
+            ) : (
+                <CallsListPanel />
+            )}
         </Layout>
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/* Sorting                                                             */
+/* ------------------------------------------------------------------ */
+
+type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "score";
+type SortDir = "asc" | "desc";
+
+function cmp(a: number | string, b: number | string): number {
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    return String(a).localeCompare(String(b));
+}
+
+function sortKeyValue(c: CallLog, key: SortKey): number | string {
+    switch (key) {
+        case "lead":
+            return (c.name || "").toLowerCase();
+        case "campaign":
+            return (c.campaign_name || "").toLowerCase();
+        case "status":
+            return (c.status || "").toLowerCase();
+        case "placed":
+            return c.started_at ? new Date(toUTC(c.started_at)).getTime() : 0;
+        case "duration":
+            return c.duration_s ?? -1;
+        case "score":
+            return c.interest ?? -1;
+    }
+}
+
+// Sortable <th> — click to sort, click again to flip direction.
+function SortTh({
+    label,
+    sortKey,
+    active,
+    dir,
+    onSort,
+    className = "",
+}: {
+    label: string;
+    sortKey: SortKey;
+    active: boolean;
+    dir: SortDir;
+    onSort: (k: SortKey) => void;
+    className?: string;
+}) {
+    return (
+        <th className={className}>
+            <button
+                type="button"
+                onClick={() => onSort(sortKey)}
+                className={`group/sort inline-flex items-center gap-1 select-none transition-colors hover:text-t-primary ${
+                    active ? "text-t-primary" : ""
+                }`}
+            >
+                {label}
+                <Icon
+                    name="chevron"
+                    className={`size-3 fill-current transition-all ${
+                        active
+                            ? dir === "asc"
+                                ? "rotate-180 opacity-100"
+                                : "opacity-100"
+                            : "opacity-0 group-hover/sort:opacity-40"
+                    }`}
+                />
+            </button>
+        </th>
     );
 }
 
 function CallsListPanel() {
     const [query, setQuery] = useState("");
     const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+    const [sortKey, setSortKey] = useState<SortKey>("placed");
+    const [sortDir, setSortDir] = useState<SortDir>("desc");
     // The bounded scroll box the table virtualizes against (sticky <thead> on top).
     const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -484,29 +792,53 @@ function CallsListPanel() {
         [calls]
     );
 
+    function onSort(k: SortKey) {
+        if (k === sortKey) {
+            setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        } else {
+            setSortKey(k);
+            // Sensible default direction: text asc, numeric/time desc.
+            setSortDir(k === "lead" || k === "campaign" || k === "status" ? "asc" : "desc");
+        }
+    }
+
     // Client-side search over the already-fetched pages (no API change). When a
-    // search is active we disable infinite-scroll fetching (the user is narrowing
-    // what's loaded, not paging further).
+    // search OR a non-default sort is active we disable infinite-scroll fetching
+    // (the user is narrowing / reordering what's loaded, not paging further).
     const searching = query.trim().length > 0;
+    const customSort = !(sortKey === "placed" && sortDir === "desc");
     const visibleCalls = useMemo(() => {
         const q = query.trim().toLowerCase();
-        if (!q) return calls;
-        return calls.filter(
-            (c) =>
-                c.name?.toLowerCase().includes(q) ||
-                c.phone?.toLowerCase().includes(q) ||
-                c.campaign_name?.toLowerCase().includes(q)
-        );
-    }, [calls, query]);
+        let rows = calls;
+        if (q) {
+            rows = rows.filter(
+                (c) =>
+                    c.name?.toLowerCase().includes(q) ||
+                    c.phone?.toLowerCase().includes(q) ||
+                    c.campaign_name?.toLowerCase().includes(q)
+            );
+        }
+        if (customSort) {
+            rows = [...rows].sort((a, b) => {
+                const r = cmp(
+                    sortKeyValue(a, sortKey),
+                    sortKeyValue(b, sortKey)
+                );
+                return sortDir === "asc" ? r : -r;
+            });
+        }
+        return rows;
+    }, [calls, query, sortKey, sortDir, customSort]);
 
     const tableHead = (
         <>
-            <th>Lead</th>
-            <th className="max-lg:hidden">Campaign</th>
-            <th>Status</th>
-            <th>Placed</th>
-            <th className="text-right">Duration</th>
-            <th className="text-right max-md:hidden">Score</th>
+            <SortTh label="Lead" sortKey="lead" active={sortKey === "lead"} dir={sortDir} onSort={onSort} />
+            <SortTh label="Campaign" sortKey="campaign" active={sortKey === "campaign"} dir={sortDir} onSort={onSort} className="max-lg:hidden" />
+            <SortTh label="Status" sortKey="status" active={sortKey === "status"} dir={sortDir} onSort={onSort} />
+            <SortTh label="Placed" sortKey="placed" active={sortKey === "placed"} dir={sortDir} onSort={onSort} />
+            <th className="text-right max-md:hidden">Recording</th>
+            <SortTh label="Duration" sortKey="duration" active={sortKey === "duration"} dir={sortDir} onSort={onSort} className="text-right [&>button]:flex-row-reverse" />
+            <SortTh label="Score" sortKey="score" active={sortKey === "score"} dir={sortDir} onSort={onSort} className="text-right max-md:hidden [&>button]:flex-row-reverse" />
         </>
     );
 
@@ -561,7 +893,7 @@ function CallsListPanel() {
                         <Table cellsThead={tableHead}>
                             {[...Array(8)].map((_, i) => (
                                 <tr key={i}>
-                                    {[...Array(6)].map((__, j) => (
+                                    {[...Array(7)].map((__, j) => (
                                         <td key={j}>
                                             <div className="skeleton h-4 w-20" />
                                         </td>
@@ -593,10 +925,10 @@ function CallsListPanel() {
                                     items={visibleCalls}
                                     rowKey={(c) => c.id}
                                     scrollRef={scrollRef}
-                                    colSpan={6}
+                                    colSpan={7}
                                     estimateRowH={73}
                                     onEndReached={
-                                        searching || !hasNextPage || isFetchingNextPage
+                                        searching || customSort || !hasNextPage || isFetchingNextPage
                                             ? undefined
                                             : () => fetchNextPage()
                                     }
@@ -762,6 +1094,247 @@ function CallbacksPanel() {
     );
 }
 
+/* ------------------------------------------------------------------ */
+/* DO-NOT-CALL panel — ported inline from the old /suppression page    */
+/* (same Core_2 Card + Table + Field + Search chrome; logic preserved).*/
+/* ------------------------------------------------------------------ */
+
+function DncReasonBadge({ reason }: { reason: string }) {
+    const variant =
+        reason === "opt_out_call"
+            ? "danger"
+            : reason === "manual"
+              ? "warning"
+              : reason === "api"
+                ? "info"
+                : "neutral";
+    return <Badge variant={variant}>{(reason || "").replace(/_/g, " ")}</Badge>;
+}
+
+function DoNotCallPanel() {
+    const [entries, setEntries] = useState<SuppressionEntry[]>([]);
+    const [total, setTotal] = useState(0);
+    const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState("");
+    const [text, setText] = useState("");
+    const [file, setFile] = useState<File | null>(null);
+    const [adding, setAdding] = useState(false);
+    const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const showToast = (msg: string, ok = true) => {
+        setToast({ msg, ok });
+        setTimeout(() => setToast(null), 4000);
+    };
+
+    const load = useCallback(() => {
+        setLoading(true);
+        getSuppression()
+            .then((r) => {
+                setEntries(r.numbers);
+                setTotal(r.total);
+            })
+            .catch(() => {})
+            .finally(() => setLoading(false));
+    }, []);
+
+    useEffect(() => {
+        load();
+    }, [load]);
+
+    async function handleAdd() {
+        if (!text.trim() && !file) return;
+        setAdding(true);
+        try {
+            const r = await addSuppression(text, file);
+            showToast(`Added ${r.added} number(s). Total: ${r.total}`);
+            setText("");
+            setFile(null);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+            load();
+        } catch (e: unknown) {
+            showToast(e instanceof Error ? e.message : "Failed to add", false);
+        } finally {
+            setAdding(false);
+        }
+    }
+
+    async function handleDelete(phone: string) {
+        if (!confirm(`Remove ${phone} from the Do-Not-Call list?`)) return;
+        try {
+            await deleteSuppression(phone);
+            showToast(`Removed ${phone}`);
+            load();
+        } catch {
+            showToast("Delete failed", false);
+        }
+    }
+
+    const filtered = useMemo(() => {
+        const q = search.trim().toLowerCase();
+        if (!q) return entries;
+        return entries.filter((e) => (e.phone || "").toLowerCase().includes(q));
+    }, [entries, search]);
+
+    return (
+        <>
+            {toast && (
+                <div
+                    className={`mb-3 flex items-center gap-2 p-3.5 rounded-3xl text-body-2 ${
+                        toast.ok
+                            ? "bg-primary-02/8 text-primary-02"
+                            : "bg-primary-03/8 text-primary-03"
+                    }`}
+                >
+                    <Icon
+                        name={toast.ok ? "check-circle" : "info"}
+                        className={`size-4 shrink-0 ${toast.ok ? "fill-primary-02" : "fill-primary-03"}`}
+                    />
+                    {toast.msg}
+                </div>
+            )}
+
+            <div className="flex gap-3 max-lg:flex-col">
+                {/* Left: suppression list */}
+                <div className="flex-1 min-w-0">
+                    <div className="card">
+                        <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
+                            <div className="pl-5 text-h6 max-lg:pl-3 mr-auto">
+                                Suppressed numbers
+                                <span className="ml-2 text-body-2 text-t-tertiary tabular-nums">
+                                    {total}
+                                </span>
+                            </div>
+                            <Search
+                                className="w-64 max-md:w-full max-md:order-3"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                placeholder="Search by number"
+                                isGray
+                            />
+                        </div>
+
+                        {loading ? (
+                            <div className="py-16">
+                                <Spinner />
+                            </div>
+                        ) : filtered.length === 0 ? (
+                            <div className="flex flex-col items-center text-center py-16 px-5">
+                                <div className="flex justify-center items-center size-16 mb-4 rounded-full bg-b-surface1">
+                                    <Icon className="fill-t-secondary" name="block" />
+                                </div>
+                                <div className="text-sub-title-1 text-t-primary">
+                                    {search
+                                        ? "No numbers match your search"
+                                        : "No suppressed numbers"}
+                                </div>
+                                <div className="mt-1 text-body-2 text-t-secondary max-w-80">
+                                    Add numbers on the right, or they appear here
+                                    automatically when a lead opts out. Suppressed
+                                    numbers are never dialed.
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="p-1 pt-3 max-lg:px-0">
+                                <Table
+                                    cellsThead={
+                                        <>
+                                            <th>Phone</th>
+                                            <th>Reason</th>
+                                            <th>Source</th>
+                                            <th>Added</th>
+                                            <th className="text-right">Action</th>
+                                        </>
+                                    }
+                                >
+                                    {filtered.map((e) => (
+                                        <TableRow key={e.phone}>
+                                            <td className="font-medium text-t-primary tabular-nums">
+                                                {e.phone}
+                                            </td>
+                                            <td>
+                                                <DncReasonBadge reason={e.reason} />
+                                            </td>
+                                            <td className="text-t-secondary">
+                                                {e.source || "—"}
+                                            </td>
+                                            <td className="text-t-secondary whitespace-nowrap">
+                                                {fmtShort(e.added_at)}
+                                            </td>
+                                            <td className="text-right">
+                                                <Button
+                                                    isStroke
+                                                    className="!h-9 !px-4 !text-body-2 !font-normal hover:!border-primary-03/40 hover:!text-primary-03"
+                                                    onClick={() => handleDelete(e.phone)}
+                                                >
+                                                    Remove
+                                                </Button>
+                                            </td>
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Right: Add numbers */}
+                <div className="w-100 max-3xl:w-90 max-lg:w-full shrink-0">
+                    <Card title="Add to Do-Not-Call">
+                        <div className="flex flex-col gap-6 p-5 pt-3 max-lg:px-3">
+                            <Field
+                                label="Paste numbers (Name, Phone or bare phone per line)"
+                                textarea
+                                classInput="!h-32"
+                                placeholder={"+919876543210\nJohn Doe, +918765432109"}
+                                value={text}
+                                onChange={(e) => setText(e.target.value)}
+                            />
+
+                            <div>
+                                <div className="mb-4 text-button">Or upload CSV</div>
+                                <div className="relative flex flex-col justify-center items-center h-32 bg-b-surface3 border border-transparent rounded-4xl overflow-hidden transition-colors hover:border-s-highlight">
+                                    <input
+                                        ref={fileInputRef}
+                                        type="file"
+                                        accept=".csv,text/csv"
+                                        className="absolute inset-0 opacity-0 cursor-pointer z-10"
+                                        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                                    />
+                                    <Icon className="mb-2 size-8 fill-t-secondary" name="upload" />
+                                    <div className="text-body-2 text-t-secondary">
+                                        {file ? (
+                                            <span className="font-bold text-t-primary">
+                                                {file.name}
+                                            </span>
+                                        ) : (
+                                            <>
+                                                Drop CSV, or{" "}
+                                                <span className="font-bold text-t-primary">
+                                                    Browse
+                                                </span>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <Button
+                                isBlack
+                                className="w-full"
+                                onClick={handleAdd}
+                                disabled={adding || (!text.trim() && !file)}
+                            >
+                                {adding ? "Adding…" : "Add to Do-Not-Call"}
+                            </Button>
+                        </div>
+                    </Card>
+                </div>
+            </div>
+        </>
+    );
+}
+
 function ScorePill({ score }: { score: number }) {
     const variant =
         score >= 70 ? "success" : score >= 40 ? "warning" : "neutral";
@@ -778,6 +1351,7 @@ function ScorePill({ score }: { score: number }) {
 function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
     const status = c.status ?? "";
     const isLive = LIVE.has(status);
+    const recUrl = recordingUrlOf(c);
     return (
         <tr
             className="group relative cursor-pointer [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3"
@@ -816,6 +1390,21 @@ function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
                     <div className="text-caption text-t-tertiary">
                         {fmtRelative(c.started_at)}
                     </div>
+                )}
+            </td>
+            {/* Recording — icon + clock when a recording exists, em-dash else.
+                The row click opens the detail modal where it actually plays. */}
+            <td className="text-right max-md:hidden">
+                {recUrl ? (
+                    <span className="inline-flex items-center gap-1.5 text-t-secondary tabular-nums">
+                        <Icon
+                            name="video"
+                            className="size-3.5 fill-primary-01"
+                        />
+                        {fmtClock(c.duration_s)}
+                    </span>
+                ) : (
+                    <span className="text-t-tertiary">—</span>
                 )}
             </td>
             <td className="text-t-secondary td-num text-right">

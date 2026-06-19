@@ -43,6 +43,117 @@ export function StageBadge({ stage }: { stage?: string | null }) {
     );
 }
 
+// ── Temperature (lifecycle heat) — the single source CRM + Leads share ────────
+//
+// The founder's round-2 spec asks for a Hot/Warm/Cold/Dead "Temperature" column
+// + filter EVERYWHERE a status filter appears. `lifecycle` is the canonical
+// signal, but list rows don't always carry it — so `tempOf` mirrors the
+// precedence of lib/report.ts `statusOf` (stage + outcome + score) to derive the
+// temperature client-side, and degrades gracefully when fields are absent.
+//
+// Temperature -> Badge map lives here ONCE (Hot=danger/red, Warm=warning,
+// Cold=info, Dead=neutral) and is imported wherever a temperature is shown, so
+// CRM and Leads never drift.
+export type Temperature = "hot" | "warm" | "cold" | "dead";
+
+const TEMP_VARIANT: Record<Temperature, BadgeVariant> = {
+    hot: "danger",
+    warm: "warning",
+    cold: "info",
+    dead: "neutral",
+};
+
+const TEMP_LABEL: Record<Temperature, string> = {
+    hot: "Hot",
+    warm: "Warm",
+    cold: "Cold",
+    dead: "Dead",
+};
+
+const TEMP_DOT: Record<Temperature, boolean> = {
+    hot: true,
+    warm: true,
+    cold: false,
+    dead: false,
+};
+
+// Anything we can classify by temperature — contacts, leads, projected rows.
+// Every field is optional so a partial payload never crashes the deriver.
+export type TempLike = {
+    lifecycle?: string | null;
+    lifecycle_state?: string | null;
+    stage?: string | null;
+    status?: string | null;
+    last_outcome?: string | null;
+    outcome?: string | null;
+    score?: number | null;
+    conversion_prob?: number | null; // 0..1
+    hot?: boolean | null;
+    booked?: boolean | null;
+};
+
+// Pure: signals -> temperature. Honors an explicit lifecycle value first (the
+// canonical source), otherwise derives it the way report.ts `statusOf` does:
+// dead/booked > stage/outcome keywords > score bands > hot flag.
+export function tempOf(row: TempLike): Temperature {
+    const norm = (s?: string | null) => (s ?? "").toLowerCase().trim();
+
+    // 1) Explicit lifecycle wins (booked collapses into hot for the heat axis).
+    const explicit = norm(row.lifecycle) || norm(row.lifecycle_state);
+    if (explicit === "hot" || explicit === "warm" || explicit === "cold" || explicit === "dead")
+        return explicit as Temperature;
+    if (explicit === "booked" || explicit === "won" || explicit === "converted") return "hot";
+
+    const bag = [norm(row.stage), norm(row.status), norm(row.last_outcome), norm(row.outcome)];
+    const has = (...keys: string[]) =>
+        bag.some((v) => keys.some((k) => v === k || v.includes(k)));
+
+    // Score may be 0..100 (score) or 0..1 (conversion_prob).
+    let score: number | null = null;
+    if (typeof row.score === "number") score = row.score;
+    else if (typeof row.conversion_prob === "number")
+        score = Math.round(row.conversion_prob * 100);
+
+    // 2) Hard outcomes.
+    if (has("opt_out", "opted_out", "not_interested", "dead", "lost")) return "dead";
+    if (row.booked === true || has("booked", "won", "converted", "site_visit", "qualified", "interested"))
+        return "hot";
+
+    // 3) Flags + score bands.
+    if (row.hot === true) return "hot";
+    if (score != null) {
+        if (score >= 70) return "hot";
+        if (score >= 40) return "warm";
+        if (score > 0) return "cold";
+    }
+
+    // 4) Engagement-ish stages with no score -> warm; brand-new -> cold.
+    if (has("engaged", "contacted", "callback")) return "warm";
+    return "cold";
+}
+
+export function TempBadge({
+    lifecycle,
+    row,
+}: {
+    // Pass an explicit temperature/lifecycle string OR a row to derive from.
+    lifecycle?: string | null;
+    row?: TempLike;
+}) {
+    const explicit = (lifecycle ?? "").toLowerCase().trim();
+    const temp: Temperature =
+        explicit === "hot" || explicit === "warm" || explicit === "cold" || explicit === "dead"
+            ? (explicit as Temperature)
+            : row
+            ? tempOf(row)
+            : "cold";
+    return (
+        <Badge variant={TEMP_VARIANT[temp]} dot={TEMP_DOT[temp]}>
+            {TEMP_LABEL[temp]}
+        </Badge>
+    );
+}
+
 // Timeline event kind (§3.3) -> a glyph from the panel's icon set + an accent
 // fill class. Used by the profile feed.
 export const KIND_META: Record<string, { icon: string; fill: string; label: string }> = {

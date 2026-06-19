@@ -32,6 +32,10 @@ import {
     type Followup,
     type ProviderStatus,
 } from "./_api";
+// ROUND-2 §1b — Payments now lives inside the Money/Billing tab hub. Mount the
+// shared BillingTabs strip at the top so the user moves between Overview/Vendors/
+// Spending/Plan/Audit/Payments from one place (Money is a single rail link).
+import { BillingTabs } from "@/app/billing/_shared";
 import {
     HeroCard,
     ShareRow,
@@ -222,6 +226,9 @@ export default function PaymentsPage() {
 
     return (
         <Layout title="Payments">
+            {/* Money tab hub — Payments is a tab of the billing hub now (§1b). */}
+            <BillingTabs />
+
             {/* Action row (title is the single Layout heading) */}
             <div className="flex items-center gap-2 mb-5 max-sm:flex-col max-sm:items-stretch">
                 <button onClick={load} className={`${ghostBtnCls} max-sm:order-2`} disabled={loading}>

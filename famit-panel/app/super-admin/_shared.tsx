@@ -128,7 +128,14 @@ export function AdminHeader({
     const pathname = usePathname();
     return (
         <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-            <div className="flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
+            {/* ROUND-2 §1c — transparent-pill tab strip, matching BillingTabs (the
+                canon). Was the grey-box "segmented control" (bg-b-surface2 ring +
+                bg-b-surface1 shadow active chip); now a flat rounded-full border pill
+                row: inactive = border-transparent text-t-secondary, active =
+                border-s-stroke2 text-t-primary. Identical idiom to app/billing
+                BillingTabs so every tab strip in the panel reads the same. The
+                ADMIN_TABS list + usePathname active logic are UNCHANGED. */}
+            <div className="flex flex-wrap gap-1 max-w-full overflow-x-auto scrollbar-none">
                 {ADMIN_TABS.map((t) => {
                     const active =
                         pathname === t.href ||
@@ -137,10 +144,10 @@ export function AdminHeader({
                         <Link
                             key={t.href}
                             href={t.href}
-                            className={`shrink-0 inline-flex items-center h-8 px-3.5 rounded-full text-button transition-colors ${
+                            className={`shrink-0 flex justify-center items-center h-12 px-5.5 rounded-full border text-button transition-colors hover:text-t-primary ${
                                 active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
+                                    ? "border-s-stroke2 text-t-primary"
+                                    : "border-transparent text-t-secondary"
                             }`}
                         >
                             {t.label}

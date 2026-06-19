@@ -23,6 +23,7 @@ import Percentage from "@/components/Percentage";
 import Icon from "@/components/Icon";
 import GlobalFilters, { useGlobalFilters } from "@/components/GlobalFilters";
 import { StatusBadge, LeadBadge } from "@/lib/badges";
+import Badge from "@/components/Badge";
 import { useStats, useCalls } from "@/lib/queries";
 import { getReport, type Report } from "@/lib/report";
 import { getUsage, type CallLog, type UsageData } from "@/lib/api";
@@ -30,6 +31,14 @@ import {
     ResponsiveContainer,
     AreaChart,
     Area,
+    BarChart,
+    Bar,
+    LineChart,
+    Line,
+    PieChart,
+    Pie,
+    Cell,
+    Legend,
     XAxis,
     YAxis,
     CartesianGrid,
@@ -171,6 +180,93 @@ function DashboardInner() {
         return qs ? `/analytics?${qs}` : "/analytics";
     }, [range, campaign, status]);
 
+    // ── Outcome distribution (bar) — the lead-temperature + interest buckets from
+    // the report totals. Real data; empty buckets simply render as zero bars.
+    const outcomeBars = useMemo(() => {
+        if (!totals) return [];
+        return [
+            { name: "Connected", value: totals.connected ?? 0, fill: "var(--primary-02)" },
+            { name: "Interested", value: totals.interested ?? 0, fill: "var(--color-chart-green)" },
+            { name: "Hot", value: totals.hot ?? 0, fill: "var(--primary-01)" },
+            { name: "Booked", value: totals.booked ?? 0, fill: "var(--color-chart-green)" },
+            { name: "Callbacks", value: totals.callbacks ?? 0, fill: "var(--text-tertiary)" },
+        ];
+    }, [totals]);
+    const outcomeBarsTotal = useMemo(
+        () => outcomeBars.reduce((s, b) => s + b.value, 0),
+        [outcomeBars]
+    );
+
+    // ── Call-outcomes pie — temperature split from by_status (hot/warm/cold/dead).
+    const PIE_COLORS = [
+        "var(--primary-01)",
+        "var(--color-chart-yellow, #FFB13C)",
+        "var(--primary-02)",
+        "var(--text-tertiary)",
+    ];
+    const byStatus = report?.by_status;
+    const pieData = useMemo(() => {
+        if (!byStatus) return [];
+        return [
+            { name: "Hot", value: byStatus.hot ?? 0 },
+            { name: "Warm", value: byStatus.warm ?? 0 },
+            { name: "Cold", value: byStatus.cold ?? 0 },
+            { name: "Dead", value: byStatus.dead ?? 0 },
+        ].filter((d) => d.value > 0);
+    }, [byStatus]);
+    const pieTotal = useMemo(() => pieData.reduce((s, d) => s + d.value, 0), [pieData]);
+
+    // ── Top campaigns mini-leaderboard — derived from the recent-calls page,
+    // grouped by campaign_name with a connect-rate (LIVE/connected statuses count
+    // as connected). Honest: it reflects the loaded recent window, not all-time.
+    const topCampaigns = useMemo(() => {
+        const map = new Map<string, { total: number; connected: number }>();
+        for (const c of calls) {
+            const key = c.campaign_name || "—";
+            const e = map.get(key) ?? { total: 0, connected: 0 };
+            e.total += 1;
+            const st = (c.status ?? "").toLowerCase();
+            if (
+                st.includes("connect") ||
+                st.includes("answer") ||
+                st.includes("complete") ||
+                st.includes("interest") ||
+                st.includes("book")
+            ) {
+                e.connected += 1;
+            }
+            map.set(key, e);
+        }
+        return [...map.entries()]
+            .map(([name, e]) => ({
+                name,
+                total: e.total,
+                rate: e.total > 0 ? Math.round((e.connected / e.total) * 100) : 0,
+            }))
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 5);
+    }, [calls]);
+    const topCampaignsMax = topCampaigns[0]?.total || 1;
+
+    // Has any timeline series got real connected/booked numbers (the W14 seam), or
+    // only call volume? Drives whether the multi-series line shows those series.
+    const timelineHasOutcomes = useMemo(
+        () => series.some((p) => (p.connected ?? 0) > 0 || (p.booked ?? 0) > 0),
+        [series]
+    );
+
+    const chartTooltip = {
+        cursor: { fill: "var(--stroke-stroke2)", opacity: 0.25 },
+        contentStyle: {
+            background: "var(--backgrounds-surface2)",
+            border: "1px solid var(--stroke-stroke2)",
+            borderRadius: "12px",
+            boxShadow: "var(--box-shadow-dropdown)",
+            fontSize: "12px",
+        },
+        labelStyle: { color: "var(--text-tertiary)", marginBottom: "2px" },
+    };
+
     return (
         <Layout title="Dashboard">
             {error && (
@@ -249,6 +345,204 @@ function DashboardInner() {
                     )}
                 </div>
             </Card>
+
+            {/* ── Analytics grid: trends line · outcome bars · temperature pie ·
+                 top-campaigns leaderboard. Fills the wide space; all REAL data
+                 from getReport (timeline/totals/by_status) + recent calls. ── */}
+            <div className="grid grid-cols-2 gap-3 mb-3 max-lg:grid-cols-1">
+                {/* Trends: calls vs connected vs booked (spans full width) */}
+                <Card title="Trends" className="col-span-2 max-lg:col-span-1">
+                    <div className="px-5 pb-5 max-lg:px-3">
+                        <div className="h-60 max-lg:h-48">
+                            {reportLoading ? (
+                                <div className="skeleton h-full w-full rounded-2xl" />
+                            ) : series.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart data={series} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="5 7" vertical={false} stroke="var(--stroke-stroke2)" />
+                                        <XAxis
+                                            dataKey="date"
+                                            axisLine={false}
+                                            tickLine={false}
+                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
+                                            height={28}
+                                            dy={8}
+                                            minTickGap={16}
+                                        />
+                                        <YAxis
+                                            axisLine={false}
+                                            tickLine={false}
+                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
+                                            width={32}
+                                            allowDecimals={false}
+                                        />
+                                        <Tooltip {...chartTooltip} />
+                                        <Legend
+                                            iconType="plainline"
+                                            wrapperStyle={{ fontSize: "12px", color: "var(--text-tertiary)" }}
+                                        />
+                                        <Line type="monotone" dataKey="calls" name="Calls" stroke="var(--primary-02)" strokeWidth={2.5} dot={false} />
+                                        {timelineHasOutcomes && (
+                                            <>
+                                                <Line type="monotone" dataKey="connected" name="Connected" stroke="var(--color-chart-green)" strokeWidth={2.5} dot={false} />
+                                                <Line type="monotone" dataKey="booked" name="Booked" stroke="var(--primary-01)" strokeWidth={2.5} dot={false} />
+                                            </>
+                                        )}
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="flex h-full items-center justify-center">
+                                    <div className="state-sub text-center">
+                                        Calls, connected and booked trends render here once a campaign runs.
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        {!reportLoading && series.length > 0 && !timelineHasOutcomes && (
+                            <div className="mt-2 text-caption text-t-tertiary">
+                                Showing call volume. Per-day connected/booked series activate when the reporting stream is enabled on your box.
+                            </div>
+                        )}
+                    </div>
+                </Card>
+
+                {/* Outcome distribution (bar) */}
+                <Card title="Outcome distribution">
+                    <div className="px-5 pb-5 max-lg:px-3">
+                        <div className="h-56 max-lg:h-44">
+                            {reportLoading ? (
+                                <div className="skeleton h-full w-full rounded-2xl" />
+                            ) : outcomeBarsTotal > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={outcomeBars} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="5 7" vertical={false} stroke="var(--stroke-stroke2)" />
+                                        <XAxis
+                                            dataKey="name"
+                                            axisLine={false}
+                                            tickLine={false}
+                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
+                                            height={28}
+                                            dy={8}
+                                        />
+                                        <YAxis
+                                            axisLine={false}
+                                            tickLine={false}
+                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
+                                            width={32}
+                                            allowDecimals={false}
+                                        />
+                                        <Tooltip {...chartTooltip} />
+                                        <Bar dataKey="value" name="Leads" radius={[6, 6, 0, 0]} maxBarSize={48}>
+                                            {outcomeBars.map((b, i) => (
+                                                <Cell key={i} fill={b.fill} />
+                                            ))}
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="flex h-full items-center justify-center">
+                                    <div className="state-sub text-center">
+                                        Outcome breakdown appears here once calls complete.
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </Card>
+
+                {/* Call-outcomes temperature pie */}
+                <Card title="Lead temperature">
+                    <div className="px-5 pb-5 max-lg:px-3">
+                        <div className="h-56 max-lg:h-44">
+                            {reportLoading ? (
+                                <div className="skeleton h-full w-full rounded-2xl" />
+                            ) : pieTotal > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={pieData}
+                                            dataKey="value"
+                                            nameKey="name"
+                                            cx="50%"
+                                            cy="50%"
+                                            innerRadius="58%"
+                                            outerRadius="82%"
+                                            paddingAngle={2}
+                                            stroke="none"
+                                        >
+                                            {pieData.map((_, i) => (
+                                                <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip {...chartTooltip} />
+                                        <Legend
+                                            iconType="circle"
+                                            wrapperStyle={{ fontSize: "12px", color: "var(--text-tertiary)" }}
+                                        />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="flex h-full items-center justify-center">
+                                    <div className="state-sub text-center">
+                                        Hot / warm / cold / dead split appears here once leads are scored.
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </Card>
+
+                {/* Top campaigns mini-leaderboard */}
+                <Card
+                    title="Top campaigns"
+                    className="col-span-2 max-lg:col-span-1"
+                    headContent={
+                        <Link href="/campaigns" className="action mr-1">
+                            All campaigns
+                            <Icon name="arrow-up-right" />
+                        </Link>
+                    }
+                >
+                    <div className="px-5 pb-5 pt-1 max-lg:px-3">
+                        {callsLoading ? (
+                            <div className="space-y-3 pt-2">
+                                {[...Array(4)].map((_, i) => (
+                                    <div key={i} className="skeleton h-8 rounded-xl" style={{ width: `${100 - i * 12}%` }} />
+                                ))}
+                            </div>
+                        ) : topCampaigns.length === 0 ? (
+                            <div className="state-sub py-6 text-center">
+                                Your busiest campaigns rank here once calls start flowing.
+                            </div>
+                        ) : (
+                            <div className="space-y-2.5 pt-1">
+                                {topCampaigns.map((c) => {
+                                    const pct = Math.max(6, Math.round((c.total / topCampaignsMax) * 100));
+                                    return (
+                                        <div key={c.name} className="flex items-center gap-3">
+                                            <div className="w-32 shrink-0 truncate text-caption text-t-secondary max-sm:w-20" title={c.name}>
+                                                {c.name}
+                                            </div>
+                                            <div className="relative flex-1 h-8 rounded-xl bg-b-surface1 dark:bg-shade-04/30 overflow-hidden">
+                                                <div
+                                                    className="absolute inset-y-0 left-0 rounded-xl bg-primary-02/80 transition-all"
+                                                    style={{ width: `${pct}%` }}
+                                                />
+                                                <div className="absolute inset-0 flex items-center justify-between px-3 text-caption">
+                                                    <span className="font-medium text-t-primary tabular-nums">
+                                                        {c.total.toLocaleString()} calls
+                                                    </span>
+                                                    <span className="text-t-tertiary tabular-nums">{c.rate}% connected</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                </Card>
+            </div>
 
             <div className="flex max-lg:block">
                 {/* ── col-left: volume chart + funnel + recent calls ── */}
@@ -411,6 +705,7 @@ function DashboardInner() {
                                         <th className="max-lg:hidden">Phone</th>
                                         <th className="max-md:hidden">Campaign</th>
                                         <th>Status</th>
+                                        <th className="text-center max-sm:hidden">Score</th>
                                         <th className="text-right">Started</th>
                                     </>
                                 }
@@ -418,7 +713,7 @@ function DashboardInner() {
                                 {callsLoading ? (
                                     [...Array(5)].map((_, i) => (
                                         <TableRow key={i}>
-                                            {[...Array(5)].map((__, j) => (
+                                            {[...Array(6)].map((__, j) => (
                                                 <td key={j}>
                                                     <div className="skeleton h-4 w-20" />
                                                 </td>
@@ -427,7 +722,7 @@ function DashboardInner() {
                                     ))
                                 ) : calls.length === 0 ? (
                                     <TableRow>
-                                        <td colSpan={5}>
+                                        <td colSpan={6}>
                                             <div className="state-block">
                                                 <span className="state-glyph">
                                                     <Icon name="chat" className="fill-inherit" />
@@ -447,6 +742,13 @@ function DashboardInner() {
                                             <td className="text-t-secondary max-md:hidden">{c.campaign_name}</td>
                                             <td>
                                                 <StatusBadge status={c.status} />
+                                            </td>
+                                            <td className="text-center max-sm:hidden">
+                                                {typeof c.interest === "number" ? (
+                                                    <ScorePill score={c.interest} />
+                                                ) : (
+                                                    <span className="text-t-tertiary">—</span>
+                                                )}
                                             </td>
                                             <td className="text-t-secondary whitespace-nowrap text-right">
                                                 <span title={fmt(c.started_at)}>{fmtCompact(c.started_at)}</span>
@@ -664,5 +966,16 @@ function UsageStat({
             <div className="text-h6 text-t-primary tabular-nums">{value}</div>
             {sub && <div className="text-caption text-t-tertiary">{sub}</div>}
         </div>
+    );
+}
+
+// Ported from app/calls/page.tsx:765 — the interest/score pill (green 70+, amber
+// 40+, neutral below). Kept identical so the Score reads the same across pages.
+function ScorePill({ score }: { score: number }) {
+    const variant = score >= 70 ? "success" : score >= 40 ? "warning" : "neutral";
+    return (
+        <Badge variant={variant} dot={score >= 70}>
+            {score}
+        </Badge>
     );
 }

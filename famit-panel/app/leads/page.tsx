@@ -7,12 +7,14 @@ import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
 import Search from "@/components/Search";
-import Tabs from "@/components/Tabs";
 import Table from "@/components/Table";
 import Select from "@/components/Select";
 import Modal from "@/components/Modal";
 import VirtualRows from "@/components/VirtualRows";
 import { StatusBadge, LeadBadge } from "@/lib/badges";
+// Shared temperature classification — the SAME source CRM uses, so the
+// Hot/Warm/Cold/Dead column + filter never drift between the two pages.
+import { TempBadge, tempOf, type Temperature } from "@/app/crm/_ui";
 import {
     addLeads,
     deleteLead,
@@ -22,7 +24,6 @@ import {
 } from "@/lib/api";
 import { useLeadsInfinite } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
-import { type TabsOption } from "@/types/tabs";
 import { type SelectOption } from "@/types/select";
 
 function fmtDate(d: string) {
@@ -42,9 +43,16 @@ function initials(name?: string): string {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-const VIEWS: TabsOption[] = [
-    { id: 1, name: "All" },
-    { id: 2, name: "Hot" },
+// Temperature filter (replaces the old All/Hot tab strip). `key` carries the
+// canonical temperature; "all" = no filter. Backend GET /leads only knows `hot`,
+// so Hot can use the server-side fast path; the rest are derived client-side via
+// tempOf over the already-loaded pages (degrades gracefully).
+const TEMP_VIEWS: (SelectOption & { key: "all" | Temperature })[] = [
+    { id: 1, name: "All", key: "all" },
+    { id: 2, name: "Hot", key: "hot" },
+    { id: 3, name: "Warm", key: "warm" },
+    { id: 4, name: "Cold", key: "cold" },
+    { id: 5, name: "Dead", key: "dead" },
 ];
 
 // Sort options — map to the backend GET /leads `sort` param. "recent" (newest
@@ -64,7 +72,7 @@ export default function LeadsPage() {
     const [adding, setAdding] = useState(false);
     const [toast, setToast] = useState("");
     const [toastErr, setToastErr] = useState(false);
-    const [view, setView] = useState<TabsOption>(VIEWS[0]);
+    const [view, setView] = useState<SelectOption>(TEMP_VIEWS[0]);
     const [sort, setSort] = useState<SelectOption>(SORTS[0]);
     const [query, setQuery] = useState("");
     // ── Multi-select + delete state ──
@@ -78,7 +86,9 @@ export default function LeadsPage() {
     const writable = canWrite(me);
     const queryClient = useQueryClient();
 
-    const hotOnly = view.id === 2;
+    const tempKey = (TEMP_VIEWS.find((v) => v.id === view.id) ?? TEMP_VIEWS[0]).key;
+    // Hot uses the server-side fast path; warm/cold/dead are derived client-side.
+    const hotOnly = tempKey === "hot";
     const sortKey = (SORTS.find((s) => s.id === sort.id) ?? SORTS[0]).sort;
 
     // PERF UNIT-4: cursor-paged read keyed by the hot filter + sort. Loads ONE
@@ -109,7 +119,24 @@ export default function LeadsPage() {
         try {
             const result = await addLeads(text, file);
             setToastErr(false);
-            setToast(`Added ${result.added} leads. Total: ${result.total}`);
+            // Dedup result: the backend skips phone-duplicate rows server-side. It
+            // may report the skipped count under any of these keys; if it does, we
+            // show "Added N · M duplicates skipped", otherwise just the added count
+            // (graceful degrade until the backend returns a duplicate tally).
+            const extra = result as Record<string, unknown>;
+            const dupRaw =
+                extra.duplicates ??
+                extra.skipped ??
+                extra.duplicate ??
+                extra.ignored;
+            const dup = typeof dupRaw === "number" ? dupRaw : Number(dupRaw);
+            const added = result.added ?? 0;
+            const parts = [`Added ${added} ${added === 1 ? "lead" : "leads"}`];
+            if (Number.isFinite(dup) && dup > 0) {
+                parts.push(`${dup} duplicate${dup === 1 ? "" : "s"} skipped`);
+            }
+            parts.push(`Total: ${result.total}`);
+            setToast(parts.join(" · "));
             setText("");
             setFile(null);
             if (fileInputRef.current) fileInputRef.current.value = "";
@@ -131,15 +158,22 @@ export default function LeadsPage() {
     // Client-side search over the already-fetched pages (no API change). Active
     // search pauses infinite-scroll fetching (the user is narrowing the loaded set).
     const searching = query.trim().length > 0;
+    // Temperature filter (client-side for warm/cold/dead; hot already came filtered
+    // from the server). Active when not "all" and not the hot fast-path.
+    const tempFiltering = tempKey !== "all" && tempKey !== "hot";
     const visibleLeads = useMemo(() => {
+        let rows = leads;
+        if (tempFiltering) {
+            rows = rows.filter((l) => tempOf(l) === tempKey);
+        }
         const q = query.trim().toLowerCase();
-        if (!q) return leads;
-        return leads.filter(
+        if (!q) return rows;
+        return rows.filter(
             (l) =>
                 l.name?.toLowerCase().includes(q) ||
                 l.phone?.toLowerCase().includes(q)
         );
-    }, [leads, query]);
+    }, [leads, query, tempFiltering, tempKey]);
 
     // ── Selection helpers (scoped to the currently visible/loaded rows) ──
     const allVisibleSelected =
@@ -235,14 +269,15 @@ export default function LeadsPage() {
             {writable && <th className="w-10" />}
             <th>Name</th>
             <th>Phone</th>
-            <th>Status</th>
+            <th>Temperature</th>
+            <th className="max-md:hidden">Status</th>
             <th>Lead</th>
             <th className="max-lg:hidden">Last outcome</th>
             <th className="text-right">Added</th>
             {writable && <th className="w-12 text-right" />}
         </>
     );
-    const colCount = writable ? 8 : 6;
+    const colCount = writable ? 9 : 7;
 
     return (
         <Layout title="Leads">
@@ -270,7 +305,7 @@ export default function LeadsPage() {
                     <div className="card">
                         <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
                             <div className="mr-auto pl-5 text-h6 max-lg:pl-3">
-                                {hotOnly ? "Hot leads" : "All leads"}
+                                {tempKey === "all" ? "All leads" : `${view.name} leads`}
                             </div>
                             <Search
                                 className="w-56 ml-6 mr-4 max-md:w-full max-md:ml-3 max-md:mr-0"
@@ -280,13 +315,19 @@ export default function LeadsPage() {
                                 isGray
                             />
                             <Select
+                                className="w-40 mr-3 max-md:w-full max-md:mr-0"
+                                classButton="!h-10"
+                                value={view}
+                                onChange={setView}
+                                options={TEMP_VIEWS}
+                            />
+                            <Select
                                 className="w-44 mr-4 max-md:w-full max-md:mr-0"
                                 classButton="!h-10"
                                 value={sort}
                                 onChange={setSort}
                                 options={SORTS}
                             />
-                            <Tabs items={VIEWS} value={view} setValue={setView} />
                         </div>
 
                         {/* ── Bulk action toolbar (writable only) ── */}
@@ -386,15 +427,19 @@ export default function LeadsPage() {
                                     <div className="state-title">
                                         {query
                                             ? "No matching leads"
-                                            : hotOnly
+                                            : tempKey === "hot"
                                             ? "No hot leads yet"
+                                            : tempKey !== "all"
+                                            ? `No ${view.name.toLowerCase()} leads`
                                             : "No leads yet"}
                                     </div>
                                     <div className="state-sub">
                                         {query
                                             ? `Nothing matches “${query}”. Try a different name or number.`
-                                            : hotOnly
+                                            : tempKey === "hot"
                                             ? "Leads scoring 70+ on a call surface here automatically."
+                                            : tempKey !== "all"
+                                            ? `No leads are ${view.name.toLowerCase()} right now — try another temperature.`
                                             : writable
                                             ? "Paste or upload leads on the right to get started."
                                             : "Leads added by your team appear here."}
@@ -428,7 +473,8 @@ export default function LeadsPage() {
                                             )}
                                             <th>Name</th>
                                             <th>Phone</th>
-                                            <th>Status</th>
+                                            <th>Temperature</th>
+                                            <th className="max-md:hidden">Status</th>
                                             <th>Lead</th>
                                             <th className="max-lg:hidden">Last outcome</th>
                                             <th className="text-right">Added</th>
@@ -502,13 +548,13 @@ export default function LeadsPage() {
 
                                 <div>
                                     <label className="block text-button mb-2.5 text-t-primary">
-                                        Upload CSV
+                                        Upload CSV or Excel
                                     </label>
                                     <div className="relative flex flex-col items-center justify-center gap-2 h-28 rounded-2xl border border-dashed border-s-stroke2 bg-b-surface1/50 transition-colors hover:border-primary-01/50 cursor-pointer dark:bg-shade-04/30">
                                         <input
                                             ref={fileInputRef}
                                             type="file"
-                                            accept=".csv,text/csv"
+                                            accept=".csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                                             className="absolute inset-0 opacity-0 cursor-pointer z-10"
                                             onChange={(e) =>
                                                 setFile(
@@ -533,13 +579,16 @@ export default function LeadsPage() {
                                                     className="size-5 fill-t-tertiary"
                                                 />
                                                 <span className="text-body-2 text-t-secondary">
-                                                    Drop CSV or{" "}
+                                                    Drop CSV / Excel or{" "}
                                                     <span className="font-medium text-t-primary">
                                                         browse
                                                     </span>
                                                 </span>
                                             </>
                                         )}
+                                    </div>
+                                    <div className="mt-1.5 text-caption text-t-tertiary">
+                                        .csv, .xlsx or .xls — duplicates are skipped automatically.
                                     </div>
                                 </div>
 
@@ -655,6 +704,10 @@ function renderLeadRow(
             </td>
             <td className="text-t-secondary td-num">{l.phone}</td>
             <td>
+                {/* Hot/Warm/Cold/Dead heat — same tempOf source as CRM */}
+                <TempBadge row={l} />
+            </td>
+            <td className="max-md:hidden">
                 <StatusBadge status={l.status} />
             </td>
             <td>

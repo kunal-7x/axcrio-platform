@@ -23,7 +23,7 @@ import {
     type ContactsResponse,
     type Segment,
 } from "./client";
-import { StageBadge, initials, fmtRelative } from "./_ui";
+import { StageBadge, TempBadge, tempOf, initials, fmtRelative } from "./_ui";
 
 // Stage filter tabs (mirrors §4.1 derivation order). "all" is special.
 const STAGE_TABS = [
@@ -48,13 +48,30 @@ const LIFECYCLE_TABS = [
 ];
 
 // Sortable columns — clicking the header toggles asc/desc.
-type SortKey = "name" | "stage" | "score" | "last_outcome" | "last_activity_at";
+type SortKey =
+    | "name"
+    | "temperature"
+    | "stage"
+    | "campaign"
+    | "score"
+    | "last_outcome"
+    | "last_activity_at";
+
+// Temperature ordering for sorting (hot is "highest").
+const TEMP_RANK: Record<string, number> = { hot: 4, warm: 3, cold: 2, dead: 1 };
+
+// Campaign label off a contact row — tolerant of either field name, "—" if absent.
+function campaignOf(c: ContactListItem): string {
+    return (c.campaign || c.campaign_name || "").trim();
+}
 
 const tableHead: { label: string; key: SortKey; className?: string }[] = [
     { label: "Contact", key: "name" },
-    { label: "Stage", key: "stage" },
+    { label: "Temperature", key: "temperature" },
+    { label: "Stage", key: "stage", className: "max-md:hidden" },
+    { label: "Campaign", key: "campaign", className: "max-lg:hidden" },
     { label: "Score", key: "score", className: "max-md:hidden" },
-    { label: "Last Outcome", key: "last_outcome", className: "max-lg:hidden" },
+    { label: "Last Outcome", key: "last_outcome", className: "max-xl:hidden" },
     { label: "Last Activity", key: "last_activity_at", className: "text-right max-md:hidden" },
 ];
 
@@ -168,13 +185,12 @@ function CrmWorkspaceInner() {
         : "") || deleteError;
     const loading = contactsQuery.isLoading && rawContacts.length === 0;
 
-    // Client-side lifecycle post-filter (degrades gracefully if the field is absent).
+    // Client-side temperature post-filter — uses the SAME tempOf deriver the
+    // Temperature column renders, so the filter and the badge never disagree
+    // (degrades gracefully when the explicit lifecycle field is absent).
     const contacts: ContactListItem[] = useMemo(() => {
         if (lifecycle === "all") return rawContacts;
-        return rawContacts.filter((c) => {
-            const lc = ((c as ContactListItem & { lifecycle?: string }).lifecycle ?? "").toLowerCase();
-            return lc === lifecycle;
-        });
+        return rawContacts.filter((c) => tempOf(c) === lifecycle);
     }, [rawContacts, lifecycle]);
 
     // Segments are a nice-to-have filter; failure (incl. dormant) is silent.
@@ -202,6 +218,10 @@ function CrmWorkspaceInner() {
             switch (sortKey) {
                 case "name":
                     return dir * (a.name || "").localeCompare(b.name || "");
+                case "temperature":
+                    return dir * ((TEMP_RANK[tempOf(a)] ?? 0) - (TEMP_RANK[tempOf(b)] ?? 0));
+                case "campaign":
+                    return dir * (campaignOf(a) || "").localeCompare(campaignOf(b) || "");
                 case "stage":
                     return dir * (a.stage || "").localeCompare(b.stage || "");
                 case "score":
@@ -343,24 +363,23 @@ function CrmWorkspaceInner() {
                                 placeholder="Search name or phone"
                                 isGray
                             />
+                            {/* Stage filter — right-side dropdown (was a tab strip) */}
+                            <Select
+                                className="w-44 mr-4 max-md:w-full max-md:mr-0"
+                                classButton="!h-10"
+                                value={stageTab}
+                                onChange={(v) => {
+                                    const next =
+                                        STAGE_TABS.find((t) => t.id === v.id) ?? STAGE_TABS[0];
+                                    setStageTab(next);
+                                }}
+                                options={STAGE_TABS}
+                            />
                         </div>
 
-                        {/* Stage filter tabs */}
+                        {/* Lifecycle / temperature filter row (Hot/Warm/Cold/Dead) */}
                         {query === "" && (
                             <div className="px-2 pt-1 overflow-x-auto scrollbar-none">
-                                <Tabs
-                                    items={STAGE_TABS}
-                                    value={stageTab}
-                                    setValue={(v) =>
-                                        setStageTab(v as (typeof STAGE_TABS)[number])
-                                    }
-                                />
-                            </div>
-                        )}
-
-                        {/* Lifecycle / heat filter row */}
-                        {query === "" && (
-                            <div className="px-2 overflow-x-auto scrollbar-none border-t border-s-subtle/40">
                                 <Tabs
                                     items={LIFECYCLE_TABS}
                                     value={lifecycleTab}
@@ -464,9 +483,17 @@ function CrmWorkspaceInner() {
                                                     </Link>
                                                 </td>
                                                 <td>
+                                                    <TempBadge row={c} />
+                                                </td>
+                                                <td className="max-md:hidden">
                                                     <StageBadge
                                                         stage={c.stage}
                                                     />
+                                                </td>
+                                                <td className="text-t-secondary max-lg:hidden">
+                                                    {campaignOf(c) || (
+                                                        <span className="text-t-tertiary">—</span>
+                                                    )}
                                                 </td>
                                                 <td className="max-md:hidden">
                                                     <ScoreCell
@@ -474,7 +501,7 @@ function CrmWorkspaceInner() {
                                                         hot={isHot}
                                                     />
                                                 </td>
-                                                <td className="text-t-secondary capitalize max-lg:hidden">
+                                                <td className="text-t-secondary capitalize max-xl:hidden">
                                                     {c.last_outcome
                                                         ? c.last_outcome.replace(
                                                               /_/g,
@@ -499,7 +526,7 @@ function CrmWorkspaceInner() {
                                                         aria-label={`Delete ${c.name || "contact"}`}
                                                     >
                                                         <Icon
-                                                            name="close"
+                                                            name="trash"
                                                             className="size-3.5 fill-current"
                                                         />
                                                     </button>
@@ -583,11 +610,17 @@ function TableSkeleton() {
         >
             {[...Array(7)].map((_, i) => (
                 <TableRow key={i}>
-                    {[...Array(6)].map((__, j) => (
+                    {[...Array(tableHead.length + 1)].map((__, j) => (
                         <td key={j}>
                             <div
                                 className={`skeleton h-4 rounded-lg ${
-                                    j === 0 ? "w-44" : j === 4 ? "w-16 ml-auto" : j === 5 ? "w-6" : "w-20"
+                                    j === 0
+                                        ? "w-44"
+                                        : j === tableHead.length - 1
+                                        ? "w-16 ml-auto"
+                                        : j === tableHead.length
+                                        ? "w-6"
+                                        : "w-20"
                                 }`}
                             />
                         </td>

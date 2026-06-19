@@ -99,6 +99,9 @@ export type ContactStage =
     | "opted_out";
 
 // List-row shape from GET /contacts.
+// `lifecycle`/`lifecycle_state` + `campaign` are OPTIONAL/back-compat: the list
+// endpoint may not project them yet, so the UI derives temperature client-side
+// (see _ui.tsx tempOf) and falls back to "—" for campaign when absent.
 export type ContactListItem = {
     id: string;
     phone_display: string;
@@ -108,6 +111,10 @@ export type ContactListItem = {
     hot: boolean;
     last_outcome: string;
     last_activity_at: string | null;
+    lifecycle?: string | null;
+    lifecycle_state?: string | null;
+    campaign?: string | null;
+    campaign_name?: string | null;
 };
 
 export type ContactsResponse = {

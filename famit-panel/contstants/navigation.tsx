@@ -6,20 +6,27 @@
 //     Click the parent -> it EXPANDS to its children (same mechanism the Billing
 //     group has always used). The whole rail now reads as organized sections.
 //
-// W15 INFORMATION ARCHITECTURE (design/W15-UI-IA-PLAN.md §2) — the SCATTER KILL.
-// The same concern used to live in 2–4 places (calls in 4 surfaces, lead scores in
-// 3, analytics in 2, money in 6, AI-Manager as 9 dead-redirect children). W15
-// consolidates to ONE obvious home per concern and regroups the rail into plain
-// task language:
+// ROUND-2 INFORMATION ARCHITECTURE — the founder's second-pass consolidation on top
+// of W15. The rail collapses tab-owning hubs to SINGLE links (the page's own tabs own
+// the sub-routes), promotes Creative Studio to its own section, retires the thin
+// Intelligence section (its two pages rehome to Work + Build), and groups the ad
+// tooling together inside Grow:
 //
-//   WORK          — Dashboard, Leads & CRM, Call Logs (Callbacks=tab), Bookings, AI Manager
-//   GROW          — Campaigns, Run, Creative Studio, Ad Automation, Funnels, Form Builder
+//   WORK          — Dashboard, Leads & CRM, Leads, Call Logs (Callbacks+DNC=tabs),
+//                   Bookings, AI Manager (single link), Reports (=/analytics)
+//   GROW          — Campaigns, Run Campaign, [Ad Tools cluster: Ad Automation,
+//                   Funnels, Form Builder]
+//   CREATIVE STUDIO — Image, Video, Library, Brand Kit (own top-level section)
 //   MESSAGE       — WhatsApp (Communication folds in as channel tabs), Customer Support
-//   INTELLIGENCE  — Reports (=/analytics, the deep drill-down), Knowledge Base
-//   MONEY         — Billing (tabbed hub: Overview/Vendor Costs/Spending/Audit/Plan), Payments
-//   BUILD         — Workflows, Webhooks, Integrations
-//   SETTINGS      — (navigationUser footer) Settings + Do-Not-Call + Vendors(admin) as sections
-//   SUPER ADMIN   — admin-only control plane (UNCHANGED, role-gated)
+//   MONEY         — single link → /billing/overview (the billing page is the tabbed
+//                   hub: Overview/Vendors/Spending/Plan/Audit/Payments)
+//   BUILD         — Workflows, Webhooks, Integrations, Knowledge Base
+//   SETTINGS      — (navigationUser footer) Settings + Do-Not-Call + Vendors(admin)
+//   SUPER ADMIN   — single link → /super-admin (AdminHeader tabs own the sub-routes)
+//
+// (Intelligence section REMOVED: Reports → Work, Knowledge Base → Build. Standalone
+//  Callbacks rail child RETIRED: it is a calls-page tab. AI-Manager / Super-Admin /
+//  Money collapse from multi-child groups to one link each.)
 //
 // NON-BREAKING by construction: every previously-live route still resolves. The
 // folded routes (Callbacks, Communication, the AI-Manager sub-pages, the
@@ -65,10 +72,10 @@
 export const navigation = [
     {
         // WORK — the daily operating surface: the cockpit + the people + the calls +
-        // the bookings + the inbound brain. Everything you DO lives here so the
-        // operator stops hopping between Command/Sell/Engage. The GROUP is UNKEYED so
-        // the core Dashboard can never be hidden; per-child keys preserve the old
-        // sell.* / engage.* / mod.ai_manager gates verbatim.
+        // the bookings + the inbound brain + the deep Reports drill-down. Everything
+        // you DO + measure lives here. The GROUP is UNKEYED so the core Dashboard can
+        // never be hidden; per-child keys preserve the old sell.* / engage.* /
+        // mod.ai_manager / intelligence.* gates verbatim.
         title: "Work",
         icon: "grid",
         list: [
@@ -81,61 +88,69 @@ export const navigation = [
             // Leads — RESTORED standalone people page (was folded into a CRM tab; the
             // standalone route is real on disk).
             { title: "Leads", href: "/leads", feature_key: "sell.leads" },
-            // Call Logs — ONE call surface. /callbacks folds in as a "Callbacks" tab.
+            // Call Logs — ONE call surface. The calls page owns Callbacks + Do-Not-Call
+            // as in-page tabs now, so the standalone Callbacks rail child is RETIRED
+            // (the route still resolves; it is just not duplicated in the rail).
             { title: "Call Logs", href: "/calls", feature_key: "engage.calls" },
-            // Callbacks — RESTORED standalone link (lands on the calls callbacks view).
-            { title: "Callbacks", href: "/callbacks", feature_key: "engage.callbacks" },
             { title: "Bookings", href: "/booking", feature_key: "engage.booking" },
-            // AI Manager — RESTORED to a collapsible group; the group keeps the single
-            // gate (mod.ai_manager) and lists the 9 real sub-routes (all pages exist on
-            // disk), so the whole inbound-command surface hides/locks as one entitlement
-            // while every sub-page is reachable from the rail again.
-            {
-                title: "AI Manager", icon: "ai", roles: "manager", feature_key: "mod.ai_manager",
-                list: [
-                    { title: "Overview",          href: "/ai-manager/overview",       feature_key: "ai_manager.overview" },
-                    { title: "Live Calls",        href: "/ai-manager/live" },
-                    { title: "Command Center",    href: "/ai-manager/command-center" },
-                    { title: "Handoff Team",      href: "/ai-manager/handoff" },
-                    { title: "Try it",            href: "/ai-manager/test",            feature_key: "ai_manager.test" },
-                    { title: "Command History",   href: "/ai-manager/commands",        feature_key: "ai_manager.commands" },
-                    { title: "Pending Approvals", href: "/ai-manager/approvals",       feature_key: "ai_manager.approvals" },
-                    { title: "Capabilities",      href: "/ai-manager/capabilities",    feature_key: "ai_manager.capabilities" },
-                    { title: "Setup",             href: "/ai-manager/setup",           feature_key: "ai_manager.setup" },
-                    { title: "Team",              href: "/ai-manager/users",           feature_key: "ai_manager.users" },
-                ],
-            },
+            // AI Manager — ROUND-2: collapsed to a SINGLE LINK. The page's own tabs
+            // (Overview/Live/Command-Center/Handoff/Try-it/History/Approvals/
+            // Capabilities/Setup/Team) own the sub-routes, so the 10-child group is
+            // killed. The mod.ai_manager key rides the link so the whole surface still
+            // hides/locks as one entitlement — and because a top-level LINK that
+            // resolves to LOCK is NOT dropped by resolveNav (only HIDE drops it), the
+            // link always opens the REAL /ai-manager page (no dead "coming soon" /
+            // "Locked" non-clickable row; the page itself shows any upsell state).
+            { title: "AI Manager", icon: "ai", href: "/ai-manager", roles: "manager", feature_key: "mod.ai_manager" },
+            // Reports — the deep analytics drill-down. MOVED IN from the retired
+            // Intelligence section. Key preserved verbatim.
+            { title: "Reports", href: "/analytics", feature_key: "intelligence.analytics" },
         ],
     },
     {
         // GROW — acquisition: turn ad spend + audiences into dialled leads. Campaigns
-        // and Run sit together (build the campaign, then run it), with the Creative
-        // Studio design engine and the ad/funnel/form tools. Group UNKEYED (mixed core
-        // + keyed children); each child keeps its grow.* / engage.run key verbatim.
+        // and Run-Campaign sit together (build the campaign, then run it). The ad
+        // tooling (Ad Automation + Funnels + Form Builder) groups together at the end.
+        // Creative Studio is now its OWN top-level section (below) — removed from Grow.
+        // Group UNKEYED (mixed core + keyed children); each child keeps its grow.* /
+        // engage.run key verbatim.
+        //
+        // ROUND-2 NOTE — "Ad Tools" sub-group: the spec asked for a collapsible
+        // sub-group nesting Ad Automation / Funnels / Form Builder. The shared
+        // Sidebar Dropdown renders only ONE level of children (a child with no href
+        // falls through to a dimmed "Soon" row — it cannot itself expand). Per the
+        // file-scope contract (nav data only; Sidebar/Dropdown UNCHANGED), nesting a
+        // second collapsible here would render the three ad tools as dead "Soon" rows.
+        // So they stay as direct, renderable Grow children, ordered together at the end
+        // as the de-facto "Ad Tools" cluster. (Promoting Dropdown to nested groups is a
+        // Sidebar-component change, out of this unit's scope — noted as a dependency.)
         title: "Grow",
         icon: "promote",
         feature_key: "mod.grow",
         list: [
             { title: "Campaigns", href: "/campaigns", feature_key: "grow.campaigns" },
-            // Run — the founder's named multi-card audience+config launcher. Lives in
-            // GROW next to Campaigns (build → run) instead of buried in the old Engage.
-            { title: "Run", href: "/run", feature_key: "engage.run" },
-            // Creative Studio — the campaign-aware AI design engine. RESTORED to a
-            // collapsible group exposing all four REAL routes (Image/Video/Library/
-            // Brand) — the W15 single-link folded the suite to a URL-only state.
-            {
-                title: "Creative Studio",
-                icon: "image",
-                list: [
-                    { title: "Image Studio", href: "/creative" },
-                    { title: "Video Studio", href: "/creative/video" },
-                    { title: "Asset Library", href: "/creative/library" },
-                    { title: "Brand Kit", href: "/creative/brand" },
-                ],
-            },
+            // Run Campaign — the founder's named multi-card audience+config launcher.
+            // Lives in GROW next to Campaigns (build → run). Relabelled "Run Campaign".
+            { title: "Run Campaign", href: "/run", feature_key: "engage.run" },
+            // ---- Ad Tools cluster (grouped together; see ROUND-2 NOTE above) --------
             { title: "Ad Automation", href: "/ads", roles: "manager", feature_key: "grow.ads" },
             { title: "Funnels", href: "/funnels", feature_key: "grow.funnels" },
             { title: "Form Builder", href: "/forms", feature_key: "grow.forms" },
+        ],
+    },
+    {
+        // CREATIVE STUDIO — ROUND-2: promoted to its OWN top-level section (was a
+        // collapsible child of Grow). The campaign-aware AI design engine, exposing all
+        // four REAL routes relabelled per spec: Image / Video / Library / Brand Kit.
+        // UNKEYED group (no module gate authored for the suite) so it is always visible;
+        // each page self-gates its writes.
+        title: "Creative Studio",
+        icon: "image",
+        list: [
+            { title: "Image", href: "/creative" },
+            { title: "Video", href: "/creative/video" },
+            { title: "Library", href: "/creative/library" },
+            { title: "Brand Kit", href: "/creative/brand" },
         ],
     },
     {
@@ -155,41 +170,22 @@ export const navigation = [
         ],
     },
     {
-        // INTELLIGENCE — where the data turns into decisions. Reports (=/analytics) is
-        // now the DEEP drill-down the Dashboard links INTO (the Dashboard owns the
-        // consolidated top-line analytics). Knowledge Base sits alongside. The old
-        // standalone "Analytics" label becomes "Reports". Keys preserved verbatim.
-        title: "Intelligence",
-        icon: "chart",
-        feature_key: "mod.intelligence",
-        list: [
-            { title: "Reports", href: "/analytics", feature_key: "intelligence.analytics" },
-            { title: "Knowledge Base", href: "/knowledge", feature_key: "intelligence.knowledge" },
-        ],
-    },
-    {
-        // MONEY — the whole money story. Billing is the hub (Overview/Vendor Costs/
-        // Spending/Audit/Plan as tabs); Payments is the collections page. The GROUP is
-        // intentionally UNKEYED: Money contains the CORE Billing surface
-        // (money.billing, is_core), so hiding the module must NEVER drop Billing. Only
-        // the non-core Payments child carries a key. All /billing/* children map to the
-        // single core money.billing page → left UNKEYED (never hidden).
+        // MONEY — ROUND-2: collapsed to a SINGLE LINK. The billing page is a tabbed hub
+        // (Overview / Vendors / Spending / Plan / Audit / Payments — §1b adds Payments
+        // to BILLING_TABS), so the rail no longer enumerates the children. The link
+        // lands on /billing/overview. UNKEYED so the CORE billing surface can never be
+        // hidden by an entitlement (Payments hides/locks at the in-page tab + the
+        // backend 404/402, not the rail).
         title: "Money",
         icon: "wallet",
-        list: [
-            { title: "Billing Overview", href: "/billing/overview" },
-            { title: "Vendor Costs", href: "/billing/vendors" },
-            { title: "Spending", href: "/billing/explorer" },
-            { title: "Audit", href: "/billing/audit" },
-            { title: "Plan", href: "/billing/plan" },
-            { title: "Payments", href: "/payments", roles: "manager", feature_key: "money.payments" },
-        ],
+        href: "/billing/overview",
     },
     {
-        // BUILD — automation + the connector substrate. Workflow orchestration,
-        // outbound webhooks, and the universal provider/connector registry. Group
-        // UNKEYED (mixed); per-child keys (automate.* / integrations.providers)
-        // preserved verbatim. (Was the old "Automate" group + the loose Integrations.)
+        // BUILD — automation + the connector substrate + the knowledge brain. Workflow
+        // orchestration, outbound webhooks, the universal provider/connector registry,
+        // and (ROUND-2: moved in from the retired Intelligence section) the Knowledge
+        // Base. Group UNKEYED (mixed); per-child keys (automate.* / integrations.* /
+        // intelligence.knowledge) preserved verbatim.
         title: "Build",
         icon: "layers",
         feature_key: "mod.automate",
@@ -200,32 +196,23 @@ export const navigation = [
             // self-host a model, or wire a tool, all from the UI. Manager-gated
             // (BYO-key is spend-sensitive).
             { title: "Integrations", href: "/integrations", roles: "manager", feature_key: "integrations.providers" },
+            // Knowledge Base — MOVED in from Intelligence (now retired). Key verbatim.
+            { title: "Knowledge Base", href: "/knowledge", feature_key: "intelligence.knowledge" },
         ],
     },
     {
-        // SUPER ADMIN — the Control Center (CL-F1, design/control-ui.md §1). The
-        // founder/super-admin's tier-0 admin plane: fleet command, per-vendor
-        // workspaces, entitlement flags, plans, fleet usage and the immutable
-        // control-audit. The WHOLE group is `roles:"admin"` so resolveNav drops it for
-        // every vendor (a vendor never receives this group in their nav tree). Each
-        // child also carries `roles:"admin"` for defense-in-depth. COSMETIC ONLY — the
-        // backend require_super_admin (which EXCLUDES the legacy static-password auth,
-        // the #1 security finding) is the real boundary; HIDDEN=404 / LOCKED=402 /
-        // unknown=DENY, fail-closed. UNCHANGED by W15 (out of consolidation scope).
+        // SUPER ADMIN — ROUND-2: collapsed to a SINGLE LINK. The control plane page
+        // renders its own sub-nav via AdminHeader (Overview/Vendors/Flags/Plans/Usage/
+        // Audit/API-Keys/Integrations as in-page tabs), so the 8-child rail group is
+        // killed. The whole entry is `roles:"admin"` so resolveNav drops it for every
+        // vendor (a vendor never receives it). COSMETIC ONLY — the backend
+        // require_super_admin (which EXCLUDES the legacy static-password auth, the #1
+        // security finding) is the real boundary; HIDDEN=404 / LOCKED=402 / unknown=DENY,
+        // fail-closed. The link lands on /super-admin (Control Overview).
         title: "Super Admin",
         icon: "lock",
+        href: "/super-admin",
         roles: "admin",
-        list: [
-            { title: "Control Overview", href: "/super-admin", roles: "admin" },
-            { title: "Vendors", href: "/super-admin/vendors", roles: "admin" },
-            { title: "Feature Flags", href: "/super-admin/flags", roles: "admin" },
-            { title: "Plans", href: "/super-admin/plans", roles: "admin" },
-            { title: "Usage Analytics", href: "/super-admin/usage", roles: "admin" },
-            { title: "Audit Logs", href: "/super-admin/audit", roles: "admin" },
-            { title: "Integrations", href: "/super-admin/integrations", roles: "admin" },
-            // API Keys — RESTORED: the one genuinely never-linked real page (MAP 1).
-            { title: "API Keys", href: "/super-admin/api-keys", roles: "admin" },
-        ],
     },
 ];
 
