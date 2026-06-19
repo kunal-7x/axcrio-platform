@@ -14,6 +14,7 @@ import datetime as _datetime_module
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import httpx
@@ -220,25 +221,66 @@ def _summarize(turns: list[dict]) -> dict:
 def _ist_time_of_day() -> dict:
     """REAL current IST time-of-day, for a time-correct (never hardcoded) greeting.
 
-    Returns {"hour": 0-23, "bucket": morning|afternoon|evening|night,
-             "en": "good morning"/..., "hi": Hinglish greeting hint}.
+    Returns {"hour": 0-23, "bucket": morning|afternoon|evening,
+             "en": "good morning"/..., "hi": ENGLISH greeting hint (kept English on
+             purpose — pure-Hindi wishes like सुप्रभात/शुभ रात्रि are BANNED)}.
     The LLM AUTHORS the greeting; this only tells it which part of the day it is so
-    "good morning/afternoon/evening" matches reality. Never raises."""
+    the ENGLISH wish "good morning/afternoon/evening" matches reality. The buckets
+    are computed in REAL IST (UTC+5:30), so 11:00 IST => 'morning'. Never raises."""
     try:
         now_ist = _datetime_module.datetime.now(
             _datetime_module.timezone(_datetime_module.timedelta(hours=5, minutes=30)))
         h = now_ist.hour
     except Exception:  # noqa: BLE001
         h = 10  # safe daytime default
+    # Labels are ENGLISH only — never emit Hindi wishes (सुप्रभात/शुभ रात्रि/नमस्ते).
     if 4 <= h < 12:
-        bucket, en, hi = "morning", "good morning", "सुप्रभात / शुभ प्रभात (subah)"
+        bucket, en, hi = "morning", "good morning", "good morning (subah — say it in ENGLISH)"
     elif 12 <= h < 17:
-        bucket, en, hi = "afternoon", "good afternoon", "नमस्ते (dopahar — afternoon)"
+        bucket, en, hi = "afternoon", "good afternoon", "good afternoon (dopahar — say it in ENGLISH)"
     elif 17 <= h < 21:
-        bucket, en, hi = "evening", "good evening", "शुभ संध्या / नमस्ते (shaam — evening)"
+        bucket, en, hi = "evening", "good evening", "good evening (shaam — say it in ENGLISH)"
     else:
-        bucket, en, hi = "night", "hello", "नमस्ते (raat — late; greet warmly, not 'good morning')"
+        # Late night / very early: still greet in clean English, never 'good morning' wrongly.
+        bucket, en, hi = "evening", "good evening", "good evening (raat — greet warmly in ENGLISH, not 'good morning')"
     return {"hour": h, "bucket": bucket, "en": en, "hi": hi}
+
+
+def _first_name(full: str) -> str:
+    """The first token of a name, for natural address ('कुणाल कुमार' -> 'कुणाल').
+    A telecaller greets by FIRST name + 'जी', never the full legal name. Never raises."""
+    return (full or "").strip().split()[0] if (full or "").strip() else ""
+
+
+# VP3: pure-Hindi greeting wishes are BANNED (the wish must be ENGLISH 'good morning'…).
+# Deterministic scrub so a banned word never reaches TTS even if the LLM disobeys: drop the
+# banned token; if that leaves the opener with no greeting, prepend the correct English wish.
+# NOTE: Python re '\b' is ASCII-only, so it does NOT anchor a Devanagari word; a trailing
+# Devanagari lookahead is also unsafe (words end in combining vowel signs). These greeting
+# words are distinctive — strip them directly + any trailing separator. Latin forms get an
+# ASCII boundary so we never clip an unrelated English word.
+_BANNED_GREETING_RE = re.compile(
+    r"(?:सुप्रभात|शुभ\s*प्रभात|शुभ\s*रात्रि|शुभ\s*संध्या|नमस्ते|नमस्कार"
+    r"|(?<![A-Za-z])(?:subratri|shubh\s*ratri|suprabhat)(?![A-Za-z]))"
+    r"[\s,!।]*",
+    re.IGNORECASE,
+)
+
+
+def _fix_opener_greeting(text: str, english_wish: str) -> str:
+    """Strip any BANNED pure-Hindi greeting from an LLM opener; ensure it opens with the
+    ENGLISH time-of-day wish. `english_wish` is e.g. 'good morning'. Never raises."""
+    try:
+        had_banned = bool(_BANNED_GREETING_RE.search(text or ""))
+        out = _BANNED_GREETING_RE.sub("", text or "").strip()
+        low = out.lower()
+        wish_present = ("good morning" in low or "good afternoon" in low or "good evening" in low)
+        if had_banned and not wish_present:
+            # we removed the greeting and there's no English wish -> lead with the correct one
+            out = f"{english_wish.capitalize()}, hello {out}".strip()
+        return re.sub(r"^[\s,!।]+", "", out).strip() or text or ""
+    except Exception:  # noqa: BLE001
+        return text or ""
 
 
 def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
@@ -247,17 +289,21 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
     """LLM-authored opening line, per-campaign + by-name, delivered via session.say().
     Identity + company + product NAME + 'abhi free?' — NO pitch. Falls back to a fixed line.
     P2: gender drives the Hindi verb form (no hardcoded feminine); AI disclosure is
-    campaign-configurable (kept by default for TRAI; `disclose=False` drops it)."""
-    name_part = f"{lead_name} जी, " if lead_name else ""
+    campaign-configurable (kept by default for TRAI; `disclose=False` drops it).
+    VP3: greeting wish is ENGLISH ('good morning/afternoon/evening') + 'hello' — pure-Hindi
+    greetings (सुप्रभात/नमस्ते) are BANNED — and the lead is addressed by FIRST name + 'जी'."""
+    fname = _first_name(lead_name)            # VP3: 'कुणाल कुमार' -> 'कुणाल' (first name only)
+    name_part = f"{fname} जी, " if fname else ""
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
     disc_phrase = (disclosure_phrase or f"{company} से").strip()
     tod = _ist_time_of_day()  # A2: REAL IST time-of-day → time-correct LLM greeting
-    # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
+    # Fallback line (used if the LLM opener call fails) — ENGLISH time-of-day wish + 'hello',
+    # NEVER 'namaste'/'suprabhat'; gender-correct + configurable disclosure; first-name address.
     if disclose:
-        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {disc_phrase} {speaking}। "
+        fallback = (f"{tod['en'].capitalize()}, hello {name_part}मैं {agent_name}, {disc_phrase} {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     else:
-        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {company} से {speaking}। "
+        fallback = (f"{tod['en'].capitalize()}, hello {name_part}मैं {agent_name}, {company} से {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     try:
         gender_clause = ("Hindi में अपने बारे में पुल्लिंग (masculine) रूप इस्तेमाल करो "
@@ -270,13 +316,20 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                        f"अपना naam {agent_name} बताओ और natural रहो, फिर ")
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
-            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। "
-            f"अभी India में {tod['bucket']} ({tod['en']}) का समय है — अगर greeting में time-of-day "
-            f"का ज़िक्र करो तो वही सही हो (जैसे {tod['hi']}); time-of-day कभी hardcode/गलत मत करना। " + gender_clause
-            + (f"caller का naam '{lead_name}' लेकर greet करो (जैसे 'नमस्ते {lead_name} जी…')। " if lead_name else "")
+            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में (पर नीचे बताए "
+            f"English शब्द English में ही रखो)। "
+            f"अभी India में {tod['bucket']} का समय है, इसलिए greeting की शुरुआत ENGLISH में "
+            f"'{tod['en']}' से करो, फिर एक soft 'hello' / 'hello जी'। time-of-day का wish हमेशा "
+            f"ENGLISH में बोलो ('good morning'/'good afternoon'/'good evening') — कभी गलत समय मत बोलो। "
+            f"ये greeting शब्द बिलकुल मना हैं, कभी मत बोलो: 'सुप्रभात', 'शुभ प्रभात', 'शुभ रात्रि', "
+            f"'शुभ संध्या', 'नमस्ते', 'नमस्कार'। " + gender_clause
+            + (f"caller को FIRST naam '{fname}' से 'जी' लगाकर greet करो (जैसे '{tod['en'].capitalize()}, "
+               f"hello {fname} जी…') — पूरा naam मत बोलो, सिर्फ़ '{fname} जी'। " if fname else "")
             + disc_clause
             + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
-            f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
+            f"सकती है?'। company और product के नाम ('{company}', '{product}') और कोई भी English "
+            f"brand/proper-noun English अक्षरों में ही लिखो — Devanagari में transliterate मत करो। "
+            f"बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
             f"Price/size/details बिलकुल मत बताओ।"
         )
         r = httpx.post(
@@ -293,6 +346,7 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             timeout=8,
         )
         text = r.json()["choices"][0]["message"]["content"].strip()
+        text = _fix_opener_greeting(text, tod["en"])  # VP3: ban Hindi greeting, force English wish
         return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("opener generation failed, using fallback: %r", exc)
@@ -392,6 +446,31 @@ def _last_assistant_is_farewell(turns: list[dict]) -> bool:
     return False
 
 
+# VP3: 'अलविदा' (Alvida/goodbye) is BANNED. Even though the close prompt forbids it,
+# this deterministic scrub guarantees it never reaches TTS if the LLM disobeys: strip the
+# word (and any trailing separator) so the rest of the warm line is still spoken.
+# '\b' is ASCII-only (won't anchor 'अलविदा'), and a trailing Devanagari lookahead is unsafe
+# (the word ends in a combining vowel sign). The word is distinctive enough to strip directly,
+# plus any separator/punctuation around it. Latin forms are guarded with an ASCII boundary.
+_ALVIDA_RE = re.compile(
+    r"[\s,–—-]*(?:अलविदा|(?<![A-Za-z])(?:alvida|alavida)(?![A-Za-z]))[।.!\s]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_alvida(text: str) -> str:
+    """Remove the banned farewell word 'अलविदा' (and transliterations) from a spoken
+    line, leaving the rest intact. Never raises; returns a stripped, tidy string."""
+    try:
+        out = _ALVIDA_RE.sub(" ", text or "").strip()
+        # tidy any leftover dangling separators at the end (', ' / '— ' / '. ')
+        out = re.sub(r"[\s,।.–—-]+$", "", out).strip()
+        # if the line now ends without terminal punctuation, add a soft '।'
+        return out or (text or "")
+    except Exception:  # noqa: BLE001
+        return text or ""
+
+
 def _goodbye_line(signal: str, agent_name: str, company: str, gender: str) -> str:
     """A warm, gender-correct closing line spoken before we end the call."""
     fem = gender != "male"
@@ -427,8 +506,11 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। {gender_clause} {intent} "
             f"सिर्फ़ एक ही छोटी (12-22 शब्द) बोली जाने वाली line दो — caller ने call में जिस भाषा "
-            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से। कोई symbol/list/दूसरा "
-            f"वाक्य नहीं, कोई नया सवाल नहीं, कोई price/legal promise नहीं।")
+            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से। "
+            f"ये शब्द बिलकुल मना है — कभी मत बोलो/लिखो: 'अलविदा' (alvida)। उसके बजाय शुक्रिया कहकर "
+            f"'आपका दिन अच्छा रहे' जैसी natural, warm line से बात ख़त्म करो। company/product और कोई भी "
+            f"English brand-name English अक्षरों में ही लिखो। कोई symbol/list/दूसरा वाक्य नहीं, कोई "
+            f"नया सवाल नहीं, कोई price/legal promise नहीं।")
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": "Bearer " + _next_groq_key()},
@@ -443,6 +525,7 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
             timeout=8,
         )
         text = (r.json()["choices"][0]["message"]["content"] or "").strip()
+        text = _strip_alvida(text)  # VP3: hard-guarantee no 'अलविदा' reaches TTS
         return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("llm close failed, using fallback: %r", exc)

@@ -6,10 +6,16 @@ delivers it, and these are PROMPT rules (not TTS knobs):
   * #1/#5  double greeting + double intro -> exactly ONE greeting; after the opener
            turn, NEVER re-greet or repeat the intro (the kernel owns the single
            greeting; the worker's spoken opener is suppressed on KERNEL_OUTBOUND).
-  * STYLE  the greeting is a time-aware English-Hindi wish ("good morning / good
-           afternoon / good evening, hello sir") — NEVER 'namaste'/'namaskar' — and
-           confirms identity BY THE LEAD'S REAL NAME ("क्या मेरी बात {name} से हो रही है?"),
-           never the generic 'सही व्यक्ति'.
+  * STYLE  the greeting wish is ENGLISH ("good morning / good afternoon / good
+           evening") + a soft "hello sir/ji" — pure-Hindi greetings are BANNED
+           ('सुप्रभात'/'शुभ रात्रि'/'नमस्ते'/'नमस्कार') — and identity is confirmed BY
+           THE LEAD'S REAL NAME ("क्या मेरी बात {name} से हो रही है?"), never the generic
+           'सही व्यक्ति'.
+  * CLOSE  the goodbye is a warm, natural LLM line ("thank you for your time, good
+           day") — the word 'अलविदा' (Alvida) is BANNED entirely.
+  * NAMES  company/product/English proper nouns stay in their original Latin/English
+           spelling (e.g. 'Agaro', 'Godrej') — never transliterated to Devanagari or
+           garbled.
   * #3a    the lead's name said again and again every line -> say the name AT MOST
            once or twice in the WHOLE call, naturally, never as a per-turn prefix.
   * #3b    the name too LOUD / too fast -> say it at the SAME normal volume + pace
@@ -32,6 +38,8 @@ import re
 NAME_DIRECTIVE_CUE = "NAME USE:"
 SINGLE_GREETING_CUE = "SINGLE GREETING:"
 NO_EMPHASIS_CUE = "no emphasis"
+CLOSING_DIRECTIVE_CUE = "CLOSING:"
+ENGLISH_NAMES_CUE = "ENGLISH NAMES:"
 
 
 def name_directive(lead_name: str = "") -> str:
@@ -77,21 +85,61 @@ def single_greeting_directive(lead_name: str = "") -> str:
     )
     return (
         f"{SINGLE_GREETING_CUE} greet the caller EXACTLY ONCE, in your opening turn, like this: "
-        "open with a warm time-of-day wish in English-Hindi mix — \"good morning\" before noon, "
-        "\"good afternoon\" till evening, else \"good evening\", followed by \"hello sir\" "
-        "(or \"hello ma'am\") — NEVER say 'namaste' or 'namaskar'. Then briefly say who you are "
-        f"and the company, {confirm} -> WAIT for their reply -> then the reason for calling + "
-        "permission. After that opening turn, do NOT greet again, do NOT say any greeting "
-        "('namaste'/'hello'/'good morning') again, and do NOT repeat your name/company/intro — "
-        "just respond to what they said and move the conversation forward. If the conversation "
-        "has already started, you have ALREADY greeted: never restate the intro or greeting."
+        "open with a warm time-of-day wish written in plain ENGLISH words — \"good morning\" "
+        "before noon, \"good afternoon\" till evening, else \"good evening\" — immediately "
+        "followed by a soft \"hello sir\" / \"hello ji\" (or \"hello ma'am\"). Keep the "
+        "time-of-day wish in ENGLISH ('good morning'/'good afternoon'/'good evening'); a tiny "
+        "Hindi-English mix around it is natural, but the wish itself MUST be the English phrase. "
+        "STRICTLY BANNED greeting words — NEVER say or write any of these: 'सुप्रभात', "
+        "'शुभ प्रभात', 'शुभ रात्रि', 'शुभ संध्या', 'subah', 'subratri', 'shubh ratri', "
+        "'namaste', 'namaskar', 'नमस्ते', 'नमस्कार'. They are forbidden as the greeting. "
+        f"Then briefly say who you are and the company, {confirm} -> WAIT for their reply -> "
+        "then the reason for calling + permission. After that opening turn, do NOT greet again, "
+        "do NOT say any greeting ('hello'/'good morning') again, and do NOT repeat your "
+        "name/company/intro — just respond to what they said and move the conversation forward. "
+        "If the conversation has already started, you have ALREADY greeted: never restate the "
+        "intro or greeting."
+    )
+
+
+def closing_directive() -> str:
+    """How to END the call (founder hard-rule): a warm, natural, LLM-authored goodbye
+    ('thank you for your time, good day' style) — but the word 'अलविदा' (Alvida) is
+    STRICTLY BANNED, along with its transliterations. The goodbye must never sound like
+    a formal 'farewell'; keep it the way a friendly Indian telecaller signs off."""
+    return (
+        f"{CLOSING_DIRECTIVE_CUE} when the call ends, sign off with ONE short, warm, natural "
+        "closing line — thank them for their time and wish them a good day (e.g. "
+        "'आपका समय देने के लिए शुक्रिया, आपका दिन अच्छा रहे' or 'thank you for your time, have "
+        "a great day'), in whatever language they spoke. STRICTLY BANNED closing word — NEVER "
+        "say or write 'अलविदा', 'alvida', or 'alavida' (it sounds like a heavy, formal "
+        "farewell). End politely and warmly, never with 'अलविदा' and never with a second pitch "
+        "or a new question."
+    )
+
+
+def english_names_directive() -> str:
+    """Company / product / brand / English proper nouns are spoken in their ORIGINAL
+    Latin/English form — never transliterated to Devanagari, never mangled into garbled
+    or Cyrillic look-alikes. Generalizes the Agaro fix to ALL English proper nouns."""
+    return (
+        f"{ENGLISH_NAMES_CUE} write every company name, product name, brand and English "
+        "proper noun in its ORIGINAL English/Latin spelling exactly (e.g. 'Agaro', 'Godrej', "
+        "'Shapoorji Pallonji', 'WhatsApp', 'iPhone') — do NOT transliterate them into "
+        "Devanagari (never 'अगारो', never 'गोदरेज'), and never render them as garbled, "
+        "broken, or Cyrillic-look-alike characters. Only the surrounding Hindi/Hinglish words "
+        "are in Devanagari; the English names stay in clean English letters so they are spoken "
+        "correctly."
     )
 
 
 def delivery_directive(lead_name: str = "") -> str:
-    """The combined single-greeting + name-use delivery block for the prompt. Threads
-    the runtime `lead_name` so the greeting confirms identity by the real name."""
-    return f"{single_greeting_directive(lead_name)} {name_directive(lead_name)}"
+    """The combined single-greeting + name-use + closing + english-names delivery block for
+    the prompt. Threads the runtime `lead_name` so the greeting confirms identity by name."""
+    return (
+        f"{single_greeting_directive(lead_name)} {name_directive(lead_name)} "
+        f"{closing_directive()} {english_names_directive()}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +182,8 @@ def text_emphasizes_name(text: str, name: str = "") -> bool:
 
 __all__ = [
     "NAME_DIRECTIVE_CUE", "SINGLE_GREETING_CUE", "NO_EMPHASIS_CUE",
-    "name_directive", "single_greeting_directive", "delivery_directive",
+    "CLOSING_DIRECTIVE_CUE", "ENGLISH_NAMES_CUE",
+    "name_directive", "single_greeting_directive", "closing_directive",
+    "english_names_directive", "delivery_directive",
     "has_name_sparingly_rule", "has_single_greeting_rule", "text_emphasizes_name",
 ]
