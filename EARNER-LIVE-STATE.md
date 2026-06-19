@@ -1,5 +1,138 @@
 # EARNER-LIVE-STATE — current live outbound earner (2026-06-19, POST-REVERT)
 
+## 🎙️ ROUND-5 VOICE-FIX — DEPLOYED 2026-06-19 ~15:23 UTC (P0 brain; voice BYTE-IDENTICAL; awaiting founder test)
+> Two brain bugs fixed on the LIVE P0 path (`KERNEL_OUTBOUND=0`, `build_system_prompt`) + a booking
+> voice-tool STAGED (flag OFF). agent.py restarted ONCE (no active calls, IST ~20:53). NEW live md5s:
+> agent.py **`c33c03e2`**, prompt.py **`c60b30f4`**, voice_kernel/brain_packs/delivery.py **`2b704ea4`**.
+> Backups `*.R5VFbak.20260619-205238` (all 3). Golden chain unchanged behind.
+
+**VOICE-SAFE PROOF (THE LAW honored):**
+- **TTS construct block byte-IDENTICAL** pre==post deploy: content-anchored md5 (`tts=elevenlabs.TTS(`
+  → `turn_detection="vad"`) = **`f0d8e332673f3fbc07c0359772469fa1`** on the OLD live file AND the new
+  one (asserted on-box, would have auto-rolled-back on mismatch). My edits are all OUTSIDE the TTS region.
+- `.env` NOT touched: `EL_STABILITY=0.55`, `ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a`, `LLM_CLOSE=1` (== golden).
+- Running PID 162145 env: **`KERNEL_OUTBOUND=0`** (P0 stays live), W5_SPEECH=0, OPENER_ALREADY_SAID=1.
+- Worker **"capsy"** re-registered (id AW_CKkA9LX59Aas); **NRestarts=0**; **0** errors/tracebacks on the
+  new PID (the 8 ERROR lines in journal = the OLD PID 140430 teardown during restart, pre-new-PID).
+- py_compile clean on the box (its own python3) BEFORE restart.
+
+**BUG 1 — OUTBOUND FRAMED AS INBOUND (fixed, no flag):** the spoken opener said "आपने … कॉल किया था"
+(YOU called) on OUTBOUND. ROOT CAUSE = `agent.py:_llm_opener` instructed `कहो कि '{product}' के बारे
+में call किया था` (ambiguous past tense → LLM read it as "आपने … कॉल किया"). The live Codename Joy
+campaign JSONs (80a939941d/b690f78cab/c17e55e9f3/d52d4ea111) are CLEAN OUTBOUND (verified on box) — NOT
+the source, so NO campaign edit (guide the LLM, never hardcode). FIX (`agent.py` `_llm_opener` sysmsg,
+~L377): explicit first-person outbound framing ("मैंने आपको … call किया है" / "आपने … में interest
+dikhaya tha इसलिए call कर रही/रहा हूँ") + ban "आपने call किया था". Reinforced in `prompt.py`
+opener_section (`OPENER_ALREADY_SAID` branch) with the same outbound rule + inbound ban. Mirrored into
+P1: `voice_kernel/brain_packs/delivery.py single_greeting_directive` (+ outbound-framing clause).
+
+**BUG 2 — REPETITIVE ENDING (fixed, no flag):** `LLM_CLOSE=1` already live so the close WAS LLM-made —
+but `agent.py:_llm_close` sysmsg literally steered it: `उसके बजाय शुक्रिया कहकर 'आपका दिन अच्छा रहे'
+जैसी … line से बात ख़त्म करो` + temp 0.4 → same goodbye every call. FIX (`agent.py` `_llm_close`,
+~L550-571): removed the canned-phrase steer; mandate a FRESH, VARIED close tied to THIS call's actual
+outcome (reads the recent transcript), natural-variation thank-you; temp 0.4 → **`CLOSE_TEMP` default
+0.8**. अलविदा ban kept as a pure ban (no suggested replacement). P1 `delivery.py closing_directive` was
+already varied/principle-only (no change). `_goodbye_line` kept as the crash-safe Groq-fail fallback.
+
+**NEW — BOOKING VOICE-TOOL (STAGED, flag OFF):** the existing in-proc `book_appointment` is gated behind
+`KERNEL_OUTBOUND=1` → DEAD on the live P0 brain. Added a SECOND tool that works on P0: `agent.py`
+`booking_http_tool_enabled()` (flag **`BOOKING_HTTP_ENABLED`**, default OFF, INDEPENDENT of the kernel) +
+`_do_booking_http()` → resolves the spoken slot to ISO (reuses `resolve_slot_start`) and **POSTs
+`http://127.0.0.1:8209/booking/book` `{phone, lead_name, datetime_iso, campaign_id, notes}`** (the R5
+contract; endpoint built in parallel by the backend agent) + a `book_site_visit(when, notes)` function-
+tool the LLM calls mid-call when the caller agrees a slot, + a gated prompt nudge. Function-tool ONLY —
+nothing in the TTS/voice path. Fully wrapped; any failure returns a spoken-safe "couldn't book" string
+and never claims a false booking. Currently OFF (`BOOKING_HTTP_ENABLED` unset) → byte-identical to today.
+
+**FOUNDER TEST (one outbound call):** (1) opener frames OUTBOUND ("मैंने आपको … call किया है", never
+"आपने … कॉल किया था"); (2) the closing is varied + natural + references the real outcome (NOT the same
+"आपका दिन अच्छा रहे" every time); (3) to test booking: founder/we flip `BOOKING_HTTP_ENABLED=1` (drop-in,
+needs `/booking/book` live) then say "book my site visit tomorrow 5pm" → real booking + natural confirm.
+
+**FLIP THE BOOKING TOOL ON (after the endpoint is live):**
+```
+sudo sed -i '/^Environment=KERNEL_OUTBOUND=0$/a Environment=BOOKING_HTTP_ENABLED=1' /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent
+```
+(optional: `BOOKING_HTTP_URL`, `BOOKING_HTTP_TOKEN`, `CLOSE_TEMP`). Per-fix knobs: `CLOSE_TEMP` tunes
+close variety with no redeploy.
+
+**ROLLBACK (per-file, then restart):**
+```
+ssh … 'cd /opt/famit-agent && cp agent.py.R5VFbak.20260619-205238 agent.py && cp prompt.py.R5VFbak.20260619-205238 prompt.py && cp voice_kernel/brain_packs/delivery.py.R5VFbak.20260619-205238 voice_kernel/brain_packs/delivery.py && sudo systemctl restart famit-agent'
+```
+Ultimate golden: `_GOLDEN_ROUND5_20260619-140341/` + `*.PERFECTgolden.20260618-210445`. STATE ledger: `caps/ROUND5_VOICEFIX_STATE.md`.
+
+
+## 🔌 ROUND-5 P4b — BACKEND WIRING #2 (famit-caller ONLY) — DEPLOYED 2026-06-19 ~15:40 UTC — earner untouched by me
+> caller.py + booking/{router,core,config,calendar_sync}.py + var/control/registry.json (all ADDITIVE).
+> **famit-caller restart ONLY** (NRestarts=0, /health 200, 0 errors). **I never touched agent.py / famit-agent.**
+> ⚠ NOTE: live `agent.py` md5 = **`c33c03e2`** (the PARALLEL ROUND-5 VOICE-FIX session changed it 15:23 UTC, BEFORE my
+> caller restart; it was `c33c03e2` both before AND after my restart, so P4b did not alter it — NOT `48bc2b5a` anymore).
+> famit-agent active, worker "capsy" registered, 0 errors. Live caller.py md5 `6f13c93b`.
+> Drop-in `famit-caller.service.d/r5p4b.conf`: `FEATURE_BOOKING=1`+`RETRY_SCHEDULER_ENABLED=1`.
+> Backups (TS=20260619-153344): `caller.py.R5BEbak.*`, `booking/{router,core,config,calendar_sync}.py.R5BEbak.*`,
+> `var/control/registry.json.R5BEbak.*`.
+
+**PER-ITEM (all DONE + curl-proven over real HTTP; token = legacy /login password=CALLER_PASS):**
+1. **BOOKING real-time + GCal — DONE.** Booking router MOUNTED (`FEATURE_BOOKING=1`). `POST /booking/book` now accepts the
+   **voice-tool contract** `{phone, lead_name, datetime_iso, campaign_id, notes}` (aliases lead_name→name, datetime_iso→
+   slot_start) AND auto-provisions the tenant's single default resource (`core.ensure_default_resource`, idempotent find-or-
+   create, name "Appointments") so a phone+time book "just works" with no resource_id. PG tables already existed (RLS FORCE-on).
+   PROOF: book → `bk_f37577da5216` persisted (auto-resource `res_6ecfcb44b12e`; a 2nd book reused the SAME resource; IST 15:00
+   → UTC 09:30 correct); `GET /booking/bookings` lists it. **GCal**: `calendar_sync.py` was already fully built + wired into
+   `core.book` (push/update/cancel), DORMANT-until-creds — verified `calendar_configured:false`. Added env-name ALIASES so
+   EITHER `GOOGLE_OAUTH_*` OR `GOOGLE_CALENDAR_*` works.
+2. **CALLBACKS auto-trigger — DONE + ENABLED (`RETRY_SCHEDULER_ENABLED=1`).** Chose the **legacy flat-file path**
+   (`retry_queue.json`) over W10 because it is **DURABLE across restarts** (W10's CbStore is in-memory only — would lose a
+   "call me at 5pm" on a caller restart). Re-implemented the exact rebuild policy the kill-switch waited for. **SAFETY CAPS (all
+   enforced):** `RETRY_MAX_ATTEMPTS_CAP=2` (clamps any per-campaign retry_max DOWN — max 2 redials then EXPIRE),
+   **`CALLBACK_TENANT_DAILY_CAP=50`** per-tenant/day GLOBAL auto-fire ceiling (durable counter `var/autofire_counts.json`,
+   anti-runaway independent of the per-lead cap), **DND/window 09:00-21:00 IST** (TRAI), **NCPR national-register scrub-before-
+   dial fail-closed**, **opt-out suppression skip**, **dedup** (one row per phone+campaign+tenant), and **WARM-LEAD (score 40-69)
+   auto next-day follow-up** at 11:00 IST (clamped to window; only on a REAL conversation, not on a no-answer which already
+   retries; skipped when an explicit callback_at exists). **Every auto-fire is logged** (`autofire.dial`). PROOF: scheduler runs
+   clean (0 exceptions); at 21:10 IST the window-gate correctly SKIPS due items (no real dial); `/callbacks` shows 2 REAL in-call
+   callbacks; today's auto-fires = admin:1 (≪50, no runaway); new enqueues carry max_attempts=2. (Legacy fired-row is REMOVED on
+   fire → no re-fire loop; re-enqueue only via the redial's own finalize, bounded by cap 2.)
+3. **AI-MANAGER end-to-end — VERIFIED (no code change; box `endpoints.py` `7c2ce93f` from P4 already implements it).**
+   `GET/POST /ai-manager/numbers` = 200 (NOT 404) → persists to `aim_numbers.jsonl` AND registers for inbound routing; the
+   inbound-routing READ (`GET /ai-manager/numbers/lookup`, service-token = `AIM_SERVICE_TOKEN`, set) resolves a number →
+   tenant+role+grants once VERIFIED. `POST /ai-manager/pin/set {user_id,pin,admin}` = 200 (NOT 422; sets the firewall tenant
+   step-up PIN). LLM "Try it": read "how many calls today" → **"Aaj 14 calls huye hain"** (grounded, no jargon, no PIN); a
+   recognized WRITE → `eliciting`/confirm flow (NEVER executes without the deterministic confirm/PIN/execute path). **GAP
+   (founder/separate step):** OTP sender DORMANT → a registered number stays `verified=False` → inbound routing only activates
+   after verify. The `aim_voice_agent` inbound SERVICE that calls `/numbers/lookup` is SEPARATE (not touched here).
+4. **SUPER-ADMIN script-lock + render-brain-lock — DONE.** Added two entitlement keys to `registry.json` (102 features now):
+   `grow.campaigns.script` (campaign SCRIPT→brain) + `grow.campaigns.render_brain` (the dry-run render-brain), BOTH
+   `default_mode:"on"` (unlocked by default → existing vendors keep their scripts; EARNER-SAFE). New `caller.py` helper
+   `_feature_block(tenant, key)` (mirrors the control middleware: master-flag-off/admin/engine-absent → pass; locked→402;
+   hidden→404) gates `GET /campaigns/{cid}/prompt-preview` (script-lock) + `POST /campaigns/{cid}/dry-run` (render-brain-lock) —
+   dynamic `{cid}` segment means the prefix middleware can't target them, hence explicit gating. PROOF (full cycle over real HTTP
+   on vendor `21d0a13603da`): default **200** → admin `PUT …/entitlements/grow.campaigns.script mode=locked` → **402**
+   `{error:locked,…}` → clear override → **200**; render_brain lock is INDEPENDENT (locking brain leaves the script at 200).
+
+**FOUNDER ACTIONS (exactly what to provide):**
+- **Google Calendar OAuth — to light up GCal sync**, set on the famit-caller box THREE values + ONE flag:
+  `GOOGLE_OAUTH_CLIENT_ID=<OAuth client id>`, `GOOGLE_OAUTH_CLIENT_SECRET=<OAuth client secret>`,
+  `GOOGLE_OAUTH_REFRESH_TOKEN=<refresh token for the target calendar, scope https://www.googleapis.com/auth/calendar>`, and
+  `BOOKING_CALENDAR_SYNC=1` (optionally `GOOGLE_CALENDAR_ID=primary`). Then restart famit-caller — bookings auto-create calendar
+  events from that point. NO interactive authorize/callback route — supply a pre-minted refresh token (one-time, e.g. Google
+  OAuth Playground for the calendar scope). (The code also accepts `GOOGLE_CALENDAR_*`-prefixed names.)
+- **AIM OTP backend** — wire an OTP sender so `POST /ai-manager/numbers/{id}/verify` can verify ownership; until then a
+  registered team number stays `verified=False` and inbound calls to it are NOT yet routed to the AI-Manager.
+
+**DEFERRED:** (a) booking voice-TOOL inside OUTBOUND `agent.py` (mid-call `/booking/book`) = earner-gated, the PARALLEL VOICE-FIX
+session owns it (already staged, flag OFF). (b) `aim_voice_agent` inbound-routing flip (consumes `/numbers/lookup`) = separate
+gated step. (c) two harmless admin-tenant test bookings remain (no DELETE-booking route).
+
+**ROLLBACK (famit-caller only; earner never involved):**
+- Flags off: `ssh … 'sudo rm /etc/systemd/system/famit-caller.service.d/r5p4b.conf && sudo systemctl daemon-reload && sudo
+  systemctl restart famit-caller'` → booking unmounts, scheduler off (byte-identical to pre-P4b).
+- Files: `cp *.R5BEbak.20260619-153344` back for caller.py + booking/{router,core,config,calendar_sync}.py +
+  var/control/registry.json, then restart famit-caller.
+- Granular: `RETRY_MAX_ATTEMPTS_CAP`/`CALLBACK_TENANT_DAILY_CAP`/`WARM_LEAD_AUTOSCHEDULE=0` env knobs; script-lock = clear the
+  per-vendor override. State ledger: `caps/.r5p4b_work/STATE.md`.
+
 ## 🔌 ROUND-5 P4 — BACKEND WIRING (famit-caller ONLY) — DEPLOYED 2026-06-19 ~15:00 UTC — earner byte-identical
 > caller.py + ai_manager/endpoints.py (additive new fields/routes). **famit-agent NEVER restarted**;
 > `agent.py` md5 **`48bc2b5a`** unchanged start→end; famit-agent active, worker "capsy" taking jobs

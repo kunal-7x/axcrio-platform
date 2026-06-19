@@ -473,6 +473,19 @@ RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
 # rebuild lands. First-calls (run_job) are UNAFFECTED — only auto-retry/callback dialing is gated.
 RETRY_SCHEDULER_ENABLED = (cfg_get("RETRY_SCHEDULER_ENABLED", "0") or "0").strip().lower() \
     in ("1", "true", "yes", "on")
+# ── R5-P4b auto-callback SAFETY CAPS (the "rebuild policy" the kill-switch above waited for) ──
+# Hard ceiling on auto-retry attempts per lead (clamps any per-campaign retry_max_attempts DOWN).
+# Default 2 = max two redials of a no-answer lead, then the lead EXPIRES (removed from queue).
+RETRY_MAX_ATTEMPTS_CAP = max(0, int(cfg_get("RETRY_MAX_ATTEMPTS_CAP", "2") or "2"))
+# Per-TENANT global daily ceiling on AUTO-fired retries+callbacks (independent of the per-lead cap
+# and the 500/day campaign dial cap). A runaway can NEVER exceed this many auto-dials/tenant/day.
+CALLBACK_TENANT_DAILY_CAP = max(0, int(cfg_get("CALLBACK_TENANT_DAILY_CAP", "50") or "50"))
+# Warm-lead (score 40-69) AUTO next-day follow-up: schedule ONE callback the next day at this IST
+# hour (clamped into the 09-21 window). Default ON; set WARM_LEAD_AUTOSCHEDULE=0 to disable.
+WARM_LEAD_AUTOSCHEDULE = (cfg_get("WARM_LEAD_AUTOSCHEDULE", "1") or "1").strip().lower() \
+    in ("1", "true", "yes", "on")
+WARM_LEAD_FOLLOWUP_HOUR = min(20, max(9, int(cfg_get("WARM_LEAD_FOLLOWUP_HOUR", "11") or "11")))
+AUTOFIRE_COUNT_FILE = VAR / "autofire_counts.json"  # durable per-tenant-per-day auto-fire counter
 WA_LOG_FILE = VAR / "wa_log.json"             # P1.A whatsapp send log
 WA_THREADS_DIR = VAR / "wa_threads"           # WAVE A2 per-contact WhatsApp conversation state
 WA_UNROUTED_TENANT = "_unrouted"              # P0-LEAK: quarantine bucket for unknown inbound numbers (never ADMIN_ID)
@@ -747,6 +760,30 @@ async def _enforce_entitlement_mw(request: Request, call_next):
     # mode == "on" (or any unexpected-but-non-blocking value already normalized by the
     # engine to hidden above) -> proceed.
     return await call_next(request)
+
+
+# ── R5-P4b: per-FEATURE entitlement gate for DYNAMIC-PATH routes the prefix middleware can't target ──
+# The choke-point above maps a path to a feature via LITERAL api_prefixes, so it cannot single out a
+# route with a dynamic id segment in the MIDDLE (e.g. /campaigns/{cid}/prompt-preview — the campaign
+# SCRIPT, and /campaigns/{cid}/dry-run — the RENDER-BRAIN). For those, the route calls this helper
+# explicitly. SAME semantics as the middleware: master-flag off / engine absent / admin tenant -> pass
+# (degrade-to-on, resting byte-identical); locked -> 402 (+upsell); hidden -> 404 (no existence leak).
+def _feature_block(tenant: Optional[dict], feature_key: str):
+    """Return a JSONResponse to BLOCK (402 locked / 404 hidden), or None to ALLOW. Never raises."""
+    if not CONTROL_ENABLED or _ent_mod is None or not tenant:
+        return None
+    if tenant.get("is_admin"):
+        return None  # admins manage entitlements; never gated by their own feature flags
+    try:
+        mode = _ent_mod.evaluate(tenant.get("tenant_id") or "", feature_key)
+    except Exception:  # noqa: BLE001 — engine error => do NOT mask the route; degrade to allow
+        return None
+    if mode == "hidden":
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    if mode == "locked":
+        return JSONResponse({"error": "locked", "feature": feature_key, "upgrade": True},
+                            status_code=402)
+    return None
 
 
 # In-memory live concurrency per tenant (P0.7). Source of truth for active SIP calls.
@@ -1910,6 +1947,29 @@ async def _remove_retry(retry_id: str):
         _write(RETRY_FILE, store)
 
 
+# ── R5-P4b per-tenant AUTO-FIRE daily counter (durable, anti-runaway) ──────────────────────────
+def _autofire_count(tenant_id: str, day: str = "") -> int:
+    """How many auto-retries/callbacks this tenant has fired today (IST). Durable across restarts."""
+    day = day or _today_iso()
+    rec = _read(AUTOFIRE_COUNT_FILE, {}) or {}
+    return int((rec.get(tenant_id) or {}).get(day, 0) or 0)
+
+
+async def _autofire_bump(tenant_id: str, day: str = "") -> int:
+    """Increment + persist the tenant's auto-fire counter for today. Returns the NEW count.
+    Self-prunes days older than ~3d so the file stays tiny. Lock-guarded shared-store write."""
+    day = day or _today_iso()
+    async with _STORE_LOCK:
+        rec = _read(AUTOFIRE_COUNT_FILE, {}) or {}
+        tmap = dict(rec.get(tenant_id) or {})
+        tmap[day] = int(tmap.get(day, 0) or 0) + 1
+        # prune: keep only the last few day-keys (today + yesterday + day-before).
+        keep = sorted(tmap.keys())[-3:]
+        rec[tenant_id] = {k: tmap[k] for k in keep}
+        _write(AUTOFIRE_COUNT_FILE, rec)
+        return tmap[day]
+
+
 # ---------- P1.A WhatsApp follow-up (fire-and-forget stub) ----------
 async def _send_whatsapp(tenant_id, rec, outcome, camp_fields):
     """Optional per-campaign WhatsApp follow-up via a BSP. Never blocks/raises into the loop."""
@@ -3065,11 +3125,15 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
             except Exception:  # noqa: BLE001 — an enqueue can NEVER break the call-finalize path
                 _cb_owned = False
         if not _cb_owned:
-            # P0.5 retry / callback enqueue (only when not opted out) — LEGACY path (flag OFF)
-            maxa = int((camp_fields or {}).get("retry_max_attempts", 3))
+            # P0.5 retry / callback enqueue (only when not opted out) — LEGACY path.
+            # R5-P4b: clamp the per-campaign retry_max DOWN to the global hard cap (default 2).
+            maxa = min(RETRY_MAX_ATTEMPTS_CAP, int((camp_fields or {}).get("retry_max_attempts", 3)))
             backoff = (camp_fields or {}).get("retry_backoff_mins") or [120, 360, 1440]
             attempts = int(it.get("attempt", 0))
             cb = tr.get("callback_at")
+            # R5-P4b NO-callback-on-pickup: a user-requested "call me at X" is honored; but do NOT
+            # schedule an auto-callback if the call already REACHED a terminal-good outcome
+            # (answered+converted/booked) AND no explicit callback time was asked — that was the T0 bug.
             if cb:
                 await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
                                      attempts, maxa, cb, "callback")
@@ -3166,6 +3230,28 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                 pass
         except Exception as exc:  # noqa: BLE001
             _lg_handoff.warning("hot-lead notify_handoff_team failed: %r", exc)
+
+    # ── R5-P4b WARM-LEAD (40-69) AUTO next-day follow-up ──────────────────────────────────────────
+    # A warm lead from a REAL conversation (not a no-answer — those already get a retry) gets ONE
+    # auto-scheduled callback the NEXT day at WARM_LEAD_FOLLOWUP_HOUR (clamped into the 09-21 window),
+    # UNLESS the caller already asked for a specific time (callback_at owns that). Dedup is handled by
+    # _enqueue_retry (one row per phone+campaign+tenant). Bounded by the per-tenant daily cap at fire.
+    # Fire-and-forget; flag-gated; NEVER blocks/raises into the dial loop.
+    if (WARM_LEAD_AUTOSCHEDULE and rec.get("outcome") in _REAL_CONVO
+            and rec.get("outcome") != "opt_out" and 40 <= _score < 70
+            and not tr.get("callback_at")):
+        try:
+            _nd = (now_ist() + timedelta(days=1)).replace(
+                hour=WARM_LEAD_FOLLOWUP_HOUR, minute=0, second=0, microsecond=0)
+            _nd = _clamp_to_window(_nd, camp_fields)
+            await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
+                                 0, RETRY_MAX_ATTEMPTS_CAP, _nd.isoformat(), "warm_followup")
+            await _emit_webhook(tenant_id, "callback.scheduled",
+                                {"phone": rec.get("phone"), "campaign_id": cid,
+                                 "name": rec.get("name", ""), "when": _nd.isoformat(),
+                                 "reason": "warm_followup", "score": _score})
+        except Exception:  # noqa: BLE001 — a warm-schedule fault must NEVER disrupt finalize
+            pass
 
     # ── COMMUNICATION (W1-P3): post-call founder hot-lead alert + contact auto-summary ──
     # COMMUNICATION-MASTER-PLAN §2.3 / §1.1 / §8 WAVE 1. EARNER LAW (the red-team mandate):
@@ -5168,6 +5254,10 @@ async def campaign_prompt_preview(request: Request, cid: str):
     t = resolve_tenant(request)
     if not t:
         return need_auth()
+    # R5-P4b SUPER-ADMIN SCRIPT-LOCK: a locked vendor cannot see/serve its campaign SCRIPT brain.
+    _blk = _feature_block(t, "grow.campaigns.script")
+    if _blk is not None:
+        return _blk
     d = get_campaign_for(cid, t)
     if not d:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -5201,6 +5291,10 @@ async def campaign_dry_run(request: Request, cid: str,
     t = resolve_tenant(request)
     if not t:
         return need_auth()
+    # R5-P4b SUPER-ADMIN RENDER-BRAIN-LOCK: a locked vendor cannot render/serve the campaign brain.
+    _blk = _feature_block(t, "grow.campaigns.render_brain")
+    if _blk is not None:
+        return _blk
     d = get_campaign_for(cid, t)
     if not d:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -8129,16 +8223,42 @@ async def scheduler_loop():
                     except Exception:  # noqa: BLE001
                         pass
             elif RETRY_SCHEDULER_ENABLED:
-                # LEGACY flat-file dial (cadence OFF). Unchanged behavior.
+                # LEGACY flat-file dial (the R5-P4b rebuilt policy: ≤RETRY_MAX_ATTEMPTS_CAP retries,
+                # 09-21 IST window, NCPR/DND fail-closed, opt-out skip, dedup, per-tenant daily cap).
                 due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
+                _autofire_today: dict = {}   # tenant -> remaining auto-fire budget this tick
                 for r in due:
+                    _tid_r = r["tenant_id"]
                     camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
                     if not _in_window(camp_fields)[0]:
-                        continue                                   # respect calling window
-                    if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
+                        continue                                   # respect calling window (TRAI 09-21)
+                    if norm(r["phone"]) in _suppressed_set(_tid_r):
                         await _remove_retry(r["id"]); continue     # opted out since enqueue
+                    # R5-P4b: NCPR / DND national-register scrub-before-dial (fail-closed): a hit OR
+                    # an unscrubbed (cache-miss) number is NOT dialed — kept for re-scrub next tick.
+                    if _NCPR_SCRUBBER is not None:
+                        try:
+                            _scr = _NCPR_SCRUBBER.scrub(_tid_r, r["phone"])
+                        except Exception:  # noqa: BLE001 — fail-closed on a Tier-A check error
+                            _scr = None
+                        if _scr is None or _scr.block:
+                            continue                               # NCPR-listed/unscrubbed -> skip (retry later)
+                    # R5-P4b: per-tenant GLOBAL daily auto-fire ceiling (anti-runaway, durable).
+                    if _tid_r not in _autofire_today:
+                        _autofire_today[_tid_r] = max(0, CALLBACK_TENANT_DAILY_CAP - _autofire_count(_tid_r))
+                    if _autofire_today[_tid_r] <= 0:
+                        continue                                   # tenant hit daily cap -> leave queued
+                    _autofire_today[_tid_r] -= 1
+                    await _autofire_bump(_tid_r)
                     _spawn_retry_job(r)
                     await _remove_retry(r["id"])
+                    try:  # log EVERY auto-fire (founder requirement) — tail only, never the full number.
+                        import logging as _lg_af
+                        _lg_af.getLogger("famit-caller").info(
+                            "autofire.dial tenant=%s phone_tail=%s reason=%s attempts=%s",
+                            _tid_r, str(r["phone"])[-4:], r.get("reason", ""), int(r.get("attempts", 0)))
+                    except Exception:  # noqa: BLE001
+                        pass
             # Reconciliation sweep: the agent writes the transcript on shutdown, which can
             # LAG run_job's finalize (which then read an empty transcript -> misclassified as
             # no_human/0). Re-reconcile any done call whose transcript now has real data but
@@ -8185,7 +8305,7 @@ async def scheduler_loop():
                         except Exception:  # noqa: BLE001
                             _cb_recon_owned = False
                     if not _cb_recon_owned:
-                        maxa = int(camp_fields.get("retry_max_attempts", 3))
+                        maxa = min(RETRY_MAX_ATTEMPTS_CAP, int(camp_fields.get("retry_max_attempts", 3)))
                         backoff = camp_fields.get("retry_backoff_mins") or [120, 360, 1440]
                         cb = tr.get("callback_at")
                         already = any(r.get("phone") == norm(phone) and r.get("campaign_id") == cid
