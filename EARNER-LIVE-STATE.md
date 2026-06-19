@@ -1,5 +1,174 @@
 # EARNER-LIVE-STATE — current live outbound earner (2026-06-19, POST-REVERT)
 
+## 🔌 ROUND-5 P4 — BACKEND WIRING (famit-caller ONLY) — DEPLOYED 2026-06-19 ~15:00 UTC — earner byte-identical
+> caller.py + ai_manager/endpoints.py (additive new fields/routes). **famit-agent NEVER restarted**;
+> `agent.py` md5 **`48bc2b5a`** unchanged start→end; famit-agent active, worker "capsy" taking jobs
+> (a live call landed mid-deploy 14:51). famit-caller restart ONLY, NRestarts=0, /health 200, 0 errors.
+> Live md5s: caller.py `f7d48c18`, ai_manager/endpoints.py `7c2ce93f`.
+> Backups: `caller.py.R5P4bak.20260619-144346`, `ai_manager/endpoints.py.R5P4bak.20260619-144346`.
+
+**PER-ITEM (all DONE + curl-proven over real HTTP, token = legacy /login admin):**
+1. **Dashboard data — DONE.** `/report` now carries `temperature_distribution:[{tier,count,pct}]` +
+   `hot_leads:[{call_id,name,phone_masked,score,conversion_prob,summary,next_action,...}]` (panel rendered
+   empty before). DERIVED from the SAME live read-model already in the report (`totals.{hot,warm,cold,dead}`
+   + `_REPSVC.hot_leads`) so they can never diverge from the KPIs. New caller.py helper
+   `_enrich_report_temperature`. PROOF: `/report?preset=today` → `temperature_distribution`=[hot:2,…],
+   `hot_leads`=2 real rows (name "kunal kumar", score 80, real summary). Score normalized 0-100 (was 8000).
+2. **CRM "unknown number" — DONE.** `_finalize_call` now `await asyncio.to_thread(crm.upsert_contact(tenant,
+   phone, name=))` after lead-scoring (`crm.upsert_contact` had ZERO callers). Idempotent; name only fills a
+   blank (manual rename preserved); best-effort, never breaks finalize. PROOF: exercised the same in-service
+   `upsert_contact` via live `PUT /contacts/<phone>` → created+read-back a contact (PG available in-service;
+   standalone scripts can't init db.engine, but `/contacts` returns 18 real rows so the live path works).
+   Takes effect on NEW calls going forward (existing pre-deploy calls stay as-is).
+3. **Sortable columns — DONE.** `/calls` + `/contacts` + `/leads` accept `sort_by` + `order` (the panel sends
+   them). calls: name|campaign_name|status|started_at|duration_s|interest. contacts: translated to crm
+   `sort` (score|stage|last_activity_at) + post-sort for name/last_outcome + `order`. leads: sort_by wins over
+   legacy `sort`. Fully back-compat. PROOF: `/calls?sort_by=duration_s&order=desc`→[404,284,280];
+   `/contacts?sort_by=score&order=desc`→[100,80,80]; `/leads?sort_by=score&order=desc`→[100,80].
+4. **AI-Manager — DONE.** (FEATURE_AI_MANAGER=1 already live → router mounted; `/numbers` POST already
+   existed & works, GET=401 not 404.)
+   - **PIN-set route ADDED** (`POST /ai-manager/pin/set` was 404 → now 200). Accepts `{user_id, pin, admin}`
+     (the `admin` field no longer 422s); sets the firewall TENANT step-up PIN (`firewall.set_pin`, 4-12 chars,
+     salted). Also added `POST /ai-manager/pin/verify`. PROOF: pin/set {pin:4729,admin:true}→`{ok:true,
+     pin_set_at}`; pin/verify→`{ok:true}`.
+   - **"Try it" is LLM-DRIVEN** (`/commands/test`). New `_aim_llm_answer` runs for ANY read/ambiguous query:
+     hydrates the shared read-model on the main loop, pulls REAL live numbers (`caller._REPSVC` report+hot_leads
+     — SAME data as the dashboard), and asks Groq (`AIM_LLM_PROVIDER=groq` already live) for a NATURAL reply.
+     **No jargon** (`intent:""`, summary is plain Hinglish). Write-commands are NOT intercepted → keep the
+     deterministic confirm/PIN/execute safety flow. Also scrubbed the residual `analytics.read` jargon from the
+     query fallback. PROOF: "how many calls today"→**"Aaj humne 13 calls kiye hain."**; "show me my hot leads"→
+     **"You have 3 hot leads, including कुणाल कुमार…Codename Joy 3.0…"**; write "call all my hot leads"→
+     `status:needs_pin, requires_confirmation:true` (deterministic flow intact).
+5. **Callbacks show — DONE (verify-only, no change needed).** An in-call "call me at 5pm" is already extracted
+   by the agent's Groq summary (`callback_at`) → `_finalize_call` legacy path enqueues into `RETRY_FILE`
+   (`reason="callback"`) → `/callbacks` returns it. `CALLBACK_CADENCE_ENABLED` unset (OFF) so the legacy path
+   owns it; `RETRY_SCHEDULER_ENABLED=0` kept (NOT auto-fired — just VISIBLE). PROOF: `/callbacks` returns the
+   real in-call callback "kunal kumar" +917861019021 @20:03 reason=callback.
+
+**DEFERRED / FOUNDER-FLAGGED (none block P4):** (a) FE-only follow-ups (P5) consume these routes. (b) AIM OTP
+backend (`/numbers/verify` + pin/reset OTP) stays DORMANT until an OTP sender is wired — pin/set works without
+it. (c) `phone_masked` is empty for some hot_leads (pre-existing reporting-store gap, not P4). (d) Two benign
+test contacts (+9199990001 11/22, admin tenant, "R5P4 … Test/Proof") remain — no DELETE-contact route exists
+to remove them; harmless, do not affect the earner or real data.
+
+**GIT:** `droplet_work/caller.py` is TRACKED → committed selectively (`f5b1600`, gitleaks 0, no `-A`, pre-commit
+clean). `ai_manager/endpoints.py` is git-IGNORED (droplet scratch) → deployed + backed up on-box, recorded here
+(not force-added). State ledger: `caps/.r5p4_work/STATE.md`.
+
+**ROLLBACK (famit-caller only; earner never involved):**
+`ssh … 'cd /opt/famit-agent && sudo cp caller.py.R5P4bak.20260619-144346 caller.py && cp
+ai_manager/endpoints.py.R5P4bak.20260619-144346 ai_manager/endpoints.py && sudo systemctl restart famit-caller'`
+Granular: the LLM "Try it" path is gated `AIM_TRYIT_LLM` (default 1) — set `AIM_TRYIT_LLM=0` to fall back to the
+deterministic card with no restart-of-behavior.
+
+## 🧪 ROUND-5 P1 — LEAN KERNEL BRAIN **STAGED (DORMANT)** (2026-06-19 14:25 UTC) — NOT LIVE, earner still on P0
+> The lean kernel-ON brain is BUILT + offline-proven on the box, but **`KERNEL_OUTBOUND=0` STAYS 0** —
+> the live earner runs the P0 `build_system_prompt` brain the entire time. These `voice_kernel/*` edits
+> are INERT while the flag is 0 (the OFF path never imports the kernel packs). famit-agent was **NOT
+> restarted**; agent.py md5 still **`48bc2b5a`**, `.env` `EL_STABILITY=0.55` + voice_id UNCHANGED,
+> service active, NRestarts=0. Founder validates the P0 brain FIRST; then a gated flip tests THIS P1 brain.
+
+**WHAT CHANGED (6 files, box `/opt/famit-agent/voice_kernel/`, all backed up `*.R5P1bak.20260619-142001`):**
+- **P1.1 premature-closure fix** — `integrations/outbound.py`: `safety_rules=""` (was line 234) → new
+  `SHARED_RULES_ENGAGEMENT` constant wired into `ContextEngineImpl(safety_rules=…)`. Restores the dropped
+  engagement discipline ("ONE reply THEN STOP / NEVER exit while the caller is buying/asking / close ONLY
+  when the outcome is clearly resolved / ONE warm closing line then stop"). Flows L0 `safety_rules` →
+  `build_structural_identity` → `IdentityLayer.safety_rules` → renders FIRST in the prompt.
+- **P1.2 de-baited closing** — `brain_packs/delivery.py` `closing_directive()`: removed the ready-to-speak
+  farewell EXAMPLE (`'…आपका दिन अच्छा रहे'` / `'thank you…have a great day'`) that `agent.py _FAREWELL_MARKERS`
+  matched into a real hangup → now a PRINCIPLE only (close only when resolved, ONE self-authored line, no recited
+  phrase; `अलविदा` ban kept).
+- **P1.3 card-script leak killed** — `packet.py` `_render_card_body()`: campaign `negotiation_ladder`/`closing_lines`
+  (the `NEGOTIATION:`/`CLOSE:` scripted lines the LLM parrots) now gated behind `CARD_SCRIPTS` (DEFAULT OFF) via
+  new `_card_scripts_enabled()`. Campaign FACTS (PRODUCT/ABOUT/OFFER/USPS/TALKING POINTS/QUALIFY/OBJECTIONS) still
+  render — "facts, not scripts."
+- **P1.4 shrink to ≤2k** — pack selection was ALREADY one-use-case + one-industry (no 11+6 concat; the bulk was
+  the L1 directive stack). Compressed `brain_packs/objection.py` hooks (482→377 tok), `brain_packs/language.py`
+  rendering rules (253→176 tok), `delivery.py` greeting/name/closing/english-names directives, and DROPPED the
+  redundant pack `CLOSING:` style line in `brain_packs/provider.py` (the close discipline now lives once, in the
+  engagement block + `closing_directive`). Every guard preserved (mode-tilt `OPENING:` kept).
+- **P1.5 RAG gate OFF** — `integrations/outbound.py`: the unconditional `build_rag_runtime(corpus=KbCorpusBackend())`
+  is now wrapped in `if w4_rag_inject_enabled()` (`RAG_INJECT_ENABLED` DEFAULT OFF). When off, the kernel keeps its
+  default `NullRagRuntime` → **no per-turn corpus retrieval can fire at ANY stage**. Facts-only re-enable is a later phase.
+
+**OFFLINE RENDER PROOF (subprocess `KERNEL_OUTBOUND=1`, real RE-sales campaign + lead; token = ceil(chars/3.5), the kernel formula):**
+| metric | BEFORE (kernel brain as-found) | AFTER (lean P1) |
+|---|---|---|
+| assembled prompt tokens | **2295** (chars 8030) | **1974** (chars 6907) ✅ ≤2000 |
+| `safety_rules` engagement block present | ❌ False (was `""`) | ✅ **True** |
+| baited ready-to-speak farewell line | ❌ True (`आपका दिन अच्छा रहे`/`have a great day`) | ✅ **False** |
+| `NEGOTIATION:`/`CLOSE:` card-script | ❌ True | ✅ **False** |
+| per-turn corpus RAG (`RELEVANT:` block) @GREET & @QUALIFY | n/a | ✅ **None** (rag impl = `NullRagRuntime`) |
+
+- **Guard-preservation (14/14 PASS):** single-greeting cue + name-sparingly/no-emphasis cue (the W17 detectors),
+  name-confirm-by-real-name, English time-of-day greeting + namaste/namaskar ban, AI block-list guardrail,
+  stay-engaged "never exit while buying", close-only-when-resolved, objection STANCE (acknowledge→isolate→reframe),
+  language mirror turn-by-turn + complete-every-sentence, english-names original spelling, `अलविदा` ban, numbers-as-speech.
+- **Behavior invariants (19/19 PASS):** service modes carry NO sales-coaching hook (cross-vertical leak guard) while
+  SALES keeps it; SUPPORT stance de-escalates / SALES re-closes; literary bans intact; `CARD_SCRIPTS` gate strips OFF /
+  restores at `=1` with facts always rendering.
+- **py_compile**: all 6 edited files clean (local + on box). **Box md5s (post-edit):** outbound `e0525626`,
+  packet `b4dc8615`, delivery `744869ab`, objection `21cd58b6`, language `54c2fcd3`, provider `4be79e07`.
+  pytest is NOT installed on the box (earner kept pristine — no installs); the pytest-protected invariants were
+  re-asserted directly via standalone harnesses (all green). All probe scripts removed from the box afterward.
+
+**FOUNDER-GATED FLIP-TEST (off-hours, JOBS queue empty — this restarts famit-agent + drops active calls):**
+```
+sudo sed -i 's/^Environment=KERNEL_OUTBOUND=0$/Environment=KERNEL_OUTBOUND=1/' /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent
+```
+(keeps W5_SPEECH=0; leaves RAG_INJECT_ENABLED + CARD_SCRIPTS unset = OFF.) Then ONE real outbound call → confirm:
+no premature closure, no repeat-intro, outbound framing, two-step greeting, engaged buyer kept on the line, voice perfect.
+
+**ONE-COMMAND REVERT (back to the P0 brain instantly):**
+```
+sudo sed -i 's/^Environment=KERNEL_OUTBOUND=1$/Environment=KERNEL_OUTBOUND=0/' /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent
+```
+Per-edge granular off (no restart of behavior, just unset/keep-default): `CARD_SCRIPTS=0`, `RAG_INJECT_ENABLED=0`
+(both already default-off). FILE-level rollback: `cp voice_kernel/<f>.R5P1bak.20260619-142001 voice_kernel/<f>`
+for any of the 6 files. STATE ledger: `caps/.voicekernel_r5p1/STATE.md`.
+
+## 🩹 ROUND-5 P0 — STOP-THE-BLEEDING (2026-06-19 14:09 UTC) — LIVE, voice byte-identical
+> READ THIS FIRST. Corrects ground truth: the box was found running **KERNEL_OUTBOUND=1**
+> (the broken prefix-swap brain → premature mid-call hangups), NOT 0. Now flipped to 0.
+> Current-truth live `agent.py` md5 = **`48bc2b5a`** (ignore older `5c055a31` notes below — stale).
+
+**ROOT CAUSE FIXED:** `KERNEL_OUTBOUND=1` made `agent.py:761-766` discard the proven
+`build_system_prompt` brain body AND `outbound.py:234` pass `safety_rules=""` (dropping the
+"ONE reply THEN STOP / never exit while buyer engaged" discipline) → premature hangups.
+
+**THE P0 CHANGE (one value):** systemd drop-in
+`/etc/systemd/system/famit-agent.service.d/kernel-outbound.conf` → flipped
+`Environment=KERNEL_OUTBOUND=1` → **`=0`** (every other line kept: W5_SPEECH=0, OPENER_IN_CTX=1,
+OPENER_ALREADY_SAID=1, OPENER_DELAY_S=0.8). `daemon-reload` + `restart famit-agent` done 14:09 UTC.
+This routes to `agent.py:766 base_instructions = build_system_prompt` (transcript-4-clean brain).
+- Drop-in backup: `kernel-outbound.conf.R5P0bak.20260619-140805`
+- **REVERT (re-enable kernel):** `sudo sed -i 's/^Environment=KERNEL_OUTBOUND=0$/Environment=KERNEL_OUTBOUND=1/' /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent`
+
+**STEP 2 — prior agent's INERT edit reverted to pristine:**
+`/opt/famit-agent/voice_kernel/integrations/outbound.py` had an env-gated `RAG_OUTBOUND_DISABLED`
+block (default off → was inert; `RAG_OUTBOUND_DISABLED` set nowhere). Restored from golden →
+md5 **`fa0b7a3515a99051605939befb99fa6f`** (pristine), py_compile clean, 0 RAG_OUTBOUND_DISABLED refs.
+- Edited-copy backup: `outbound.py.R5P0edit.20260619-140805`
+
+**STEP 1 — GOLDEN BACKUP (prior agent created it; verified complete):**
+`/opt/famit-agent/_GOLDEN_ROUND5_20260619-140341/` (+ `.tar.gz`) holds agent.py / prompt.py /
+voice_kernel/ / .env / kb_chunks.sql (188 rows) / kb_full_corpus.sql + MANIFEST.txt. md5sums
+inside == live-at-backup-time (agent.py `48bc2b5a`, prompt.py `635d8205`, .env `aa58ab7a`).
+- **One-command restore of the golden tree:** `tar -xzf /opt/famit-agent/_GOLDEN_ROUND5_20260619-140341.tar.gz -C /` (re-extracts the snapshot dir) — to restore live files, copy from `/opt/famit-agent/_GOLDEN_ROUND5_20260619-140341/{agent.py,prompt.py,.env}` and `voice_kernel/` back into `/opt/famit-agent/`, then `sudo systemctl restart famit-agent`.
+
+**VOICE-SAFE PROOF (all green, no rollback needed):**
+- agent.py NOT touched → live md5 still **`48bc2b5a`**; TTS region (885-941) md5 `9d7572ffb2909ebee3a116b4c08d0461` (golden anchor, unchanged).
+- `.env` `EL_STABILITY=0.55`, `ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a` (== golden) — `.env` NOT touched.
+- Running PID 140430 env shows **`KERNEL_OUTBOUND=0`**, W5_SPEECH=0, EL_STABILITY=0.55.
+- Worker **"capsy"** re-registered (id AW_WC4vhK5fyL4k); famit-agent **active**; NRestarts=**0**; **0** tracebacks post-restart (the 6 ERROR lines in journal are the OLD PID 82266 shutdown, pre-restart).
+- outbound.py py_compile **OK**, pristine md5 `fa0b7a35…`.
+
+**AWAITING:** founder's ONE test call — expect perfect brain: single greeting, single goodbye,
+NO premature hangup, engaged buyer kept on the line. If the call is bad → REVERT (cmd above).
+caller.py + panel NOT touched.
+
+---
+
 > READ-FIRST after any compaction. GROUND TRUTH verified directly on the box (golden snapshot
 > 20260618-210445). Do NOT trust older notes that say the kernel is live — it was REVERTED.
 
@@ -90,6 +259,24 @@ Files: `voice_kernel/brain_packs/delivery.py` (+ closing_directive + english_nam
 on first deploy (missing `import re`) → auto-rolled-back → fixed (+module-import smoke) → clean. Voice-safe PROVEN
 (TTS md5 `9d7572ff` unchanged, EL_STABILITY=0.55, KERNEL_OUTBOUND=1/W5_SPEECH=0, worker registered, 0 errors).
 Backups `*.VP3bak.20260619-070109`. Live agent.py now includes A1+A2+A4-wiring+VP3.
+
+## 🚢 ROUND-4 SHIP — DONE 2026-06-19 (commit `3394519` PUSHED to `kunal-7x/axcrio-platform`; gitleaks 0)
+LIVE: **A1 RAG corpus wired into the outbound brain** (188 kb_chunks reach calls; voice byte-identical, TTS md5
+`8958b147` == golden, no rollback); **panel premium UI** (dashboard varied charts, Reports day-filter FIX
+[`api.ts:1873` typo], funnel numbers+CSV, run-campaign card-split, call-logs) — BUILD_ID `0_a9L5v13B3qQJZHD9hMe`,
+public 200, backup `.next.R4SHIPbak.20260619-104337`. GitHub pushed via box `gh` OAuth (`.env.local` PAT lacked
+write-scope→403); `.gitignore` hardened; selective add (no `-A`); `droplet_work` left uncommitted.
+**VERIFIED ON BOX (wireup-2): most backend is DONE/LIVE** — super-admin vendor permissions (registry 100 keys,
+all `creative.*` present, HIDDEN=404/LOCKED=402 enforced), AI-Manager add-number+PIN step-up, booking+GCal
+backend (router + `/booking/book` + `calendar_sync` un-stubbed; dormant on creds), brand-kit CRUD
+(`/brand-kits`), customer-support/workflow/webhook (routers mounted, 401-gated, no 5xx), callbacks T0-retry-fix
++ TRAI 21:00→09:00 DND clamp (BUILT, `RETRY_SCHEDULER_ENABLED=0` — correctly NOT flipped). Earner byte-identical
+(`agent.py` md5 `48bc2b5a` == R4 golden, famit-agent active, zero mutations).
+**REAL remaining gaps = 2 VOICE-PATH items (separate earner-gated, founder-tested wave):** (a) booking voice-TOOL
+in `outbound.py` (agent calls `/booking/book` mid-call); (b) AI-Manager inbound-ROUTING in `aim_voice_agent.py`.
+**FOUNDER actions:** GCal OAuth creds · AIM OTP backend · flip `RETRY_SCHEDULER` after one signed live test ·
+`.env.local` GitHub PAT needs `axcrio-platform`+Contents:write (push used the box `gh` OAuth this time).
+State: `ROUND4-SHIP-STATE.md` + `ROUND4-WIREUP2-STATE.md`. ⚠ Only the founder's real call + dashboard proves it.
 
 ## ❌ What BROKE the voice (now OFF, do not re-deploy as-is)
 - The **W-VOICE-HEART kernel build**: `agent.py` `1567f79e` + `KERNEL_OUTBOUND=1` + `.env` 0.45/1.08.

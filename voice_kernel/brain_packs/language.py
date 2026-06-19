@@ -42,14 +42,12 @@ PREFERRED_CONNECTORS: tuple[str, ...] = (
     "achha", "theek hai", "dekhiye", "ji bilkul", "haan", "ek minute",
 )
 
-# Rendering rules (behavioral, always-on for the language layer).
+# Rendering rules (behavioral, always-on; R5-P1.4-compressed — same guards, tighter).
 RENDERING_RULES: tuple[str, ...] = (
-    "Speak casual urban spoken Hinglish; render Devanagari that reads like SPEECH, not a formal letter.",
-    "Keep names, company names and English product nouns un-translated inside Hindi sentences.",
-    "Mirror the lead's exact register: rough/casual -> match it; cleaner English -> stay in English.",
-    "Switch language turn-by-turn following the lead's LAST utterance; never lock to one language for the whole call.",
-    "Numbers as natural speech: 'pachaasi lakh' not '85,00,000'; say times like 'gyaarah baje' not '11:00'.",
-    "COMPLETE every sentence — naturalness comes from prosody/pacing, never from dropping the last word.",
+    "Speak casual urban Hinglish; Devanagari that reads like SPEECH, not a formal letter.",
+    "Mirror the lead's register and SWITCH language turn-by-turn to their LAST utterance — never lock to one language.",
+    "Numbers as speech: 'pachaasi lakh' not '85,00,000'; 'gyaarah baje' not '11:00'.",
+    "COMPLETE every sentence — never drop the last word.",
 )
 
 
