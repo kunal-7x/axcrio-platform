@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import Link from "next/link";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
@@ -16,6 +16,7 @@ import TableRow from "@/components/TableRow";
 import {
     getContacts,
     getSegments,
+    deleteContact,
     CrmDormantError,
     isDormantResponse,
     type ContactListItem,
@@ -24,7 +25,7 @@ import {
 } from "./client";
 import { StageBadge, initials, fmtRelative } from "./_ui";
 
-// Stage filter tabs (mirrors §4.1 derivation order). "all" + hot are special.
+// Stage filter tabs (mirrors §4.1 derivation order). "all" is special.
 const STAGE_TABS = [
     { id: 1, name: "All", key: "all" },
     { id: 2, name: "New", key: "new" },
@@ -33,15 +34,29 @@ const STAGE_TABS = [
     { id: 5, name: "Qualified", key: "qualified" },
     { id: 6, name: "Booked", key: "booked" },
     { id: 7, name: "Won", key: "won" },
-    { id: 8, name: "Dormant", key: "dormant" },
+    { id: 8, name: "Lost", key: "lost" },
 ];
 
-const HOT_TABS = [
-    { id: 1, name: "All" },
-    { id: 2, name: "Hot" },
+// Lifecycle/heat filter — maps to the contact's lifecycle_state field.
+// All = no filter; the rest pass as lifecycle= query param AND post-filter.
+const LIFECYCLE_TABS = [
+    { id: 1, name: "All", key: "all" },
+    { id: 2, name: "Hot", key: "hot" },
+    { id: 3, name: "Warm", key: "warm" },
+    { id: 4, name: "Cold", key: "cold" },
+    { id: 5, name: "Dead", key: "dead" },
 ];
 
-const tableHead = ["Contact", "Stage", "Score", "Last Outcome", "Last Activity"];
+// Sortable columns — clicking the header toggles asc/desc.
+type SortKey = "name" | "stage" | "score" | "last_outcome" | "last_activity_at";
+
+const tableHead: { label: string; key: SortKey; className?: string }[] = [
+    { label: "Contact", key: "name" },
+    { label: "Stage", key: "stage" },
+    { label: "Score", key: "score", className: "max-md:hidden" },
+    { label: "Last Outcome", key: "last_outcome", className: "max-lg:hidden" },
+    { label: "Last Activity", key: "last_activity_at", className: "text-right max-md:hidden" },
+];
 
 export default function CrmWorkspacePage() {
     return (
@@ -53,45 +68,79 @@ export default function CrmWorkspacePage() {
 
 function CrmWorkspaceInner() {
     // W15 — honor the shared ?status= deep-link (the Dashboard "Hot leads" + the
-    // Leads page link here with ?status=hot). status=hot lands on the Hot view;
-    // other tier words map onto the nearest stage tab where one exists.
+    // Leads page link here with ?status=hot). status=hot lands on the Hot/lifecycle view.
     const params = useSearchParams();
     const statusParam = (params.get("status") || "").toLowerCase();
+
+    const queryClient = useQueryClient();
 
     // Filters (server-driven so they reflect the real read-model once mounted).
     const [stageTab, setStageTab] = useState(
         () => STAGE_TABS.find((t) => t.key === statusParam) ?? STAGE_TABS[0]
     );
-    const [hotTab, setHotTab] = useState(
-        statusParam === "hot" ? HOT_TABS[1] : HOT_TABS[0]
+    // Lifecycle/heat filter — "hot" from ?status=hot maps here.
+    const [lifecycleTab, setLifecycleTab] = useState(
+        () => LIFECYCLE_TABS.find((t) => t.key === statusParam) ?? LIFECYCLE_TABS[0]
     );
     const [segment, setSegment] = useState<{ id: number; name: string } | null>(
         null
     );
     const [query, setQuery] = useState("");
+    // Sort state: key + direction
+    const [sortKey, setSortKey] = useState<SortKey>("last_activity_at");
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+    // Delete in-progress set
+    const [deleting, setDeleting] = useState<Set<string>>(new Set());
+    const [deleteError, setDeleteError] = useState("");
 
     const [segments, setSegments] = useState<Segment[]>([]);
 
     const stage = stageTab.key;
-    const hotOnly = hotTab.id === 2;
+    const lifecycle = lifecycleTab.key;
     // option.id (1-based) maps to segments[id-1]; id 0 = "All segments".
     const segmentId =
         segment && segment.id > 0 ? segments[segment.id - 1]?.id : undefined;
 
+    // Sort header toggle
+    const handleSort = (key: SortKey) => {
+        if (sortKey === key) {
+            setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        } else {
+            setSortKey(key);
+            setSortDir("asc");
+        }
+    };
+
+    // Delete row handler — role-gated upstream; degrade gracefully on 403.
+    const handleDelete = async (id: string) => {
+        setDeleting((s) => new Set(s).add(id));
+        setDeleteError("");
+        try {
+            await deleteContact(id);
+            queryClient.invalidateQueries({ queryKey: ["contacts"] });
+        } catch (e) {
+            setDeleteError(e instanceof Error ? e.message : "Delete failed");
+        } finally {
+            setDeleting((s) => {
+                const n = new Set(s);
+                n.delete(id);
+                return n;
+            });
+        }
+    };
+
     // PERF UNIT-3: cached contacts list keyed by the active filters — switching
-    // stage/hot/segment tabs and tab-back are instant (cache + bg revalidate),
-    // and keepPreviousData keeps the current rows on screen while a new filter
-    // loads. The queryFn normalises a thrown CrmDormantError into a dormant-marked
-    // response so the existing dormant/empty rendering is preserved unchanged.
+    // tabs is instant (cache + bg revalidate); keepPreviousData keeps rows on
+    // screen while a new filter loads.  10 s auto-refresh for near-live updates.
     const contactsQuery = useQuery<ContactsResponse>({
-        queryKey: ["contacts", { stage, hotOnly, segmentId }],
+        queryKey: ["contacts", { stage, lifecycle, segmentId }],
         queryFn: async () => {
             try {
                 return await getContacts({
                     stage: stage !== "all" ? stage : undefined,
-                    hot: hotOnly || undefined,
+                    lifecycle: lifecycle !== "all" ? lifecycle : undefined,
                     segment: segmentId,
-                    sort: "last_activity_at",
+                    sort: sortKey,
                     limit: 500,
                 });
             } catch (e) {
@@ -102,21 +151,31 @@ function CrmWorkspaceInner() {
             }
         },
         placeholderData: keepPreviousData,
+        refetchInterval: 10_000,
     });
 
     const resp = contactsQuery.data;
     const dormant = !!resp && isDormantResponse(resp);
-    const contacts: ContactListItem[] = useMemo(
+    const rawContacts: ContactListItem[] = useMemo(
         () => (dormant ? [] : resp?.contacts ?? []),
         [resp, dormant]
     );
-    const total = dormant ? 0 : resp?.total ?? contacts.length;
-    const error = contactsQuery.error
+    const total = dormant ? 0 : resp?.total ?? rawContacts.length;
+    const error = (contactsQuery.error
         ? contactsQuery.error instanceof Error
             ? contactsQuery.error.message
             : "Failed to load contacts"
-        : "";
-    const loading = contactsQuery.isLoading && contacts.length === 0;
+        : "") || deleteError;
+    const loading = contactsQuery.isLoading && rawContacts.length === 0;
+
+    // Client-side lifecycle post-filter (degrades gracefully if the field is absent).
+    const contacts: ContactListItem[] = useMemo(() => {
+        if (lifecycle === "all") return rawContacts;
+        return rawContacts.filter((c) => {
+            const lc = ((c as ContactListItem & { lifecycle?: string }).lifecycle ?? "").toLowerCase();
+            return lc === lifecycle;
+        });
+    }, [rawContacts, lifecycle]);
 
     // Segments are a nice-to-have filter; failure (incl. dormant) is silent.
     useEffect(() => {
@@ -136,18 +195,43 @@ function CrmWorkspaceInner() {
         );
     }, [contacts, query]);
 
+    // Client-side sort — applies after search filter so toggling a header is instant.
+    const sorted = useMemo(() => {
+        const dir = sortDir === "asc" ? 1 : -1;
+        return [...visible].sort((a, b) => {
+            switch (sortKey) {
+                case "name":
+                    return dir * (a.name || "").localeCompare(b.name || "");
+                case "stage":
+                    return dir * (a.stage || "").localeCompare(b.stage || "");
+                case "score":
+                    return dir * ((a.score ?? 0) - (b.score ?? 0));
+                case "last_outcome":
+                    return dir * (a.last_outcome || "").localeCompare(b.last_outcome || "");
+                case "last_activity_at":
+                    return (
+                        dir *
+                        ((a.last_activity_at || "").localeCompare(
+                            b.last_activity_at || ""
+                        ))
+                    );
+                default:
+                    return 0;
+            }
+        });
+    }, [visible, sortKey, sortDir]);
+
     // Real summary signals from the loaded set (never a fabricated delta).
     const summary = useMemo(() => {
-        const n = contacts.length;
-        const hot = contacts.filter((c) => c.hot || (c.score ?? 0) >= 70).length;
-        const qualified = contacts.filter((c) =>
+        const n = rawContacts.length;
+        const hot = rawContacts.filter((c) => c.hot || (c.score ?? 0) >= 70).length;
+        const qualified = rawContacts.filter((c) =>
             ["qualified", "booked", "won"].includes(c.stage)
         ).length;
-        const engaged = contacts.filter((c) =>
+        const engaged = rawContacts.filter((c) =>
             ["engaged", "qualified", "booked", "won"].includes(c.stage)
         ).length;
-        const dormantCount = contacts.filter((c) => c.stage === "dormant").length;
-        const scored = contacts.filter((c) => (c.score ?? 0) > 0);
+        const scored = rawContacts.filter((c) => (c.score ?? 0) > 0);
         const avg =
             scored.length > 0
                 ? Math.round(
@@ -155,8 +239,8 @@ function CrmWorkspaceInner() {
                           scored.length
                   )
                 : null;
-        return { n, hot, qualified, engaged, dormantCount, avg };
-    }, [contacts]);
+        return { n, hot, qualified, engaged, avg };
+    }, [rawContacts]);
 
     const segmentOptions = useMemo(
         () => [
@@ -167,12 +251,12 @@ function CrmWorkspaceInner() {
     );
 
     const activeFilters =
-        !!query || stage !== "all" || hotOnly || (segment && segment.id !== 0);
+        !!query || stage !== "all" || lifecycle !== "all" || (segment && segment.id !== 0);
 
     const clearFilters = () => {
         setQuery("");
         setStageTab(STAGE_TABS[0]);
-        setHotTab(HOT_TABS[0]);
+        setLifecycleTab(LIFECYCLE_TABS[0]);
         setSegment(null);
     };
 
@@ -238,8 +322,6 @@ function CrmWorkspaceInner() {
                                 sub={
                                     loading
                                         ? undefined
-                                        : summary.dormantCount > 0
-                                        ? `${summary.dormantCount} dormant to re-engage`
                                         : summary.avg == null
                                         ? "No scored contacts yet"
                                         : "0–100 interest scale"
@@ -261,14 +343,6 @@ function CrmWorkspaceInner() {
                                 placeholder="Search name or phone"
                                 isGray
                             />
-                            {query === "" && (
-                                <Tabs
-                                    className="max-md:w-full"
-                                    items={HOT_TABS}
-                                    value={hotTab}
-                                    setValue={setHotTab}
-                                />
-                            )}
                         </div>
 
                         {/* Stage filter tabs */}
@@ -279,6 +353,19 @@ function CrmWorkspaceInner() {
                                     value={stageTab}
                                     setValue={(v) =>
                                         setStageTab(v as (typeof STAGE_TABS)[number])
+                                    }
+                                />
+                            </div>
+                        )}
+
+                        {/* Lifecycle / heat filter row */}
+                        {query === "" && (
+                            <div className="px-2 overflow-x-auto scrollbar-none border-t border-s-subtle/40">
+                                <Tabs
+                                    items={LIFECYCLE_TABS}
+                                    value={lifecycleTab}
+                                    setValue={(v) =>
+                                        setLifecycleTab(v as (typeof LIFECYCLE_TABS)[number])
                                     }
                                 />
                             </div>
@@ -309,37 +396,43 @@ function CrmWorkspaceInner() {
                         <div className="p-1 pt-3 max-lg:px-0">
                             {loading ? (
                                 <TableSkeleton />
-                            ) : visible.length === 0 ? (
+                            ) : sorted.length === 0 ? (
                                 <EmptyState
                                     query={query}
-                                    hotOnly={hotOnly}
+                                    lifecycleLabel={lifecycleTab.name}
                                     stageLabel={stageTab.name}
-                                    isAll={stage === "all"}
+                                    isAll={stage === "all" && lifecycle === "all"}
                                     canClear={!!activeFilters}
                                     onClear={clearFilters}
                                 />
                             ) : (
                                 <Table
-                                    cellsThead={tableHead.map((head) => (
-                                        <th
-                                            className={
-                                                head === "Last Activity"
-                                                    ? "text-right max-md:hidden"
-                                                    : head === "Last Outcome"
-                                                    ? "max-lg:hidden"
-                                                    : head === "Score"
-                                                    ? "max-md:hidden"
-                                                    : ""
-                                            }
-                                            key={head}
-                                        >
-                                            {head}
-                                        </th>
-                                    ))}
+                                    cellsThead={[
+                                        ...tableHead.map((col) => (
+                                            <th
+                                                key={col.key}
+                                                className={`cursor-pointer select-none ${col.className ?? ""}`}
+                                                onClick={() => handleSort(col.key)}
+                                            >
+                                                <span className="inline-flex items-center gap-1">
+                                                    {col.label}
+                                                    <span className="text-t-tertiary text-caption">
+                                                        {sortKey === col.key
+                                                            ? sortDir === "asc"
+                                                                ? "↑"
+                                                                : "↓"
+                                                            : ""}
+                                                    </span>
+                                                </span>
+                                            </th>
+                                        )),
+                                        <th key="_del" className="w-10" />,
+                                    ]}
                                 >
-                                    {visible.map((c) => {
+                                    {sorted.map((c) => {
                                         const isHot =
                                             c.hot || (c.score ?? 0) >= 70;
+                                        const isDeleting = deleting.has(c.id);
                                         return (
                                             <TableRow key={c.id}>
                                                 <td className="font-medium text-t-primary">
@@ -393,6 +486,23 @@ function CrmWorkspaceInner() {
                                                     {fmtRelative(
                                                         c.last_activity_at
                                                     )}
+                                                </td>
+                                                <td className="w-10">
+                                                    <button
+                                                        type="button"
+                                                        disabled={isDeleting}
+                                                        onClick={() =>
+                                                            handleDelete(c.id)
+                                                        }
+                                                        className="inline-flex items-center justify-center size-7 rounded-full text-t-tertiary hover:text-primary-03 hover:bg-primary-03/10 transition-colors disabled:opacity-40"
+                                                        title="Delete contact"
+                                                        aria-label={`Delete ${c.name || "contact"}`}
+                                                    >
+                                                        <Icon
+                                                            name="close"
+                                                            className="size-3.5 fill-current"
+                                                        />
+                                                    </button>
                                                 </td>
                                             </TableRow>
                                         );
@@ -466,17 +576,18 @@ function ScoreCell({ score, hot }: { score?: number | null; hot?: boolean }) {
 function TableSkeleton() {
     return (
         <Table
-            cellsThead={tableHead.map((head) => (
-                <th key={head}>{head}</th>
-            ))}
+            cellsThead={[
+                ...tableHead.map((col) => <th key={col.key}>{col.label}</th>),
+                <th key="_del" className="w-10" />,
+            ]}
         >
             {[...Array(7)].map((_, i) => (
                 <TableRow key={i}>
-                    {[...Array(5)].map((__, j) => (
+                    {[...Array(6)].map((__, j) => (
                         <td key={j}>
                             <div
                                 className={`skeleton h-4 rounded-lg ${
-                                    j === 0 ? "w-44" : j === 4 ? "w-16 ml-auto" : "w-20"
+                                    j === 0 ? "w-44" : j === 4 ? "w-16 ml-auto" : j === 5 ? "w-6" : "w-20"
                                 }`}
                             />
                         </td>
@@ -489,19 +600,20 @@ function TableSkeleton() {
 
 function EmptyState({
     query,
-    hotOnly,
+    lifecycleLabel,
     stageLabel,
     isAll,
     canClear,
     onClear,
 }: {
     query: string;
-    hotOnly: boolean;
+    lifecycleLabel: string;
     stageLabel: string;
     isAll: boolean;
     canClear: boolean;
     onClear: () => void;
 }) {
+    const titleParts = ["No contacts in", stageLabel, lifecycleLabel !== "All" ? "\u00B7 " + lifecycleLabel : ""].filter(Boolean);
     return (
         <div className="py-16 text-center max-md:py-12">
             <span className="inline-grid place-items-center size-14 mb-4 rounded-full bg-b-surface1">
@@ -513,16 +625,14 @@ function EmptyState({
             <div className="text-h6 mb-1">
                 {query
                     ? "No matching contacts"
-                    : hotOnly
-                    ? "No hot contacts yet"
                     : !isAll
-                    ? `No contacts in “${stageLabel}”`
+                    ? titleParts.join(" ")
                     : "No contacts yet"}
             </div>
             <div className="max-w-md mx-auto text-body-2 text-t-secondary">
                 {query
-                    ? `Nothing matches “${query}”. Try a different name or number.`
-                    : "Contacts appear here as people are called or message you — each one builds its own unified timeline."}
+                    ? ["Nothing matches", query, ". Try a different name or number."].join(" ")
+                    : "Contacts appear here as people are called or message you \u2014 each one builds its own unified timeline."}
             </div>
             {canClear && (
                 <Button className="mt-5" isStroke onClick={onClear}>
@@ -532,7 +642,6 @@ function EmptyState({
         </div>
     );
 }
-
 function DormantBody() {
     return (
         <div className="py-16 text-center max-md:py-12">

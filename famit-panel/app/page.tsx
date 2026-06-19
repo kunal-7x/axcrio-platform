@@ -45,11 +45,20 @@ function fmt(dateStr: string) {
     }
 }
 
+// Parse a potentially timezone-naive backend string as UTC (same logic as
+// crm/_ui.tsx toUTC — keeps dashboard timestamps consistent with the CRM).
+function parseUTC(dateStr: string): Date {
+    if (!dateStr) return new Date(NaN);
+    if (/Z$|[+-]\d{2}:\d{2}$/.test(dateStr.trim())) return new Date(dateStr);
+    if (/[+-]\d{4}$/.test(dateStr.trim())) return new Date(dateStr);
+    return new Date(dateStr.trim() + "Z");
+}
+
 // Compact "x ago / time" for the recent-calls list — calmer than a full
-// locale string, keeps rows scannable. Falls back to fmt() for old dates.
+// locale string, keeps rows scannable. Falls back to short date for old dates.
 function fmtCompact(dateStr: string) {
     if (!dateStr) return "—";
-    const d = new Date(dateStr);
+    const d = parseUTC(dateStr);
     if (isNaN(d.getTime())) return dateStr;
     const diff = Date.now() - d.getTime();
     const min = Math.floor(diff / 60000);
@@ -59,7 +68,7 @@ function fmtCompact(dateStr: string) {
     if (hr < 24) return `${hr}h ago`;
     const day = Math.floor(hr / 24);
     if (day < 7) return `${day}d ago`;
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return d.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", month: "short", day: "numeric" });
 }
 
 // Human label for the 8 canonical funnel stages (W14 model.FUNNEL_STAGES).
@@ -113,14 +122,16 @@ function DashboardInner() {
         };
     }, [range, campaign, status]);
 
-    // Recent calls (cached; shared cache with the Calls page).
-    const callsQuery = useCalls({ limit: 200, order: "desc", slim: true });
-    const allCalls: CallLog[] = useMemo(
+    // Recent calls — fetch only 8 initially; "Show more" loads the next page.
+    const [callsPage, setCallsPage] = useState(8);
+    const callsQuery = useCalls({ limit: callsPage, order: "desc", slim: true });
+    const calls: CallLog[] = useMemo(
         () => callsQuery.data?.calls ?? [],
         [callsQuery.data]
     );
-    const calls: CallLog[] = useMemo(() => allCalls.slice(0, 8), [allCalls]);
-    const callsLoading = callsQuery.isLoading && allCalls.length === 0;
+    const callsTotal = callsQuery.data?.total ?? 0;
+    const callsLoading = callsQuery.isLoading && calls.length === 0;
+    const hasMoreCalls = calls.length < callsTotal;
 
     // Day-over-day delta from the (real) stats series — honest, no fabricated periods.
     const statsQuery = useStats();
@@ -176,7 +187,7 @@ function DashboardInner() {
                 headContent={<GlobalFilters show={{ range: true, campaign: true, status: true }} />}
             >
                 <div className="px-5 pb-5 max-lg:px-3">
-                    <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-2 max-md:grid-cols-2">
+                    <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-4 max-lg:grid-cols-2 max-md:grid-cols-2">
                         <Kpi
                             label="Total calls"
                             value={reportLoading ? null : (totals?.calls ?? 0).toLocaleString()}
@@ -199,6 +210,34 @@ function DashboardInner() {
                                 totals
                                     ? `${totals.warm} warm · ${totals.cold} cold`
                                     : undefined
+                            }
+                        />
+                        <Kpi
+                            label="Interested"
+                            value={reportLoading ? null : totals?.interested != null ? totals.interested.toLocaleString() : "—"}
+                        />
+                        <Kpi
+                            label="Callbacks"
+                            value={reportLoading ? null : totals?.callbacks != null ? totals.callbacks.toLocaleString() : "—"}
+                        />
+                        <Kpi
+                            label="Avg talk time"
+                            value={
+                                reportLoading
+                                    ? null
+                                    : totals?.avg_talk_time_s != null && totals.avg_talk_time_s > 0
+                                    ? `${Math.floor(totals.avg_talk_time_s / 60)}m ${Math.round(totals.avg_talk_time_s % 60)}s`
+                                    : "—"
+                            }
+                        />
+                        <Kpi
+                            label="Connect rate"
+                            value={
+                                reportLoading
+                                    ? null
+                                    : totals?.connect_rate != null
+                                    ? `${totals.connect_rate}%`
+                                    : "—"
                             }
                         />
                     </div>
@@ -416,6 +455,17 @@ function DashboardInner() {
                                     ))
                                 )}
                             </Table>
+                            {!callsLoading && hasMoreCalls && (
+                                <div className="flex justify-center py-3">
+                                    <button
+                                        type="button"
+                                        className="action text-caption"
+                                        onClick={() => setCallsPage((p) => p + 20)}
+                                    >
+                                        Show more
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </Card>
                 </div>

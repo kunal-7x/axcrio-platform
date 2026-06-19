@@ -96,7 +96,6 @@ export type ContactStage =
     | "booked"
     | "won"
     | "lost"
-    | "dormant"
     | "opted_out";
 
 // List-row shape from GET /contacts.
@@ -237,6 +236,7 @@ export type SegmentsResponse = {
 export type ContactsQuery = {
     stage?: string;
     hot?: boolean;
+    lifecycle?: string;
     segment?: string;
     q?: string;
     sort?: string;
@@ -247,12 +247,40 @@ export async function getContacts(opts?: ContactsQuery): Promise<ContactsRespons
     const params = new URLSearchParams();
     if (opts?.stage) params.set("stage", opts.stage);
     if (opts?.hot) params.set("hot", "1");
+    if (opts?.lifecycle) params.set("lifecycle", opts.lifecycle);
     if (opts?.segment) params.set("segment", opts.segment);
     if (opts?.q) params.set("q", opts.q);
     if (opts?.sort) params.set("sort", opts.sort);
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     const qs = params.toString();
     return crmFetch<ContactsResponse>(`/contacts${qs ? `?${qs}` : ""}`);
+}
+
+// DELETE /contacts/{id} — role-gated; the caller must hold the right role.
+// Never throws a dormant-style error — a missing route / 404 on an id that
+// doesn't exist both resolve to a plain Error so the caller can surface a toast.
+export async function deleteContact(id: string): Promise<void> {
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/contacts/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+        });
+    } catch {
+        throw new Error("Network error — could not delete contact");
+    }
+    if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem("famit_token");
+        localStorage.removeItem("famit_me");
+        window.location.href = "/login";
+        throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+        let body: Record<string, unknown> = {};
+        try { body = await res.json(); } catch { /* non-JSON */ }
+        const msg = typeof body.error === "string" ? body.error : "";
+        throw new Error(msg || `Delete failed (${res.status})`);
+    }
 }
 
 export async function getContact(id: string): Promise<ContactDetailResponse> {

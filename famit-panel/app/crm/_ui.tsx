@@ -19,7 +19,6 @@ const STAGE_VARIANT: Record<string, BadgeVariant> = {
     won: "success",
     lost: "danger",
     opted_out: "danger",
-    dormant: "neutral",
 };
 
 const STAGE_LABEL: Record<string, string> = {
@@ -31,7 +30,6 @@ const STAGE_LABEL: Record<string, string> = {
     won: "Won",
     lost: "Lost",
     opted_out: "Opted out",
-    dormant: "Dormant",
 };
 
 export function StageBadge({ stage }: { stage?: string | null }) {
@@ -71,14 +69,33 @@ export function initials(name?: string): string {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// Treat timezone-naive strings from the backend as UTC by appending Z if there is
+// no timezone offset already present.  Without this, new Date("2026-06-14 10:00:00")
+// is parsed as local time in the browser, causing a ~5.5h IST shift that makes
+// recent events appear to have happened "5 days ago".
+function toUTC(d: string): Date {
+    // Already has tz info: ends with Z, +HH:MM, or -HH:MM
+    if (/Z$|[+-]\d{2}:\d{2}$/.test(d.trim())) return new Date(d);
+    // ISO with offset like +0530 (no colon)
+    if (/[+-]\d{4}$/.test(d.trim())) return new Date(d);
+    // Naive string — assume UTC
+    return new Date(d.trim() + "Z");
+}
+
+const IST_FMT = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "short",
+});
+const IST_DATE_FMT = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+});
+
 export function fmtDate(d?: string | null): string {
     if (!d) return "—";
     try {
-        return new Date(d).toLocaleDateString(undefined, {
-            day: "numeric",
-            month: "short",
-            year: "numeric",
-        });
+        return IST_DATE_FMT.format(toUTC(d));
     } catch {
         return d;
     }
@@ -87,23 +104,18 @@ export function fmtDate(d?: string | null): string {
 export function fmtDateTime(d?: string | null): string {
     if (!d) return "—";
     try {
-        return new Date(d).toLocaleString(undefined, {
-            day: "numeric",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit",
-        });
+        return IST_FMT.format(toUTC(d));
     } catch {
         return d;
     }
 }
 
-// Relative "2h ago" / "3d ago" — falls back to a short date past a week.
+// Relative "2h ago" / "3d ago" — falls back to a short IST date past a week.
 export function fmtRelative(d?: string | null): string {
     if (!d) return "—";
     let t: number;
     try {
-        t = new Date(d).getTime();
+        t = toUTC(d).getTime();
     } catch {
         return d;
     }

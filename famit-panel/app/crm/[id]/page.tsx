@@ -58,7 +58,11 @@ export default function ContactProfilePage() {
     const [detail, setDetail] = useState<ContactDetailResponse | null>(null);
     const [timeline, setTimeline] = useState<TimelineRow[]>([]);
     const [recordings, setRecordings] = useState<Recording[]>([]);
-    const [recLoading, setRecLoading] = useState(true);
+    const [recLoading, setRecLoading] = useState(false);
+    // Lazy recordings: only loaded when the user opens the Recordings section.
+    const [recOpen, setRecOpen] = useState(false);
+    // Pagination for recordings: start with 10, "Load more" increments.
+    const [recLimit, setRecLimit] = useState(10);
 
     // VOICE-BRAIN W4: durable cross-channel relationship memory (lead_memory
     // profile + lead_episodes history), keyed by phone. Dormant-safe: the client
@@ -106,30 +110,37 @@ export default function ContactProfilePage() {
         setTranscriptLoading(false);
     };
 
-    // Load the contact (+ embedded timeline + nba). Dormant (module/PG down) ->
-    // "coming soon"; not-found (bad id) -> "not found"; else error.
+    // Load the contact (+ embedded timeline + nba). Auto-refreshes every 10s so
+    // the profile updates after a call finishes. Dormant/not-found handled below.
     useEffect(() => {
         if (!id) return;
+        let cancelled = false;
+
+        const load = () => {
+            if (!loading) setLoading(false); // no re-spinner on background refresh
+            getContact(id)
+                .then((r) => {
+                    if (cancelled) return;
+                    if (!r.contact) { setDormant(true); return; }
+                    setDetail(r);
+                    setDormant(false);
+                })
+                .catch((e: unknown) => {
+                    if (cancelled) return;
+                    if (e instanceof CrmDormantError) setDormant(true);
+                    else if (e instanceof CrmNotFoundError) setNotFound(true);
+                    else setError(e instanceof Error ? e.message : "Failed to load contact");
+                })
+                .finally(() => { if (!cancelled) setLoading(false); });
+        };
+
         setLoading(true);
         setError("");
         setNotFound(false);
-        getContact(id)
-            .then((r) => {
-                // 200 with a null contact == module/PG dormant.
-                if (!r.contact) {
-                    setDormant(true);
-                    return;
-                }
-                setDetail(r);
-                setDormant(false);
-            })
-            .catch((e: unknown) => {
-                if (e instanceof CrmDormantError) setDormant(true);
-                else if (e instanceof CrmNotFoundError) setNotFound(true);
-                else setError(e instanceof Error ? e.message : "Failed to load contact");
-            })
-            .finally(() => setLoading(false));
-    }, [id]);
+        load();
+        const iv = setInterval(load, 10_000);
+        return () => { cancelled = true; clearInterval(iv); };
+    }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Load the timeline. The detail endpoint already embeds the unfiltered
     // first page, so the "all" view seeds from `detail.timeline` (no redundant
@@ -151,23 +162,20 @@ export default function ContactProfilePage() {
             .finally(() => setTlLoading(false));
     }, [id, kind, detail]);
 
-    // Load the lead's call recordings (inbound + outbound), keyed by phone. The
-    // backend joins by phone/call_id/room and mints presigned URLs per-read.
-    // Dormant-safe: the client resolves any failure to [] -> calm empty state.
+    // Lazy recordings — only fetched when the Recordings section is opened,
+    // paginated (recLimit rows). Re-fetches on recLimit change for "Load more".
     useEffect(() => {
+        if (!recOpen) return;
         const c = detail?.contact;
         if (!c) return;
         const phone = c.phone_key || c.phone_display || id;
-        if (!phone) {
-            setRecLoading(false);
-            return;
-        }
+        if (!phone) return;
         setRecLoading(true);
         getContactRecordings(phone)
-            .then((r) => setRecordings(r.recordings || []))
+            .then((r) => setRecordings((r.recordings || []).slice(0, recLimit)))
             .catch(() => setRecordings([]))
             .finally(() => setRecLoading(false));
-    }, [detail, id]);
+    }, [recOpen, recLimit, detail, id]);
 
     // Load the lead's durable memory + episode history (W4). Same phone key as
     // recordings. Both client calls never throw -> the section degrades calmly.
@@ -403,7 +411,14 @@ export default function ContactProfilePage() {
 
                         {/* Recordings — call audio for this lead (inbound + outbound) */}
                         {!loading && (
-                            <RecordingsCard loading={recLoading} recordings={recordings} />
+                            <RecordingsCard
+                                open={recOpen}
+                                onOpen={() => setRecOpen(true)}
+                                loading={recLoading}
+                                recordings={recordings}
+                                hasMore={recordings.length >= recLimit}
+                                onLoadMore={() => setRecLimit((l) => l + 10)}
+                            />
                         )}
                     </div>
 
@@ -945,25 +960,48 @@ function fmtClock(sec?: number | null): string {
 }
 
 function RecordingsCard({
+    open,
+    onOpen,
     loading,
     recordings,
+    hasMore,
+    onLoadMore,
 }: {
+    open: boolean;
+    onOpen: () => void;
     loading: boolean;
     recordings: Recording[];
+    hasMore: boolean;
+    onLoadMore: () => void;
 }) {
     return (
         <Card
             title="Recordings"
             headContent={
-                !loading && recordings.length > 0 ? (
-                    <span className="ml-auto text-caption text-t-tertiary td-num">
-                        {recordings.length}
-                    </span>
-                ) : undefined
+                <button
+                    type="button"
+                    onClick={() => !open && onOpen()}
+                    className={`text-caption mr-1 transition-colors ${open ? "text-t-tertiary cursor-default" : "action"}`}
+                >
+                    {open ? (loading ? "Loading…" : `${recordings.length} recording${recordings.length === 1 ? "" : "s"}`) : "Load recordings"}
+                </button>
             }
         >
             <div className="px-5 pb-5 max-lg:px-3">
-                {loading ? (
+                {!open ? (
+                    <div className="py-6 text-center">
+                        <span className="inline-grid place-items-center size-12 mb-3 rounded-full bg-b-surface1 dark:bg-shade-04/60">
+                            <Icon name="camera-video" className="fill-t-tertiary" />
+                        </span>
+                        <button
+                            type="button"
+                            onClick={onOpen}
+                            className="action text-caption"
+                        >
+                            Load recordings
+                        </button>
+                    </div>
+                ) : loading ? (
                     <div className="space-y-2.5 pt-1">
                         {[...Array(2)].map((_, i) => (
                             <div key={i} className="skeleton h-14 w-full rounded-2xl" />
@@ -987,6 +1025,17 @@ function RecordingsCard({
                         {recordings.map((r) => (
                             <RecordingRow key={r.call_id} r={r} />
                         ))}
+                        {hasMore && (
+                            <div className="flex justify-center pt-2">
+                                <button
+                                    type="button"
+                                    className="action text-caption"
+                                    onClick={onLoadMore}
+                                >
+                                    Load more
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
