@@ -146,3 +146,17 @@ groq_api.md
 **/app_id_secret*
 **/*_CONFIG_RESULT.md
 infra/logto/LOGTO_CONFIG_RESULT.md
+
+# provider-pool secret key dumps + the box key-store — NEVER COMMIT (2026-06-13)
+z_groq_2.md
+**/z_groq_2.md
+z_samba.md
+**/z_samba.md
+z_groq_api.md
+**/z_groq_api.md
+provider_keys.json
+**/provider_keys.json*
+**/provider_keys.json.enc
+
+# kernel staging scratch (box agent.py copies — secret-bearing, never commit)
+.kernelstage/
