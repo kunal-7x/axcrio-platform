@@ -10,9 +10,9 @@
 
 | File | Canonical start | md5 (box / local) | Notes |
 |---|---|---|---|
-| `aim_voice_agent.py` | `droplet_work/aim_voice_agent.LIVEBOX.py` | `018c20a7` / `018c20a7` ✅ | Pull box → local reconciled P2. ALWAYS start from this golden, never repo stale. |
+| `aim_voice_agent.py` | `droplet_work/aim_voice_agent.LIVEBOX.py` | `1614be09` / `1614be09` ✅ | 2026-06-14 inbound-voice-naturalness-fix deploy (was 5c3936fa post-W1-RAG; 018c20a7 entry was stale). ALWAYS start from this golden. |
 | `prompt.py` | `droplet_work/prompt.LIVEBOX.py` | `fb87ea56` / `fb87ea56` ✅ | Pull box → local reconciled P2. Has W1 `build_system_prompt_v2`. |
-| `agent.py` (EARNER) | **BOX ONLY** `/opt/famit-agent/agent.py` | `9150fabe` / gitignored | NEVER deploy from local. Local on-disk = `9150fabe` (updated P2); git-ignored; `_inbound_ref/agent.REFERENCE.py` = confirmed accurate read-only mirror. |
+| `agent.py` (EARNER) | **BOX ONLY** `/opt/famit-agent/agent.py` | **`98655dbf`** / local stale `9150fabe` | ⚠️ RE-ANCHORED 2026-06-18: LIVE box md5 = `98655dbfc71d5c3da36bcfe3f848082c` (verified off box + running PIDs 3039438/3112900) — includes the founder's already-live voice-naturalness fixes. The old `9150fabe` is STALE (still on local on-disk; NEVER deploy local). DEPLOY GATE must protect `98655dbf` and must NOT "restore baseline" to 9150fabe (would revert live fixes). `_inbound_ref/agent.REFERENCE.py` mirror may also be stale — re-pull from box before any agent.py work. |
 | `caller.py` | `droplet_work/caller.py` | `592e6b94` / `592e6b94` ✅ | Already matched box at P1 audit; safe to start edits here. |
 | `context_store.py` | `droplet_work/context_store.py` | `245d864f` / `245d864f` ✅ | Matched. |
 | `audit.py` | `droplet_work/audit.py` | `190fa1b6` / `190fa1b6` ✅ | Matched. |

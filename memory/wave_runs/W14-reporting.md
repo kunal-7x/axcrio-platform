@@ -94,3 +94,10 @@ not edited, imported, or restarted. Verified: importing both new packages pulls 
 - Schedule the daily executive summary per tenant (cron/Hatchet, vendor tz);
   inject the real WhatsApp sender + number resolver when Meta WA creds land.
 - W15 universal-reporting UI (Core_2 kit) against the §7 UI contract.
+---
+
+## VERIFY+COMMIT (2026-06-18)
+- Red-team verdict: SHIP, no blockers (5/5 questions clean: date/tz correctness, no stale AIM numbers, tenant isolation, no cross-tenant summary leak, no call-path blocking).
+- 611 passed (full voice_ops + voice_kernel); 62 W14-only. agent.py md5 98655dbf unchanged. Zero forbidden imports (runtime check = NONE). gitleaks staged = 0.
+- Staged ONLY voice_ops/reporting/ + voice_ops/ai_manager_live/ + design/W14-REPORTING-AIM-SEAM.md + memory/wave_runs/W14-reporting.md + voice_ops/W14_REPORTING_AIM_STATE.md (never git add -A).
+- Committed `dfb94a2` on branch fix/realtime-voice-kernel-v2.

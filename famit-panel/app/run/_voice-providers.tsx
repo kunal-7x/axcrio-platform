@@ -389,43 +389,55 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
         { id: "sarvam", label: "Sarvam" },
     ];
 
-    return (
-        <Card title="Voice & Providers">
-            <div className="px-5 pb-5 max-lg:px-3 space-y-5">
-                {/* shared hidden audio element for ALL voice previews */}
-                <audio
-                    ref={audioRef}
-                    onEnded={() => setPlayingId("")}
-                    onPause={() => setPlayingId("")}
-                    onError={() => {
-                        // unsupported content-type / network / 502 -> flag the attempted row
-                        console.error(
-                            "voice preview <audio> error",
-                            attemptedId.current,
-                            voiceProvider
-                        );
-                        setPlayingId("");
-                        if (attemptedId.current)
-                            setPreviewError(attemptedId.current);
-                    }}
-                    className="hidden"
-                />
+    // B3 (ROUND4): the one-big jargon card is split into THREE clear cards —
+    // ① Quality & Voice  ② Cost estimate  ③ Providers — with bigger, calmer copy.
+    // The empty / loading states still render as a single calm card so the step
+    // never shows three skeletons at once.
+    if (noCampaign || !loaded) {
+        return (
+            <>
+                <audio ref={audioRef} className="hidden" />
+                <Card title="Voice & Providers">
+                    <div className="px-5 pb-5 max-lg:px-3">
+                        <div className="p-4 rounded-2xl bg-b-surface1 border border-s-subtle text-body-2 text-t-tertiary dark:bg-shade-04/30">
+                            {noCampaign
+                                ? "Select a campaign above to set its voice, quality tier and live cost estimate."
+                                : "Loading this campaign’s settings…"}
+                        </div>
+                    </div>
+                </Card>
+            </>
+        );
+    }
 
-                {noCampaign ? (
-                    <div className="p-4 rounded-2xl bg-b-surface1 border border-s-subtle text-caption text-t-tertiary dark:bg-shade-04/30">
-                        Select a campaign above to set its voice, quality tier and
-                        live cost estimate.
-                    </div>
-                ) : !loaded ? (
-                    <div className="p-4 rounded-2xl bg-b-surface1 border border-s-subtle text-caption text-t-tertiary dark:bg-shade-04/30">
-                        Loading this campaign&apos;s settings…
-                    </div>
-                ) : (
-                    <>
+    return (
+        <div className="flex flex-col gap-4">
+            {/* shared hidden audio element for ALL voice previews */}
+            <audio
+                ref={audioRef}
+                onEnded={() => setPlayingId("")}
+                onPause={() => setPlayingId("")}
+                onError={() => {
+                    // unsupported content-type / network / 502 -> flag the attempted row
+                    console.error(
+                        "voice preview <audio> error",
+                        attemptedId.current,
+                        voiceProvider
+                    );
+                    setPlayingId("");
+                    if (attemptedId.current)
+                        setPreviewError(attemptedId.current);
+                }}
+                className="hidden"
+            />
+
+            {/* ══ CARD ① — QUALITY & VOICE ══════════════════════════════════ */}
+            <Card title="Quality & voice">
+                <div className="px-5 pb-5 max-lg:px-3 space-y-5">
                         {/* ── 3-stop segmented tier slider ── */}
                         <div>
                             <div className="flex items-center justify-between mb-2.5">
-                                <span className="text-button">Quality tier</span>
+                                <span className="text-sub-title-1">Quality tier</span>
                                 {savedNote && (
                                     <span
                                         className={`text-caption ${
@@ -499,137 +511,16 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                 )}
                             </div>
                             {tier !== "custom" && tierMap[tier]?.blurb && (
-                                <p className="mt-2 text-caption text-t-tertiary">
+                                <p className="mt-2 text-body-2 text-t-tertiary">
                                     {tierMap[tier]?.blurb}
                                 </p>
                             )}
                         </div>
 
-                        {/* ── WAVE C: provider-lock banner (CONFIG-ONLY today) ── */}
-                        <ProviderLock
-                            state={lockState}
-                            stt={resolved.stt}
-                            llm={resolved.llm}
-                            tts={resolved.tts}
-                            voice={resolvedVoiceName}
-                            inboundLive={tiersData?.inbound_prov_lock}
-                        />
-
-                        {/* ── WAVE C: real (honest) per-call cost breakdown ── */}
-                        <div>
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                                <label className="flex items-center gap-2 text-caption text-t-secondary">
-                                    Avg call length
-                                    <input
-                                        type="number"
-                                        min={0.1}
-                                        max={30}
-                                        step={0.5}
-                                        value={avgMin}
-                                        disabled={!writable}
-                                        onChange={(e) =>
-                                            setAvgMin(
-                                                parseFloat(e.target.value) || 0
-                                            )
-                                        }
-                                        onBlur={(e) =>
-                                            onAvgMin(parseFloat(e.target.value))
-                                        }
-                                        className="w-16 h-8 px-2 rounded-xl bg-b-surface2 border border-s-stroke2 text-body-2 text-t-primary tabular-nums outline-none focus:border-primary-01/60"
-                                    />
-                                    min
-                                </label>
-                                {tier !== "premium" && savingsVsPremium > 0 && (
-                                    <span className="text-caption text-primary-02">
-                                        Saving ≈ {inr(savingsVsPremium)}/min vs Premium
-                                    </span>
-                                )}
-                            </div>
-                            <CostBreakdown
-                                rateCard={tiersData?.rate_card ?? null}
-                                tier={tier}
-                                tierObj={tier !== "custom" ? tierMap[tier] : undefined}
-                                sttKey={sttP}
-                                llmKey={llmP}
-                                ttsKey={ttsP}
-                                avgMin={avgMin}
-                                audienceCount={audienceCount}
-                                platformFeeInr={PLAN_FEE[tier]?.fee}
-                                planLabel={PLAN_FEE[tier]?.label}
-                            />
-                        </div>
-
-                        {/* ── WAVE C: inline per-tier compare strip ── */}
-                        <TierCompare
-                            tiers={tiersData?.tiers || []}
-                            rateCard={tiersData?.rate_card ?? null}
-                            avgMin={avgMin}
-                            audienceCount={audienceCount}
-                            active={tier}
-                            onPick={(k) => pickTier(k as CampaignTier)}
-                            writable={writable}
-                        />
-
-                        {/* ── WAVE C: campaign cost-per-lead (CPL) — hides until data exists ── */}
-                        {cpl && (cpl.cpl != null || cpl.cpc != null) && (
-                            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl bg-b-surface1 border border-s-subtle px-4 py-3 dark:bg-shade-04/30">
-                                <div className="flex items-center gap-1.5 text-caption text-t-tertiary">
-                                    <Icon
-                                        name="chart"
-                                        className="size-4 fill-t-tertiary"
-                                    />
-                                    So far this campaign
-                                </div>
-                                {cpl.cpl != null && (
-                                    <div className="flex items-baseline gap-1.5">
-                                        <span className="text-body-1 text-t-primary tabular-nums">
-                                            {inr(cpl.cpl)}
-                                        </span>
-                                        <span className="text-caption text-t-secondary">
-                                            / qualified lead
-                                        </span>
-                                    </div>
-                                )}
-                                {cpl.cpc != null && (
-                                    <div className="flex items-baseline gap-1.5">
-                                        <span className="text-body-2 text-t-secondary tabular-nums">
-                                            {inr(cpl.cpc)}
-                                        </span>
-                                        <span className="text-caption text-t-tertiary">
-                                            / call · {cpl.calls} calls
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {/* ── provider health ── */}
-                        <div className="flex items-center gap-3 flex-wrap text-caption text-t-secondary">
-                            <span className="text-t-tertiary">Providers:</span>
-                            {healthProviders.map((p) => {
-                                const ok = providersAvail[p.id];
-                                return (
-                                    <span
-                                        key={p.id}
-                                        className="inline-flex items-center gap-1.5"
-                                    >
-                                        <span
-                                            className={`size-1.5 rounded-full ${
-                                                ok
-                                                    ? "bg-primary-02"
-                                                    : "bg-t-tertiary/60"
-                                            }`}
-                                        />
-                                        {p.label}
-                                    </span>
-                                );
-                            })}
-                        </div>
-
                         {/* ── voice dropdown + per-row play ── */}
                         <div>
                             <div className="flex items-center justify-between mb-2.5">
-                                <span className="text-button">
+                                <span className="text-sub-title-1">
                                     Voice{" "}
                                     <span className="text-t-tertiary font-normal">
                                         ({voiceProvider === "elevenlabs"
@@ -713,10 +604,141 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                     })
                                 )}
                             </div>
-                            <p className="mt-2 text-caption text-t-tertiary">
+                            <p className="mt-2 text-body-2 text-t-tertiary">
                                 Press ▶ to hear a free sample. Your voice choice
                                 applies on the next outbound call.
                             </p>
+                        </div>
+                    </div>
+                </Card>
+
+                {/* ══ CARD ② — COST ESTIMATE ════════════════════════════════════ */}
+                <Card title="Cost estimate">
+                    <div className="px-5 pb-5 max-lg:px-3 space-y-5">
+                        {/* ── WAVE C: real (honest) per-call cost breakdown ── */}
+                        <div>
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                                <label className="flex items-center gap-2 text-body-2 text-t-secondary">
+                                    Avg call length
+                                    <input
+                                        type="number"
+                                        min={0.1}
+                                        max={30}
+                                        step={0.5}
+                                        value={avgMin}
+                                        disabled={!writable}
+                                        onChange={(e) =>
+                                            setAvgMin(
+                                                parseFloat(e.target.value) || 0
+                                            )
+                                        }
+                                        onBlur={(e) =>
+                                            onAvgMin(parseFloat(e.target.value))
+                                        }
+                                        className="w-16 h-8 px-2 rounded-xl bg-b-surface2 border border-s-stroke2 text-body-2 text-t-primary tabular-nums outline-none focus:border-primary-01/60"
+                                    />
+                                    min
+                                </label>
+                                {tier !== "premium" && savingsVsPremium > 0 && (
+                                    <span className="text-caption text-primary-02">
+                                        Saving ≈ {inr(savingsVsPremium)}/min vs Premium
+                                    </span>
+                                )}
+                            </div>
+                            <CostBreakdown
+                                rateCard={tiersData?.rate_card ?? null}
+                                tier={tier}
+                                tierObj={tier !== "custom" ? tierMap[tier] : undefined}
+                                sttKey={sttP}
+                                llmKey={llmP}
+                                ttsKey={ttsP}
+                                avgMin={avgMin}
+                                audienceCount={audienceCount}
+                                platformFeeInr={PLAN_FEE[tier]?.fee}
+                                planLabel={PLAN_FEE[tier]?.label}
+                            />
+                        </div>
+
+                        {/* ── WAVE C: inline per-tier compare strip ── */}
+                        <TierCompare
+                            tiers={tiersData?.tiers || []}
+                            rateCard={tiersData?.rate_card ?? null}
+                            avgMin={avgMin}
+                            audienceCount={audienceCount}
+                            active={tier}
+                            onPick={(k) => pickTier(k as CampaignTier)}
+                            writable={writable}
+                        />
+
+                        {/* ── WAVE C: campaign cost-per-lead (CPL) — hides until data exists ── */}
+                        {cpl && (cpl.cpl != null || cpl.cpc != null) && (
+                            <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-2xl bg-b-surface1 border border-s-subtle px-4 py-3 dark:bg-shade-04/30">
+                                <div className="flex items-center gap-1.5 text-caption text-t-tertiary">
+                                    <Icon
+                                        name="chart"
+                                        className="size-4 fill-t-tertiary"
+                                    />
+                                    So far this campaign
+                                </div>
+                                {cpl.cpl != null && (
+                                    <div className="flex items-baseline gap-1.5">
+                                        <span className="text-body-1 text-t-primary tabular-nums">
+                                            {inr(cpl.cpl)}
+                                        </span>
+                                        <span className="text-caption text-t-secondary">
+                                            / qualified lead
+                                        </span>
+                                    </div>
+                                )}
+                                {cpl.cpc != null && (
+                                    <div className="flex items-baseline gap-1.5">
+                                        <span className="text-body-2 text-t-secondary tabular-nums">
+                                            {inr(cpl.cpc)}
+                                        </span>
+                                        <span className="text-caption text-t-tertiary">
+                                            / call · {cpl.calls} calls
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </Card>
+
+                {/* ══ CARD ③ — PROVIDERS ════════════════════════════════════════ */}
+                <Card title="Providers">
+                    <div className="px-5 pb-5 max-lg:px-3 space-y-5">
+                        {/* ── WAVE C: provider-lock banner (CONFIG-ONLY today) ── */}
+                        <ProviderLock
+                            state={lockState}
+                            stt={resolved.stt}
+                            llm={resolved.llm}
+                            tts={resolved.tts}
+                            voice={resolvedVoiceName}
+                            inboundLive={tiersData?.inbound_prov_lock}
+                        />
+
+                        {/* ── provider health ── */}
+                        <div className="flex items-center gap-3 flex-wrap text-body-2 text-t-secondary">
+                            <span className="text-t-tertiary">Live status:</span>
+                            {healthProviders.map((p) => {
+                                const ok = providersAvail[p.id];
+                                return (
+                                    <span
+                                        key={p.id}
+                                        className="inline-flex items-center gap-1.5"
+                                    >
+                                        <span
+                                            className={`size-1.5 rounded-full ${
+                                                ok
+                                                    ? "bg-primary-02"
+                                                    : "bg-t-tertiary/60"
+                                            }`}
+                                        />
+                                        {p.label}
+                                    </span>
+                                );
+                            })}
                         </div>
 
                         {/* ── Advanced disclosure ── */}
@@ -781,10 +803,9 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                 </span>
                             </div>
                         )}
-                    </>
-                )}
-            </div>
-        </Card>
+                    </div>
+                </Card>
+        </div>
     );
 }
 
@@ -826,7 +847,7 @@ function TierCompare({
     return (
         <div>
             <div className="flex items-center justify-between mb-2">
-                <span className="text-button">Compare tiers · this audience</span>
+                <span className="text-sub-title-1">Compare tiers · this audience</span>
                 <span className="text-caption text-t-tertiary">
                     voice cost only — telephony extra
                 </span>

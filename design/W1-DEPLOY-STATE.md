@@ -47,5 +47,10 @@
 - S10 PASS (item5) — VENDOR_SCRIPT_INJECT=1 via systemd drop-in for aim-voice-agent ONLY; inbound env has it, EARNER env ABSENT; env flag drives v2 splice; golden 5/5 still identical under flag ON
 - S11 PASS (FINAL EARNER GATE) — agent.py 9150fabe unchanged, PID 1477083 never restarted, /health 200, 0 real 5xx, 0 Traceback, NO ring
 - cleanup — test campaign c444b5185a deleted; box temp artifacts removed
-- [ ] S12 FORTRESS panel deploy
-- [ ] S13 ledgers + founder recipe
+- S12 PASS — FORTRESS panel deployed (BUILD_ID Ykm_1fVt267VDkPib8uVg); 200 loopback + panel.famit.in edge; famit-panel restarted only; backups *.W1bak.20260614-051000
+- S13 PASS — ledgers updated (ORCHESTRATOR/NEXT-BIG-BUILDS/VOICE-BRAIN-MASTER-PLAN+STATE/AGENT_LEARNINGS); founder recipe FOUNDER-SCRIPT-STUDIO.md; commit 1ffe7cd
+
+## ✅ WAVE COMPLETE 2026-06-14
+All 5 verify items PASS + FULL EARNER GATE PASS + panel LIVE. Final snapshot:
+agent.py 9150fabe unchanged · famit-agent PID 1477083 · 3 svc active · /health 200 · inbound flag ON (earner clean) · panel BUILD_ID Ykm_1fVt267VDkPib8uVg.
+RESIDUAL: only a real inbound DID call proves the live mic/voice adoption; outbound earner stays flag-OFF pending founder sign-off + ring.

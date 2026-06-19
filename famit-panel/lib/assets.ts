@@ -29,6 +29,14 @@ const ASSET_BASE =
         ? `${process.env.NEXT_PUBLIC_API_BASE}/assets`
         : "/api/assets";
 
+// Brand-kit persistence lives on famit-caller (:8209 via /api), NOT the ai_asset service (:8310 via
+// /api/assets). The R4 A5 backend added GET/POST/DELETE /brand-kits there. (nginx: /api/ -> :8209,
+// /api/assets/ -> :8310.) Routing brand-kits here is what makes "save brand kit" actually persist.
+const CALLER_BASE =
+    typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
+        ? `${process.env.NEXT_PUBLIC_API_BASE}`
+        : "/api";
+
 function getToken(): string | null {
     if (typeof window === "undefined") return null;
     return localStorage.getItem("famit_token");
@@ -614,10 +622,10 @@ export async function variationFromUpload(
     return res.json();
 }
 
-/** GET /brand-kits — the brand memory. Dormant -> empty (no throw). */
+/** GET /brand-kits — the brand memory (famit-caller). Dormant -> empty (no throw). */
 export async function getBrandKits(): Promise<{ brand_kits: BrandKit[] }> {
     try {
-        const res = await fetch(`${ASSET_BASE}/brand-kits`, { headers: authHeaders() });
+        const res = await fetch(`${CALLER_BASE}/brand-kits`, { headers: authHeaders() });
         await handle401(res);
         if (!res.ok) return { brand_kits: [] };
         const data = await res.json();
@@ -627,15 +635,17 @@ export async function getBrandKits(): Promise<{ brand_kits: BrandKit[] }> {
     }
 }
 
+/** POST /brand-kits — create OR update (upsert by id) on famit-caller. */
 export async function saveBrandKit(kit: Partial<BrandKit>): Promise<BrandKit> {
-    const res = await fetch(`${ASSET_BASE}/brand-kits`, {
-        method: kit.id ? "PUT" : "POST",
+    const res = await fetch(`${CALLER_BASE}/brand-kits`, {
+        method: "POST",
         headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
         body: JSON.stringify(kit),
     });
     await handle401(res);
     if (!res.ok) return throwAsset(res, "Couldn't save the brand kit");
-    return res.json();
+    const data = await res.json();
+    return (data?.brand_kit ?? data) as BrandKit;
 }
 
 /** POST /brand-kits/extract — F1 auto-extract (logo / website URL). Dormant-safe:

@@ -160,3 +160,38 @@ provider_keys.json
 
 # kernel staging scratch (box agent.py copies — secret-bearing, never commit)
 .kernelstage/
+
+# ============================================================================
+#  ROUND4 HARDENING (Risk-A close, 2026-06-19) — box-source mirrors, inbound
+#  reference dumps, autonomy scratch + secret-bearing LIVE box copies.
+#  NEVER COMMIT — these mirror /opt box source (agent.py/caller.py/.env-bearing).
+# ============================================================================
+.boxsrc/
+.boxsrc/**
+.boxwork/
+.boxwork/**
+_inbound_ref/
+_inbound_ref/**
+**/*.LIVE.py
+autonmous/
+autonmous/**
+autonomous/
+autonomous/**
+research/agents/
+research/agents/**
+request2.md
+**/request2.md
+MAX_AUTONOMY_PROMPT.md
+**/MAX_AUTONOMY_PROMPT.md
+# round4 / wave work scratch dirs (agent-local, box-mirroring, secret-risk)
+.r4_work/
+.recfix_work/
+.aim_work/
+.disc_work/
+.leakwork/
+.voicefix_build/
+.wafx_work/
+.wireops_work/
+.round4_panel_runcalls_STATE.md
+_tmp_aiasset_*.py
+_wabuild/

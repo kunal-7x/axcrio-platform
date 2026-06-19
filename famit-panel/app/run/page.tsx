@@ -175,6 +175,13 @@ export default function RunPage() {
     const [hourlyCap, setHourlyCap] = useState(0);
     const [dailyCap, setDailyCap] = useState(0);
 
+    // ── Retry cadence (ROUND4 B5) ──
+    // How many times an unanswered/busy lead is re-dialed, and how many minutes
+    // to wait between attempts. Feeds the backend callback/retry scheduler
+    // (max_retries / retry_interval_min in the run payload). 0 retries = call once.
+    const [maxRetries, setMaxRetries] = useState(2);
+    const [retryIntervalMin, setRetryIntervalMin] = useState(60);
+
     // ── Retention & storage (recordings + transcripts) ──
     // Compliance-friendly default: store both, auto-trash after 30 days. The
     // toggles + duration selects resolve to recording_retention_days /
@@ -477,6 +484,11 @@ export default function RunPage() {
             concurrency: concurrency || undefined,
             hourly_cap: hourlyCap || undefined,
             daily_cap: dailyCap || undefined,
+            // Retry cadence (ROUND4 B5) — re-dial unanswered/busy leads. The
+            // backend callback/retry scheduler reads these; degrades safely if
+            // the server ignores them (run still launches with its own defaults).
+            max_retries: maxRetries,
+            retry_interval_min: retryIntervalMin,
             // Retention policy (0=don't store, -1=forever, N=auto-trash after N days).
             // Forwarded to the backend so it can configure Egress + transcript
             // persistence + the auto-delete sweep. Degrades safely: if the server
@@ -1167,6 +1179,65 @@ export default function RunPage() {
                                         hourly / daily caps throttle volume. Leave
                                         a cap at 0 for no limit.
                                     </p>
+
+                                    {/* ── ROUND4 B5: retry cadence ─────────────── */}
+                                    <div className="mt-5 pt-5 border-t border-s-subtle">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <Icon
+                                                name="clock"
+                                                className="size-4 fill-t-tertiary shrink-0"
+                                            />
+                                            <span className="text-sub-title-1">
+                                                Retry unanswered leads
+                                            </span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+                                            <Field
+                                                label="Retry attempts"
+                                                type="number"
+                                                min={0}
+                                                max={5}
+                                                value={String(maxRetries)}
+                                                onChange={(e) =>
+                                                    setMaxRetries(
+                                                        Math.max(
+                                                            0,
+                                                            Math.min(
+                                                                5,
+                                                                parseInt(
+                                                                    e.target.value
+                                                                ) || 0
+                                                            )
+                                                        )
+                                                    )
+                                                }
+                                            />
+                                            <Field
+                                                label="Minutes between attempts"
+                                                type="number"
+                                                min={5}
+                                                step={5}
+                                                value={String(retryIntervalMin)}
+                                                onChange={(e) =>
+                                                    setRetryIntervalMin(
+                                                        Math.max(
+                                                            5,
+                                                            parseInt(
+                                                                e.target.value
+                                                            ) || 5
+                                                        )
+                                                    )
+                                                }
+                                            />
+                                        </div>
+                                        <p className="mt-3 text-body-2 text-t-secondary">
+                                            {maxRetries === 0
+                                                ? "Each lead is dialed once — no automatic retries."
+                                                : `If a lead doesn't answer, the dialer re-tries up to ${maxRetries} time${
+                                                      maxRetries === 1 ? "" : "s"
+                                                  }, waiting ${retryIntervalMin} min between attempts. Retries respect the 9 AM–9 PM calling window and Do-Not-Call list.`}
+                                        </p>
+                                    </div>
                                 </div>
                             </Card>
 
@@ -1332,6 +1403,23 @@ export default function RunPage() {
                                                 transcriptRetentionDays === 0
                                                     ? "Nothing stored"
                                                     : "Auto-trashed on schedule"
+                                            }
+                                        />
+                                        <ReviewCell
+                                            label="Retries"
+                                            value={
+                                                maxRetries === 0
+                                                    ? "Call once"
+                                                    : `Up to ${maxRetries} retr${
+                                                          maxRetries === 1
+                                                              ? "y"
+                                                              : "ies"
+                                                      }`
+                                            }
+                                            sub={
+                                                maxRetries === 0
+                                                    ? "No automatic re-dial"
+                                                    : `${retryIntervalMin} min apart · 9 AM–9 PM`
                                             }
                                         />
                                     </div>
@@ -1572,6 +1660,14 @@ export default function RunPage() {
                                         ]
                                             .filter(Boolean)
                                             .join(" · ") || "none"
+                                    }
+                                />
+                                <SummaryRow
+                                    label="Retries"
+                                    value={
+                                        maxRetries === 0
+                                            ? "off"
+                                            : `${maxRetries}× · ${retryIntervalMin}m`
                                     }
                                 />
                             </dl>

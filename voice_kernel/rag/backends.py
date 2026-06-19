@@ -115,26 +115,58 @@ class KbCorpusBackend:
         self._kb_tried = False
 
     def _core(self) -> Any:
-        """Lazily import droplet_work/kb/core.py the SAME isolated way conftest
-        loads prompt.py — by file path, WITHOUT registering a droplet_work
-        package and WITHOUT importing agent.py. Returns None if unavailable."""
+        """Lazily resolve kb/core.py. Tries, in order:
+
+          1. a direct `import kb.core` — the LIVE BOX layout, where droplet_work's
+             contents are flattened to /opt/famit-agent/ so `kb` is a top-level
+             module already on the agent's sys.path. THIS is the path that was
+             silently failing before (the old code only looked at
+             parents[2]/droplet_work/kb/core.py, which does not exist on the box —
+             kb lives at /opt/famit-agent/kb, NOT /opt/droplet_work/kb — so the 188
+             live kb_chunks never reached the brain). [A1 box-layout fix]
+          2. a file-path load at parents[2]/droplet_work/kb/core.py — the REPO/CI
+             layout (conftest-style isolated import, no package registration).
+          3. a file-path load at parents[2]/kb/core.py — the flattened layout via
+             explicit path (belt-and-braces if sys.path lacks the agent root).
+
+        Returns None if every strategy fails (corpus degrades to empty — safe)."""
         if self._kb is not None or self._kb_tried:
             return self._kb
         self._kb_tried = True
+        # Strategy 1: top-level package import (the live box).
+        try:
+            import importlib
+
+            mod = importlib.import_module("kb.core")
+            if hasattr(mod, "retrieve"):
+                self._kb = mod
+                log.info("kb.core wired via top-level import (box layout)")
+                return mod
+        except Exception as exc:  # noqa: BLE001 — fall through to file-path strategies
+            log.debug("kb.core top-level import unavailable: %r", exc)
+        # Strategies 2 & 3: isolated file-path load (repo/CI + flattened path).
         try:
             import importlib.util
             from pathlib import Path
 
             root = Path(__file__).resolve().parents[2]
-            p = root / "droplet_work" / "kb" / "core.py"
-            if not p.exists():
-                log.info("kb/core.py absent (%s) — corpus backend degrades to empty", p)
+            candidates = [
+                root / "droplet_work" / "kb" / "core.py",  # repo / CI checkout
+                root / "kb" / "core.py",                    # flattened (alt path)
+            ]
+            p = next((c for c in candidates if c.exists()), None)
+            if p is None:
+                log.info(
+                    "kb/core.py absent (tried import kb.core + %s) — corpus degrades to empty",
+                    [str(c) for c in candidates],
+                )
                 return None
             spec = importlib.util.spec_from_file_location("_vk_kb_core", str(p))
             mod = importlib.util.module_from_spec(spec)
             assert spec and spec.loader is not None
             spec.loader.exec_module(mod)
             self._kb = mod
+            log.info("kb/core.py wired via file-path %s", p)
             return mod
         except Exception as exc:  # noqa: BLE001
             log.warning("kb/core.py load failed (degrade to empty): %r", exc)

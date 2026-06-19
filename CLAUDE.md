@@ -53,3 +53,4 @@ The secret-bearing files (give to teammates separately): `.env`, `.env.local`
 - Reuse Core_2 UI components; don't invent from scratch.
 - Before any commit: `git add -A` then confirm `gitleaks protect --staged` = 0.
 - The detailed system map is `ARCHITECTURE.md`.
+- **Autonomy Operating System (for big end-to-end builds):** read `START_HERE.md` and follow it — it boots `MAX_AUTONOMY_PROMPT.md` (Parts A–Q). Integrates the **5-layer specialist build tree** (`BUILD_TREE_PROTOCOL.md`) and the **UltraCode Universe** = main loop as conductor of many independent workflows (`ULTRACODE_UNIVERSE.md`); deep research brain in `research/`. This EXTENDS `AUTONOMY_OS.md` — it does not replace the live earner-gate discipline (agent.py md5 unchanged, integrated real-flow smoke, one box-mutating change + revert path).

@@ -17,9 +17,11 @@ import VirtualRows from "@/components/VirtualRows";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import { useCallsInfinite } from "@/lib/queries";
 import {
+    getCalls,
     getCallDetail,
     getCallRecording,
     getCallbacks,
+    addCallback,
     cancelCallback,
     getSuppression,
     addSuppression,
@@ -700,6 +702,7 @@ function StatChip({
 // deep-links + the /callbacks & /suppression redirect aliases resolve here.
 const CALL_TABS: TabsOption[] = [
     { id: 1, name: "Calls" },
+    { id: 4, name: "Warm leads" },
     { id: 2, name: "Callbacks" },
     { id: 3, name: "Do-Not-Call" },
 ];
@@ -716,15 +719,20 @@ function CallLogsInner() {
     const router = useRouter();
     const params = useSearchParams();
     const tabParam = params.get("tab");
+    const byId = (id: number) =>
+        CALL_TABS.find((t) => t.id === id) ?? CALL_TABS[0];
     const tab =
-        tabParam === "callbacks"
-            ? CALL_TABS[1]
-            : tabParam === "dnc" || tabParam === "do-not-call"
-              ? CALL_TABS[2]
-              : CALL_TABS[0];
+        tabParam === "warm"
+            ? byId(4)
+            : tabParam === "callbacks"
+              ? byId(2)
+              : tabParam === "dnc" || tabParam === "do-not-call"
+                ? byId(3)
+                : byId(1);
     const setTab = (t: TabsOption) => {
         const sp = new URLSearchParams(params.toString());
-        if (t.id === 2) sp.set("tab", "callbacks");
+        if (t.id === 4) sp.set("tab", "warm");
+        else if (t.id === 2) sp.set("tab", "callbacks");
         else if (t.id === 3) sp.set("tab", "dnc");
         else sp.delete("tab");
         const qs = sp.toString();
@@ -736,7 +744,9 @@ function CallLogsInner() {
             <div className="mb-3 flex items-center">
                 <Tabs items={CALL_TABS} value={tab} setValue={setTab} />
             </div>
-            {tab.id === 2 ? (
+            {tab.id === 4 ? (
+                <WarmLeadsPanel />
+            ) : tab.id === 2 ? (
                 <CallbacksPanel />
             ) : tab.id === 3 ? (
                 <DoNotCallPanel />
@@ -1153,6 +1163,357 @@ function CallbacksPanel() {
         </>
     );
 }
+
+/* ================================================================== */
+/* WARM LEADS panel (ROUND4 B4)                                        */
+/* ------------------------------------------------------------------ */
+/* A "warm" lead is a contact whose AI-scored interest sits in the 40–69 */
+/* band (Hot is 70+, Cold is <40). This view surfaces those mid-interest  */
+/* contacts — the ones most worth a human/AI follow-up — with the call's  */
+/* AI summary (lazy-fetched from the call detail) and a one-click         */
+/* "Schedule follow-up" that drops a callback into the dialer queue.      */
+/* Dormant-safe: no warm calls → calm empty state; summary/callback gaps  */
+/* degrade quietly. Reuses the same CallDetailModal as the Calls tab.     */
+
+const WARM_LO = 40;
+const WARM_HI = 69;
+
+type WarmSort = "score" | "recent";
+
+function WarmLeadsPanel() {
+    const [calls, setCalls] = useState<CallLog[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [query, setQuery] = useState("");
+    const [sort, setSort] = useState<WarmSort>("score");
+    const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
+    // Lazy per-call AI summaries keyed by call id (fetched on expand/hover-in).
+    const [summaries, setSummaries] = useState<Record<string, string>>({});
+    const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    // Per-call scheduling state: "idle" | "saving" | "done" | "error".
+    const [sched, setSched] = useState<Record<string, string>>({});
+    const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+
+    const showToast = (msg: string, ok = true) => {
+        setToast({ msg, ok });
+        setTimeout(() => setToast(null), 4000);
+    };
+
+    useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        // Pull a generous newest-first window; we filter to the warm band client-side.
+        getCalls({ limit: 500, order: "desc", slim: true })
+            .then((r) => !cancelled && setCalls(r.calls))
+            .catch(() => !cancelled && setCalls([]))
+            .finally(() => !cancelled && setLoading(false));
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // Warm band, de-duplicated to the most-recent call per phone (so a lead that
+    // was dialed twice shows once, with its latest interest score + timestamp).
+    const warm = useMemo(() => {
+        const inBand = calls.filter(
+            (c) =>
+                c.interest != null &&
+                c.interest >= WARM_LO &&
+                c.interest <= WARM_HI
+        );
+        const byPhone = new Map<string, CallLog>();
+        for (const c of inBand) {
+            const key = c.phone || c.id;
+            const prev = byPhone.get(key);
+            const t = c.started_at
+                ? new Date(toUTC(c.started_at)).getTime()
+                : 0;
+            const pt = prev?.started_at
+                ? new Date(toUTC(prev.started_at)).getTime()
+                : -1;
+            if (!prev || t >= pt) byPhone.set(key, c);
+        }
+        let rows = Array.from(byPhone.values());
+        const q = query.trim().toLowerCase();
+        if (q) {
+            rows = rows.filter(
+                (c) =>
+                    c.name?.toLowerCase().includes(q) ||
+                    c.phone?.toLowerCase().includes(q) ||
+                    c.campaign_name?.toLowerCase().includes(q)
+            );
+        }
+        rows.sort((a, b) => {
+            if (sort === "recent") {
+                const at = a.started_at
+                    ? new Date(toUTC(a.started_at)).getTime()
+                    : 0;
+                const bt = b.started_at
+                    ? new Date(toUTC(b.started_at)).getTime()
+                    : 0;
+                return bt - at;
+            }
+            return (b.interest ?? 0) - (a.interest ?? 0);
+        });
+        return rows;
+    }, [calls, query, sort]);
+
+    // Lazy-load the AI summary for a call the first time its row is expanded.
+    const loadSummary = useCallback(
+        (id: string) => {
+            if (summaries[id] !== undefined) return;
+            setSummaries((p) => ({ ...p, [id]: "" })); // mark in-flight
+            getCallDetail(id)
+                .then((d) =>
+                    setSummaries((p) => ({
+                        ...p,
+                        [id]: d.transcript?.summary || "—",
+                    }))
+                )
+                .catch(() =>
+                    setSummaries((p) => ({ ...p, [id]: "—" }))
+                );
+        },
+        [summaries]
+    );
+
+    const toggleExpand = (id: string) => {
+        setExpanded((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else {
+                next.add(id);
+                loadSummary(id);
+            }
+            return next;
+        });
+    };
+
+    // Schedule a follow-up callback ~1 day out (next morning), dropped into the
+    // dialer's callback queue. The scheduler clamps to the 9 AM–9 PM window +
+    // skips Do-Not-Call numbers, so this is safe to fire directly from the row.
+    async function scheduleFollowUp(c: CallLog) {
+        setSched((p) => ({ ...p, [c.id]: "saving" }));
+        const when = new Date();
+        when.setDate(when.getDate() + 1);
+        when.setHours(11, 0, 0, 0); // 11 AM local, inside the legal window
+        try {
+            await addCallback(c.phone, "", when.toISOString());
+            setSched((p) => ({ ...p, [c.id]: "done" }));
+            showToast(`Follow-up scheduled for ${c.name || c.phone}`);
+        } catch {
+            setSched((p) => ({ ...p, [c.id]: "error" }));
+            showToast("Couldn't schedule — try the Callbacks tab", false);
+        }
+    }
+
+    return (
+        <>
+            {selectedCallId && (
+                <CallDetailModal
+                    callId={selectedCallId}
+                    onClose={() => setSelectedCallId(null)}
+                />
+            )}
+
+            {toast && (
+                <div
+                    className={`mb-3 flex items-center gap-2 p-3.5 rounded-3xl text-body-2 ${
+                        toast.ok
+                            ? "bg-primary-02/8 text-primary-02"
+                            : "bg-primary-03/8 text-primary-03"
+                    }`}
+                >
+                    <Icon
+                        name={toast.ok ? "check-circle" : "info"}
+                        className={`size-4 shrink-0 ${
+                            toast.ok ? "fill-primary-02" : "fill-primary-03"
+                        }`}
+                    />
+                    {toast.msg}
+                </div>
+            )}
+
+            <div className="card">
+                <div className="flex items-center min-h-12 max-md:flex-wrap max-md:gap-3">
+                    <div className="mr-auto pl-5 max-lg:pl-3">
+                        <div className="text-h6">Warm leads</div>
+                        <div className="text-caption text-t-tertiary">
+                            Interest {WARM_LO}–{WARM_HI} — mid-intent contacts
+                            worth a follow-up
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 max-md:w-full max-md:px-3">
+                        <Tabs
+                            items={WARM_SORT_TABS}
+                            value={
+                                sort === "recent"
+                                    ? WARM_SORT_TABS[1]
+                                    : WARM_SORT_TABS[0]
+                            }
+                            setValue={(t) =>
+                                setSort(t.id === 2 ? "recent" : "score")
+                            }
+                            classButton="!h-10 !px-4"
+                        />
+                        <Search
+                            className="w-56 max-md:flex-1"
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            placeholder="Search lead, number or campaign"
+                            isGray
+                        />
+                    </div>
+                </div>
+
+                <div className="pt-3">
+                    {loading ? (
+                        <div className="py-16">
+                            <Spinner />
+                        </div>
+                    ) : warm.length === 0 ? (
+                        <div className="state-block">
+                            <span className="state-glyph">
+                                <Icon name="chat" className="fill-inherit" />
+                            </span>
+                            <div className="state-title">
+                                {query
+                                    ? "No matching warm leads"
+                                    : "No warm leads yet"}
+                            </div>
+                            <div className="state-sub">
+                                {query
+                                    ? `Nothing matches “${query}”.`
+                                    : "Leads the AI scores 40–69 (interested but not committed) land here after a call — ready for a follow-up."}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="px-1 pb-2 max-lg:px-0 flex flex-col gap-2">
+                            {warm.map((c) => {
+                                const isOpen = expanded.has(c.id);
+                                const sum = summaries[c.id];
+                                const sState = sched[c.id] || "idle";
+                                return (
+                                    <div
+                                        key={c.id}
+                                        className="rounded-2xl border border-s-subtle bg-b-surface2 transition-colors hover:border-s-stroke2"
+                                    >
+                                        <div className="flex items-center gap-3 p-3.5 max-md:flex-wrap">
+                                            <span className="flex items-center justify-center size-10 shrink-0 rounded-xl bg-primary-05/12 text-primary-05 text-caption font-semibold">
+                                                {c.name
+                                                    ? c.name
+                                                          .trim()
+                                                          .charAt(0)
+                                                          .toUpperCase()
+                                                    : "?"}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => toggleExpand(c.id)}
+                                                className="flex-1 min-w-0 text-left"
+                                            >
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-sub-title-1 truncate">
+                                                        {c.name || "Unknown"}
+                                                    </span>
+                                                    <ScorePill
+                                                        score={c.interest ?? 0}
+                                                    />
+                                                </div>
+                                                <div className="flex items-center gap-2 text-caption text-t-tertiary">
+                                                    <span className="tabular-nums">
+                                                        {c.phone}
+                                                    </span>
+                                                    {c.campaign_name && (
+                                                        <>
+                                                            <span>·</span>
+                                                            <span className="truncate">
+                                                                {c.campaign_name}
+                                                            </span>
+                                                        </>
+                                                    )}
+                                                    {c.started_at && (
+                                                        <>
+                                                            <span>·</span>
+                                                            <span className="whitespace-nowrap">
+                                                                {fmtShort(
+                                                                    c.started_at
+                                                                )}
+                                                            </span>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </button>
+                                            <div className="flex items-center gap-2 shrink-0 max-md:w-full max-md:justify-end">
+                                                <Button
+                                                    isStroke
+                                                    className="!h-9 !px-4"
+                                                    onClick={() =>
+                                                        setSelectedCallId(c.id)
+                                                    }
+                                                >
+                                                    View call
+                                                </Button>
+                                                <Button
+                                                    isBlack
+                                                    className="!h-9 !px-4"
+                                                    onClick={() =>
+                                                        scheduleFollowUp(c)
+                                                    }
+                                                    disabled={
+                                                        sState === "saving" ||
+                                                        sState === "done"
+                                                    }
+                                                >
+                                                    {sState === "saving"
+                                                        ? "Scheduling…"
+                                                        : sState === "done"
+                                                          ? "Scheduled ✓"
+                                                          : "Schedule follow-up"}
+                                                </Button>
+                                            </div>
+                                        </div>
+
+                                        {isOpen && (
+                                            <div className="px-3.5 pb-3.5 -mt-1">
+                                                <div className="p-3.5 rounded-2xl bg-b-surface1/70 dark:bg-shade-04/30">
+                                                    <div className="flex items-center gap-2 mb-2">
+                                                        <Icon
+                                                            name="feather"
+                                                            className="size-3.5 fill-t-tertiary"
+                                                        />
+                                                        <div className="eyebrow">
+                                                            AI summary
+                                                        </div>
+                                                    </div>
+                                                    {sum === undefined ||
+                                                    sum === "" ? (
+                                                        <div className="flex items-center gap-2 text-caption text-t-tertiary">
+                                                            <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
+                                                            Loading summary…
+                                                        </div>
+                                                    ) : (
+                                                        <p className="text-body-2 text-t-primary leading-relaxed">
+                                                            {sum}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </>
+    );
+}
+
+const WARM_SORT_TABS: TabsOption[] = [
+    { id: 1, name: "Hottest" },
+    { id: 2, name: "Recent" },
+];
 
 /* ------------------------------------------------------------------ */
 /* DO-NOT-CALL panel — ported inline from the old /suppression page    */

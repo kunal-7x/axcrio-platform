@@ -314,3 +314,99 @@ is the seam the worker implements); (b) the FE (W9 — Video Studio page + Asset
 Videos toggle, sibling FE wave, NOT this BE wave); (c) U7 Signal-Loop export, U8 reaper/output-moderation/
 lifecycle/alerts, U9 BYO-key/multilingual/music — the hardening tail. ACTIVATE: FEATURE_VIDEO_STUDIO=1 +
 FEATURE_VIDEO_COMPOSE=1 (+FFmpeg on worker) + FEATURE_VIDEO_LIBRARY=1 + AIASSET_SERVICE_TOKEN.
+
+---
+
+## W9 — VIDEO STUDIO FE (U6) — ✅ BUILT + GREEN (FE only, NOT deployed) — 2026-06-14
+
+Scope (plan §10 / roadmap U6/W9): the crazy Video Studio UI + one-library video support, on
+`fe/unify-run-wavec`. FE-only — committed (`2d26c98`, 15 files, +1799/-16), `npm run build` GREEN,
+panel NOT deployed (single deploy after voice-core-surgery, per no-panel-deploy-race). Earner
+untouched (no box mutation/restart; agent.py `9150fabe` never imported). Core_2 + Inter Display,
+ZERO raw hex, dormant-safe (404 when FEATURE_VIDEO_STUDIO off).
+
+### NEW page + studio components (`famit-panel/app/creative/video/`)
+- `page.tsx:42` — two-column studio (VideoCreatePanel+BatchProgress / How-it-works+recent reels);
+  `useVideoStatus()` probe → DormantCard (`camera-video`) byte-identical when the surface 404s.
+- `_components/TierTabs.tsx:35` (`TIERS`) — the SIGNATURE composite-vs-AI control: Composite (default,
+  "Free", ₹0.25/clip, no key) · AI motion (Kling/Hailuo, Paid) · Premium (Runway/Veo, Paid). Radio cards.
+- `_components/VideoCreatePanel.tsx:84` — campaign + TierTabs + ad-ready AspectTabs (9:16/1:1/16:9) +
+  count + command box + HONEST cost meter (`costLabel`: $0-gen-key composite + metered TTS vs paid/sec) +
+  Sarvam(free)/ElevenLabs(paid, 1-test-gate copy) voiceover toggle; binds `POST /creative/video/batches`.
+- `_components/BatchProgress.tsx:46` — the queue: `useBatchPoll` → liquid `CreativeSkeleton` slots morph
+  into real `<video>` `AssetCard`s (one component, image+video same look); the paid-batch APPROVAL GATE
+  (approve/discard, 1-paid-test posture); collect fires the library bridge.
+- `_components/ByoKeyPicker.tsx:29` — per-tenant gen-provider picker over `useIntegrations("video_gen")`
+  (the BE-ready seam); paid tiers only; deep-links /integrations to add/rotate (key never surfaced here).
+- `_components/UploadClip.tsx:24` — manual-upload floor: local object-URL `<video>` preview, honest
+  "composites once the worker is enabled", zero gen-key, revokes URL on unmount.
+
+### one-library video support (shared kit, additive)
+- `lib/video.ts` (NEW, 1 file) — typed `/api/creative/video` client (proposeBatch/getBatch/list/
+  approve/reject/cancel/collect/promote) + `VideoError` + `useVideoStatus`/`useBatchPoll`; dormant-safe
+  (404→not_configured shape, never an error wall, never a logout). Verified vs `endpoints.py` contract.
+- `lib/assets.ts` — `Asset` +`media_type`/`duration_s`/`with_audio`/`poster_url`/`outputs`/`ab_group`/
+  `moderation_status`; `AssetVersion` +video cols; `AssetQuery.media_type` passthrough in `listAssets`;
+  `getAsset` carries the version poster/duration; helpers `isVideoAsset`/`isVideoUrl`/`fmtDuration`.
+- `AssetImage` → `AssetMedia.tsx` split — `<video preload="none" poster controls playsInline>`; GRID is
+  POSTER-ONLY + CSS play triangle + duration pill + audio chip (egress-safe §10b/R4); hover loads one
+  muted preview. `AssetCard`/`AssetDetail` swapped to it; AssetDetail +video meta row (duration/VO/captions).
+- `FilterRail.tsx` `KIND_OPTS` +Video; `LibraryGallery.tsx` +Images↔Videos segmented `Tabs` toggle
+  (`MEDIA_TABS`, `media_type` query passthrough; `defaultMediaType`/`lockMediaType` props so the studio
+  can reuse the gallery scoped to videos).
+- `globals.css` +`.play-tri` (CSS triangle — no `play` glyph in the set) + reduced-motion skeleton guard.
+- `navigation.tsx` +Video Studio child under Creative Studio (`/creative/video`).
+
+### VERIFY (GREEN, FE-only)
+`npm run build` = exit 0 ("Compiled successfully", 58/58 static, `/creative/video` 8.96 kB compiled).
+Raw-hex scan on all new files + edited lines = EMPTY (semantic tokens only). `gitleaks protect --staged`
+= 0 leaks (81.66 KB). `tsc --noEmit` = 1 PRE-EXISTING error in `app/integrations/page.ts` (the sibling
+Integrations wave's non-default page export — NOT my files; the build tolerates it). EARNER UNTOUCHED
+(FE-only, no box mutation, no restart, no ring). Panel NOT deployed. Commit `2d26c98` on `fe/unify-run-wavec`.
+
+### NEXT (build-the-other-half, NOT this FE wave)
+The composite render WORKER (FFmpeg/TTS/Whisper on famit-hatchet — `compose_worker.enqueue` seam);
+U7 Signal-Loop export; U8 reaper/output-moderation/lifecycle/alerts; U9 BYO-key Vault seam/multilingual/
+music. ACTIVATE the studio: `FEATURE_VIDEO_STUDIO=1` + `FEATURE_VIDEO_COMPOSE=1` (+FFmpeg) +
+`FEATURE_VIDEO_LIBRARY=1` + `AIASSET_SERVICE_TOKEN`. State: `droplet_work/VIDEO_STUDIO_FE_STATE.md`.
+
+---
+
+## VERIFY (end-to-end integrated verify, 2026-06-14) — per-item PASS/FAIL
+
+### Item 1 — W5: REGISTRY_FOR_VIDEO flag-off byte-identical + flag-on registry path
+**PASS.** Box probe: `/opt/capsy-agent/.venv/bin/python -c "from media_gen.video.config import registry_for_video; print(registry_for_video())"` = `False` (NOT in .env — absent = flag-off, correct resting state). config.py md5 `02bb49dc` on box matches wave log. 6/6 offline proofs documented in W5 (flag-off identical; ON+ok→registry; ON+miss/raise/empty-key/pkg-absent→legacy).
+
+### Item 2 — W6+W7+W8: Video Studio BE deployed + composite tier working + PG schema live + library bridge
+**PASS on all sub-items.**
+- **PG schema live:** `video_jobs` + `video_scripts` tables confirmed in famit_db (via PG_DSN / aiasset venv); `ai_asset_assets` has all 8 new video cols (`media_type`/`duration_s`/`with_audio`/`poster_key`/`outputs`/`ab_group`/`moderation_status`/`music_license`) — confirmed via `information_schema.columns`. Resting: `media_type` default='image' (image rows byte-identical).
+- **Composite tier:** `compose.py` present on box (md5 `50119b8c`); `submit_gate.gate(tenant,{provider:'compose',count:3,dur:10})` = `{_gate:{paid_class:'',forced_one_test:False,reason:'free_floor'}}` (PASS — composite is the free floor, NOT gated). `_paid_class({provider:'fal',...})` = `gen:fal` (PASS — hosted gen is a paid class, choke applies). `submit_gate.py` present on box; `mark_paid_render_approved`/`gate`/`check_daily_cap` functions confirmed.
+- **Live-library bridge:** `endpoints.py` contains `POST /assets/_internal/register-video` (`:291`) + `store.register_video_asset` with `media_type='video'` path (`:357`, `:477-509` confirmed). `FEATURE_VIDEO_LIBRARY` absent from `/opt/famit-aiasset/.env` (default OFF, resting byte-identical).
+- **Video Studio mount dormant:** `FEATURE_VIDEO_STUDIO=0` in `/opt/famit-agent/.env`; `curl -o /dev/null -w '%{http_code}' http://localhost:8209/creative/video/batches` = `404` (PASS — dormant as designed).
+- **1-paid-test choke:** `submit_gate` `_paid_class` + `gate` logic confirmed functional on box via import probe (paid class fal→gen:fal; compose→'' free floor). Durable per-tenant JSON marker pattern confirmed in submit_gate.py.
+- **Per-tenant cap:** `check_daily_cap` function present; `VIDEO_DAILY_CAP_USD` default `$20`, `__<tenant>` override pattern isolated — one tenant cap cannot drain another's (PASS per code review).
+- **Wallet hold seam:** `client.py:_submit_compose` places a `pre-fan-out wallet HOLD` before fan-out (confirmed in wave log W7+W8; compose.py+client.py on box).
+
+### Item 3 — FE builds GREEN + committed on fe/unify-run-wavec
+**PASS.**
+- `npm run build` = exit 0 ("Compiled successfully", 58/58 static) — confirmed this session.
+- `tsc --noEmit` = 1 PRE-EXISTING error in `app/integrations/page.ts` (sibling wave's non-default page export — NOT video studio files; build tolerates it). PASS (not introduced by this wave).
+- `gitleaks protect --staged` = 0 leaks (81.66 KB) — confirmed in W9 wave record.
+- Commits confirmed on `fe/unify-run-wavec`: `a71b87a` (W5) · `f3d9bd4` (Integrations UI) · `49d3165` (W6) · `ef95422` (W7+W8) · `2d26c98` (W9 Video FE) — all 5 present in `git log --oneline fe/unify-run-wavec`.
+- Zero raw hex scan: EMPTY (semantic tokens only, confirmed in wave log).
+- PANEL NOT DEPLOYED: Integrations UI + Video Studio UI committed but NOT deployed. Ships in SINGLE final deploy after voice-core-surgery (no-panel-deploy-race rule — confirmed in ORCHESTRATOR + NEXT-BIG-BUILDS).
+
+### EARNER GATE (final, PASS)
+| Check | Value |
+|---|---|
+| agent.py md5 (box `/opt/famit-agent/agent.py`) | `9150fabe4ff62b4b4470f9a87df346e5` UNCHANGED |
+| famit-agent MainPID | `1477083` NOT restarted |
+| aim-voice-agent | `2739156` active, untouched |
+| famit-aiasset | `2768818` active (aiasset restarted for U3 in W6 only) |
+| famit-caller (8209) | `/health` = `{"status":"ok","checks":{"db":{"ok":true},"redis":{"ok":true},"livekit":{"ok":true}}}` = **200** |
+| FEATURE_VIDEO_STUDIO | `0` (in .env) → resting byte-identical, 404 on video routes |
+| 5xx | 0 |
+| Ring | NO ring placed this wave |
+
+### DEFERRED DEPLOY NOTE (appended to WORKFLOW_LEDGER + ORCHESTRATOR)
+PANEL DEPLOY DEFERRED. The Integrations UI (commit `f3d9bd4`) + Video Studio UI (commit `2d26c98`) are committed on `fe/unify-run-wavec` and ship in the SINGLE final panel deploy AFTER the voice-core-surgery wave, from the LATEST `fe/unify-run-wavec` (= transcript fix + Integrations + Video UI together). Only BE deploys (video worker / caller.py video-API) happen in isolation. Nothing reverts.

@@ -267,3 +267,73 @@ worker's `session.say()`.
   instant `=0` revert).
 
 **Full output:** `memory/wave_runs/W-SURGICAL-B.md`
+
+---
+
+## W-SURGICAL-A2 — AI-self-label removal DEPLOYED (code + the one campaign DATA fix)
+**Built 2026-06-18 → DEPLOYED + re-verified live on box 2026-06-19** · VERDICT: **DEPLOY COMPLETE AND VERIFIED.**
+All gates passed · no rollback needed · NO real PSTN · `aim-voice-agent` never touched · `KERNEL_OUTBOUND=0` (OFF).
+
+Completes W-SURGICAL-A (which HALTED pre-deploy: code was correct but ONE live campaign JSON stored its own
+self-label that overrode the clean default). A2 fixes that single saved field AND ships the authorized code
+strings → airtight 100%-clean canary, voice byte-identical.
+
+- **MD5 OLD golden → NEW deployed (live, re-confirmed):**
+  - agent.py `98655dbfc71d5c3da36bcfe3f848082c` → `5c055a31b2608d6381ab475af1e64761`
+  - prompt.py `fb87ea56ee7f7688b6af712a52627e72` → `660f1ec666329094e9d90ca137312e70`
+- **Campaign DATA fix (root cause):** `var/campaigns/c17e55e9f3.json` = Codename Joy 3.0 / Shapoorji Pallonji
+  Real Estate (the ONLY one of 15 with a non-null `ai_disclosure`). Field `ai_disclosure`:
+  `'Shapoorji Pallonji की एक AI assistant'` → `'Shapoorji Pallonji Real Estate से'`.
+  Backup `c17e55e9f3.json.AIbak.1781807526` (verified to hold the ORIGINAL self-label).
+- **Code diffs (vs golden):** agent.py = ONLY line `:218` (disclosure default string); voice-path ranges
+  550-670 (TTS/AgentSession/STT/LLM/VAD/turn_detection/endpointing) + 695-890 (opener mechanics) diff EMPTY.
+  prompt.py = only disclosure-text lines `94,99,208,225-226,358,361-362,683`. `py_compile` clean both.
+- **Earner gate:** BEFORE famit-agent active, 8090=200/8091=200 → AFTER new MainPID **4042950**, active, worker
+  "capsy" re-registered, 8090=200/8091=200, journal-since-restart = ZERO errors. No real ring placed.
+- **Canary (15-campaign render vs LIVE deployed code):** AI-SELF-LABEL HITS = **0**. The 16 residual token
+  substrings are TWO benign non-self-ID strings only (anti-robotic coaching `इनके बिना robotic लगता है`;
+  AGARO `"Machine heating"`). Live opener: `मैं Riya, Shapoorji Pallonji Real Estate से बोल रही हूँ…`.
+- **Voice/.env UNTOUCHED:** `.env` `EL_STABILITY=0.55`, `OPENER_ALREADY_SAID=1`, `OPENER_IN_CTX=0`;
+  `KERNEL_OUTBOUND=0` (systemd drop-in `kernel-outbound.conf`, not `.env`). No TTS/prosody/turn-taking change.
+  `aim-voice-agent` NOT restarted.
+- **Rollback (one command):** restore `agent.py.WOUTbak.1781793303` + `prompt.py.AIFIXbak.1781801811` +
+  `c17e55e9f3.json.AIbak.1781807526` → `systemctl restart famit-agent` → back to `98655dbf`/`fb87ea56` + the
+  original campaign text.
+
+**Full output:** `memory/wave_runs/W-SURGICAL-A2.md`
+
+---
+
+## W-FRONTEND-DEPLOY — W15/W16 Consolidated Panel — DEPLOYED 2026-06-18
+
+**Branch:** `fix/realtime-voice-kernel-v2` | **Box:** FORTRESS panel only (`143.110.247.249`) | **Voice box: UNTOUCHED**
+
+**Result:** DEPLOYED — BUILD_EXIT=0, service active NRestarts=0, public smoke 200 OK.
+
+**Old BUILD_ID:** `xF8YUvBmTwYj_yP4w7WY4` → **New BUILD_ID:** `Zg_bPJTYqOR9zsYkgoJ3c`
+
+**What's live at https://panel.famit.in:**
+- `/` — W15 consolidated "Dashboard / Today" cockpit (GlobalFilters-driven)
+- `/crm` + `/crm/[id]` — CRM with LeadBadge
+- `/calls`, `/callbacks`, `/run`, `/whatsapp` (W16 media), `/analytics` (Reports), `/ai-manager` (+ `/sessions`), `/super-admin`, `/billing`, `/booking`, `/forms`, `/funnels`, `/workflows`
+- `/dashboard` + `/reports` → 404 by design (dashboard = `/`, Reports = `/analytics`)
+
+**Backups on box:**
+- `.next` hot-swap: `/opt/famit-panel/.next.W16bak.20260618-191059`
+- Full source tar (92M): `/opt/famit-panel.W16bak.20260618-191059.tar.gz`
+
+**Rollback:** `rm -rf /opt/famit-panel/.next && cp -a /opt/famit-panel/.next.W16bak.20260618-191059 /opt/famit-panel/.next && chown -R deployuser:deployuser /opt/famit-panel/.next && systemctl restart famit-panel`
+
+**Full output:** `memory/wave_runs/W-FRONTEND-DEPLOY.md`
+
+---
+
+## W-FRONTEND-RECONCILE — additive nav restore + keep new dashboard + wire filters (DESIGN) — 2026-06-19
+
+The W15 "UI consolidation" (`5a2d5fe`, `navigation.tsx`) stripped the sidebar down and HID ~15 real feature routes — the entire Creative Studio suite (Image/Video/Library/Brand: `/creative/video`,`/creative/library`,`/creative/brand` reachable only by typing the URL), the 9 AI-Manager sub-pages, `/callbacks`, `/communication`, `/leads`, plus `/super-admin/api-keys` (a genuine never-linked page) — collapsing them to flat single links whose promised in-page tabs were never actually built (MAP 2: "intent, not reality"). It also shipped a good new dashboard (`app/page.tsx`, GlobalFilters/LeadBadge) whose filters are inert: `composeReport()` (`lib/report.ts:266-271`, the always-hit fallback because `/report` isn't mounted on the box) calls `getStats`/`getAnalytics`/`getLeads` WITHOUT forwarding `range`/`campaign`/`status`, so every filter change re-fetches identical all-time data (MAP 4). The founder was furious; the **live panel is ALREADY ROLLED BACK** to the full pre-W15 product (full nav + all features visible to him now — interim relief). Designed `design/W-FRONTEND-RECONCILE-PLAN.md`: the permanent ADDITIVE reconciliation that REMOVES NOTHING — (1) restore every dropped route by turning Creative Studio + AI Manager into collapsible groups in the SAME W15 task-group names and re-adding Callbacks/Communication/Leads/API-Keys, each keeping its verbatim `feature_key` (one file: `contstants/navigation.tsx`; render path `Sidebar/Dropdown` already handles groups — no component change); (2) KEEP the new W15 dashboard at `/` untouched; (3) WIRE GlobalFilters to real endpoints — forward `range.from/to` to `getAnalytics` (already accepts them, `api.ts:1779`), extend `getLeads` (`api.ts:559`) with from/to/campaign_id/status + a guaranteed client-side post-filter fallback in `composeReport`, leave all-time `/stats` honestly labelled, and add an "All campaigns" clear to CampaignSelect/GlobalFilters. Build phase = FE-only on branch `fix/realtime-voice-kernel-v2` (pages exist on disk → npm build is the only gate), deploy FORTRESS, founder verifies full nav + working filters; pure-FE revert path, earner/voice untouched. Plan also consolidates DONE+LIVE / BUILT-not-deployed / PENDING and the voice-heart status: build wave COMPLETE (931 pytest, 16 gates, `KERNEL_OUTBOUND=0`), only the 7-step founder-gated box deploy remains — independent and parallel-safe with this FE work; neither blocked by the T0 scheduler retry-bug gate (which only gates dialing/campaign work).
+
+---
+
+## W-BRAIN-V2 — brain-only red-team hardening of prompt.BRAINv2.py (BUILD, deploy-gated) — 2026-06-19
+
+Finalized the BRAIN-ONLY voice upgrade: applied the three prompt-side red-team fixes to `droplet_work/prompt.BRAINv2.py` and re-verified clean. Three adversarial lenses converged on one harsh truth — the worst live failures (hard mid-word truncation "3 BH"/"25 एकड़…", double/ghost goodbye T9+T10/T7+T8, language-mirror lag) are RUNTIME/ARCHITECTURE bugs in `agent.py` (the `max_completion_tokens=90` guillotine + `_confirm_then_hangup` firing a second independent `session.say()` on the assistant turn + the lang-detect pipeline race), NOT prompt-content bugs, so a system prompt cannot fully close them; it is the wrong layer. Within the brain-only scope I installed the exact backstops all three lenses recommended: (1) Rule 2 now carries a COUNTABLE HARD BUDGET — reply ≤ ~30 words / ~200 chars, "count before you speak", end the sentence immediately when nearing the limit, and NEVER begin an enumeration ("दो BHK, तीन BHK, और तीन BHK duplex…" / "85 lakh से शुरू…") it cannot finish — replacing the un-countable "land a complete thought"; (2) resolved the digit-vs-spelled-number collision the red-team flagged (spelling numbers in words inflates Devanagari token count under the cap) by keeping words-not-symbols for TTS but forcing ONE number per turn, no price+size+floor list; (3) Flow step 5 KEY DETAILS now gives ONE relevant point + ONE number then pauses, never a config/number list in one turn. Untouched (already closed/strong): rule-1 language+Devanagari-only, the OPENER strict rules (greeting-once / no-recording-disclaimer / no-double-question / no-hallucinated-history), the name cap, the resolver, and the whole vendor-script-injection layer. **Verified locally: `py_compile` OK; `resolve_providers({})==_DEFAULT_PROVIDERS`; `build_system_prompt_v2(GODREJ)==build_system_prompt(GODREJ)` with the vendor feature OFF (byte-identical, golden oracle green); render len 18259. Local md5 `17ad3e0d133721c4a673f258f6420df5`.** This wave changes ONLY the brain text — the founder's perfect voice is byte-identical (agent.py md5 must stay `5c055a31`, `.env` `EL_STABILITY=0.55` + `KERNEL_OUTBOUND=0` UNCHANGED). Ready-but-NOT-executed brain-only deploy plan (backup live `prompt.py` → scp → box `py_compile` → `systemctl restart famit-agent` → assert worker "capsy" re-registers + NRestarts=0 + agent.py/.env unchanged → founder ONE real test call) + one-command rollback (restore the `prompt.py.BRAINv2bak.<ts>` + restart) live in `design/W-BRAIN-V2-PLAN.md`; per-wave log `memory/wave_runs/W-BRAIN-V2.md`. KNOWN RESIDUE → next SEPARATE voice-touching agent.py wave (earner-gated): raise `GROQ_MAX_TOKENS` 90→~160-180 + sentence-boundary trim before TTS, gate the hangup say() on the latest USER turn, feed freshest lang to the turn.

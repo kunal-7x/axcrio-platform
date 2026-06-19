@@ -246,11 +246,31 @@ def _build_kernel_with_impls(cfg, tenant_id: str, campaign_id: str, fields: dict
     except Exception as exc:
         log.warning("W2 brain_packs unavailable -> Null: %r", exc)
 
-    # W4 rag (stage-aware; degrades to EMPTY with no backends wired — safe).
+    # W4 rag (stage-aware). A1 FIX: wire the PRODUCTION corpus + cache EXPLICITLY so
+    # the 188 live kb_chunks actually reach the call brain. Previously build_rag_runtime()
+    # was called with NO corpus/cache — it relied on the runtime's own internal default,
+    # which is brittle and never used a cross-process (Redis) cache, so warmed entries
+    # could not be shared and uploaded PDFs never surfaced. Now:
+    #   * corpus = KbCorpusBackend() — wraps droplet_work/kb/core.py (lazy, read-only,
+    #     is_admin=False RLS reads, tenant-scoped per call). Degrades to [] if kb absent.
+    #   * cache  = RedisHotCache.from_env() — L0 dict + optional L1 Redis (REDIS_URL),
+    #     degrades to L0-only when Redis is absent. NEVER raises.
+    # Still degrade-to-empty + voice byte-identical: with the kernel OFF nothing is
+    # retrieved into a live prompt; the per-turn retrieve is cache-only with a hard
+    # timeout, so a slow/empty corpus can never block or alter the hot voice path.
     try:
-        from voice_kernel.rag import build_rag_runtime
+        from voice_kernel.rag import (
+            KbCorpusBackend,
+            RedisHotCache,
+            build_rag_runtime,
+        )
 
-        impls["rag"] = build_rag_runtime()
+        try:
+            _rag_cache = RedisHotCache.from_env()
+        except Exception as _cexc:  # noqa: BLE001 — cache build must never break rag wiring
+            log.warning("W4 rag cache build failed -> default InProc: %r", _cexc)
+            _rag_cache = None
+        impls["rag"] = build_rag_runtime(corpus=KbCorpusBackend(), cache=_rag_cache)
     except Exception as exc:
         log.warning("W4 rag unavailable -> Null: %r", exc)
 

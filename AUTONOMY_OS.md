@@ -25,6 +25,25 @@ build logs.
 
 ---
 
+## 0b. COMPANION SYSTEMS — the deeply-researched extension (2026-06-14)
+This AUTONOMY_OS is now EXTENDED by a multi-run / 67+-agent deep-research effort (durable brain in
+`research/`). Read these for the deep mechanics; they build ON this doc and the global rules, and NEVER
+replace the live earner-gate discipline (agent.py md5 unchanged, integrated real-flow smoke, one
+box-mutating change + revert path):
+- **`START_HERE.md`** — ignition key. "Read START_HERE.md and follow it" boots the whole stack (Parts A–Q).
+- **`MAX_AUTONOMY_PROMPT.md`** — the full operating system, **Parts A–Q** (born-production-grade standards,
+  the innovation/market-domination engine, permissionless end-to-end execution, the build tree, the Universe).
+- **`BUILD_TREE_PROTOCOL.md`** — the **5-LAYER specialist subagent tree** (deepens §3 "parallelize safely"):
+  ground-truth nesting (needs Claude Code ≥ v2.1.172; box on 2.1.177 ✓), Team-Lead→Managers→Specialists, the
+  BRIEF/RETURN schemas, per-layer verification, and ready-to-use prompt templates.
+- **`ULTRACODE_UNIVERSE.md`** — **"many workflows, one product"**: the main loop as CONDUCTOR launching MANY
+  independent top-level workflows (workflows do NOT nest >1 level) coordinating on a disk blackboard.
+- **`GIT_ECOSYSTEM.md`** — the **fully-autonomous git/GitHub lifecycle** (branch→commit→PR→CI→review→merge→
+  tag→release→rollback) Claude drives end-to-end so the founder never types git — the substrate this doc assumes.
+- **`research/RESEARCH_INDEX.md`** — the preserved deep-research brain (synthesized `raw/` + rawest `agents/`).
+
+---
+
 ## 0. TL;DR — the operating loop in one breath
 
 1. **Orient, then delegate.** Read HANDOFF/brain first; do heavy exploration in **subagents**

@@ -19,25 +19,25 @@ import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
-import Percentage from "@/components/Percentage";
 import Icon from "@/components/Icon";
+import KpiCard from "@/components/KpiCard";
+import Sparkline from "@/components/Sparkline";
 import GlobalFilters, { useGlobalFilters } from "@/components/GlobalFilters";
 import { StatusBadge, LeadBadge } from "@/lib/badges";
 import Badge from "@/components/Badge";
 import { useStats, useCalls } from "@/lib/queries";
 import { getReport, type Report } from "@/lib/report";
 import { getUsage, type CallLog, type UsageData } from "@/lib/api";
+import { CenterDonut, RadialGauge, CallsHeatmap } from "./_dashboard-charts";
 import {
     ResponsiveContainer,
     AreaChart,
     Area,
-    BarChart,
-    Bar,
+    RadialBarChart,
+    RadialBar,
+    PolarAngleAxis,
     LineChart,
     Line,
-    PieChart,
-    Pie,
-    Cell,
     Legend,
     XAxis,
     YAxis,
@@ -78,6 +78,18 @@ function fmtCompact(dateStr: string) {
     const day = Math.floor(hr / 24);
     if (day < 7) return `${day}d ago`;
     return d.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", month: "short", day: "numeric" });
+}
+
+// Trim leading/trailing zeros from a per-hour series so a sparkline shows the
+// active window (keeps a crest legible). Guarantees ≥2 points so the spark draws.
+function trimSeries(arr: number[]): number[] {
+    let start = arr.findIndex((n) => n > 0);
+    let end = arr.length - 1;
+    while (end > 0 && arr[end] === 0) end--;
+    if (start < 0) return [0, 0];
+    if (start > 0) start -= 1; // one quiet hour of lead-in for a nicer curve
+    const slice = arr.slice(start, end + 1);
+    return slice.length >= 2 ? slice : [...slice, ...slice];
 }
 
 // Human label for the 8 canonical funnel stages (W14 model.FUNNEL_STAGES).
@@ -180,51 +192,91 @@ function DashboardInner() {
         return qs ? `/analytics?${qs}` : "/analytics";
     }, [range, campaign, status]);
 
-    // ── Outcome distribution (bar) — the lead-temperature + interest buckets from
-    // the report totals. Real data; empty buckets simply render as zero bars.
-    const outcomeBars = useMemo(() => {
+    // ── Outcome distribution (radial) — connected→interested→booked progression
+    // as concentric arcs, each measured against total calls. Real data; a varied
+    // chart type (radial, not bars) that reads as a premium gauge stack.
+    const outcomeRadial = useMemo(() => {
         if (!totals) return [];
+        // Ordered inner→outer; each arc's domain is total calls so the fill % is
+        // honestly "share of all calls reaching this outcome".
         return [
+            { name: "Booked", value: totals.booked ?? 0, fill: "var(--primary-01)" },
+            { name: "Interested", value: totals.interested ?? 0, fill: "var(--chart-green)" },
             { name: "Connected", value: totals.connected ?? 0, fill: "var(--primary-02)" },
-            { name: "Interested", value: totals.interested ?? 0, fill: "var(--color-chart-green)" },
-            { name: "Hot", value: totals.hot ?? 0, fill: "var(--primary-01)" },
-            { name: "Booked", value: totals.booked ?? 0, fill: "var(--color-chart-green)" },
-            { name: "Callbacks", value: totals.callbacks ?? 0, fill: "var(--text-tertiary)" },
         ];
     }, [totals]);
-    const outcomeBarsTotal = useMemo(
-        () => outcomeBars.reduce((s, b) => s + b.value, 0),
-        [outcomeBars]
+    const outcomeTotal = totals?.calls ?? 0;
+    const outcomeHasData = useMemo(
+        () => outcomeRadial.some((d) => d.value > 0),
+        [outcomeRadial]
     );
 
-    // ── Call-outcomes pie — temperature split from by_status (hot/warm/cold/dead).
-    const PIE_COLORS = [
-        "var(--primary-01)",
-        "var(--color-chart-yellow, #FFB13C)",
-        "var(--primary-02)",
-        "var(--text-tertiary)",
-    ];
+    // ── Lead-temperature donut — hot/warm/cold/dead split from by_status, with a
+    // center grand-total. On-brand slice colors (blue→amber→green→neutral).
     const byStatus = report?.by_status;
-    const pieData = useMemo(() => {
+    const tempDonut = useMemo(() => {
         if (!byStatus) return [];
         return [
-            { name: "Hot", value: byStatus.hot ?? 0 },
-            { name: "Warm", value: byStatus.warm ?? 0 },
-            { name: "Cold", value: byStatus.cold ?? 0 },
-            { name: "Dead", value: byStatus.dead ?? 0 },
+            { name: "Hot", value: byStatus.hot ?? 0, color: "var(--primary-01)" },
+            { name: "Warm", value: byStatus.warm ?? 0, color: "var(--primary-05)" },
+            { name: "Cold", value: byStatus.cold ?? 0, color: "var(--primary-02)" },
+            { name: "Dead", value: byStatus.dead ?? 0, color: "var(--text-tertiary)" },
         ].filter((d) => d.value > 0);
     }, [byStatus]);
-    const pieTotal = useMemo(() => pieData.reduce((s, d) => s + d.value, 0), [pieData]);
+    const tempTotal = useMemo(
+        () => tempDonut.reduce((s, d) => s + d.value, 0),
+        [tempDonut]
+    );
+
+    // ── Calls-by-hour heatmap (IST) — 24 buckets from the loaded recent-calls
+    // window. Real data; shows when the agent is busiest. Fills the right column.
+    const hourBuckets = useMemo(() => {
+        const b = new Array(24).fill(0);
+        for (const c of calls) {
+            const d = parseUTC(c.started_at);
+            if (isNaN(d.getTime())) continue;
+            const hr = Number(
+                new Intl.DateTimeFormat("en-GB", {
+                    timeZone: "Asia/Kolkata",
+                    hour: "2-digit",
+                    hour12: false,
+                }).format(d)
+            );
+            if (hr >= 0 && hr < 24) b[hr % 24] += 1;
+        }
+        return b;
+    }, [calls]);
+    const hourTotal = useMemo(() => hourBuckets.reduce((s, n) => s + n, 0), [hourBuckets]);
+
+    // Per-KPI spark series from the real call-volume timeline (calls/day). Used as
+    // a calm trend hint inside the hero KPI cards — never fabricated.
+    const callsSpark = useMemo(() => series.map((p) => p.calls), [series]);
 
     // ── Top campaigns mini-leaderboard — derived from the recent-calls page,
     // grouped by campaign_name with a connect-rate (LIVE/connected statuses count
     // as connected). Honest: it reflects the loaded recent window, not all-time.
     const topCampaigns = useMemo(() => {
-        const map = new Map<string, { total: number; connected: number }>();
+        // group by campaign; track total, connected, and a per-hour mini-series
+        // (IST hour bucket) for the sparkline crest.
+        const map = new Map<
+            string,
+            { total: number; connected: number; spark: number[] }
+        >();
         for (const c of calls) {
             const key = c.campaign_name || "—";
-            const e = map.get(key) ?? { total: 0, connected: 0 };
+            const e = map.get(key) ?? { total: 0, connected: 0, spark: new Array(24).fill(0) };
             e.total += 1;
+            const d = parseUTC(c.started_at);
+            if (!isNaN(d.getTime())) {
+                const hr = Number(
+                    new Intl.DateTimeFormat("en-GB", {
+                        timeZone: "Asia/Kolkata",
+                        hour: "2-digit",
+                        hour12: false,
+                    }).format(d)
+                );
+                if (hr >= 0 && hr < 24) e.spark[hr] += 1;
+            }
             const st = (c.status ?? "").toLowerCase();
             if (
                 st.includes("connect") ||
@@ -242,9 +294,11 @@ function DashboardInner() {
                 name,
                 total: e.total,
                 rate: e.total > 0 ? Math.round((e.connected / e.total) * 100) : 0,
+                // trim leading/trailing empty hours so the spark crest is legible
+                spark: trimSeries(e.spark),
             }))
             .sort((a, b) => b.total - a.total)
-            .slice(0, 5);
+            .slice(0, 3);
     }, [calls]);
     const topCampaignsMax = topCampaigns[0]?.total || 1;
 
@@ -284,57 +338,86 @@ function DashboardInner() {
             >
                 <div className="px-5 pb-5 max-lg:px-3">
                     <div className="grid grid-cols-4 gap-3 max-2xl:grid-cols-4 max-lg:grid-cols-2 max-md:grid-cols-2">
-                        <Kpi
+                        <KpiCard
                             label="Total calls"
-                            value={reportLoading ? null : (totals?.calls ?? 0).toLocaleString()}
-                            delta={trendDelta}
+                            icon="chat"
+                            tone="info"
+                            value={reportLoading ? <SkVal /> : (totals?.calls ?? 0).toLocaleString()}
+                            spark={callsSpark}
+                            sub={
+                                trendDelta != null ? (
+                                    <>
+                                        <span className={trendDelta >= 0 ? "text-primary-02" : "text-primary-03"}>
+                                            {trendDelta >= 0 ? "▲" : "▼"} {Math.abs(trendDelta)}%
+                                        </span>
+                                        <span className="text-t-tertiary">vs prev day</span>
+                                    </>
+                                ) : undefined
+                            }
                         />
-                        <Kpi
+                        <KpiCard
                             label="Connected"
-                            value={reportLoading ? null : (totals?.connected ?? 0).toLocaleString()}
+                            icon="check"
+                            tone="success"
+                            value={reportLoading ? <SkVal /> : (totals?.connected ?? 0).toLocaleString()}
+                            meter={totals ? totals.connect_rate / 100 : null}
                             sub={totals ? `${totals.connect_rate}% connect rate` : undefined}
                         />
-                        <Kpi
+                        <KpiCard
                             label="Booked"
-                            value={reportLoading ? null : (totals?.booked ?? 0).toLocaleString()}
+                            icon="calendar"
+                            tone="info"
+                            value={reportLoading ? <SkVal /> : (totals?.booked ?? 0).toLocaleString()}
+                            meter={totals ? totals.conversion_rate / 100 : null}
                             sub={totals ? `${totals.conversion_rate}% of calls` : undefined}
                         />
-                        <Kpi
+                        <KpiCard
                             label="Hot leads"
-                            value={reportLoading ? null : (totals?.hot ?? 0).toLocaleString()}
+                            icon="heart-fill"
+                            tone="danger"
+                            value={reportLoading ? <SkVal /> : (totals?.hot ?? 0).toLocaleString()}
                             sub={
                                 totals
                                     ? `${totals.warm} warm · ${totals.cold} cold`
                                     : undefined
                             }
                         />
-                        <Kpi
+                        <KpiCard
                             label="Interested"
-                            value={reportLoading ? null : totals?.interested != null ? totals.interested.toLocaleString() : "—"}
+                            tone="neutral"
+                            value={reportLoading ? <SkVal /> : totals?.interested != null ? totals.interested.toLocaleString() : "—"}
                         />
-                        <Kpi
+                        <KpiCard
                             label="Callbacks"
-                            value={reportLoading ? null : totals?.callbacks != null ? totals.callbacks.toLocaleString() : "—"}
+                            tone="neutral"
+                            value={reportLoading ? <SkVal /> : totals?.callbacks != null ? totals.callbacks.toLocaleString() : "—"}
                         />
-                        <Kpi
+                        <KpiCard
                             label="Avg talk time"
+                            tone="neutral"
                             value={
-                                reportLoading
-                                    ? null
-                                    : totals?.avg_talk_time_s != null && totals.avg_talk_time_s > 0
-                                    ? `${Math.floor(totals.avg_talk_time_s / 60)}m ${Math.round(totals.avg_talk_time_s % 60)}s`
-                                    : "—"
+                                reportLoading ? (
+                                    <SkVal />
+                                ) : totals?.avg_talk_time_s != null && totals.avg_talk_time_s > 0 ? (
+                                    `${Math.floor(totals.avg_talk_time_s / 60)}m ${Math.round(totals.avg_talk_time_s % 60)}s`
+                                ) : (
+                                    "—"
+                                )
                             }
                         />
-                        <Kpi
+                        <KpiCard
                             label="Connect rate"
+                            tone="success"
                             value={
-                                reportLoading
-                                    ? null
-                                    : totals?.connect_rate != null
-                                    ? `${totals.connect_rate}%`
-                                    : "—"
+                                reportLoading ? (
+                                    <SkVal />
+                                ) : totals?.connect_rate != null ? (
+                                    `${totals.connect_rate}%`
+                                ) : (
+                                    "—"
+                                )
                             }
+                            meter={totals?.connect_rate != null ? totals.connect_rate / 100 : null}
                         />
                     </div>
                     {report && !report.live_seam && (
@@ -346,12 +429,9 @@ function DashboardInner() {
                 </div>
             </Card>
 
-            {/* ── Analytics grid: trends line · outcome bars · temperature pie ·
-                 top-campaigns leaderboard. Fills the wide space; all REAL data
-                 from getReport (timeline/totals/by_status) + recent calls. ── */}
-            <div className="grid grid-cols-2 gap-3 mb-3 max-lg:grid-cols-1">
-                {/* Trends: calls vs connected vs booked (spans full width) */}
-                <Card title="Trends" className="col-span-2 max-lg:col-span-1">
+            {/* ── Trends line (full width): calls vs connected vs booked ── */}
+            <div className="mb-3">
+                <Card title="Trends">
                     <div className="px-5 pb-5 max-lg:px-3">
                         <div className="h-60 max-lg:h-48">
                             {reportLoading ? (
@@ -406,39 +486,56 @@ function DashboardInner() {
                     </div>
                 </Card>
 
-                {/* Outcome distribution (bar) */}
-                <Card title="Outcome distribution">
+            </div>
+
+            {/* ── Insight row: outcome radial · temperature donut · activity heatmap.
+                 Three varied chart types side-by-side; all REAL data. ── */}
+            <div className="grid grid-cols-3 gap-3 mb-3 max-xl:grid-cols-2 max-md:grid-cols-1">
+                {/* Outcome funnel as concentric radial arcs */}
+                <Card title="Outcome breakdown">
                     <div className="px-5 pb-5 max-lg:px-3">
-                        <div className="h-56 max-lg:h-44">
+                        <div className="h-56 max-lg:h-48">
                             {reportLoading ? (
                                 <div className="skeleton h-full w-full rounded-2xl" />
-                            ) : outcomeBarsTotal > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <BarChart data={outcomeBars} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="5 7" vertical={false} stroke="var(--stroke-stroke2)" />
-                                        <XAxis
-                                            dataKey="name"
-                                            axisLine={false}
-                                            tickLine={false}
-                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
-                                            height={28}
-                                            dy={8}
-                                        />
-                                        <YAxis
-                                            axisLine={false}
-                                            tickLine={false}
-                                            tick={{ fontSize: "12px", fill: "var(--text-tertiary)" }}
-                                            width={32}
-                                            allowDecimals={false}
-                                        />
-                                        <Tooltip {...chartTooltip} />
-                                        <Bar dataKey="value" name="Leads" radius={[6, 6, 0, 0]} maxBarSize={48}>
-                                            {outcomeBars.map((b, i) => (
-                                                <Cell key={i} fill={b.fill} />
-                                            ))}
-                                        </Bar>
-                                    </BarChart>
-                                </ResponsiveContainer>
+                            ) : outcomeHasData ? (
+                                <div className="flex h-full items-center gap-3">
+                                    <div className="relative h-full flex-1">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <RadialBarChart
+                                                innerRadius="38%"
+                                                outerRadius="100%"
+                                                data={outcomeRadial}
+                                                startAngle={90}
+                                                endAngle={-270}
+                                                barSize={13}
+                                            >
+                                                <PolarAngleAxis
+                                                    type="number"
+                                                    domain={[0, outcomeTotal || 1]}
+                                                    angleAxisId={0}
+                                                    tick={false}
+                                                />
+                                                <RadialBar
+                                                    background={{ fill: "var(--stroke-stroke2)" }}
+                                                    dataKey="value"
+                                                    cornerRadius={8}
+                                                />
+                                                <Tooltip {...chartTooltip} />
+                                            </RadialBarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <div className="shrink-0 space-y-2.5 pr-1">
+                                        {outcomeRadial.map((d) => (
+                                            <div key={d.name} className="flex items-center gap-2">
+                                                <span className="size-2.5 shrink-0 rounded-full" style={{ background: d.fill }} />
+                                                <span className="text-caption text-t-secondary">{d.name}</span>
+                                                <span className="text-caption text-t-primary tabular-nums font-medium">
+                                                    {d.value.toLocaleString()}
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
                             ) : (
                                 <div className="flex h-full items-center justify-center">
                                     <div className="state-sub text-center">
@@ -450,39 +547,16 @@ function DashboardInner() {
                     </div>
                 </Card>
 
-                {/* Call-outcomes temperature pie */}
+                {/* Lead-temperature donut with center total */}
                 <Card title="Lead temperature">
                     <div className="px-5 pb-5 max-lg:px-3">
-                        <div className="h-56 max-lg:h-44">
+                        <div className="h-56 max-lg:h-48 flex items-center">
                             {reportLoading ? (
-                                <div className="skeleton h-full w-full rounded-2xl" />
-                            ) : pieTotal > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                        <Pie
-                                            data={pieData}
-                                            dataKey="value"
-                                            nameKey="name"
-                                            cx="50%"
-                                            cy="50%"
-                                            innerRadius="58%"
-                                            outerRadius="82%"
-                                            paddingAngle={2}
-                                            stroke="none"
-                                        >
-                                            {pieData.map((_, i) => (
-                                                <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                                            ))}
-                                        </Pie>
-                                        <Tooltip {...chartTooltip} />
-                                        <Legend
-                                            iconType="circle"
-                                            wrapperStyle={{ fontSize: "12px", color: "var(--text-tertiary)" }}
-                                        />
-                                    </PieChart>
-                                </ResponsiveContainer>
+                                <div className="skeleton h-44 w-full rounded-2xl" />
+                            ) : tempTotal > 0 ? (
+                                <CenterDonut data={tempDonut} total={tempTotal} centerLabel="leads" />
                             ) : (
-                                <div className="flex h-full items-center justify-center">
+                                <div className="flex h-full w-full items-center justify-center">
                                     <div className="state-sub text-center">
                                         Hot / warm / cold / dead split appears here once leads are scored.
                                     </div>
@@ -492,7 +566,35 @@ function DashboardInner() {
                     </div>
                 </Card>
 
-                {/* Top campaigns mini-leaderboard */}
+                {/* Activity-by-hour heatmap (IST) */}
+                <Card title="Activity by hour">
+                    <div className="px-5 pb-5 max-lg:px-3">
+                        <div className="h-56 max-lg:h-48 flex flex-col justify-center">
+                            {callsLoading ? (
+                                <div className="skeleton h-32 w-full rounded-2xl" />
+                            ) : hourTotal > 0 ? (
+                                <>
+                                    <CallsHeatmap buckets={hourBuckets} />
+                                    <div className="mt-3 text-caption text-t-tertiary">
+                                        {hourTotal.toLocaleString()} calls across the recent window, by IST hour.
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="flex h-full items-center justify-center">
+                                    <div className="state-sub text-center">
+                                        Your busiest calling hours light up here once a campaign runs.
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </Card>
+            </div>
+
+            {/* ── Leaderboard row: compact top-campaigns (with sparkline) +
+                 bookings/callbacks radial gauges. ── */}
+            <div className="grid grid-cols-3 gap-3 mb-3 max-lg:grid-cols-1">
+                {/* Top campaigns — single column, top-3, sparkline crest */}
                 <Card
                     title="Top campaigns"
                     className="col-span-2 max-lg:col-span-1"
@@ -506,8 +608,8 @@ function DashboardInner() {
                     <div className="px-5 pb-5 pt-1 max-lg:px-3">
                         {callsLoading ? (
                             <div className="space-y-3 pt-2">
-                                {[...Array(4)].map((_, i) => (
-                                    <div key={i} className="skeleton h-8 rounded-xl" style={{ width: `${100 - i * 12}%` }} />
+                                {[...Array(3)].map((_, i) => (
+                                    <div key={i} className="skeleton h-12 rounded-xl" />
                                 ))}
                             </div>
                         ) : topCampaigns.length === 0 ? (
@@ -515,24 +617,41 @@ function DashboardInner() {
                                 Your busiest campaigns rank here once calls start flowing.
                             </div>
                         ) : (
-                            <div className="space-y-2.5 pt-1">
-                                {topCampaigns.map((c) => {
+                            <div className="space-y-2 pt-1">
+                                {topCampaigns.map((c, i) => {
                                     const pct = Math.max(6, Math.round((c.total / topCampaignsMax) * 100));
                                     return (
-                                        <div key={c.name} className="flex items-center gap-3">
-                                            <div className="w-32 shrink-0 truncate text-caption text-t-secondary max-sm:w-20" title={c.name}>
-                                                {c.name}
+                                        <div
+                                            key={c.name}
+                                            className="flex items-center gap-3 rounded-2xl p-2.5 transition-colors hover:bg-b-surface1/60 dark:hover:bg-shade-04/30"
+                                        >
+                                            <span className="flex items-center justify-center size-7 shrink-0 rounded-lg bg-b-surface1 text-caption font-semibold text-t-secondary tabular-nums dark:bg-shade-04/60">
+                                                {i + 1}
+                                            </span>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-body-2 font-medium text-t-primary" title={c.name}>
+                                                    {c.name}
+                                                </div>
+                                                <div className="mt-1 h-1.5 rounded-full bg-b-surface1 dark:bg-shade-04/30 overflow-hidden">
+                                                    <div
+                                                        className="h-full rounded-full bg-primary-02/80 transition-all"
+                                                        style={{ width: `${pct}%` }}
+                                                    />
+                                                </div>
                                             </div>
-                                            <div className="relative flex-1 h-8 rounded-xl bg-b-surface1 dark:bg-shade-04/30 overflow-hidden">
-                                                <div
-                                                    className="absolute inset-y-0 left-0 rounded-xl bg-primary-02/80 transition-all"
-                                                    style={{ width: `${pct}%` }}
-                                                />
-                                                <div className="absolute inset-0 flex items-center justify-between px-3 text-caption">
-                                                    <span className="font-medium text-t-primary tabular-nums">
-                                                        {c.total.toLocaleString()} calls
-                                                    </span>
-                                                    <span className="text-t-tertiary tabular-nums">{c.rate}% connected</span>
+                                            <Sparkline
+                                                data={c.spark}
+                                                color="var(--primary-01)"
+                                                width={72}
+                                                height={28}
+                                                className="shrink-0 max-sm:hidden"
+                                            />
+                                            <div className="shrink-0 text-right">
+                                                <div className="text-sub-title-2 text-t-primary tabular-nums">
+                                                    {c.total.toLocaleString()}
+                                                </div>
+                                                <div className="text-caption text-t-tertiary tabular-nums">
+                                                    {c.rate}% conn.
                                                 </div>
                                             </div>
                                         </div>
@@ -540,6 +659,36 @@ function DashboardInner() {
                                 })}
                             </div>
                         )}
+                    </div>
+                </Card>
+
+                {/* Bookings & callbacks radial gauges */}
+                <Card title="Bookings & callbacks">
+                    <div className="px-5 pb-5 pt-1 max-lg:px-3">
+                        {reportLoading ? (
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="skeleton h-32 rounded-2xl" />
+                                <div className="skeleton h-32 rounded-2xl" />
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                                <RadialGauge
+                                    value={totals?.booked ?? 0}
+                                    max={totals?.calls ?? 0}
+                                    label="Booked"
+                                    color="var(--primary-01)"
+                                />
+                                <RadialGauge
+                                    value={totals?.callbacks ?? 0}
+                                    max={totals?.calls ?? 0}
+                                    label="Callbacks"
+                                    color="var(--primary-05)"
+                                />
+                            </div>
+                        )}
+                        <div className="mt-3 text-caption text-t-tertiary">
+                            Share of {(totals?.calls ?? 0).toLocaleString()} calls in range.
+                        </div>
                     </div>
                 </Card>
             </div>
@@ -922,33 +1071,9 @@ function DashboardInner() {
     );
 }
 
-function Kpi({
-    label,
-    value,
-    sub,
-    delta,
-}: {
-    label: string;
-    value: string | null;
-    sub?: string;
-    delta?: number | null;
-}) {
-    return (
-        <div className="flex flex-col gap-1 p-4 rounded-2xl bg-b-surface1/60 dark:bg-shade-04/30">
-            <div className="eyebrow">{label}</div>
-            <div className="flex items-end gap-2">
-                <div className="text-h4 text-t-primary tabular-nums max-lg:text-h5">
-                    {value === null ? (
-                        <span className="skeleton inline-block h-8 w-16 align-bottom" />
-                    ) : (
-                        value
-                    )}
-                </div>
-                {delta != null && <Percentage className="mb-1" value={delta} />}
-            </div>
-            {sub && <div className="text-caption text-t-tertiary">{sub}</div>}
-        </div>
-    );
+// Skeleton placeholder for a KpiCard value while the report loads.
+function SkVal() {
+    return <span className="skeleton inline-block h-7 w-16 align-bottom rounded-md" />;
 }
 
 function UsageStat({

@@ -473,3 +473,89 @@ export async function getReport(
     if (live) return live;
     return composeReport(range, filters);
 }
+
+// ── Report DOWNLOAD (CSV / Excel) ────────────────────────────────────────────
+// Client-side blob export — no backend route (founder rule: no /report* signature
+// change). Two artifacts: (1) the SUMMARY report (KPIs + funnel + temperature),
+// (2) the LEADS list (the hot-leads table the report surfaces). The "Excel" path
+// emits a UTF-8 CSV with a BOM so Excel opens it cleanly with the right encoding —
+// no SheetJS dependency, no extra bundle weight.
+
+// RFC-4180 cell escaping: wrap in quotes when the value holds a comma, quote, or
+// newline; double any embedded quote.
+function csvCell(v: unknown): string {
+    const s = v == null ? "" : String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function toCsv(rows: (string | number | null | undefined)[][]): string {
+    return rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+}
+
+// Trigger a browser download of `content` as `filename`. `bom=true` prepends a
+// UTF-8 BOM so Excel detects encoding (₹, Hindi names render correctly).
+function downloadBlob(content: string, filename: string, mime: string, bom = false) {
+    if (typeof window === "undefined") return;
+    const parts = bom ? ["﻿", content] : [content];
+    const blob = new Blob(parts, { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke on the next tick so the click has consumed the URL.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function stamp(range: ResolvedRange): string {
+    return range.from === range.to ? range.from : `${range.from}_to_${range.to}`;
+}
+
+// (1) The SUMMARY report: KPIs + funnel + temperature, one flat CSV with section
+// headers. `excel=true` -> BOM (Excel-friendly encoding); otherwise a plain CSV.
+export function exportReportSummary(report: Report, excel = false): void {
+    const t = report.totals;
+    const rows: (string | number)[][] = [
+        ["Famit Report", `${report.range.from} to ${report.range.to} (${report.range.tz})`],
+        [],
+        ["Metric", "Value"],
+        ["Total calls", t.calls],
+        ["Connected", t.connected],
+        ["Connect rate %", t.connect_rate],
+        ["Interested", t.interested],
+        ["Booked", t.booked],
+        ["Converted", t.converted],
+        ["Conversion rate %", t.conversion_rate],
+        ["Callbacks", t.callbacks],
+        ["Avg talk time (s)", t.avg_talk_time_s],
+        [],
+        ["Lead temperature", "Count"],
+        ["Hot", report.by_status.hot],
+        ["Warm", report.by_status.warm],
+        ["Cold", report.by_status.cold],
+        ["Dead", report.by_status.dead],
+        [],
+        ["Funnel stage", "Count", "% of top", "Step conv %"],
+        ...report.funnel.map((f) => [f.stage, f.count, f.pct_of_top, f.step_conv]),
+    ];
+    downloadBlob(toCsv(rows), `famit-report-${stamp(report.range)}.csv`, "text/csv;charset=utf-8", excel);
+}
+
+// (2) The LEADS list the report surfaces (the hot-leads rows). One row per lead.
+export function exportReportLeads(report: Report, excel = false): void {
+    const rows: (string | number)[][] = [
+        ["Name", "Phone", "Campaign", "Booked", "Conversion prob %", "Next action", "Timestamp"],
+        ...report.hot_leads.map((l) => [
+            l.name ?? "",
+            l.phone_masked ?? "",
+            l.campaign_id ?? "",
+            l.booked ? "yes" : "no",
+            l.conversion_prob != null ? Math.round(l.conversion_prob * 100) : "",
+            l.next_action ?? "",
+            l.ts_iso ?? "",
+        ]),
+    ];
+    downloadBlob(toCsv(rows), `famit-leads-${stamp(report.range)}.csv`, "text/csv;charset=utf-8", excel);
+}
