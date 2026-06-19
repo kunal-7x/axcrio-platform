@@ -8,12 +8,14 @@ import Spinner from "@/components/Spinner";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import GlobalFilters, { useGlobalFilters } from "@/components/GlobalFilters";
+import KpiCard from "@/components/KpiCard";
 import { getCampaigns, type Campaign } from "@/lib/api";
 import {
     getReport,
     exportReportSummary,
     exportReportLeads,
     type Report,
+    type FunnelStage,
 } from "@/lib/report";
 import {
     ResponsiveContainer,
@@ -46,6 +48,31 @@ const TEMP_COLORS = [
     "var(--color-chart-yellow, #FFB13C)",
     "var(--primary-02)",
     "var(--text-tertiary)",
+];
+
+// 8-stage funnel ramp: top stages cool/blue, deepening toward warm/green as the
+// lead progresses to converted (a visual "heating up" down the funnel).
+const FUNNEL_COLORS: string[] = [
+    "#7CB1FF", // uploaded  — light blue
+    "#5A9CFF", // dialed
+    "#2A85FF", // connected — brand
+    "#7F5FFF", // interested — purple
+    "#FF9D34", // warm      — amber
+    "#FF6B3D", // hot       — orange-red
+    "#22B07D", // booked    — green
+    "#00A656", // converted — deep green
+];
+
+// Order matters: matches lib/report FUNNEL_ORDER.
+const FUNNEL_STAGES = [
+    "uploaded",
+    "dialed",
+    "connected",
+    "interested",
+    "warm",
+    "hot",
+    "booked",
+    "converted",
 ];
 
 // W15 / ROUND4 §B2 — "Reports": the DEEP drill-down the Dashboard links INTO,
@@ -146,6 +173,51 @@ function ReportsInner() {
           ]
         : [];
 
+    // ── Varied analytics derived metrics (NOT bars) ──
+    // Pull the biggest single-step drop-off so the founder sees WHERE leads leak.
+    const biggestDrop = useMemo(() => {
+        let worst: { from: string; to: string; lost: number; rate: number } | null = null;
+        for (let i = 1; i < funnel.length; i++) {
+            const prev = funnel[i - 1];
+            const cur = funnel[i];
+            if (prev.count <= 0) continue;
+            const lost = prev.count - cur.count;
+            const rate = Math.round((lost / prev.count) * 100);
+            if (lost > 0 && (!worst || lost > worst.lost)) {
+                worst = {
+                    from: FUNNEL_LABEL[prev.stage] ?? prev.stage,
+                    to: FUNNEL_LABEL[cur.stage] ?? cur.stage,
+                    lost,
+                    rate,
+                };
+            }
+        }
+        return worst;
+    }, [funnel]);
+
+    // End-to-end yield: converted / uploaded (the one number that matters most).
+    const overallYield = useMemo(() => {
+        const top = funnel[0]?.count ?? 0;
+        const conv = funnel.find((f) => f.stage === "converted")?.count ?? 0;
+        return top > 0 ? Math.round((conv / top) * 1000) / 10 : 0;
+    }, [funnel]);
+
+    // Hot-lead share of all scored leads (engagement intensity).
+    const hotShare = useMemo(() => {
+        const tot = pieTotal || 0;
+        return tot > 0 ? Math.round(((byStatus?.hot ?? 0) / tot) * 100) : 0;
+    }, [byStatus, pieTotal]);
+
+    // Avg talk time formatted mm:ss (real field; 0 → em-dash in render).
+    const talkTime = totals?.avg_talk_time_s ?? 0;
+    const talkFmt =
+        talkTime > 0
+            ? `${Math.floor(talkTime / 60)}:${String(Math.round(talkTime % 60)).padStart(2, "0")}`
+            : "—";
+
+    // Real call-volume series for the inline sparklines on the metric cards.
+    const volSpark = useMemo(() => series.map((p) => p.calls ?? 0), [series]);
+
     const chartTooltip = {
         contentStyle: {
             background: "var(--backgrounds-surface2)",
@@ -212,10 +284,11 @@ function ReportsInner() {
                                     <span className="mr-3 text-caption text-t-tertiary">{selectedCampaignName}</span>
                                 }
                             >
-                                {/* Compact, capped-height funnel ROWS: each shows the
-                                    COUNT (number) + step-conversion %, bar width is the
-                                    share of the top stage. Ported from the Dashboard
-                                    (un-stretched; no FunnelChart ratio shape). */}
+                                {/* REAL top-to-bottom funnel DIAGRAM (ROUND5 §B):
+                                    stacked trapezoids that narrow at each level, top
+                                    (uploaded) widest → bottom (converted) narrowest.
+                                    HOVER any band → the absolute COUNT + step-conv %.
+                                    Custom SVG (no stretched-ratio FunnelChart shape). */}
                                 <div className="px-5 pb-5 pt-1 max-lg:px-3">
                                     {!hasFunnel ? (
                                         <div className="flex flex-col items-center text-center py-12 px-5">
@@ -228,34 +301,7 @@ function ReportsInner() {
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="space-y-2.5 pt-1">
-                                            {funnel.map((s) => {
-                                                const pct = Math.max(4, Math.round((s.count / funnelTop) * 100));
-                                                return (
-                                                    <div key={s.stage} className="flex items-center gap-3">
-                                                        <div className="w-20 shrink-0 text-caption text-t-secondary">
-                                                            {FUNNEL_LABEL[s.stage] ?? s.stage}
-                                                        </div>
-                                                        <div className="relative flex-1 h-9 rounded-xl bg-b-surface1 dark:bg-shade-04/30 overflow-hidden">
-                                                            <div
-                                                                className="absolute inset-y-0 left-0 rounded-xl bg-primary-01/85 transition-all"
-                                                                style={{ width: `${pct}%` }}
-                                                            />
-                                                            <div className="absolute inset-0 flex items-center justify-between px-3 text-caption">
-                                                                <span className="font-medium text-t-primary tabular-nums">
-                                                                    {s.count.toLocaleString()}
-                                                                </span>
-                                                                {s.step_conv > 0 && s.stage !== "uploaded" && (
-                                                                    <span className="text-t-tertiary tabular-nums">
-                                                                        {s.step_conv}%
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
+                                        <FunnelDiagram funnel={funnel} top={funnelTop} />
                                     )}
                                 </div>
                             </Card>
@@ -319,6 +365,54 @@ function ReportsInner() {
                                 )}
                             </div>
                         </Card>
+                    </div>
+
+                    {/* Varied analytics cards (NOT bars) — premium metric tiles with
+                        real meters / sparklines / drop-off insight. */}
+                    <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
+                        <KpiCard
+                            label="End-to-end yield"
+                            value={`${overallYield}%`}
+                            icon="chart"
+                            tone="success"
+                            sub="converted ÷ uploaded"
+                            meter={overallYield / 100}
+                        />
+                        <KpiCard
+                            label="Connect rate"
+                            value={`${totals?.connect_rate ?? 0}%`}
+                            icon="mobile"
+                            tone="info"
+                            sub={`${(totals?.connected ?? 0).toLocaleString()} connected`}
+                            meter={(totals?.connect_rate ?? 0) / 100}
+                            spark={volSpark.length > 1 ? volSpark : undefined}
+                        />
+                        <KpiCard
+                            label="Hot-lead share"
+                            value={`${hotShare}%`}
+                            icon="profile"
+                            tone="danger"
+                            sub={`${(byStatus?.hot ?? 0).toLocaleString()} hot leads`}
+                            meter={hotShare / 100}
+                        />
+                        {biggestDrop ? (
+                            <KpiCard
+                                label="Biggest drop-off"
+                                value={`-${biggestDrop.lost.toLocaleString()}`}
+                                icon="arrow"
+                                tone="warning"
+                                sub={`${biggestDrop.from} → ${biggestDrop.to} (${biggestDrop.rate}% lost)`}
+                                meter={biggestDrop.rate / 100}
+                            />
+                        ) : (
+                            <KpiCard
+                                label="Avg talk time"
+                                value={talkFmt}
+                                icon="clock"
+                                tone="neutral"
+                                sub="per connected call"
+                            />
+                        )}
                     </div>
 
                     {/* Call-volume trend over the range */}
@@ -437,6 +531,108 @@ function ReportsInner() {
                 </div>
             )}
         </Layout>
+    );
+}
+
+// ── Real top-to-bottom funnel diagram ───────────────────────────────────────
+// A clean custom SVG: each stage is a trapezoid whose top edge = the previous
+// stage's bottom width and whose bottom edge scales with this stage's count, so
+// the shape NARROWS monotonically from uploaded (full width) to converted. Each
+// band carries its stage label + COUNT inline; HOVERING a band raises a tooltip
+// with the absolute number + step-conversion %. SVG so the narrowing geometry is
+// exact and the hover hit-area is the whole trapezoid.
+function FunnelDiagram({ funnel, top }: { funnel: FunnelStage[]; top: number }) {
+    const [hover, setHover] = useState<number | null>(null);
+
+    // Order the stages canonically; missing stages render as 0-width slivers.
+    const byStage = new Map(funnel.map((f) => [f.stage, f]));
+    const stages = FUNNEL_STAGES.map(
+        (s) => byStage.get(s) ?? { stage: s, count: 0, pct_of_top: 0, step_conv: 0 },
+    ).map((s, i) => ({ ...s, color: FUNNEL_COLORS[i % FUNNEL_COLORS.length] }));
+
+    const W = 100; // viewBox width units
+    const rowH = 40; // px per band
+    const gap = 6;
+    const H = stages.length * rowH + (stages.length - 1) * gap;
+    const minW = 12; // floor width % so a tiny/zero stage is still a visible sliver
+
+    // Width (in viewBox units) for a given count, floored so labels stay readable.
+    const widthFor = (count: number) =>
+        Math.max(minW, (count / (top || 1)) * W);
+
+    return (
+        <div className="relative pt-1">
+            <svg
+                viewBox={`0 0 ${W} ${H}`}
+                preserveAspectRatio="none"
+                className="w-full"
+                style={{ height: H }}
+            >
+                {stages.map((s, i) => {
+                    const wTop = i === 0 ? W : widthFor(stages[i - 1].count);
+                    const wBot = widthFor(s.count);
+                    const y = i * (rowH + gap);
+                    const xTopL = (W - wTop) / 2;
+                    const xTopR = (W + wTop) / 2;
+                    const xBotL = (W - wBot) / 2;
+                    const xBotR = (W + wBot) / 2;
+                    const dim = hover != null && hover !== i;
+                    return (
+                        <polygon
+                            key={s.stage}
+                            points={`${xTopL},${y} ${xTopR},${y} ${xBotR},${y + rowH} ${xBotL},${y + rowH}`}
+                            fill={s.color}
+                            opacity={dim ? 0.35 : 1}
+                            style={{ transition: "opacity .15s", cursor: "pointer" }}
+                            onMouseEnter={() => setHover(i)}
+                            onMouseLeave={() => setHover(null)}
+                        />
+                    );
+                })}
+            </svg>
+
+            {/* Overlay labels (HTML so text never skews with preserveAspectRatio). */}
+            <div className="pointer-events-none absolute inset-0 flex flex-col">
+                {stages.map((s, i) => (
+                    <div
+                        key={s.stage}
+                        className="flex items-center justify-between px-4 text-caption"
+                        style={{ height: rowH, marginTop: i === 0 ? 4 : gap }}
+                    >
+                        <span className="font-medium text-white/95 drop-shadow-sm">
+                            {FUNNEL_LABEL[s.stage] ?? s.stage}
+                        </span>
+                        <span className="font-semibold text-white tabular-nums drop-shadow-sm">
+                            {s.count.toLocaleString()}
+                        </span>
+                    </div>
+                ))}
+            </div>
+
+            {/* Hover tooltip — the ABSOLUTE number + step-conversion, not a ratio. */}
+            {hover != null && (
+                <div
+                    className="pointer-events-none absolute left-1/2 -translate-x-1/2 z-20 px-3 py-2 rounded-xl bg-b-surface2 border border-s-stroke2 shadow-depth text-caption whitespace-nowrap"
+                    style={{ top: hover * (rowH + gap) + rowH + 8 }}
+                >
+                    <div className="text-t-primary font-medium">
+                        {FUNNEL_LABEL[stages[hover].stage] ?? stages[hover].stage}
+                    </div>
+                    <div className="mt-0.5 text-t-secondary tabular-nums">
+                        {stages[hover].count.toLocaleString()} leads
+                        {hover > 0 && stages[hover].step_conv > 0 && (
+                            <span className="text-t-tertiary">
+                                {" · "}
+                                {stages[hover].step_conv}% from {FUNNEL_LABEL[stages[hover - 1].stage]}
+                            </span>
+                        )}
+                    </div>
+                    <div className="mt-0.5 text-t-tertiary tabular-nums">
+                        {stages[hover].pct_of_top}% of top
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
 

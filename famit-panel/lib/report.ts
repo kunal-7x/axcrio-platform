@@ -173,12 +173,25 @@ export type HotLeadRow = {
     ts_iso?: string;
 };
 
+// A richer temperature distribution the W14 seam may emit per range: each tier's
+// count + its share of the total + a day-over-day delta. The dashboard's
+// temperature display PREFERS this when the backend populates it, and falls back
+// to the coarser `by_status` counts when it is absent (graceful, forward-compat).
+export type TemperatureBucket = {
+    tier: "hot" | "warm" | "cold" | "dead";
+    count: number;
+    pct: number; // 0..100 share of scored leads
+    delta?: number; // signed change vs the previous comparable range, optional
+};
+
 export type Report = {
     range: ResolvedRange;
     totals: ReportTotals;
     funnel: FunnelStage[];
     timeline: TimelinePoint[];
     by_status: { hot: number; warm: number; cold: number; dead: number };
+    // Forward-compatible: present only when the live /report seam emits it.
+    temperature_distribution?: TemperatureBucket[];
     hot_leads: HotLeadRow[];
     // true when the numbers came from the real W14 /report seam; false = composed
     // from the live /stats+/analytics fallback (still REAL data, coarser range).
@@ -236,6 +249,7 @@ async function tryLiveReport(
                     cold: data.totals.cold ?? 0,
                     dead: data.totals.dead ?? 0,
                 },
+            temperature_distribution: data.temperature_distribution,
             hot_leads: data.hot_leads ?? [],
             live_seam: true,
         };

@@ -26,6 +26,7 @@ import Field from "@/components/Field";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
 import Spinner from "@/components/Spinner";
+import ProviderLogo from "@/components/ProviderLogo";
 import {
     getProviderKeys,
     getProviderKeyStatus,
@@ -220,7 +221,10 @@ function ProviderCard({
     }, [rows, status]);
 
     return (
-        <Card title={prov.name}>
+        <Card
+            title={prov.name}
+            headContent={<ProviderLogo provider={prov.id} size={28} className="ml-3 mr-auto" />}
+        >
             <div className="px-1 -mt-1 mb-4 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-body-2 text-t-secondary max-w-xl">{prov.blurb}</p>
                 <button className={ghostBtnCls} onClick={onAdd}>

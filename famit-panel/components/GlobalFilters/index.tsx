@@ -20,6 +20,7 @@ import { useCallback, useMemo } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import Select from "@/components/Select";
 import CampaignSelect from "@/components/CampaignSelect";
+import Icon from "@/components/Icon";
 import { type SelectOption } from "@/types/select";
 import {
     RANGE_PRESETS,
@@ -48,10 +49,21 @@ export type GlobalFilterState = {
 };
 
 // Read the current filters off the URL (the single source of truth). Default
-// preset = today. Custom carries ?from&to.
+// preset = today. Custom carries ?from&to. A single `?day=YYYY-MM-DD` is the
+// shorthand the day-picker writes: it resolves to a custom range with from==to
+// (one specific calendar day) without forcing the user through the custom UI.
 export function useGlobalFilters(): GlobalFilterState {
     const params = useSearchParams();
     return useMemo(() => {
+        // Single-day shortcut: ?day=YYYY-MM-DD pins both ends to that one day.
+        const day = params.get("day");
+        if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+            return {
+                range: resolveRange("custom", { from: day, to: day }),
+                campaign: params.get("campaign") || "",
+                status: params.get("status") || "",
+            };
+        }
         const preset = (params.get("range") as RangePreset) || "today";
         const valid = RANGE_PRESETS.some((p) => p.id === preset);
         const p: RangePreset = valid ? preset : "today";
@@ -110,12 +122,25 @@ const GlobalFilters = ({ show, className }: GlobalFiltersProps) => {
     }, [range.preset, rangeOptions]);
     const onRange = (opt: SelectOption) => {
         const preset = RANGE_PRESETS[opt.id - 1]?.id ?? "today";
+        // Any preset choice clears the single-day pin too (mutually exclusive).
         // Leaving custom clears the explicit dates; entering it seeds today.
         if (preset === "custom") {
-            patch({ range: "custom" });
+            patch({ range: "custom", day: null });
         } else {
-            patch({ range: preset === "today" ? null : preset, from: null, to: null });
+            patch({ range: preset === "today" ? null : preset, from: null, to: null, day: null });
         }
+    };
+
+    // ── Single-day picker ──
+    // A dedicated "pick any one day" control: writing ?day=YYYY-MM-DD pins the
+    // whole report to that calendar day (from==to) and clears range/custom. The
+    // value mirrors the active day when the range is exactly one day, so the
+    // control always reflects the live state. Clearing it returns to Today.
+    const dayParam = params.get("day") || "";
+    const dayValue = dayParam || (range.from === range.to ? range.from : "");
+    const onDay = (v: string) => {
+        if (v) patch({ day: v, range: null, from: null, to: null });
+        else patch({ day: null, range: null, from: null, to: null });
     };
 
     // ── Status select ──
@@ -149,7 +174,22 @@ const GlobalFilters = ({ show, className }: GlobalFiltersProps) => {
                     options={rangeOptions}
                 />
             )}
-            {range.preset === "custom" && (
+            {showRange && (
+                <label className="relative flex items-center" title="Jump to a specific day">
+                    <Icon
+                        name="calendar"
+                        className="pointer-events-none absolute left-3 size-4 fill-t-tertiary"
+                    />
+                    <input
+                        type="date"
+                        value={dayValue}
+                        onChange={(e) => onDay(e.target.value)}
+                        className="h-12 pl-9 pr-3 border border-s-stroke2 rounded-3xl bg-transparent text-body-2 text-t-primary outline-none transition-colors focus:border-primary-01/60 hover:border-s-stroke2/80 [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+                        aria-label="Pick a specific day"
+                    />
+                </label>
+            )}
+            {range.preset === "custom" && !dayParam && (
                 <div className="flex items-center gap-2">
                     <input
                         type="date"

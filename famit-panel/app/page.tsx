@@ -211,20 +211,47 @@ function DashboardInner() {
         [outcomeRadial]
     );
 
-    // ── Lead-temperature donut — hot/warm/cold/dead split from by_status, with a
-    // center grand-total. On-brand slice colors (blue→amber→green→neutral).
+    // ── Lead-temperature donut — hot/warm/cold/dead split. PREFERS the richer
+    // report.temperature_distribution (count + share + day-over-day delta) the W14
+    // seam may emit; falls back to the coarse by_status counts when it's absent.
+    // On-brand slice colors (blue→amber→green→neutral). Lights up either way.
     const byStatus = report?.by_status;
+    const tempDist = report?.temperature_distribution;
+    const TEMP_META: Record<string, { name: string; color: string }> = {
+        hot: { name: "Hot", color: "var(--primary-01)" },
+        warm: { name: "Warm", color: "var(--primary-05)" },
+        cold: { name: "Cold", color: "var(--primary-02)" },
+        dead: { name: "Dead", color: "var(--text-tertiary)" },
+    };
     const tempDonut = useMemo(() => {
+        // Forward-compat path: the backend-populated distribution wins.
+        if (tempDist && tempDist.length) {
+            return tempDist
+                .map((b) => ({
+                    name: TEMP_META[b.tier]?.name ?? b.tier,
+                    value: b.count ?? 0,
+                    color: TEMP_META[b.tier]?.color ?? "var(--text-tertiary)",
+                    delta: b.delta,
+                }))
+                .filter((d) => d.value > 0);
+        }
         if (!byStatus) return [];
-        return [
-            { name: "Hot", value: byStatus.hot ?? 0, color: "var(--primary-01)" },
-            { name: "Warm", value: byStatus.warm ?? 0, color: "var(--primary-05)" },
-            { name: "Cold", value: byStatus.cold ?? 0, color: "var(--primary-02)" },
-            { name: "Dead", value: byStatus.dead ?? 0, color: "var(--text-tertiary)" },
-        ].filter((d) => d.value > 0);
-    }, [byStatus]);
+        return (["hot", "warm", "cold", "dead"] as const)
+            .map((tier) => ({
+                name: TEMP_META[tier].name,
+                value: byStatus[tier] ?? 0,
+                color: TEMP_META[tier].color,
+                delta: undefined as number | undefined,
+            }))
+            .filter((d) => d.value > 0);
+    }, [tempDist, byStatus]);
     const tempTotal = useMemo(
         () => tempDonut.reduce((s, d) => s + d.value, 0),
+        [tempDonut]
+    );
+    // Single dominant temperature (largest slice) — used by the AI recommendation.
+    const tempLeader = useMemo(
+        () => [...tempDonut].sort((a, b) => b.value - a.value)[0],
         [tempDonut]
     );
 
@@ -308,6 +335,84 @@ function DashboardInner() {
         () => series.some((p) => (p.connected ?? 0) > 0 || (p.booked ?? 0) > 0),
         [series]
     );
+
+    // ── AI Recommendation (deterministic, REAL-data driven) ────────────────────
+    // Not a fabricated LLM blurb — a rules engine over the live report that names
+    // the single highest-leverage next action. Picks the most urgent signal:
+    //  • hot leads waiting → chase them (highest revenue intent)
+    //  • low connect rate → retune dialing window / retry
+    //  • good connect but low booking → tighten the pitch / offer
+    //  • healthy → keep volume up.
+    // Returns null while loading so the card shows a calm skeleton.
+    const aiRec = useMemo(() => {
+        if (!totals) return null;
+        const t = totals;
+        const hotWaiting = hotLeads.length;
+        // 1) Hot leads sitting unbooked = the sharpest knife.
+        if (hotWaiting > 0 && t.booked < hotWaiting) {
+            return {
+                tone: "danger" as const,
+                icon: "heart-fill",
+                title: `Call your ${hotWaiting} hot lead${hotWaiting === 1 ? "" : "s"} now`,
+                body: `${hotWaiting} lead${hotWaiting === 1 ? " is" : "s are"} scoring 70+ and not yet booked. They cool fast — a follow-up within the hour converts best.`,
+                cta: { label: "Open hot leads", href: "/crm?status=hot" },
+            };
+        }
+        // 2) Weak connect rate → the dialing window / retries need work.
+        if (t.calls >= 10 && t.connect_rate < 45) {
+            return {
+                tone: "warning" as const,
+                icon: "mobile",
+                title: `Connect rate is ${t.connect_rate}% — lift it`,
+                body: `Most dials aren't being answered. Shift calling into 11am–1pm / 5pm–7pm IST and enable a 2nd retry to recover unanswered numbers.`,
+                cta: { label: "Tune campaign", href: "/campaigns" },
+            };
+        }
+        // 3) Good connect but thin bookings → the pitch/offer is the bottleneck.
+        if (t.connected >= 10 && t.conversion_rate < 12) {
+            return {
+                tone: "info" as const,
+                icon: "chat",
+                title: `Conversations land, bookings lag (${t.conversion_rate}%)`,
+                body: `People answer but few book. Sharpen the offer and add a clear single ask in the script — ${t.interested} showed interest without booking.`,
+                cta: { label: "Edit script", href: "/campaigns" },
+            };
+        }
+        // 4) Healthy → keep the engine fed.
+        if (t.calls > 0) {
+            return {
+                tone: "success" as const,
+                icon: "check",
+                title: "Pipeline looks healthy",
+                body: `${t.connect_rate}% connect · ${t.conversion_rate}% booked. The system is converting — load more leads to scale revenue at this rate.`,
+                cta: { label: "Run a campaign", href: "/run" },
+            };
+        }
+        // 5) Cold start.
+        return {
+            tone: "info" as const,
+            icon: "magic-pencil",
+            title: "Start your first campaign",
+            body: "Upload leads and launch a run — your AI caller will work the list and these insights light up with real results.",
+            cta: { label: "Run a campaign", href: "/run" },
+        };
+    }, [totals, hotLeads]);
+
+    // ── Two compact analytics tiles beside Recent Calls ────────────────────────
+    // (a) Pipeline velocity = booked / connected (how well conversations close).
+    // (b) Lead quality = (hot+warm) share of scored leads. Both REAL, range-aware.
+    const pipelineVelocity = useMemo(() => {
+        if (!totals || totals.connected <= 0) return null;
+        return Math.round((totals.booked / totals.connected) * 100);
+    }, [totals]);
+    const leadQuality = useMemo(() => {
+        if (tempTotal <= 0) return null;
+        const hotWarm =
+            tempDonut
+                .filter((d) => d.name === "Hot" || d.name === "Warm")
+                .reduce((s, d) => s + d.value, 0) ?? 0;
+        return Math.round((hotWarm / tempTotal) * 100);
+    }, [tempDonut, tempTotal]);
 
     const chartTooltip = {
         cursor: { fill: "var(--stroke-stroke2)", opacity: 0.25 },
@@ -921,8 +1026,83 @@ function DashboardInner() {
                     </Card>
                 </div>
 
-                {/* ── col-right: hot leads + usage ── */}
+                {/* ── col-right: AI rec + analytics + hot leads + usage ── */}
                 <div className="col-right">
+                    {/* AI Recommendation — the single highest-leverage next action,
+                        derived deterministically from the live report (REAL data). */}
+                    <Card title="AI recommendation">
+                        <div className="px-5 pb-5 pt-1 max-lg:px-3">
+                            {reportLoading || !aiRec ? (
+                                <div className="space-y-3 pt-1">
+                                    <div className="skeleton h-10 w-10 rounded-2xl" />
+                                    <div className="skeleton h-4 w-3/4 rounded-md" />
+                                    <div className="skeleton h-12 w-full rounded-md" />
+                                </div>
+                            ) : (
+                                <div className="flex flex-col gap-3 pt-1">
+                                    <div className="flex items-start gap-3">
+                                        <span className={`flex items-center justify-center size-10 shrink-0 rounded-2xl ${recToneBg(aiRec.tone)}`}>
+                                            <Icon name={aiRec.icon} className={`size-5 ${recToneFill(aiRec.tone)}`} />
+                                        </span>
+                                        <div className="min-w-0">
+                                            <div className="text-sub-title-1 text-t-primary leading-snug">
+                                                {aiRec.title}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <p className="text-body-2 text-t-secondary leading-relaxed">
+                                        {aiRec.body}
+                                    </p>
+                                    <Link href={aiRec.cta.href} className="action self-start">
+                                        {aiRec.cta.label}
+                                        <Icon name="arrow-up-right" />
+                                    </Link>
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+
+                    {/* Two compact analytics tiles — pipeline velocity + lead quality.
+                        Both REAL, range-aware; radial gauges (varied chart type). */}
+                    <Card title="Pipeline analytics">
+                        <div className="px-5 pb-5 pt-1 max-lg:px-3">
+                            {reportLoading ? (
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="skeleton h-32 rounded-2xl" />
+                                    <div className="skeleton h-32 rounded-2xl" />
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                                    {pipelineVelocity != null ? (
+                                        <RadialGauge
+                                            value={pipelineVelocity}
+                                            max={100}
+                                            label="Close rate"
+                                            suffix={`${pipelineVelocity}%`}
+                                            color="var(--primary-01)"
+                                        />
+                                    ) : (
+                                        <AnalyticEmpty label="Close rate" />
+                                    )}
+                                    {leadQuality != null ? (
+                                        <RadialGauge
+                                            value={leadQuality}
+                                            max={100}
+                                            label="Lead quality"
+                                            suffix={`${leadQuality}%`}
+                                            color="var(--primary-05)"
+                                        />
+                                    ) : (
+                                        <AnalyticEmpty label="Lead quality" />
+                                    )}
+                                </div>
+                            )}
+                            <div className="mt-3 text-caption text-t-tertiary">
+                                Close rate = booked ÷ connected. Lead quality = hot + warm share of scored leads.
+                            </div>
+                        </div>
+                    </Card>
+
                     {/* Hot leads — now uses the business-friendly LeadBadge */}
                     <Card
                         title="Hot leads"
@@ -1074,6 +1254,44 @@ function DashboardInner() {
 // Skeleton placeholder for a KpiCard value while the report loads.
 function SkVal() {
     return <span className="skeleton inline-block h-7 w-16 align-bottom rounded-md" />;
+}
+
+// Tone → soft icon-chip background for the AI recommendation card.
+function recToneBg(tone: "danger" | "warning" | "info" | "success"): string {
+    switch (tone) {
+        case "danger":
+            return "bg-primary-03/12";
+        case "warning":
+            return "bg-primary-05/12";
+        case "success":
+            return "bg-primary-02/12";
+        default:
+            return "bg-primary-01/12";
+    }
+}
+
+// Tone → icon fill color for the AI recommendation card.
+function recToneFill(tone: "danger" | "warning" | "info" | "success"): string {
+    switch (tone) {
+        case "danger":
+            return "fill-primary-03";
+        case "warning":
+            return "fill-primary-05";
+        case "success":
+            return "fill-primary-02";
+        default:
+            return "fill-primary-01";
+    }
+}
+
+// Empty state for a single analytics gauge (no data in range yet).
+function AnalyticEmpty({ label }: { label: string }) {
+    return (
+        <div className="flex h-32 flex-col items-center justify-center gap-1 rounded-2xl bg-b-surface1/60 dark:bg-shade-04/30">
+            <div className="text-h6 text-t-tertiary tabular-nums">—</div>
+            <div className="text-caption text-t-tertiary">{label}</div>
+        </div>
+    );
 }
 
 function UsageStat({

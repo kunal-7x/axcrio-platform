@@ -132,15 +132,15 @@ export default function BuilderView({ writable, onToast }: { writable: boolean; 
 
                 <Card title="Media (optional)">
                     <div className="px-5 pb-5 max-lg:px-3">
-                        <div className="flex items-center gap-1 p-1 mb-4 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit">
+                        <div className="flex items-center gap-1 mb-4 w-fit">
                             {(["photo", "video", "document"] as const).map((k) => (
                                 <button
                                     key={k}
                                     onClick={() => setAssetKind(k)}
-                                    className={`inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full text-button capitalize transition-colors ${
+                                    className={`inline-flex items-center gap-1.5 h-10 px-4 rounded-full border text-button capitalize transition-colors hover:text-t-primary ${
                                         assetKind === k
-                                            ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                            : "text-t-secondary hover:text-t-primary"
+                                            ? "border-s-stroke2 text-t-primary"
+                                            : "border-transparent text-t-secondary"
                                     }`}
                                 >
                                     <Icon

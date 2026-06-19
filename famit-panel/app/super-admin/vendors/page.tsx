@@ -144,7 +144,7 @@ function VendorsInner() {
                         </button>
                     )}
                 </div>
-                <div className="flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle overflow-x-auto scrollbar-none">
+                <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
                     {STATUS_TABS.map((t) => {
                         const active = tab === t.key;
                         const count = counts[t.key] ?? 0;
@@ -152,10 +152,10 @@ function VendorsInner() {
                             <button
                                 key={t.key}
                                 onClick={() => setTab(t.key)}
-                                className={`shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-button transition-colors ${
+                                className={`shrink-0 inline-flex items-center gap-1.5 h-10 px-4 rounded-full border text-button transition-colors hover:text-t-primary ${
                                     active
-                                        ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                        : "text-t-secondary hover:text-t-primary"
+                                        ? "border-s-stroke2 text-t-primary"
+                                        : "border-transparent text-t-secondary"
                                 }`}
                             >
                                 {t.label}

@@ -454,17 +454,17 @@ export default function PaymentsPage() {
             <Card
                 title="Payment Links"
                 headContent={
-                    <div className="ml-3 flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle max-md:hidden">
+                    <div className="ml-3 flex items-center gap-1 max-md:hidden">
                         {STATUS_FILTERS.map((s) => {
                             const active = statusFilter === s.value;
                             return (
                                 <button
                                     key={s.value}
                                     onClick={() => setStatusFilter(s.value)}
-                                    className={`shrink-0 inline-flex items-center h-7 px-3 rounded-full text-caption transition-colors ${
+                                    className={`shrink-0 inline-flex items-center h-9 px-3.5 rounded-full border text-caption transition-colors hover:text-t-primary ${
                                         active
-                                            ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                            : "text-t-secondary hover:text-t-primary"
+                                            ? "border-s-stroke2 text-t-primary"
+                                            : "border-transparent text-t-secondary"
                                     }`}
                                 >
                                     {s.label}

@@ -71,28 +71,136 @@ const STATUS_FILTERS: { value: string; label: string }[] = [
     { value: "blocked", label: "Blocked" },
 ];
 
+// One "Show more" pulls this many more sessions (Lane C SPEED — was a single
+// limit:100 load-all).
+const AIM_PAGE = 50;
+
+// Sortable columns → the backend sort_by column. Sorting asks the server to
+// order ALL records; the client sort below is the graceful fallback.
+type AimSortKey = "caller" | "when" | "duration" | "commands" | "outcome";
+const AIM_SORT_COLUMN: Record<AimSortKey, string> = {
+    caller: "caller",
+    when: "started_at",
+    duration: "started_at", // duration derives from started/ended; proxy on start
+    commands: "n_actions",
+    outcome: "outcome",
+};
+function aimSortValue(s: AimSession, key: AimSortKey): number | string {
+    switch (key) {
+        case "caller":
+            return (sessionCaller(s) || "").toLowerCase();
+        case "when":
+            return s.started_at ? new Date(s.started_at).getTime() : 0;
+        case "duration": {
+            if (!s.started_at || !s.ended_at) return -1;
+            return new Date(s.ended_at).getTime() - new Date(s.started_at).getTime();
+        }
+        case "commands":
+            return typeof s.n_actions === "number" ? s.n_actions : 0;
+        case "outcome":
+            return (s.outcome || s.status || "").toLowerCase();
+    }
+}
+
 /* ============================================================== the tab */
 
 export default function CallsTab() {
     const router = useRouter();
 
-    const [res, setRes] = useState<ReadResult<{ sessions: AimSession[]; source?: string }> | null>(null);
+    const [res, setRes] = useState<ReadResult<{ sessions: AimSession[]; source?: string; total?: number; next?: number | null }> | null>(null);
+    const [pages, setPages] = useState<AimSession[]>([]);
+    const [offset, setOffset] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
     const [loading, setLoading] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [channel, setChannel] = useState("");
     const [status, setStatus] = useState("");
+    // Click-header sort (Lane C). Backend sort_by/order span ALL records; the
+    // client sort below is the fallback if the backend ignores them.
+    const [sortKey, setSortKey] = useState<AimSortKey>("when");
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
+    // Page 0 — replaces the list whenever filters/sort change.
     const load = useCallback(() => {
         setLoading(true);
-        getAimSessions({ limit: 100, channel: channel || undefined, status: status || undefined })
-            .then(setRes)
+        getAimSessions({
+            limit: AIM_PAGE,
+            offset: 0,
+            channel: channel || undefined,
+            status: status || undefined,
+            sort_by: AIM_SORT_COLUMN[sortKey],
+            order: sortDir,
+        })
+            .then((r) => {
+                setRes(r);
+                if (r.kind === "ok") {
+                    const got = r.data.sessions || [];
+                    setPages(got);
+                    setOffset(got.length);
+                    setHasMore(
+                        r.data.next != null
+                            ? true
+                            : got.length >= AIM_PAGE &&
+                                  (r.data.total == null || got.length < r.data.total)
+                    );
+                } else {
+                    setPages([]);
+                    setOffset(0);
+                    setHasMore(false);
+                }
+            })
             .finally(() => setLoading(false));
-    }, [channel, status]);
+    }, [channel, status, sortKey, sortDir]);
+
+    const loadMore = useCallback(() => {
+        setLoadingMore(true);
+        getAimSessions({
+            limit: AIM_PAGE,
+            offset,
+            channel: channel || undefined,
+            status: status || undefined,
+            sort_by: AIM_SORT_COLUMN[sortKey],
+            order: sortDir,
+        })
+            .then((r) => {
+                if (r.kind === "ok") {
+                    const got = r.data.sessions || [];
+                    setPages((prev) => [...prev, ...got]);
+                    setOffset((o) => o + got.length);
+                    setHasMore(
+                        r.data.next != null ? true : got.length >= AIM_PAGE
+                    );
+                }
+            })
+            .finally(() => setLoadingMore(false));
+    }, [offset, channel, status, sortKey, sortDir]);
 
     useEffect(() => {
         load();
     }, [load]);
 
-    const rows = useMemo(() => (res?.kind === "ok" ? res.data.sessions || [] : []), [res]);
+    const onSort = (k: AimSortKey) => {
+        if (k === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        else {
+            setSortKey(k);
+            setSortDir(k === "caller" || k === "outcome" ? "asc" : "desc");
+        }
+    };
+
+    // Client-side sort fallback over the loaded pages (keeps the header instant +
+    // correct even if the backend ignored sort_by).
+    const rows = useMemo(() => {
+        const sorted = [...pages].sort((a, b) => {
+            const av = aimSortValue(a, sortKey);
+            const bv = aimSortValue(b, sortKey);
+            const r =
+                typeof av === "number" && typeof bv === "number"
+                    ? av - bv
+                    : String(av).localeCompare(String(bv));
+            return sortDir === "asc" ? r : -r;
+        });
+        return sorted;
+    }, [pages, sortKey, sortDir]);
     const dormant = res?.kind === "dormant";
     const err = res?.kind === "error" ? res.message : "";
 
@@ -172,12 +280,12 @@ export default function CallsTab() {
                             <table className="w-full">
                                 <thead>
                                     <tr className="text-left text-caption text-t-tertiary">
-                                        <th className="font-normal px-3 py-2">Caller</th>
-                                        <th className="font-normal px-3 py-2">When</th>
-                                        <th className="font-normal px-3 py-2">Duration</th>
-                                        <th className="font-normal px-3 py-2">Commands</th>
+                                        <AimSortTh label="Caller" k="caller" active={sortKey} dir={sortDir} onSort={onSort} />
+                                        <AimSortTh label="When" k="when" active={sortKey} dir={sortDir} onSort={onSort} />
+                                        <AimSortTh label="Duration" k="duration" active={sortKey} dir={sortDir} onSort={onSort} />
+                                        <AimSortTh label="Commands" k="commands" active={sortKey} dir={sortDir} onSort={onSort} />
                                         <th className="font-normal px-3 py-2">Recording</th>
-                                        <th className="font-normal px-3 py-2">Outcome</th>
+                                        <AimSortTh label="Outcome" k="outcome" active={sortKey} dir={sortDir} onSort={onSort} />
                                         <th className="px-3 py-2" />
                                     </tr>
                                 </thead>
@@ -270,6 +378,25 @@ export default function CallsTab() {
                             ))}
                         </div>
 
+                        {hasMore && (
+                            <div className="flex justify-center px-3 pb-4">
+                                <button
+                                    onClick={loadMore}
+                                    disabled={loadingMore}
+                                    className="inline-flex items-center justify-center gap-2 h-9 px-4 rounded-full border border-s-subtle text-button text-t-secondary bg-b-surface2 transition-all hover:border-s-highlight hover:text-t-primary active:scale-[0.98] disabled:opacity-50"
+                                >
+                                    {loadingMore ? (
+                                        <>
+                                            <Icon name="clock" className="size-4 fill-current animate-spin" />
+                                            Loading…
+                                        </>
+                                    ) : (
+                                        "Show more"
+                                    )}
+                                </button>
+                            </div>
+                        )}
+
                         {res?.kind === "ok" && res.data.source === "jsonl" && (
                             <div className="px-5 max-lg:px-3 pb-4 text-caption text-t-tertiary">
                                 Showing a mirrored copy — live records resume once the database reconnects.
@@ -283,6 +410,39 @@ export default function CallsTab() {
 }
 
 /* ----------------------------------------------------------- sub-components */
+
+// Sortable <th> — click to sort, click again to flip direction.
+function AimSortTh({
+    label,
+    k,
+    active,
+    dir,
+    onSort,
+}: {
+    label: string;
+    k: AimSortKey;
+    active: AimSortKey;
+    dir: "asc" | "desc";
+    onSort: (k: AimSortKey) => void;
+}) {
+    const isActive = active === k;
+    return (
+        <th className="font-normal px-3 py-2">
+            <button
+                type="button"
+                onClick={() => onSort(k)}
+                className={`inline-flex items-center gap-1 select-none transition-colors hover:text-t-primary ${
+                    isActive ? "text-t-secondary" : ""
+                }`}
+            >
+                {label}
+                <span className="text-caption">
+                    {isActive ? (dir === "asc" ? "↑" : "↓") : ""}
+                </span>
+            </button>
+        </th>
+    );
+}
 
 function FilterPill({
     value,

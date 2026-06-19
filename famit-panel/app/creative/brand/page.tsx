@@ -54,6 +54,7 @@ const Page = () => {
     const [savedNote, setSavedNote] = useState<string | null>(null);
 
     // editable local mirror
+    const [logoFile, setLogoFile] = useState<File | null>(null);
     const [palette, setPalette] = useState<string[]>([]);
     const [newColor, setNewColor] = useState("");
     const [tone, setTone] = useState("");
@@ -86,8 +87,21 @@ const Page = () => {
         setSaving(true);
         setSavedNote(null);
         try {
+            // If a new logo was attached, upload it first (the extract endpoint
+            // ingests the file and returns its stored URL) and carry it through.
+            // Dormant-safe: if the upload route isn't live, keep the existing URL.
+            let logoUrl = kit?.logo_url;
+            if (logoFile) {
+                try {
+                    const up = await extractBrandKit({ logo: logoFile });
+                    if (up?.logo_url) logoUrl = up.logo_url;
+                } catch {
+                    /* upload dormant — fall back to the existing logo URL */
+                }
+            }
             const saved = await saveBrandKit({
                 id: kit?.id,
+                logo_url: logoUrl,
                 palette,
                 tone: tone.split(",").map((s) => s.trim()).filter(Boolean),
                 language_pref: language.name,
@@ -95,6 +109,7 @@ const Page = () => {
                 do_not_use: { words: doNotUse.split(",").map((s) => s.trim()).filter(Boolean) },
             });
             setKit(saved);
+            setLogoFile(null);
             setSavedNote("Brand kit saved.");
         } catch (e) {
             setSavedNote(e instanceof Error ? e.message : "Couldn't save the brand kit.");
@@ -169,12 +184,12 @@ const Page = () => {
                 </div>
 
                 {/* section cards */}
-                <div className="grow min-w-0">
+                <div className="grow min-w-0 space-y-3">
                     <div id="logo">
                         <Card title="Logo">
                             <div className="px-5 max-lg:px-3">
                                 <FieldImage
-                                    onChange={() => {}}
+                                    onChange={(file) => setLogoFile(file)}
                                     initialImage={kit?.logo_url}
                                 />
                                 <p className="mt-3 text-caption text-t-tertiary">

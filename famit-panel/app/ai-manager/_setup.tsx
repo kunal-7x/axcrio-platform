@@ -927,7 +927,9 @@ function SetPinModal({
         if (!validPin(pin) || pin !== confirm) return;
         setSaving(true);
         try {
-            await setAimUserPin(user.id, pin);
+            // `admin` carries the required admin-on-behalf flag so the backend
+            // accepts an admin reset of another user's PIN (otherwise 422).
+            await setAimUserPin(user.id, pin, admin || resetting);
             onSaved(`PIN ${resetting ? "reset" : "set"} for ${user.name}`);
         } catch (err) {
             onError(err instanceof Error ? err.message : "Could not set PIN");

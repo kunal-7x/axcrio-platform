@@ -785,16 +785,21 @@ export type CallsPage = {
 export type GetCallsOpts = {
     limit?: number;
     offset?: number;
-    order?: "desc";
+    order?: "asc" | "desc";
     slim?: boolean;
     campaign_id?: string;
     outcome?: string;
+    // Lane C SPEED — ask the backend to sort across ALL records (not just the
+    // loaded page). `sort_by` names the column; `order` the direction. The call
+    // sites keep a client-side sort fallback for a backend that ignores these.
+    sort_by?: string;
 };
 export async function getCalls(opts?: GetCallsOpts): Promise<CallsPage> {
     const params = new URLSearchParams();
     params.set("limit", String(opts?.limit ?? 200));
     if (opts?.offset != null && opts.offset > 0) params.set("offset", String(opts.offset));
-    if (opts?.order === "desc") params.set("order", "desc");
+    if (opts?.order) params.set("order", opts.order);
+    if (opts?.sort_by) params.set("sort_by", opts.sort_by);
     if (opts?.slim) params.set("slim", "1");
     if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
     if (opts?.outcome) params.set("outcome", opts.outcome);

@@ -8,7 +8,6 @@
 // (zero raw hex). {variable} tokens resolve to a sample so the preview shows what
 // the contact actually sees.
 
-import Image from "@/components/Image";
 import Icon from "@/components/Icon";
 
 export type PreviewButton = { text: string; url?: string };
@@ -75,16 +74,34 @@ const TelegramPreview = ({
                                     <div className="text-caption text-t-tertiary">Document</div>
                                 </div>
                             </div>
+                        ) : draft.asset_kind === "video" ? (
+                            <div className="relative h-40 w-full bg-shade-10">
+                                {/* native <video> — renders any stored/presigned Spaces URL
+                                    (next/image would reject an un-allowlisted host). */}
+                                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                                <video
+                                    src={draft.asset_url}
+                                    className="h-full w-full object-cover"
+                                    muted
+                                    playsInline
+                                    preload="metadata"
+                                />
+                                <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <span className="flex justify-center items-center size-11 rounded-full bg-shade-10/45 backdrop-blur-sm">
+                                        <Icon className="fill-t-light !size-5" name="video" />
+                                    </span>
+                                </span>
+                            </div>
                         ) : (
                             <div className="relative h-40 w-full bg-b-surface1">
-                                <Image className="object-cover" src={draft.asset_url} alt="Media preview" fill sizes="320px" />
-                                {draft.asset_kind === "video" && (
-                                    <span className="absolute inset-0 flex items-center justify-center">
-                                        <span className="flex justify-center items-center size-11 rounded-full bg-shade-10/45 backdrop-blur-sm">
-                                            <Icon className="fill-t-light !size-5" name="video" />
-                                        </span>
-                                    </span>
-                                )}
+                                {/* native <img> so any uploaded banner URL renders without
+                                    next/image host allow-listing. */}
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                    src={draft.asset_url}
+                                    alt="Media preview"
+                                    className="h-full w-full object-cover"
+                                />
                             </div>
                         )
                     ) : null}

@@ -120,6 +120,13 @@ export type ContactListItem = {
 export type ContactsResponse = {
     contacts: ContactListItem[];
     total: number;
+    // Cursor paging (Lane C SPEED). When the backend honours offset/limit it may
+    // echo them + a `next` offset (null on the last page). Legacy responses omit
+    // these — the client derives the next offset from contacts.length, so paging
+    // degrades gracefully against a backend that still returns a flat list.
+    offset?: number;
+    limit?: number;
+    next?: number | null;
     // The live API returns 200 with a `note` (not a 404) when the crm module or
     // its Postgres is unavailable — the UI treats these as "dormant", same as a
     // 404 on a not-yet-mounted route. See DORMANT_NOTES.
@@ -248,6 +255,11 @@ export type ContactsQuery = {
     q?: string;
     sort?: string;
     limit?: number;
+    // Lane C SPEED — cursor paging + column sort. `offset` pages; `sort_by`/`order`
+    // ask the backend to sort across ALL records (the client keeps a sort fallback).
+    offset?: number;
+    sort_by?: string;
+    order?: "asc" | "desc";
 };
 
 export async function getContacts(opts?: ContactsQuery): Promise<ContactsResponse> {
@@ -258,7 +270,10 @@ export async function getContacts(opts?: ContactsQuery): Promise<ContactsRespons
     if (opts?.segment) params.set("segment", opts.segment);
     if (opts?.q) params.set("q", opts.q);
     if (opts?.sort) params.set("sort", opts.sort);
+    if (opts?.sort_by) params.set("sort_by", opts.sort_by);
+    if (opts?.order) params.set("order", opts.order);
     if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null && opts.offset > 0) params.set("offset", String(opts.offset));
     const qs = params.toString();
     return crmFetch<ContactsResponse>(`/contacts${qs ? `?${qs}` : ""}`);
 }

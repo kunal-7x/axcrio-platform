@@ -246,14 +246,19 @@ export type AimSessionFilters = {
     offset?: number;
     channel?: string;
     status?: string;
+    // Lane C SPEED — backend sort across ALL records (client keeps a fallback).
+    sort_by?: string;
+    order?: "asc" | "desc";
 };
 export const getAimSessions = (f: AimSessionFilters = {}) =>
-    read<{ sessions: AimSession[]; source?: string }>(
+    read<{ sessions: AimSession[]; source?: string; total?: number; next?: number | null }>(
         `/ai-manager/sessions${aimQs({
             limit: f.limit ?? 50,
             offset: f.offset,
             channel: f.channel,
             status: f.status,
+            sort_by: f.sort_by,
+            order: f.order,
         })}`,
     );
 
@@ -422,8 +427,16 @@ export const deleteAimUser = (id: string) =>
 
 // ---- PIN flows (raw PIN never logged/returned) ----
 // Set / enrol a PIN for a given authorized user.
-export const setAimUserPin = (userId: string, pin: string) =>
-    write<{ ok: boolean; pin_set_at?: string }>("/ai-manager/pin/set", { user_id: userId, pin });
+// `admin` = an admin is resetting/setting the PIN for ANOTHER user (vs the user
+// enrolling their own). The backend Pydantic schema requires this flag to be
+// present for the admin-on-behalf path — omitting it returns 422. We always send
+// it so both the self-enrol (false) and admin-reset (true) legs validate.
+export const setAimUserPin = (userId: string, pin: string, admin = false) =>
+    write<{ ok: boolean; pin_set_at?: string }>("/ai-manager/pin/set", {
+        user_id: userId,
+        pin,
+        admin,
+    });
 
 // Admin-initiated reset: clears the PIN + lockout so the user can re-enrol.
 // Backend may require an OTP confirm step; we expose both legs.

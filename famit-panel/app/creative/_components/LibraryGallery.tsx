@@ -37,6 +37,7 @@ import {
     angleLabel,
     statusLabel,
     statusVariant,
+    isVideoAsset,
     type Asset,
 } from "@/lib/assets";
 
@@ -176,6 +177,18 @@ const LibraryGallery = ({
         }
     };
 
+    // Client-side media-type fallback. The backend `media_type` filter is a
+    // forward-compat param (live-library bridge §5) that older builds ignore — so
+    // the Images tab could leak videos (and vice-versa). We re-apply the narrow
+    // locally using the authoritative isVideoAsset() so "Images" shows images ONLY
+    // even when the server returned a mixed page. No-op for "all".
+    const visibleAssets = useMemo(() => {
+        if (mediaType === "all") return assets;
+        return assets.filter((a) =>
+            mediaType === "video" ? isVideoAsset(a) : !isVideoAsset(a)
+        );
+    }, [assets, mediaType]);
+
     const toggleSelect = (id: string) =>
         setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
     const deselect = () => setSelected([]);
@@ -308,12 +321,12 @@ const LibraryGallery = ({
                             Couldn&apos;t load assets right now. Try again in a moment.
                         </p>
                     </div>
-                ) : assets.length === 0 ? (
+                ) : visibleAssets.length === 0 ? (
                     <EmptyState filtered={isFiltered} onClear={clearFilters} />
                 ) : view.id === 1 ? (
                     <>
                         <div className="flex flex-wrap">
-                            {assets.map((a) => (
+                            {visibleAssets.map((a) => (
                                 <AssetCard
                                     key={a.id}
                                     asset={a}
@@ -336,7 +349,7 @@ const LibraryGallery = ({
                     </>
                 ) : (
                     <ListView
-                        assets={assets}
+                        assets={visibleAssets}
                         onOpen={selectMode === "pick" ? onPick : onOpen}
                     />
                 )}

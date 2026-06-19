@@ -764,6 +764,17 @@ function CallLogsInner() {
 type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "score";
 type SortDir = "asc" | "desc";
 
+// Map the UI sort key onto the backend sort_by column so the cursor query sorts
+// across ALL records server-side (the client sort stays as a graceful fallback).
+const SORT_COLUMN: Record<SortKey, string> = {
+    lead: "name",
+    campaign: "campaign_name",
+    status: "status",
+    placed: "started_at",
+    duration: "duration_s",
+    score: "interest",
+};
+
 function cmp(a: number | string, b: number | string): number {
     if (typeof a === "number" && typeof b === "number") return a - b;
     return String(a).localeCompare(String(b));
@@ -839,13 +850,21 @@ function CallsListPanel() {
     // Loads ONE page (~60 slim rows) at a time and fetches the next as you scroll
     // near the end — the call-logs page no longer loads every row at once. Tab-back
     // is instant (react-query keeps the fetched pages cached + revalidates in bg).
+    // Map the clicked column onto the backend sort column so sorting spans ALL
+    // records (not just the loaded pages). A new sort re-keys the cursor query →
+    // fresh page-0 fetch in the chosen order; the client sort below is the fallback
+    // for a backend that ignores sort_by.
     const {
         data,
         isLoading,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useCallsInfinite({ pageSize: 60 });
+    } = useCallsInfinite({
+        pageSize: 60,
+        sort_by: SORT_COLUMN[sortKey],
+        order: sortDir,
+    });
 
     // Flatten the cursor pages into one row list for the virtualizer.
     const calls: CallLog[] = useMemo(
@@ -998,7 +1017,7 @@ function CallsListPanel() {
                                     colSpan={7}
                                     estimateRowH={73}
                                     onEndReached={
-                                        searching || customSort || !hasNextPage || isFetchingNextPage
+                                        searching || !hasNextPage || isFetchingNextPage
                                             ? undefined
                                             : () => fetchNextPage()
                                     }

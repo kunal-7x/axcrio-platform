@@ -7,9 +7,18 @@
 // WhatsApp lockup. Token-only (zero raw hex). Tokens in the body resolve to
 // sample values when `useReal` is off; the parent swaps to a selected lead.
 
-import Image from "@/components/Image";
 import Icon from "@/components/Icon";
 import { type TemplateDraft } from "../_lib/types";
+
+// Is the attached header media a video? Prefer the structured media[] ref
+// (kind/content_type), then fall back to sniffing the URL extension.
+function isVideoAsset(draft: TemplateDraft): boolean {
+    const m = draft.media?.find((x) => x.url && x.url === draft.asset_url) || draft.media?.[0];
+    if (m?.kind === "video") return true;
+    if (m?.content_type?.startsWith("video/")) return true;
+    const url = draft.asset_url || "";
+    return /\.(mp4|mov|webm|m4v|ogg)(\?|$)/i.test(url);
+}
 
 type PhonePreviewProps = {
     draft: TemplateDraft;
@@ -52,17 +61,36 @@ const PhonePreview = ({ draft, sampleName = "Kunal", className }: PhonePreviewPr
             <div className="px-3 py-5 bg-b-surface1 min-h-90">
                 {/* the outbound bubble */}
                 <div className="ml-auto max-w-[88%] rounded-3xl rounded-tr-md bg-b-surface2 ring-1 ring-s-subtle shadow-sm overflow-hidden">
-                    {/* header media */}
+                    {/* header media — native <img>/<video> so any stored or
+                        presigned Spaces URL renders (next/image would reject an
+                        un-allowlisted host). */}
                     {draft.asset_url ? (
-                        <div className="relative h-40 w-full bg-b-surface1">
-                            <Image
-                                className="object-cover"
-                                src={draft.asset_url}
-                                alt="Banner preview"
-                                fill
-                                sizes="320px"
-                            />
-                        </div>
+                        isVideoAsset(draft) ? (
+                            <div className="relative h-40 w-full bg-shade-10">
+                                {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                                <video
+                                    src={draft.asset_url}
+                                    className="h-full w-full object-cover"
+                                    muted
+                                    playsInline
+                                    preload="metadata"
+                                />
+                                <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <span className="flex justify-center items-center size-11 rounded-full bg-shade-10/45 backdrop-blur-sm">
+                                        <Icon className="fill-t-light !size-5" name="camera-video" />
+                                    </span>
+                                </span>
+                            </div>
+                        ) : (
+                            <div className="relative h-40 w-full bg-b-surface1">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                    src={draft.asset_url}
+                                    alt="Banner preview"
+                                    className="h-full w-full object-cover"
+                                />
+                            </div>
+                        )
                     ) : (
                         <div className="flex flex-col items-center justify-center h-32 w-full bg-b-surface1 text-t-tertiary">
                             <Icon className="fill-t-tertiary mb-1" name="camera" />

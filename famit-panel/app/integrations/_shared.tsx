@@ -56,17 +56,17 @@ export function SubNav({
 }) {
     return (
         <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-            <div className="flex items-center gap-1 p-1 rounded-full bg-b-surface2 ring-1 ring-s-subtle w-fit max-w-full overflow-x-auto scrollbar-none">
+            <div className="flex items-center gap-1 w-fit max-w-full overflow-x-auto scrollbar-none">
                 {VIEWS.map((v) => {
                     const active = v.id === view;
                     return (
                         <button
                             key={v.id}
                             onClick={() => onChange(v.id)}
-                            className={`shrink-0 inline-flex items-center h-8 px-3.5 rounded-full text-button transition-colors ${
+                            className={`shrink-0 inline-flex items-center h-10 px-4 rounded-full border text-button transition-colors hover:text-t-primary ${
                                 active
-                                    ? "bg-b-surface1 text-t-primary shadow-widget dark:bg-shade-04"
-                                    : "text-t-secondary hover:text-t-primary"
+                                    ? "border-s-stroke2 text-t-primary"
+                                    : "border-transparent text-t-secondary"
                             }`}
                         >
                             {v.label}

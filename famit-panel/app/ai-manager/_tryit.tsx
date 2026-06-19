@@ -64,13 +64,6 @@ type Turn =
           note?: string;
       };
 
-const EXAMPLES = [
-    "Aaj ka report WhatsApp kar do",
-    "Meta budget 500 kar do",
-    "Call all hot leads after 5 PM",
-    "Wallet balance?",
-];
-
 let TURN_SEQ = 0;
 const nextId = () => `t${Date.now()}-${++TURN_SEQ}`;
 
@@ -376,7 +369,7 @@ export default function TryItTab({ seedQuery = "" }: { seedQuery?: string }) {
                         className="px-5 max-lg:px-3 h-[30rem] overflow-y-auto scrollbar-none"
                     >
                         {turns.length === 0 && !thinking ? (
-                            <EmptyThread dormant={dormant} onPick={send} />
+                            <EmptyThread dormant={dormant} />
                         ) : view === "trace" ? (
                             <TraceView turns={turns} />
                         ) : (
@@ -419,7 +412,7 @@ export default function TryItTab({ seedQuery = "" }: { seedQuery?: string }) {
                                 }}
                                 rows={1}
                                 disabled={thinking}
-                                placeholder='Try: "Aaj ka report WhatsApp kar do" — Enter to send, Shift+Enter for a new line'
+                                placeholder="Type a command in your own words — Enter to send, Shift+Enter for a new line"
                                 className="flex-1 min-h-11 max-h-32 px-4 py-2.5 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none resize-none transition-colors hover:border-s-highlight focus:border-primary-01/60 focus:ring-2 focus:ring-primary-01/30 placeholder:text-t-secondary/50 disabled:opacity-60"
                             />
                             <Button
@@ -432,21 +425,6 @@ export default function TryItTab({ seedQuery = "" }: { seedQuery?: string }) {
                                 Send
                             </Button>
                         </form>
-                        {turns.length > 0 && (
-                            <div className="flex flex-wrap gap-1.5 mt-2">
-                                {EXAMPLES.map((ex) => (
-                                    <button
-                                        key={ex}
-                                        type="button"
-                                        onClick={() => send(ex)}
-                                        disabled={thinking}
-                                        className="h-7 px-3 rounded-full bg-b-surface1 ring-1 ring-s-subtle text-caption text-t-secondary transition-colors hover:text-t-primary hover:ring-s-highlight disabled:opacity-50 dark:bg-shade-04/50"
-                                    >
-                                        {ex}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
                     </div>
                 </Card>
             </div>
@@ -464,7 +442,7 @@ export default function TryItTab({ seedQuery = "" }: { seedQuery?: string }) {
 
 /* ------------------------------------------------------------ empty state */
 
-function EmptyThread({ dormant, onPick }: { dormant: boolean; onPick: (t: string) => void }) {
+function EmptyThread({ dormant }: { dormant: boolean }) {
     return (
         <div className="py-10 flex flex-col items-center text-center">
             <span className="grid place-items-center size-14 rounded-2xl bg-b-surface2 ring-1 ring-s-subtle fill-primary-01">
@@ -475,20 +453,9 @@ function EmptyThread({ dormant, onPick }: { dormant: boolean; onPick: (t: string
             </div>
             <p className="text-body-2 text-t-secondary mt-1.5 max-w-md">
                 {dormant
-                    ? "The command engine lights up once the AI Manager service token and intent model are provisioned on the server. Until then, here's the vocabulary it understands."
-                    : "Speak to it like you would to a smart office manager. It will classify the intent, score the risk, and ask for a confirm or PIN before doing anything that spends money or touches many records."}
+                    ? "The command engine lights up once the AI Manager service token and intent model are provisioned on the server."
+                    : "Speak to it like you would to a smart office manager, in your own words. It will work out the intent, score the risk, and ask for a confirm or PIN before doing anything that spends money or touches many records."}
             </p>
-            <div className="flex flex-wrap items-center justify-center gap-2 mt-5 max-w-lg">
-                {EXAMPLES.map((ex) => (
-                    <button
-                        key={ex}
-                        onClick={() => onPick(ex)}
-                        className="lift h-9 px-4 rounded-full bg-b-surface2 ring-1 ring-s-subtle text-button text-t-secondary transition-colors hover:text-t-primary hover:ring-s-highlight"
-                    >
-                        &ldquo;{ex}&rdquo;
-                    </button>
-                ))}
-            </div>
         </div>
     );
 }

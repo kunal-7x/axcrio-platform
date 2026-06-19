@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
@@ -46,6 +46,9 @@ const LIFECYCLE_TABS = [
     { id: 4, name: "Cold", key: "cold" },
     { id: 5, name: "Dead", key: "dead" },
 ];
+
+// Cursor page size (Lane C SPEED) — one "Show more" fetches this many more rows.
+const CRM_PAGE = 60;
 
 // Sortable columns — clicking the header toggles asc/desc.
 type SortKey =
@@ -146,19 +149,25 @@ function CrmWorkspaceInner() {
         }
     };
 
-    // PERF UNIT-3: cached contacts list keyed by the active filters — switching
-    // tabs is instant (cache + bg revalidate); keepPreviousData keeps rows on
-    // screen while a new filter loads.  10 s auto-refresh for near-live updates.
-    const contactsQuery = useQuery<ContactsResponse>({
-        queryKey: ["contacts", { stage, lifecycle, segmentId }],
-        queryFn: async () => {
+    // Lane C SPEED — cursor-paged contacts (was a single limit:500 load-all that
+    // got slow on big books). Loads ONE page (~60) and a "Show more" fetches the
+    // next; the active filters + sort key/dir re-key the query so a new filter or a
+    // header click starts a fresh page-0 fetch. Backend sort_by/order sort across
+    // ALL records; the client sort below is the graceful fallback. Cache keeps the
+    // tab instant on return; 10 s bg refresh for near-live updates.
+    const contactsQuery = useInfiniteQuery<ContactsResponse, Error>({
+        queryKey: ["contacts", { stage, lifecycle, segmentId, sortKey, sortDir }],
+        queryFn: async ({ pageParam }) => {
             try {
                 return await getContacts({
                     stage: stage !== "all" ? stage : undefined,
                     lifecycle: lifecycle !== "all" ? lifecycle : undefined,
                     segment: segmentId,
                     sort: sortKey,
-                    limit: 500,
+                    sort_by: sortKey,
+                    order: sortDir,
+                    limit: CRM_PAGE,
+                    offset: (pageParam as number) ?? 0,
                 });
             } catch (e) {
                 if (e instanceof CrmDormantError) {
@@ -167,17 +176,27 @@ function CrmWorkspaceInner() {
                 throw e;
             }
         },
-        placeholderData: keepPreviousData,
+        initialPageParam: 0,
+        // Prefer the backend-echoed `next`; else derive it (offset+len) and stop
+        // once a short/empty page proves we hit the end (legacy flat-list backend).
+        getNextPageParam: (last, all) => {
+            if (last.next != null) return last.next;
+            const loaded = all.reduce((n, p) => n + (p.contacts?.length ?? 0), 0);
+            if ((last.contacts?.length ?? 0) < CRM_PAGE) return undefined;
+            if (last.total != null && loaded >= last.total) return undefined;
+            return loaded;
+        },
         refetchInterval: 10_000,
     });
 
-    const resp = contactsQuery.data;
-    const dormant = !!resp && isDormantResponse(resp);
+    const pages = contactsQuery.data?.pages;
+    const firstPage = pages?.[0];
+    const dormant = !!firstPage && isDormantResponse(firstPage);
     const rawContacts: ContactListItem[] = useMemo(
-        () => (dormant ? [] : resp?.contacts ?? []),
-        [resp, dormant]
+        () => (dormant ? [] : (pages ?? []).flatMap((p) => p.contacts ?? [])),
+        [pages, dormant]
     );
-    const total = dormant ? 0 : resp?.total ?? rawContacts.length;
+    const total = dormant ? 0 : firstPage?.total ?? rawContacts.length;
     const error = (contactsQuery.error
         ? contactsQuery.error instanceof Error
             ? contactsQuery.error.message
@@ -535,6 +554,23 @@ function CrmWorkspaceInner() {
                                         );
                                     })}
                                 </Table>
+                            )}
+                            {!loading && sorted.length > 0 && contactsQuery.hasNextPage && (
+                                <div className="flex justify-center py-4">
+                                    <Button
+                                        isStroke
+                                        onClick={() => contactsQuery.fetchNextPage()}
+                                        disabled={contactsQuery.isFetchingNextPage}
+                                    >
+                                        {contactsQuery.isFetchingNextPage
+                                            ? "Loading…"
+                                            : `Show more${
+                                                  total > rawContacts.length
+                                                      ? ` (${rawContacts.length} of ${total})`
+                                                      : ""
+                                              }`}
+                                    </Button>
+                                </div>
                             )}
                         </div>
                     </div>

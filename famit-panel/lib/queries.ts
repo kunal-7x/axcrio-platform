@@ -91,11 +91,16 @@ export function useCallsInfinite(opts?: {
     pageSize?: number;
     campaign_id?: string;
     outcome?: string;
+    // Lane C SPEED — backend sort across ALL records. Re-keys the query (a new
+    // sort starts a fresh page-0 fetch); the page keeps a client sort fallback.
+    sort_by?: string;
+    order?: "asc" | "desc";
 }) {
     const pageSize = opts?.pageSize ?? 60;
     const base: GetCallsOpts = {
         limit: pageSize,
-        order: "desc",
+        order: opts?.order ?? "desc",
+        sort_by: opts?.sort_by,
         slim: true,
         campaign_id: opts?.campaign_id,
         outcome: opts?.outcome,
