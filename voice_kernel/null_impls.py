@@ -140,6 +140,25 @@ class NullSpeechPlanner:
         return SpeechPlan(text=raw_text, tts_lang=lang, segments=(raw_text,) if raw_text else (), normalized=False)
 
 
+class W5OffSpeechPlanner:
+    """W5 FORCE-OFF speech impl (EARNER LAW). `plan()` returns None so the agent's
+    `plan_speech()` returns None and the spoken text is the RAW LLM text — ZERO
+    prosody / filler / normalization is ever applied.
+
+    This is the gate behind which the live cutover registers the speech impl: the
+    W5 DefaultSpeechPlanner's prosody + sparse-filler + normalization pipeline is
+    EXACTLY what broke the perfect outbound voice before (fast / half-sentences /
+    `.env` prosody drift). So even when KERNEL_OUTBOUND=1, the speech impl stays
+    THIS no-op UNLESS the founder explicitly sets W5_SPEECH=1 — the real planner is
+    never reachable by default. Returning None (not a pass-through SpeechPlan) is
+    deliberate: it makes `plan_speech()` short-circuit to raw_text at the call site
+    with zero allocation, and makes the OFF state unmistakable in a trace."""
+
+    def plan(self, raw_text: str, lang: str, mode_card: CampaignCard):
+        log.debug("W5OffSpeechPlanner.plan -> None (W5 force-off; no prosody/normalization)")
+        return None
+
+
 class NullProviderRouter:
     """Returns the live default triple (sarvam/groq/elevenlabs) — matches the
     deployed resolve_providers default (LEARNINGS: _DEFAULT_PROVIDERS)."""

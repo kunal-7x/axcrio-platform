@@ -65,6 +65,23 @@ def kernel_outbound_enabled() -> bool:
         return False
 
 
+def w5_speech_enabled() -> bool:
+    """W5 SPEECH-PLANNER force-off gate (EARNER LAW, INDEPENDENT of KERNEL_OUTBOUND).
+
+    The W5 DefaultSpeechPlanner (prosody + sparse fillers + number/price/date
+    normalization) is EXACTLY what broke the perfect outbound voice before. So the
+    speech impl is force-disabled by DEFAULT — even when KERNEL_OUTBOUND=1 — and is
+    wired in ONLY when the founder explicitly sets `W5_SPEECH=1` (the same
+    codebase-native flag pattern as OPENER_ALREADY_SAID / the kernel flags). Absent
+    or "0" => the W5OffSpeechPlanner (plan() -> None) is registered, so no prosody /
+    filler / normalization can ever touch the spoken text. Reads its OWN env var so
+    this gate is orthogonal to the master cutover flag (flip the brain on WITHOUT
+    flipping W5)."""
+    import os
+
+    return os.getenv("W5_SPEECH", "0") in ("1", "true", "True")
+
+
 @dataclass
 class OutboundKernel:
     """Per-call façade. Holds the built RealtimeVoiceKernel + the C2 KernelSession
@@ -237,15 +254,36 @@ def _build_kernel_with_impls(cfg, tenant_id: str, campaign_id: str, fields: dict
     except Exception as exc:
         log.warning("W4 rag unavailable -> Null: %r", exc)
 
-    # W5 speech planner + provider router (the Sarvam authoritative-routing fix).
+    # W5 provider router (the Sarvam authoritative-routing fix) — always wired.
     try:
         from voice_kernel.providers import build_provider_router
-        from voice_kernel.speech import build_speech_planner
 
         impls["router"] = build_provider_router()
-        impls["speech"] = build_speech_planner()
     except Exception as exc:
-        log.warning("W5 speech/router unavailable -> Null: %r", exc)
+        log.warning("W5 router unavailable -> Null: %r", exc)
+
+    # W5 SPEECH PLANNER — EARNER-GATED (force-off by default; see w5_speech_enabled).
+    # The prosody/filler/normalization pipeline is what broke the perfect voice, so
+    # it stays the W5OffSpeechPlanner (plan() -> None, ZERO text mutation) UNLESS
+    # W5_SPEECH=1 is explicitly set — EVEN when KERNEL_OUTBOUND=1. This is the W5
+    # force-off gate: the real DefaultSpeechPlanner is never reachable by default.
+    try:
+        if w5_speech_enabled():
+            from voice_kernel.speech import build_speech_planner
+
+            impls["speech"] = build_speech_planner()
+        else:
+            from voice_kernel.null_impls import W5OffSpeechPlanner
+
+            impls["speech"] = W5OffSpeechPlanner()
+    except Exception as exc:
+        log.warning("W5 speech gate failed -> force-off Null: %r", exc)
+        try:
+            from voice_kernel.null_impls import W5OffSpeechPlanner
+
+            impls["speech"] = W5OffSpeechPlanner()
+        except Exception:
+            pass
 
     # W7 lead memory (PG-backed, RLS-isolated). Constructed WITHOUT eagerly binding
     # the box DB session (droplet-free by default); the box-deploy hook injects the
@@ -496,6 +534,7 @@ async def persist_post_call(
 
 __all__ = [
     "kernel_outbound_enabled",
+    "w5_speech_enabled",
     "OutboundKernel",
     "build_for_call",
     "bind_box_memory",

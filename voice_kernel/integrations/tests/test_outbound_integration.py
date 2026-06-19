@@ -111,6 +111,7 @@ def test_public_api_surface():
     """The agent imports ONLY these names; no voice_kernel.* type crosses over."""
     assert set(ob.__all__) == {
         "kernel_outbound_enabled",
+        "w5_speech_enabled",
         "OutboundKernel",
         "build_for_call",
         "bind_box_memory",
@@ -469,7 +470,36 @@ def test_plan_speech_off_is_none(monkeypatch):
     assert ob.plan_speech(None, raw_text="₹999", lang="hi") is None
 
 
-def test_plan_speech_on_returns_speech_plan(monkeypatch):
+def test_w5_speech_force_off_by_default(monkeypatch):
+    """EARNER LAW: W5_SPEECH defaults OFF (the prosody/normalization pipeline that
+    broke the perfect voice). Absent or '0' => disabled, even with KERNEL_OUTBOUND on."""
+    monkeypatch.delenv("W5_SPEECH", raising=False)
+    assert ob.w5_speech_enabled() is False
+    monkeypatch.setenv("W5_SPEECH", "0")
+    assert ob.w5_speech_enabled() is False
+    monkeypatch.setenv("W5_SPEECH", "1")
+    assert ob.w5_speech_enabled() is True
+
+
+def test_plan_speech_w5_gate_off_returns_none_even_when_kernel_on(monkeypatch):
+    """THE W5 FORCE-OFF PROOF: with KERNEL_OUTBOUND=1 but W5_SPEECH absent/0, the
+    speech impl resolves to W5OffSpeechPlanner so plan_speech() returns None — NO
+    prosody / filler / normalization can touch the spoken text. This is the gate
+    that keeps the perfect voice safe even on the ON brain path."""
+    monkeypatch.delenv("W5_SPEECH", raising=False)  # gate OFF (default)
+    ik = _build_on(monkeypatch)  # KERNEL_OUTBOUND=1
+    assert ik is not None
+    # the registered speech impl is the force-off null (plan() -> None)
+    assert ik.kernel.svc.speech.plan("price is 999 rupees", "hi", None) is None
+    # and the agent-facing helper short-circuits to None
+    assert ob.plan_speech(ik, raw_text="price is 999 rupees", lang="hi") is None
+
+
+def test_plan_speech_on_returns_speech_plan_when_w5_explicitly_enabled(monkeypatch):
+    """Only when the founder EXPLICITLY sets W5_SPEECH=1 is the real W5
+    DefaultSpeechPlanner wired in (the prosody/normalization path). The gate is
+    orthogonal to KERNEL_OUTBOUND."""
+    monkeypatch.setenv("W5_SPEECH", "1")
     ik = _build_on(monkeypatch)
     plan = ob.plan_speech(ik, raw_text="price is 999 rupees", lang="hi")
     assert plan is not None
