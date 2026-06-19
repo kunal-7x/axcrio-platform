@@ -110,20 +110,10 @@ export const navigation = [
     {
         // GROW — acquisition: turn ad spend + audiences into dialled leads. Campaigns
         // and Run-Campaign sit together (build the campaign, then run it). The ad
-        // tooling (Ad Automation + Funnels + Form Builder) groups together at the end.
-        // Creative Studio is now its OWN top-level section (below) — removed from Grow.
-        // Group UNKEYED (mixed core + keyed children); each child keeps its grow.* /
-        // engage.run key verbatim.
-        //
-        // ROUND-2 NOTE — "Ad Tools" sub-group: the spec asked for a collapsible
-        // sub-group nesting Ad Automation / Funnels / Form Builder. The shared
-        // Sidebar Dropdown renders only ONE level of children (a child with no href
-        // falls through to a dimmed "Soon" row — it cannot itself expand). Per the
-        // file-scope contract (nav data only; Sidebar/Dropdown UNCHANGED), nesting a
-        // second collapsible here would render the three ad tools as dead "Soon" rows.
-        // So they stay as direct, renderable Grow children, ordered together at the end
-        // as the de-facto "Ad Tools" cluster. (Promoting Dropdown to nested groups is a
-        // Sidebar-component change, out of this unit's scope — noted as a dependency.)
+        // tooling moved OUT into its own "Revenue Tools" section (below) so a
+        // super-admin can hide it per-vendor. Creative Studio is its OWN top-level
+        // section (further below). Group UNKEYED (mixed core + keyed children); each
+        // child keeps its grow.* / engage.run key verbatim.
         title: "Grow",
         icon: "promote",
         feature_key: "mod.grow",
@@ -132,7 +122,25 @@ export const navigation = [
             // Run Campaign — the founder's named multi-card audience+config launcher.
             // Lives in GROW next to Campaigns (build → run). Relabelled "Run Campaign".
             { title: "Run Campaign", href: "/run", feature_key: "engage.run" },
-            // ---- Ad Tools cluster (grouped together; see ROUND-2 NOTE above) --------
+        ],
+    },
+    {
+        // REVENUE TOOLS — the ad-acquisition cluster (Ad Automation + Funnels + Form
+        // Builder) promoted out of Grow into its OWN top-level section. The whole
+        // group carries `feature_key:"mod.revenue_tools"` so a SUPER-ADMIN can
+        // HIDE/LOCK it for a vendor that shouldn't see the ad tooling: when the
+        // backend /me/entitlements resolves mod.revenue_tools → HIDE, resolveNav
+        // drops the entire section (the same mechanism every keyed group uses).
+        // Each child KEEPS its original page key (grow.ads / grow.funnels /
+        // grow.forms) so per-page entitlements still gate individually. Ad
+        // Automation stays `roles:"manager"` (spend-sensitive). BACKEND DEPENDENCY:
+        // the module-level HIDE/LOCK needs the backend entitlement map to register
+        // `mod.revenue_tools`; until then the group hides only when all three child
+        // page-keys are hidden (which the backend already supports).
+        title: "Revenue Tools",
+        icon: "income",
+        feature_key: "mod.revenue_tools",
+        list: [
             { title: "Ad Automation", href: "/ads", roles: "manager", feature_key: "grow.ads" },
             { title: "Funnels", href: "/funnels", feature_key: "grow.funnels" },
             { title: "Form Builder", href: "/forms", feature_key: "grow.forms" },
@@ -144,8 +152,12 @@ export const navigation = [
         // four REAL routes relabelled per spec: Image / Video / Library / Brand Kit.
         // UNKEYED group (no module gate authored for the suite) so it is always visible;
         // each page self-gates its writes.
+        // ICON FIX — was `icon:"image"`, which is NOT a key in the Icon registry
+        // (components/Icon) → `icons["image"]` is undefined → empty <path> → the
+        // Creative Studio glyph rendered BLANK in the rail. `magic-pencil` (the AI
+        // design wand) is a real registry key and reads as the AI creative engine.
         title: "Creative Studio",
-        icon: "image",
+        icon: "magic-pencil",
         list: [
             { title: "Image", href: "/creative" },
             { title: "Video", href: "/creative/video" },

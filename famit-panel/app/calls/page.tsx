@@ -18,6 +18,7 @@ import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import { useCallsInfinite } from "@/lib/queries";
 import {
     getCallDetail,
+    getCallRecording,
     getCallbacks,
     cancelCallback,
     getSuppression,
@@ -25,6 +26,7 @@ import {
     deleteSuppression,
     type CallLog,
     type CallDetail,
+    type CallRecording,
     type CallbackEntry,
     type CallTranscriptTurn,
     type SuppressionEntry,
@@ -118,7 +120,11 @@ function recordingUrlOf(c?: Partial<CallLog> | null): string | null {
     if (!c) return null;
     const rec = c as Record<string, unknown>;
     const url =
-        rec.recording_url ?? rec.recordingUrl ?? rec.audio_url ?? rec.recording;
+        rec.recording_presigned_url ??
+        rec.recording_url ??
+        rec.recordingUrl ??
+        rec.audio_url ??
+        rec.recording;
     return typeof url === "string" && url.length > 0 ? url : null;
 }
 
@@ -150,6 +156,13 @@ function CallDetailModal({
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
 
+    // The recording is served by a SEPARATE endpoint (GET /calls/{id}/recording)
+    // that mints the presigned player URL — the /calls/{id} detail does NOT carry
+    // it. We fetch it alongside the detail and POLL while it is not yet playable so
+    // the player appears within seconds of the call ending (the .ogg lands in
+    // Spaces almost immediately after hangup, then self-heals on read).
+    const [recording, setRecording] = useState<CallRecording | null>(null);
+
     // Audio playback state drives the karaoke highlight + auto-scroll.
     const audioRef = useRef<HTMLAudioElement>(null);
     const [playhead, setPlayhead] = useState(0);
@@ -161,6 +174,38 @@ function CallDetailModal({
                 setError(e instanceof Error ? e.message : "Failed to load")
             )
             .finally(() => setLoading(false));
+    }, [callId]);
+
+    // Fetch + poll the recording until it is playable (or the modal closes). Once
+    // playable we stop polling. A still-live / just-ended call may take a few
+    // seconds to upload + finalize, so we re-check every 5s up to ~2 min.
+    useEffect(() => {
+        let cancelled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let attempts = 0;
+        const MAX_ATTEMPTS = 24; // ~2 min at 5s
+
+        const tick = () => {
+            getCallRecording(callId)
+                .then((rec) => {
+                    if (cancelled) return;
+                    setRecording(rec);
+                    attempts += 1;
+                    if (!rec.playable && attempts < MAX_ATTEMPTS) {
+                        timer = setTimeout(tick, 5000);
+                    }
+                })
+                .catch(() => {
+                    if (cancelled) return;
+                    attempts += 1;
+                    if (attempts < MAX_ATTEMPTS) timer = setTimeout(tick, 5000);
+                });
+        };
+        tick();
+        return () => {
+            cancelled = true;
+            if (timer) clearTimeout(timer);
+        };
     }, [callId]);
 
     function handleBackdrop(e: React.MouseEvent<HTMLDivElement>) {
@@ -179,7 +224,13 @@ function CallDetailModal({
     const t = detail?.transcript;
     const turns = (t?.turns ?? []) as TimedTurn[];
     const turnCount = turns.length;
-    const recordingUrl = recordingUrlOf(call);
+    // PRIMARY source: the dedicated /calls/{id}/recording presigned URL (polled).
+    // FALLBACK: any URL the detail row happens to carry (belt-and-suspenders).
+    const recordingUrl =
+        (recording?.playable && recording.recording_presigned_url) ||
+        recordingUrlOf(call);
+    // Still waiting on the recording to finalize+upload (call may have just ended).
+    const recordingPending = !recordingUrl && recording != null && !recording.playable;
 
     // Karaoke is available ONLY when we have audio AND every turn carries a
     // numeric t0. Otherwise we render the existing (non-synced) bubble list.
@@ -404,15 +455,24 @@ function CallDetailModal({
                                     </audio>
                                 </div>
                             ) : (
-                                // Recording not (yet) attached to this call.
+                                // Recording not (yet) attached to this call. While
+                                // we are still polling for it (recordingPending) we
+                                // show a calm "preparing" state with a spinner — it
+                                // flips to the player automatically the moment the
+                                // upload + finalize completes (no refresh needed).
                                 !loading && (
                                     <div className="flex items-center gap-2.5 p-3.5 rounded-2xl bg-b-surface1/50 dark:bg-shade-04/20 text-caption text-t-tertiary">
-                                        <Icon
-                                            name="clock"
-                                            className="size-3.5 fill-t-tertiary shrink-0"
-                                        />
-                                        Recording not available yet — it appears
-                                        here automatically once processed.
+                                        {recordingPending ? (
+                                            <span className="size-3.5 shrink-0 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
+                                        ) : (
+                                            <Icon
+                                                name="clock"
+                                                className="size-3.5 fill-t-tertiary shrink-0"
+                                            />
+                                        )}
+                                        {recordingPending
+                                            ? "Preparing recording — it appears here automatically the moment the call audio uploads."
+                                            : "Recording not available yet — it appears here automatically once processed."}
                                     </div>
                                 )
                             )}

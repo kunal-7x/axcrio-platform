@@ -675,6 +675,13 @@ export type RunPayload = {
     // and ignores use_stored/leads. Sent as a comma-separated string for
     // maximum form-field compatibility.
     lead_ids?: string[];
+    // Retention & Storage step — how long the backend keeps the call recording /
+    // transcript. Day counts the backend understands: 0 = don't store (discard at
+    // call end), -1 = keep forever, N = auto-trash after N days. The backend now
+    // accepts these on POST /run (Egress + transcript persistence + auto-delete
+    // sweep). Optional + degrades safely (server ignores unknown fields).
+    recording_retention_days?: number;
+    transcript_retention_days?: number;
 };
 
 export type RunResult = {
@@ -717,6 +724,15 @@ export async function run(
     if (payload.force) fd.append("force", "1");
     if (payload.lead_ids && payload.lead_ids.length > 0)
         fd.append("lead_ids", payload.lead_ids.join(","));
+    // Retention & Storage — persist the founder's recording/transcript retention
+    // choice into the real run payload (0=don't store, -1=forever, N=N-day TTL).
+    // Sent as form fields so the backend's POST /run handler can configure Egress
+    // + transcript persistence + the auto-delete sweep. -1/0 ARE meaningful values
+    // (forever / off), so we forward whenever the field is provided, not just > 0.
+    if (payload.recording_retention_days != null)
+        fd.append("recording_retention_days", String(payload.recording_retention_days));
+    if (payload.transcript_retention_days != null)
+        fd.append("transcript_retention_days", String(payload.transcript_retention_days));
     const res = await fetch(`${BASE}/run`, {
         method: "POST",
         headers: authHeaders(),
@@ -815,6 +831,55 @@ export async function getCallDetail(id: string): Promise<CallDetail> {
     await handle401(res);
     if (!res.ok) throw new Error("Failed to fetch call detail");
     return res.json();
+}
+
+// ---- Call recording (presigned player URL) ----
+// GET /calls/{id}/recording returns the freshly-minted, range-streamable presigned
+// URL for an OUTBOUND call's audio plus availability metadata. The recording lands
+// in DO Spaces seconds after hangup and this endpoint self-heals the URL on read —
+// so the player can appear within seconds of a call ending (we poll for it). The
+// `/calls/{id}` detail endpoint does NOT carry this URL, which is why the Call-Logs
+// modal never showed a player; this is the missing wiring. Dormant-safe: any
+// failure resolves to `{ playable:false }` so the UI shows the calm "preparing"
+// state, never an error wall.
+export type CallRecording = {
+    playable: boolean;
+    recording_presigned_url?: string | null;
+    size_bytes?: number | null;
+    duration_s?: number | null;
+    recording_status?: string | null;
+};
+
+export async function getCallRecording(id: string): Promise<CallRecording> {
+    try {
+        const res = await fetch(
+            `${BASE}/calls/${encodeURIComponent(id)}/recording`,
+            { headers: authHeaders() }
+        );
+        await handle401(res);
+        if (!res.ok) return { playable: false };
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        // Tolerate field drift: the player URL may arrive under any of these keys.
+        const url =
+            (typeof data.recording_presigned_url === "string" && data.recording_presigned_url) ||
+            (typeof data.url === "string" && data.url) ||
+            (typeof data.recording_url === "string" && data.recording_url) ||
+            null;
+        const dur = Number(data.duration_s);
+        return {
+            playable: Boolean(data.playable) || !!url,
+            recording_presigned_url: url,
+            size_bytes:
+                typeof data.size_bytes === "number" ? data.size_bytes : null,
+            duration_s: Number.isFinite(dur) && dur > 0 ? dur : null,
+            recording_status:
+                typeof data.recording_status === "string"
+                    ? data.recording_status
+                    : null,
+        };
+    } catch {
+        return { playable: false }; // offline / route absent -> calm "preparing"
+    }
 }
 
 // ---- Voices ----
@@ -1438,9 +1503,20 @@ export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
     { key: "mod.grow", kind: "module", parent_key: null, label: "Grow", sort_order: 20 },
     { key: "grow.campaigns", kind: "page", parent_key: "mod.grow", label: "Campaigns", nav_href: "/campaigns", sort_order: 21 },
     { key: "grow.campaigns.create", kind: "action", parent_key: "grow.campaigns", label: "Create campaign", sort_order: 22 },
-    { key: "grow.ads", kind: "page", parent_key: "mod.grow", label: "Ad Automation", nav_href: "/ads", sort_order: 23 },
-    { key: "grow.funnels", kind: "page", parent_key: "mod.grow", label: "Funnels", nav_href: "/funnels", sort_order: 24 },
-    { key: "grow.forms", kind: "page", parent_key: "mod.grow", label: "Form Builder", nav_href: "/forms", sort_order: 25 },
+
+    // REVENUE TOOLS — the ad-acquisition cluster (Ad Automation / Funnels / Form
+    // Builder), promoted out of Grow into its OWN module so a super-admin can
+    // HIDE/LOCK the whole section for a vendor that shouldn't see it. The page
+    // KEYS are PRESERVED VERBATIM (grow.ads / grow.funnels / grow.forms) so the
+    // backend's existing per-page entitlement still gates each child; only the
+    // parent module changes (mod.grow → mod.revenue_tools). BACKEND DEPENDENCY:
+    // /me/entitlements must register `mod.revenue_tools` for the module-level
+    // HIDE/LOCK to take effect (until then it resolves permissive "on" and the
+    // group hides only when all three child page-keys are hidden).
+    { key: "mod.revenue_tools", kind: "module", parent_key: null, label: "Revenue Tools", sort_order: 26 },
+    { key: "grow.ads", kind: "page", parent_key: "mod.revenue_tools", label: "Ad Automation", nav_href: "/ads", sort_order: 23 },
+    { key: "grow.funnels", kind: "page", parent_key: "mod.revenue_tools", label: "Funnels", nav_href: "/funnels", sort_order: 24 },
+    { key: "grow.forms", kind: "page", parent_key: "mod.revenue_tools", label: "Form Builder", nav_href: "/forms", sort_order: 25 },
 
     { key: "mod.sell", kind: "module", parent_key: null, label: "Sell", sort_order: 30 },
     { key: "sell.leads", kind: "page", parent_key: "mod.sell", label: "Leads", nav_href: "/leads", sort_order: 31 },

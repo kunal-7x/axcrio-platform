@@ -17,7 +17,7 @@
  * empty/disabled surface renders the calm empty state, never an error-wall.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Search from "@/components/Search";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/Button";
@@ -55,6 +55,10 @@ type LibraryGalleryProps = {
      *  "video"/"image" hides it (the Video Studio reuses this scoped to videos). */
     defaultMediaType?: "all" | "image" | "video";
     lockMediaType?: boolean;
+    /** Bump this (e.g. after an upload) to force a re-fetch of page 0. */
+    reloadToken?: number;
+    /** Optional extra control rendered in the browse-state head (e.g. Upload). */
+    headerExtra?: ReactNode;
 };
 
 // The one-library discriminator (the differentiator — images & videos in ONE wall).
@@ -93,6 +97,8 @@ const LibraryGallery = ({
     showBulk = true,
     defaultMediaType = "all",
     lockMediaType = false,
+    reloadToken,
+    headerExtra,
 }: LibraryGalleryProps) => {
     const [search, setSearch] = useState("");
     const [statusTab, setStatusTab] = useState<TabsOption>(STATUS_TABS[0]);
@@ -154,7 +160,7 @@ const LibraryGallery = ({
             active = false;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [JSON.stringify(baseQuery)]);
+    }, [JSON.stringify(baseQuery), reloadToken]);
 
     const loadMore = async () => {
         const next = offset + PAGE;
@@ -267,6 +273,7 @@ const LibraryGallery = ({
                         value={statusTab}
                         setValue={setStatusTab}
                     />
+                    {headerExtra}
                     <Button isWhite isCircle icon="filters" onClick={() => setFilterOpen(true)} />
                     <Tabs items={VIEW_TABS} value={view} setValue={setView} isOnlyIcon />
                 </div>

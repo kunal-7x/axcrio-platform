@@ -59,8 +59,11 @@ export default function ContactProfilePage() {
     const [timeline, setTimeline] = useState<TimelineRow[]>([]);
     const [recordings, setRecordings] = useState<Recording[]>([]);
     const [recLoading, setRecLoading] = useState(false);
-    // Lazy recordings: only loaded when the user opens the Recordings section.
-    const [recOpen, setRecOpen] = useState(false);
+    // Recordings now AUTO-OPEN so the audio is visible by default — the founder
+    // read the old collapsed "Load recordings" state as "no recording". Fetch
+    // fires as soon as the contact loads (the effect gates on detail?.contact),
+    // so a person's calls play the moment you open their profile.
+    const [recOpen, setRecOpen] = useState(true);
     // Pagination for recordings: start with 10, "Load more" increments.
     const [recLimit, setRecLimit] = useState(10);
 

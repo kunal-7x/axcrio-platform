@@ -16,11 +16,13 @@
 import { useEffect, useMemo, useState } from "react";
 import Layout from "@/components/Layout";
 import Spinner from "@/components/Spinner";
+import Button from "@/components/Button";
 import useAssetStatus from "../_hooks/useAssetStatus";
 import DormantCard from "../_components/DormantCard";
 import LibraryGallery from "../_components/LibraryGallery";
 import AssetDetail from "../_components/AssetDetail";
 import UsePicker from "../_components/UsePicker";
+import UploadAssetModal from "../_components/UploadAssetModal";
 import { getCampaigns, type Campaign } from "@/lib/api";
 import type { SelectOption } from "@/types/select";
 import type { Asset } from "@/lib/assets";
@@ -33,6 +35,10 @@ const Page = () => {
     const [detailOpen, setDetailOpen] = useState(false);
     const [useAsset, setUseAsset] = useState<Asset | null>(null);
     const [usePickerOpen, setUsePickerOpen] = useState(false);
+    // Upload-your-own-media control + a token bumped after a successful upload to
+    // force the gallery to re-fetch so the new asset appears.
+    const [uploadOpen, setUploadOpen] = useState(false);
+    const [reloadToken, setReloadToken] = useState(0);
 
     useEffect(() => {
         getCampaigns()
@@ -72,6 +78,16 @@ const Page = () => {
                         campaignOptions={campaignOptions}
                         onOpen={openDetail}
                         onUse={openUse}
+                        reloadToken={reloadToken}
+                        headerExtra={
+                            <Button
+                                isStroke
+                                icon="upload"
+                                onClick={() => setUploadOpen(true)}
+                            >
+                                Upload
+                            </Button>
+                        }
                     />
                     <AssetDetail
                         asset={detailAsset}
@@ -82,6 +98,12 @@ const Page = () => {
                         asset={useAsset}
                         open={usePickerOpen}
                         onClose={() => setUsePickerOpen(false)}
+                    />
+                    <UploadAssetModal
+                        open={uploadOpen}
+                        onClose={() => setUploadOpen(false)}
+                        onUploaded={() => setReloadToken((n) => n + 1)}
+                        campaignOptions={campaignOptions}
                     />
                 </>
             )}
