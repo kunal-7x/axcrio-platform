@@ -119,6 +119,207 @@ try:
 except Exception:  # noqa: BLE001
     _firewall_mod = None
 
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# W-WIRE-OPS: real-time ops backbone singletons. ALL import-guarded + flag-gated (default OFF).
+# EARNER LAW: these only back the additive seams below; with every flag OFF nothing engages and the
+# resting build is byte-identical. voice_kernel/ + voice_ops/ must be on PYTHONPATH (/opt/famit-agent).
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+
+# ── W8 EventBus singleton (EVENTBUS_ENABLED default OFF — systemd drop-in only) ─────────────────
+try:
+    from voice_kernel.events import EventBusConfig as _EvCfg, RedisEventBus as _RedisEvBus  # type: ignore
+    _EVCFG = _EvCfg.from_env()
+    _EVBUS = _RedisEvBus(_EVCFG) if (_EVCFG and _EVCFG.enabled) else None
+except Exception:  # noqa: BLE001
+    _EVCFG = None
+    _EVBUS = None
+
+async def _ev(make_event):          # noqa: ANN001
+    """Fire-and-forget event emit. No-ops when EVENTBUS_ENABLED is OFF. NEVER raises into the loop."""
+    if _EVBUS is None:
+        return
+    try:
+        await _EVBUS.emit(make_event)
+    except Exception:  # noqa: BLE001
+        pass
+
+def _get_event_bus():
+    """Accessor so the W9 StagedPipeline + W10 cadence reuse the SAME singleton bus."""
+    return _EVBUS
+
+# ── W9 Recording finalize config + providers (RECORDING_FINALIZE_ENABLED default OFF) ───────────
+try:
+    from voice_ops.recording import (    # type: ignore
+        RecordingConfig as _RecCfg, StagedPipeline as _StagedPipeline,
+        EgressClient as _EgressClient, ObjectStorage as _ObjStorage,
+    )
+    from voice_ops.recording.poller import FinalizePoller as _FinalizePoller  # type: ignore
+    _RECCFG = _RecCfg.from_env()
+except Exception:  # noqa: BLE001
+    _RECCFG = None
+
+def _w9_transcript_provider(tenant_id, call_id):   # noqa: ANN001
+    """Bind the W9 pipeline to the transcript file caller already reads (room == call_id outbound)."""
+    try:
+        tr = _read(TRANSCRIPT_DIR / f"{call_id}.json", {})
+    except Exception:  # noqa: BLE001
+        return None
+    if not tr:
+        return None
+    return {"turns": tr.get("turns", []), "text": tr.get("summary", "")}
+
+def _w9_summary_provider(tenant_id, call_id, transcript):  # noqa: ANN001
+    try:
+        tr = _read(TRANSCRIPT_DIR / f"{call_id}.json", {})
+    except Exception:  # noqa: BLE001
+        return None
+    if not tr.get("summary") and not tr.get("outcome"):
+        return None
+    return {
+        "summary": tr.get("summary", ""),
+        "lifecycle": tr.get("outcome", ""),
+        "conversion_prob": tr.get("interest"),
+    }
+
+# ── W14 Reporting service (REPORTING_ENABLED default OFF) ────────────────────────────────────────
+# ReportingConfig reads NO env, so the enabled flag is read here from REPORTING_ENABLED. The query
+# API works against an empty in-mem store (dashboard sees zeros, never an error). A separate consumer
+# worker (NOT in this process) fills the store from the W8 stream.
+try:
+    from voice_ops.reporting import (    # type: ignore
+        ReportingStore as _RepStore, ReportingConfig as _RepCfg, ReportingService as _RepSvc,
+    )
+    _REPORTING_ON = (cfg_get("REPORTING_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+    if _REPORTING_ON:
+        _REPCFG = _RepCfg(enabled=True)
+        _REPSTORE = _RepStore()
+        _REPSVC = _RepSvc(_REPSTORE, _REPCFG)
+    else:
+        _REPCFG = None; _REPSTORE = None; _REPSVC = None
+except Exception:  # noqa: BLE001
+    _REPCFG = None; _REPSTORE = None; _REPSVC = None
+
+# ── W14-WIRE: read-model bridge (caller.py /report* <- the SAME W8 stream the worker reads) ───────
+# ROOT-CAUSE FIX (dashboard zeros): the reporting WORKER fills a ReportingStore in a SEPARATE process;
+# this API process had its OWN empty in-mem store -> /report returned zeros. We bridge by REPLAYING the
+# per-tenant Redis stream `vk:events:{tenant}` (read-only XRANGE, no consumer group => zero interference
+# with the worker) into THIS process's _REPSTORE via the SAME reducer the worker uses, on each query.
+# Idempotent (the reducer is latest-wins on call_id) + per-tenant last-id cached so a repeat query only
+# replays new entries. Fail-safe: on any error we leave the store as-is (the old empty-store behavior,
+# never a 500). Bounded scan so a huge backlog can't stall a request.
+_REP_LAST_ID: dict = {}          # tenant_id -> last XRANGE stream id replayed
+_REP_REDIS = None                # cached sync redis client (lazy)
+_REP_HYDRATE_MAX = 5000          # max entries replayed per query (bounded; reducer is latest-wins)
+try:
+    from voice_kernel.events import serde as _vk_serde            # type: ignore
+    from voice_ops.reporting import build_consumer_handler as _rep_build_handler  # type: ignore
+    _REP_HANDLER = _rep_build_handler(_REPSTORE) if _REPSTORE is not None else None
+except Exception:  # noqa: BLE001
+    _vk_serde = None
+    _REP_HANDLER = None
+
+
+def _rep_redis():
+    """Lazy SYNC redis client on the SAME bus url as the W8 emit. None if unavailable."""
+    global _REP_REDIS
+    if _REP_REDIS is not None:
+        return _REP_REDIS
+    if _EVCFG is None:
+        return None
+    try:
+        import redis as _r  # type: ignore  # noqa: PLC0415
+        _REP_REDIS = _r.from_url(_EVCFG.url, socket_timeout=2.0, socket_connect_timeout=2.0)
+        return _REP_REDIS
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rep_xrange(stream: str, start_id: str):
+    """Blocking XRANGE (start exclusive) -> list[(id, fields)]. Empty on any error."""
+    rc = _rep_redis()
+    if rc is None:
+        return []
+    try:
+        return rc.xrange(stream, min=start_id, max="+", count=_REP_HYDRATE_MAX)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def _w14_hydrate(tenant_id: str) -> None:
+    """Replay any NEW `vk:events:{tenant}` entries into THIS process's _REPSTORE so /report* serves
+    LIVE numbers. Read-only, no consumer group, fail-safe, bounded. No-op when reporting is off."""
+    if _REPSTORE is None or _REP_HANDLER is None or _vk_serde is None or _EVCFG is None or not tenant_id:
+        return
+    try:
+        stream = _EVCFG.stream_for(tenant_id)
+    except Exception:  # noqa: BLE001
+        return
+    last = _REP_LAST_ID.get(tenant_id, "0-0")
+    # XRANGE min is INCLUSIVE; use "(" to make it exclusive of the last id we already replayed.
+    start = "(" + last if last != "0-0" else "0-0"
+    try:
+        entries = await asyncio.to_thread(_rep_xrange, stream, start)
+    except Exception:  # noqa: BLE001
+        return
+    for _id, fields in entries or []:
+        try:
+            ev = _vk_serde.decode(fields)
+            await _REP_HANDLER(ev)          # reduce+upsert onto the in-proc read-model (never raises)
+            _REP_LAST_ID[tenant_id] = _id.decode() if isinstance(_id, (bytes, bytearray)) else str(_id)
+        except Exception:  # noqa: BLE001 — one bad entry must never fail the query
+            continue
+
+# ── W14b AI-Manager live-data service (rides the SAME reporting store) ───────────────────────────
+try:
+    from voice_ops.ai_manager_live import AIManagerLiveService as _AIMLiveSvc  # type: ignore
+    _AIM_LIVE = _AIMLiveSvc(_REPSVC) if _REPSVC is not None else None
+except Exception:  # noqa: BLE001
+    _AIM_LIVE = None
+
+# ── W7 Lead lifecycle + AI summary (LEAD_LIFECYCLE_ENABLED default OFF) ──────────────────────────
+_LEAD_LIFECYCLE_ON = (cfg_get("LEAD_LIFECYCLE_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+try:
+    from voice_kernel.memory.lifecycle import classify_lifecycle as _vk_classify_lifecycle  # type: ignore
+    from voice_kernel.packet import Lifecycle as _VKLifecycle  # type: ignore
+except Exception:  # noqa: BLE001
+    _vk_classify_lifecycle = None
+    _VKLifecycle = None
+
+# ── W10 Smart callback cadence (CALLBACK_CADENCE_ENABLED default OFF; anti-runaway) ─────────────
+try:
+    from voice_ops.callback import (    # type: ignore
+        CallbackConfig as _CbCfg, InMemoryCallbackStore as _CbStore,
+        enqueue_smart as _cb_enqueue_smart, fire_due as _cb_fire_due, release as _cb_release,
+    )
+    _CB_CFG = _CbCfg.from_env()
+    _CB_STORE = _CbStore() if (_CB_CFG and _CB_CFG.enabled) else None
+except Exception:  # noqa: BLE001
+    _CB_CFG = None
+    _CB_STORE = None
+    _cb_enqueue_smart = None
+    _cb_fire_due = None
+    _cb_release = None
+
+# ── NCPR / DND scrub-before-dial (W26 compliance; R4 A2) ─────────────────────────────────────────
+# An ADDITIONAL pre-dial compliance gate on the cadence dial path: scrub every due number against the
+# NCPR national DND register before dialing (on top of the always-on local opt-out / suppression
+# check already in the fire_due seam). DndScrubber is FAIL-CLOSED (a cache miss BLOCKS) — so with an
+# empty NCPR cache it would block EVERY dial. Therefore it is gated behind CALLBACK_NCPR_SCRUB_ENABLED
+# (default OFF): only the founder flips it ON once the NCPR cache is being populated by the scrub job.
+# The local-suppression check stays always-on regardless of this flag.
+_NCPR_SCRUB_ENABLED = (cfg_get("CALLBACK_NCPR_SCRUB_ENABLED", "0") or "0").strip().lower() \
+    in ("1", "true", "yes", "on")
+try:
+    from voice_ops.compliance.dnd import DndScrubber as _DndScrubber  # type: ignore
+    _NCPR_SCRUBBER = _DndScrubber(
+        salt=(cfg_get("DND_HASH_SALT", "") or ""),
+        refresh_days=int(cfg_get("DND_REFRESH_DAYS", "30") or "30"),
+    ) if _NCPR_SCRUB_ENABLED else None
+except Exception:  # noqa: BLE001
+    _DndScrubber = None
+    _NCPR_SCRUBBER = None
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+
 # CRM CORE: contact spine + unified timeline + next-best-action (import-safe; PG-native projection).
 # A read-model/intent layer over the existing leads/calls/wa/suppression/events stores — NEVER a second
 # writer of core records, NEVER on the voice run-path. Degrades to empty shapes when PG is absent.
@@ -292,6 +493,13 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 def now_ist() -> datetime:
     return datetime.now(IST)
+
+
+def _utc_iso() -> str:
+    """W14-WIRE: UTC wall-clock ISO, tz-LABELLED (+00:00) so the panel parses call times correctly.
+    The box runs UTC, so the instant is unchanged vs the old naive datetime.now(); we only ADD the
+    offset label that was missing (old `started_at`/`ended_at` were unlabelled -> mis-parsed as local)."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 app = FastAPI()
@@ -1607,6 +1815,54 @@ async def _update_lead_after_call(tenant_id: str, phone: str, score, outcome: st
             _write(LEADS_FILE, store)
 
 
+async def _w7_lifecycle_after_call(tenant_id: str, rec: dict, tr: dict, outcome: str, score: int):
+    """W7 (LEAD_LIFECYCLE_ENABLED): after each call, classify the lead lifecycle
+    (hot/warm/cold/dead) via the deterministic FSM + stamp an AI summary + next action
+    onto the lead record so the CRM updates after every call. Pure-Python classify (no PG
+    dependency); NEVER raises into finalize. Additive: only WRITES new fields
+    (lifecycle/ai_summary/next_action/conversion_prob), never regresses existing outcome/score."""
+    if _vk_classify_lifecycle is None or _VKLifecycle is None:
+        return
+    phone = norm(rec.get("phone", ""))
+    if not phone:
+        return
+    # Map this call's observed signals onto the FSM inputs.
+    booked = bool(tr.get("booked") or tr.get("appointment") or outcome in ("booked", "converted"))
+    handoff = score >= 70
+    dead = bool(tr.get("opt_out") or outcome == "opt_out")
+    had_commitment = bool(tr.get("callback_at") or tr.get("commitment") or outcome == "callback")
+    had_objection = bool(tr.get("objection") or tr.get("objections"))
+    engaged = outcome in _REAL_CONVO or bool(tr.get("summary"))
+    try:
+        prior_val = _VKLifecycle.NEW
+    except Exception:  # noqa: BLE001
+        prior_val = None
+    async with _STORE_LOCK:
+        store = _read(LEADS_FILE, [])
+        changed = False
+        for x in store:
+            if x.get("tenant_id", ADMIN_ID) == tenant_id and norm(x.get("phone", "")) == phone:
+                try:
+                    prior = _VKLifecycle(x.get("lifecycle", "new")) if x.get("lifecycle") else prior_val
+                except Exception:  # noqa: BLE001
+                    prior = prior_val
+                new_lc = _vk_classify_lifecycle(
+                    prior=prior, booked=booked, handoff=handoff, dead=dead,
+                    had_objection=had_objection, had_commitment=had_commitment, engaged=engaged)
+                x["lifecycle"] = getattr(new_lc, "value", str(new_lc))
+                summ = (tr.get("summary", "") or "")[:300]
+                if summ:
+                    x["ai_summary"] = summ
+                na = (tr.get("next_action", "") or "")
+                if na:
+                    x["next_action"] = na
+                x["conversion_prob"] = round((int(score or 0)) / 100.0, 3)
+                x["lifecycle_at"] = datetime.now().isoformat(timespec="seconds")
+                changed = True
+        if changed:
+            _write(LEADS_FILE, store)
+
+
 # ---------- P0.7 usage metering ----------
 def _tenant_usage(tenant_id: str, since_iso: str) -> dict:
     rows = [c for c in CALLS if c.get("tenant_id") == tenant_id and c.get("started_at", "") >= since_iso]
@@ -2719,7 +2975,7 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
     if not rec:
         return
     rec["status"] = "done"
-    rec["ended_at"] = datetime.now().isoformat(timespec="seconds")
+    rec["ended_at"] = _utc_iso()  # W14-WIRE: tz-labelled UTC so the panel renders the right time
     rec["duration_s"] = int(now_t - it["launched_at"])
     room = rec.get("room", "")
     tr = _read(TRANSCRIPT_DIR / f"{room}.json", {}) if room else {}
@@ -2734,11 +2990,49 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
     rec["interest"] = tr.get("interest", 0)               # P0.6 surface score on call rec
     async with _STORE_LOCK:
         _write(CALLS_FILE, CALLS)
+    # ── W9 recording finalize-poll (RECORDING_FINALIZE_ENABLED) -> recording appears in SECONDS ──
+    # DETACHED task: polls LiveKit ListEgress to completion, flips recording_status -> "completed",
+    # emits recording_ready/transcript_ready/summary_ready IN ORDER. Never blocks/raises into the loop.
+    if _RECCFG is not None and _RECCFG.enabled:
+        try:
+            _bus_w9 = _get_event_bus()
+            _storage_w9 = _ObjStorage(_RECCFG)
+            _poller_w9 = _FinalizePoller(_RECCFG, bus=_bus_w9,
+                                         egress=_EgressClient(), storage=_storage_w9)
+            _pipe_w9 = _StagedPipeline(
+                _RECCFG, bus=_bus_w9, poller=_poller_w9,
+                transcript_provider=_w9_transcript_provider,
+                summary_provider=_w9_summary_provider,
+            )
+            asyncio.create_task(_pipe_w9.run(
+                call_id=cid, tenant_id=tenant_id,
+                room_name=rec.get("room", cid) or cid, direction="outbound",
+            ))
+        except Exception as _w9_exc:  # noqa: BLE001
+            try:
+                import logging as _lg_w9
+                _lg_w9.getLogger("w9.finalize").warning(
+                    "W9 finalize schedule failed (non-fatal): %r", _w9_exc)
+            except Exception:  # noqa: BLE001
+                pass
     # WAVE3 Unit4: bill this completed call (ledger + prepaid balance). Best-effort.
     await _charge_call(tenant_id, rec)
     # P0.6 lead scoring
     await _update_lead_after_call(tenant_id, rec.get("phone", ""), tr.get("interest", 0), outcome,
                                   call_at=rec.get("started_at", ""))
+    # R5P4-2 (ADDITIVE): UPSERT this caller into the CRM contacts store so a freshly-called number is
+    # NEVER "(unknown)" in the CRM (the finalize path only wrote leads.json before; crm.upsert_contact
+    # had ZERO callers). Idempotent on (org, phone); name only overwrites a blank, so a manual rename is
+    # preserved. Off the event loop, best-effort — a PG-down / missing-phone case returns None and the
+    # call finalize proceeds untouched. NEVER raises into the finalize path.
+    try:
+        _crm_phone = rec.get("phone", "") or ""
+        _crm_name = (rec.get("name", "") or "").strip()
+        if _crm_mod is not None and _crm_phone:
+            await asyncio.to_thread(
+                lambda: _crm_mod.upsert_contact(tenant_id, _crm_phone, name=_crm_name))
+    except Exception:  # noqa: BLE001 — a CRM write can NEVER break call finalize
+        pass
     # P0.3 opt-out -> auto-suppress + flip lead
     if tr.get("opt_out") or tr.get("outcome") == "opt_out":
         rec["outcome"] = "opt_out"; rec["answered"] = True
@@ -2748,26 +3042,62 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
             _write(CALLS_FILE, CALLS)
         await _emit_webhook(tenant_id, "lead.opted_out",
                             {"phone": rec.get("phone"), "campaign_id": cid})
+        # W8: opt-out -> lead dead + call ended events
+        try:
+            import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+            await _ev(_vke.lead_classified(rec.get("id", ""), tenant_id, "dead"))
+            await _ev(_vke.call_ended(rec.get("id", ""), tenant_id, duration_s=rec.get("duration_s", 0)))
+        except Exception:  # noqa: BLE001
+            pass
     else:
-        # P0.5 retry / callback enqueue (only when not opted out)
-        maxa = int((camp_fields or {}).get("retry_max_attempts", 3))
-        backoff = (camp_fields or {}).get("retry_backoff_mins") or [120, 360, 1440]
-        attempts = int(it.get("attempt", 0))
-        cb = tr.get("callback_at")
-        if cb:
-            await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
-                                 attempts, maxa, cb, "callback")
-            await _emit_webhook(tenant_id, "callback.scheduled",
-                                {"phone": rec.get("phone"), "campaign_id": cid,
-                                 "name": rec.get("name", ""), "when": cb,
-                                 "callback_raw": tr.get("callback_raw", "")})
-        elif outcome in ("no_answer", "voicemail", "busy") and attempts < maxa:
-            delay = backoff[min(attempts, len(backoff) - 1)]
-            next_at = _clamp_to_window(now_ist() + timedelta(minutes=delay), camp_fields)
-            await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
-                                 attempts + 1, maxa, next_at.isoformat(), outcome)
+        # ── W10 smart callback cadence (CALLBACK_CADENCE_ENABLED): when ON it OWNS the enqueue
+        #    (anti-runaway: outcome-guarded, monotonic attempts, dedup, DND). The legacy flat-file
+        #    enqueue below is SKIPPED only when the cadence engine is armed -> reversible by flag.
+        _cb_owned = False
+        if _CB_STORE is not None and _cb_enqueue_smart is not None:
+            try:
+                await _cb_enqueue_smart(
+                    tenant_id, cid, rec, tr, outcome,
+                    int(it.get("attempt", 0)), camp_fields,
+                    store=_CB_STORE, config=_CB_CFG, bus=_get_event_bus(),
+                )
+                _cb_owned = True
+            except Exception:  # noqa: BLE001 — an enqueue can NEVER break the call-finalize path
+                _cb_owned = False
+        if not _cb_owned:
+            # P0.5 retry / callback enqueue (only when not opted out) — LEGACY path (flag OFF)
+            maxa = int((camp_fields or {}).get("retry_max_attempts", 3))
+            backoff = (camp_fields or {}).get("retry_backoff_mins") or [120, 360, 1440]
+            attempts = int(it.get("attempt", 0))
+            cb = tr.get("callback_at")
+            if cb:
+                await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
+                                     attempts, maxa, cb, "callback")
+                await _emit_webhook(tenant_id, "callback.scheduled",
+                                    {"phone": rec.get("phone"), "campaign_id": cid,
+                                     "name": rec.get("name", ""), "when": cb,
+                                     "callback_raw": tr.get("callback_raw", "")})
+                # W8: callback scheduled event
+                try:
+                    import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+                    await _ev(_vke.callback_scheduled(rec.get("id", ""), tenant_id, preferred_ts=cb))
+                except Exception:  # noqa: BLE001
+                    pass
+            elif outcome in ("no_answer", "voicemail", "busy") and attempts < maxa:
+                delay = backoff[min(attempts, len(backoff) - 1)]
+                next_at = _clamp_to_window(now_ist() + timedelta(minutes=delay), camp_fields)
+                await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
+                                     attempts + 1, maxa, next_at.isoformat(), outcome)
     # P1.A WhatsApp + P1.C webhook (fire-and-forget; never block)
     await _send_whatsapp(tenant_id, rec, rec["outcome"], camp_fields)
+    # W8: whatsapp_sent event (optimistic; mirrors the webhook pattern — a later wave can gate on
+    # the _send_whatsapp return value). Skip on opt-out (no follow-up is sent).
+    if rec.get("outcome") not in ("opt_out",):
+        try:
+            import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+            await _ev(_vke.whatsapp_sent(rec.get("id", ""), tenant_id, template=rec.get("outcome", "")))
+        except Exception:  # noqa: BLE001
+            pass
     # WAVE A2: AI-drafted context-aware follow-up (gated by per-campaign wa_followup
     # flag + configured WA env). Falls back to the WAVE3 template path when dormant or
     # when no free-form (Meta) text path is available.
@@ -2785,6 +3115,27 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                          "outcome": rec["outcome"], "interest": _score, "score": _score,
                          "summary": tr.get("summary", ""), "next_action": tr.get("next_action", ""),
                          "duration_s": rec.get("duration_s", 0), "room": room})
+    # W8: call_ended + summary_ready (rich payload -> W14 reducer builds the FactCall the dashboard reads)
+    try:
+        import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+        await _ev(_vke.call_ended(rec.get("id", ""), tenant_id, duration_s=rec.get("duration_s", 0)))
+        await _ev(_vke.summary_ready(
+            rec.get("id", ""), tenant_id,
+            lifecycle=rec.get("outcome", ""),
+            conversion_prob=(_score / 100.0),
+            summary=tr.get("summary", ""),
+            next_action=tr.get("next_action", ""),
+            lead_name=rec.get("name", ""),
+            campaign_id=cid,
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+    # ── W7 post-call lead lifecycle + AI summary (LEAD_LIFECYCLE_ENABLED) -> CRM updates after each call
+    if _LEAD_LIFECYCLE_ON and rec.get("outcome") != "opt_out":
+        try:
+            await _w7_lifecycle_after_call(tenant_id, rec, tr, outcome, _score)
+        except Exception:  # noqa: BLE001 — lifecycle enrichment can NEVER break finalize
+            pass
     # WAVE3 Unit2: lead.qualified on a high-interest, real conversation
     if rec["outcome"] != "opt_out" and _score >= 70:
         await _emit_webhook(tenant_id, "lead.qualified",
@@ -2792,6 +3143,13 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                              "name": rec.get("name", ""), "campaign_id": cid,
                              "score": _score, "outcome": rec["outcome"],
                              "summary": tr.get("summary", "")})
+        # W8: lead classified HOT
+        try:
+            import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+            await _ev(_vke.lead_classified(rec.get("id", ""), tenant_id, "hot",
+                                           conversion_prob=(_score / 100.0)))
+        except Exception:  # noqa: BLE001
+            pass
         # BUILD#6: HOT-LEAD -> TEAM WHATSAPP. Notify the vendor's handoff team (lead phone +
         # call summary) so a human can take over a hot lead. Reuses whatsapp.py; no-ops if no
         # handoff team or WA dormant. Fire-and-forget, never blocks/raises into the call loop.
@@ -2800,6 +3158,12 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                 tenant_id,
                 {"name": rec.get("name", ""), "phone": rec.get("phone", "")},
                 summary=tr.get("summary", ""), score=_score)
+            # W8: handoff requested
+            try:
+                import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+                await _ev(_vke.handoff_requested(rec.get("id", ""), tenant_id, reason="hot_lead"))
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
             _lg_handoff.warning("hot-lead notify_handoff_team failed: %r", exc)
 
@@ -2914,8 +3278,8 @@ async def run_job(job_id: str) -> None:
                                  "name": it.get("name", ""), "phone": num,
                                  "campaign_id": cid, "campaign_name": cname, "status": "suppressed",
                                  "outcome": "suppressed", "answered": False,
-                                 "started_at": datetime.now().isoformat(timespec="seconds"),
-                                 "ended_at": datetime.now().isoformat(timespec="seconds"),
+                                 "started_at": _utc_iso(),  # W14-WIRE: tz-labelled UTC
+                                 "ended_at": _utc_iso(),    # W14-WIRE: tz-labelled UTC
                                  "duration_s": 0, "room": ""})
                     continue
                 # P0.7 per-tenant concurrency cap (stacks under per-job concurrency)
@@ -2954,11 +3318,17 @@ async def run_job(job_id: str) -> None:
                         wait_until_answered=False, ringing_timeout=Duration(seconds=45)))
                     _sip_call_id = (getattr(_sip_resp, "sip_call_id", "") or "").strip()
                     it["status"] = "calling"; it["room"] = room; it["launched_at"] = time.time()
+                    # W8: call_started event (detached; fire-and-forget; no-op when EVENTBUS off)
+                    try:
+                        import voice_kernel.events as _vke  # type: ignore  # noqa: PLC0415
+                        asyncio.create_task(_ev(_vke.call_started(_call_id, tenant_id, campaign_id=cid)))
+                    except Exception:  # noqa: BLE001
+                        pass
                     rec = {"id": _call_id, "tenant_id": tenant_id,
                            "name": it.get("name", ""), "phone": num,
                            "campaign_id": cid, "campaign_name": cname, "status": "calling",
                            "variant_id": v_id, "variant_label": v_label,
-                           "started_at": datetime.now().isoformat(timespec="seconds"),
+                           "started_at": _utc_iso(),  # W14-WIRE: tz-labelled UTC
                            "ended_at": "", "duration_s": 0, "room": room,
                            "sip_call_id": _sip_call_id,
                            # REC-B server-side auto-egress handle (additive). egress_id is assigned
@@ -2976,7 +3346,7 @@ async def run_job(job_id: str) -> None:
                     record_call({"id": uuid.uuid4().hex[:10], "tenant_id": tenant_id,
                                  "name": it.get("name", ""), "phone": num,
                                  "campaign_id": cid, "campaign_name": cname, "status": "failed",
-                                 "started_at": datetime.now().isoformat(timespec="seconds"),
+                                 "started_at": _utc_iso(),  # W14-WIRE: tz-labelled UTC
                                  "ended_at": "", "duration_s": 0})
             await asyncio.sleep(4)
         job["state"] = "done"
@@ -3689,7 +4059,8 @@ async def kb_gaps(request: Request, days: int = 30, limit: int = 50):
 # ============================================================================
 @app.get("/contacts")
 async def contacts_list(request: Request, stage: str = "", hot: str = "", q: str = "",
-                        segment: str = "", sort: str = "last_activity_at", limit: int = 100):
+                        segment: str = "", sort: str = "last_activity_at", limit: int = 100,
+                        sort_by: str = "", order: str = ""):
     """List/filter/segment contacts for the caller's org. {contacts:[...], total}."""
     t = resolve_tenant(request)
     if not t:
@@ -3701,10 +4072,37 @@ async def contacts_list(request: Request, stage: str = "", hot: str = "", q: str
         hot_f = True
     elif str(hot).lower() in ("0", "false", "no"):
         hot_f = False
+    # R5P4-3 (ADDITIVE): the panel CRM sends sort_by + order. crm.list_contacts only sorts on
+    # score|stage|last_activity_at, so translate the FE column to that vocabulary (temperature/score
+    # -> score; stage -> stage; everything else -> last_activity_at), pass it as `sort`, and then apply
+    # `order` + the FE-only columns (name/last_outcome) as a stable post-sort on the returned rows.
+    _sb = (sort_by or "").strip().lower()
+    if _sb:
+        sort = {"temperature": "score", "score": "score", "stage": "stage",
+                "last_activity_at": "last_activity_at"}.get(_sb, "last_activity_at")
     res = await asyncio.to_thread(
         lambda: _crm_mod.list_contacts(t["tenant_id"], stage=stage, hot=hot_f, q=q, sort=sort,
                                        limit=max(1, min(int(limit or 100), 1000)),
                                        is_admin=bool(t.get("is_admin"))))
+    if _sb and isinstance(res, dict) and isinstance(res.get("contacts"), list):
+        _desc = (order or "").strip().lower() != "asc"
+
+        def _ck(c):  # noqa: ANN001
+            if _sb in ("score", "temperature"):
+                return int(c.get("score") or 0)
+            if _sb == "name":
+                return (c.get("name", "") or "").lower()
+            if _sb in ("stage",):
+                return (c.get("stage", "") or "").lower()
+            if _sb in ("campaign",):
+                return (c.get("campaign_id") or c.get("campaign") or "").lower()
+            if _sb in ("last_outcome",):
+                return (c.get("last_outcome", "") or "").lower()
+            return (c.get("last_activity_at") or "") or ""
+        try:
+            res["contacts"] = sorted(res["contacts"], key=_ck, reverse=_desc)
+        except Exception:  # noqa: BLE001 — a sort hiccup never drops the list
+            pass
     return JSONResponse(res)
 
 
@@ -3735,7 +4133,35 @@ async def contacts_get(request: Request, phone: str):
             lambda: _crm_mod.get_timeline(org, c["id"], limit=50, is_admin=adm))
     tl = tl_full[:50]
     nba = await asyncio.to_thread(lambda: _crm_mod.next_best_action(org, c, timeline=tl, is_admin=adm))
-    return JSONResponse({"contact": c, "timeline": tl, "nba": nba})
+    # REC-FIX: attach this lead's recordings (UNIFIED, both directions, newest-first) directly on the
+    # profile so the CRM lead page shows the player URL the moment the object exists — no separate lazy
+    # "Load recordings" fetch needed. Reuses the proven /contacts/{phone}/recordings shaper (HEAD-verify
+    # + presign + stuck-status self-heal). Tenant-pinned (RLS inbound / tenant filter outbound). NEVER
+    # raises -> a degraded recordings side returns [] and the profile still renders.
+    recs: list[dict] = []
+    try:
+        phone_n = norm(c.get("phone", "") or phone) or (c.get("phone", "") or phone or "")
+        def _lead_recs() -> list[dict]:
+            out: list[dict] = []
+            try:
+                for cc in calls_for(t):
+                    cp = cc.get("phone", "") or ""
+                    if norm(cp) == phone_n or cp == phone_n:
+                        out.append(_outbound_rec_item(cc))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                out.extend(_inbound_rec_items(org, phone_n))
+            except Exception:  # noqa: BLE001
+                pass
+            out.sort(key=lambda x: (x.get("started_at", "") or ""), reverse=True)
+            return out
+        recs = await asyncio.to_thread(_lead_recs)
+    except Exception:  # noqa: BLE001
+        recs = []
+    n_play = sum(1 for x in recs if x.get("playable"))
+    return JSONResponse({"contact": c, "timeline": tl, "nba": nba,
+                         "recordings": recs, "recordings_playable": n_play})
 
 
 @app.get("/contacts/{phone}/timeline")
@@ -4033,6 +4459,98 @@ async def extract(request: Request, brief: str = Form("")):
     if not authed(request):
         return need_auth()
     return JSONResponse(extract_fields(brief or ""))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# BRAND KITS — tenant-scoped persistence for the Creative Studio brand page (R4 A5)
+# ════════════════════════════════════════════════════════════════════════════
+# The panel brand page (app/assets) binds /api/assets/brand-kits -> this backend /brand-kits.
+# Before R4 there was NO backend, so "save brand kit" silently dropped. Persisted as a tenant-scoped
+# JSON file (var/brand_kits/<tenant>.json) — same control-plane pattern as ai-manager sessions /
+# tenants: NO PG, NO DDL, byte-identical-when-untouched, fully isolated per tenant (the file path IS
+# the tenant boundary; tenant_id comes ONLY from the token via resolve_tenant, never a body field).
+_BRAND_KITS_DIR = VAR / "brand_kits"
+
+
+def _brand_kits_path(tenant_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(tenant_id or "")) or "unknown"
+    return _BRAND_KITS_DIR / f"{safe}.json"
+
+
+def _read_brand_kits(tenant_id: str) -> list:
+    data = _read(_brand_kits_path(tenant_id), [])
+    return data if isinstance(data, list) else []
+
+
+@app.get("/brand-kits")
+async def brand_kits_list(request: Request):
+    """List the calling tenant's saved brand kits. Tenant derived from token ONLY."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    return JSONResponse({"brand_kits": _read_brand_kits(t["tenant_id"])})
+
+
+@app.post("/brand-kits")
+async def brand_kits_save(request: Request):
+    """Create or update a brand kit for the calling tenant. Body is a JSON brand-kit object
+    (name, colors, fonts, logo_url, voice/tone, etc.). If it carries an `id` that already exists
+    the kit is UPDATED in place; otherwise a new one is appended with a fresh id. The org_id is
+    SERVER-DERIVED from the token (never trusted from the body)."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden()
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "reason": "bad_body"}, status_code=400)
+    tenant_id = t["tenant_id"]
+    kits = _read_brand_kits(tenant_id)
+    now_iso = now_ist().isoformat()
+    kit = {k: v for k, v in body.items() if k != "tenant_id"}  # never let body set tenant
+    kid = str(kit.get("id") or "").strip()
+    if kid:
+        found = False
+        for i, k in enumerate(kits):
+            if str(k.get("id")) == kid:
+                kit["created_at"] = k.get("created_at", now_iso)
+                kit["updated_at"] = now_iso
+                kits[i] = kit
+                found = True
+                break
+        if not found:
+            kit["created_at"] = kit["updated_at"] = now_iso
+            kits.append(kit)
+    else:
+        kit["id"] = f"bk_{uuid.uuid4().hex[:12]}"
+        kit["created_at"] = kit["updated_at"] = now_iso
+        kits.append(kit)
+    async with _STORE_LOCK:
+        _BRAND_KITS_DIR.mkdir(parents=True, exist_ok=True)
+        _write(_brand_kits_path(tenant_id), kits)
+    return JSONResponse({"ok": True, "brand_kit": kit})
+
+
+@app.delete("/brand-kits/{kit_id}")
+async def brand_kits_delete(request: Request, kit_id: str):
+    """Delete one of the calling tenant's brand kits by id. Tenant-scoped + write-gated."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if not can(t, "write"):
+        return _forbidden()
+    tenant_id = t["tenant_id"]
+    kits = _read_brand_kits(tenant_id)
+    remaining = [k for k in kits if str(k.get("id")) != str(kit_id)]
+    if len(remaining) == len(kits):
+        return JSONResponse({"ok": True, "status": "noop", "reason": "not_found"})
+    async with _STORE_LOCK:
+        _write(_brand_kits_path(tenant_id), remaining)
+    return JSONResponse({"ok": True, "deleted": kit_id})
 
 
 # === PVS PHASE-1 (provider+voice switcher) === ADDITIVE; agent.py/trunks/firewall/SIP untouched.
@@ -4818,7 +5336,7 @@ def _resolve_audience(t: dict, *, source_mode: str = "", lead_ids: str = "",
 
 @app.get("/leads")
 async def get_leads(request: Request, hot: str = "", sort: str = "",
-                    limit: int = 0, offset: int = 0):
+                    limit: int = 0, offset: int = 0, sort_by: str = "", order: str = ""):
     """Leads. Backward-compatible: with NO limit (the current FE) it returns ALL leads as
     `{leads:[...]}` exactly as before. Pagination is opt-in via limit/offset, and the
     response ALWAYS now also carries total/offset/limit/next so the FE can paginate.
@@ -4829,21 +5347,61 @@ async def get_leads(request: Request, hot: str = "", sort: str = "",
     rows = _leads_for(t)
     if hot:
         rows = [x for x in rows if (x.get("score", 0) or 0) >= 70]
+    # W14-WIRE: apply the filters the panel forwards (from/to/campaign_id/status/batch). The route used
+    # to DROP these (the panel sent them, caller ignored them) -> the dashboard's filtered lead views
+    # silently showed everything. All optional; absent -> unchanged behavior.
+    qp = request.query_params
+    _lfrm = (qp.get("from_") or qp.get("from") or "").strip()
+    _lto = (qp.get("to_") or qp.get("to") or "").strip()
+    _lcamp = (qp.get("campaign_id") or qp.get("campaign") or "").strip()
+    _lstatus = (qp.get("status") or "").strip().lower()
+    _lbatch = (qp.get("batch") or qp.get("batch_id") or "").strip()
+    if _lfrm:
+        rows = [x for x in rows if (x.get("added_at") or "") >= _lfrm]
+    if _lto:
+        rows = [x for x in rows if (x.get("added_at") or "") <= (_lto + "T23:59:59+00:00")]
+    if _lcamp:
+        rows = [x for x in rows if str(x.get("campaign_id", "")) == _lcamp]
+    if _lbatch:
+        rows = [x for x in rows if str(x.get("batch_id", "")) == _lbatch]
+    if _lstatus:
+        if _lstatus in ("hot", "warm", "cold", "dead"):   # temperature band (matches /crm?status=hot)
+            _lo, _hi = {"hot": (70, 1000), "warm": (40, 69), "cold": (1, 39), "dead": (0, 0)}[_lstatus]
+            rows = [x for x in rows if _lo <= (x.get("score", 0) or 0) <= _hi]
+        else:                                              # literal lead status (new/contacted/...)
+            rows = [x for x in rows if (x.get("status", "") or "").lower() == _lstatus]
     # Sort selector (additive; default = newest-first by added_at, latest->oldest).
-    # Accepts: "" / "recent" -> created_at DESC; "oldest" -> created_at ASC;
+    # Accepts the legacy `sort`: "" / "recent" -> created_at DESC; "oldest" -> created_at ASC;
     # "name" -> A->Z; "status" -> status A->Z then newest; "score" -> high->low.
-    s = (sort or "recent").lower()
-    if s == "score":
-        rows = sorted(rows, key=lambda x: x.get("score", 0) or 0, reverse=True)
-    elif s == "oldest":
-        rows = sorted(rows, key=lambda x: x.get("added_at", "") or "")
-    elif s == "name":
-        rows = sorted(rows, key=lambda x: (x.get("name", "") or "").lower())
-    elif s == "status":
-        rows = sorted(rows, key=lambda x: ((x.get("status", "") or "").lower(),
-                                           x.get("added_at", "") or ""))
-    else:  # "recent" / default / unknown -> newest-first
-        rows = sorted(rows, key=lambda x: x.get("added_at", "") or "", reverse=True)
+    # R5P4-3 (ADDITIVE): also accept the panel's `sort_by` + `order` (column + direction). When sort_by
+    # is present it wins; we map the column to a sort key and honor order=asc|desc. No FE breakage: the
+    # existing `sort`-only callers are untouched.
+    _lsb = (sort_by or "").strip().lower()
+    if _lsb:
+        _ldesc = (order or "").strip().lower() != "asc"
+        if _lsb in ("score", "interest"):
+            rows = sorted(rows, key=lambda x: x.get("score", 0) or 0, reverse=_ldesc)
+        elif _lsb in ("name", "lead"):
+            rows = sorted(rows, key=lambda x: (x.get("name", "") or "").lower(), reverse=_ldesc)
+        elif _lsb in ("status",):
+            rows = sorted(rows, key=lambda x: (x.get("status", "") or "").lower(), reverse=_ldesc)
+        elif _lsb in ("added_at", "created_at", "placed", "recent"):
+            rows = sorted(rows, key=lambda x: x.get("added_at", "") or "", reverse=_ldesc)
+        else:  # unknown column -> newest-first default
+            rows = sorted(rows, key=lambda x: x.get("added_at", "") or "", reverse=True)
+    else:
+        s = (sort or "recent").lower()
+        if s == "score":
+            rows = sorted(rows, key=lambda x: x.get("score", 0) or 0, reverse=True)
+        elif s == "oldest":
+            rows = sorted(rows, key=lambda x: x.get("added_at", "") or "")
+        elif s == "name":
+            rows = sorted(rows, key=lambda x: (x.get("name", "") or "").lower())
+        elif s == "status":
+            rows = sorted(rows, key=lambda x: ((x.get("status", "") or "").lower(),
+                                               x.get("added_at", "") or ""))
+        else:  # "recent" / default / unknown -> newest-first
+            rows = sorted(rows, key=lambda x: x.get("added_at", "") or "", reverse=True)
     total = len(rows)
     off = max(0, int(offset))
     lim = int(limit)
@@ -5200,7 +5758,7 @@ def _call_outcome_cached(c: dict) -> str:
 @app.get("/calls")
 async def calls(request: Request, limit: int = 200, offset: int = 0,
                 campaign_id: str = "", outcome: str = "", order: str = "",
-                slim: str = ""):
+                slim: str = "", sort_by: str = ""):
     """Call logs. Backward-compatible: a bare `/calls` (or `/calls?limit=N`) returns the
     SAME `{calls:[...]}` in storage order it always did. Pagination is opt-in:
       - offset (int>=0): page start; presence implies the caller wants the paginated contract.
@@ -5220,9 +5778,32 @@ async def calls(request: Request, limit: int = 200, offset: int = 0,
         rows = [c for c in rows if _call_outcome_cached(c) == outcome]
 
     paginated = bool(str(offset).strip()) and int(offset) > 0
-    paginated = paginated or order.lower() == "desc" or str(slim).strip().lower() in ("1", "true", "yes")
+    paginated = paginated or order.lower() in ("desc", "asc") or bool(str(sort_by).strip()) \
+        or str(slim).strip().lower() in ("1", "true", "yes")
 
-    if order.lower() == "desc":
+    # R5P4-3 (ADDITIVE): column sort the panel call-logs sends (sort_by + order). Maps the FE column
+    # keys to call-row fields; unknown column -> the legacy started_at sort. Back-compat: with no
+    # sort_by the only behavior change is honoring order=asc (was: only desc) -> bare /calls unchanged.
+    _sb = (sort_by or "").strip().lower()
+    if _sb:
+        _desc = order.lower() != "asc"   # default desc for an explicit column sort
+
+        def _calls_key(c):  # noqa: ANN001
+            if _sb in ("duration_s", "duration"):
+                return int(c.get("duration_s") or 0)
+            if _sb in ("interest", "score"):
+                return int(c.get("interest") or 0)
+            if _sb in ("name", "lead"):
+                return (c.get("name", "") or "").lower()
+            if _sb in ("campaign_name", "campaign", "campaign_id"):
+                return (c.get("campaign_name") or c.get("campaign_id") or "").lower()
+            if _sb in ("status", "outcome"):
+                return (_call_outcome_cached(c) or "").lower()
+            return c.get("started_at") or ""   # started_at / placed / unknown
+        rows = sorted(rows, key=_calls_key, reverse=_desc)
+    elif order.lower() == "asc":
+        rows = sorted(rows, key=lambda c: c.get("started_at") or "")
+    elif order.lower() == "desc":
         rows = sorted(rows, key=lambda c: c.get("started_at") or "", reverse=True)
 
     total = len(rows)
@@ -5255,7 +5836,23 @@ async def call_detail(request: Request, call_id: str):
     if guard is not None:
         return guard
     transcript = _read(TRANSCRIPT_DIR / f"{rec.get('room', '')}.json", {}) if rec.get("room") else {}
-    return JSONResponse({"call": rec, "transcript": transcript})
+    # REC-FIX: enrich the call detail with the SAME unified recording shape used by
+    # /calls/{id}/recording, so the Call-Logs modal gets the presigned, range-streamable player URL in
+    # the SAME request (no separate fetch, no missed field). The shaper HEAD-verifies the Spaces object,
+    # flips a stuck "recording" status -> "completed" when the object is playable, and degrades to an
+    # empty url (never a 500) on any Spaces/boto3 hiccup. We also fold the key fields onto the `call`
+    # object so any FE that reads call.recording_presigned_url / call.recording_status works too.
+    try:
+        recv = _outbound_rec_item(rec)
+        if isinstance(rec, dict) and recv:
+            rec["recording_presigned_url"] = recv.get("recording_presigned_url", "")
+            rec["recording_playable"] = bool(recv.get("playable"))
+            rec["recording_status"] = recv.get("recording_status", rec.get("recording_status", ""))
+            rec["recording_size_bytes"] = int(recv.get("size_bytes", 0) or 0)
+        return JSONResponse({"call": rec, "transcript": transcript, "recording": recv})
+    except Exception:  # noqa: BLE001
+        # any recording-shaping failure must NEVER break the call-detail read (earner-safe).
+        return JSONResponse({"call": rec, "transcript": transcript})
 
 
 # ==============================================================================================
@@ -5317,6 +5914,17 @@ def _rec_playable(bucket: str, key: str) -> dict:
 def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
     """Shape ONE outbound call row (REC-B) into the unified recording item. The deterministic
     recording_key IS the authoritative handle (auto-egress returns no id at room-create)."""
+    # ── W9 self-heal (RECORDING_FINALIZE_ENABLED): if a row is stuck at "recording", HEAD the
+    #    deterministic key and flip it to completed + presigned on READ (unifies the manual HEAD below).
+    if presign and _RECCFG is not None and _RECCFG.enabled:
+        try:
+            from voice_ops.recording.api import build_recording_view  # type: ignore  # noqa: PLC0415
+            view = build_recording_view(
+                rec, storage=_ObjStorage(_RECCFG), tenant_id=rec.get("tenant_id", ""))
+            if view:
+                return view
+        except Exception:  # noqa: BLE001
+            pass   # fall through to the existing sync HEAD-check logic
     bucket = (rec.get("recording_bucket", "") or "")
     key = (rec.get("recording_key", "") or "")
     rstatus = (rec.get("recording_status", "") or "")
@@ -5326,6 +5934,14 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
     # object is a real non-trivial audio file. The HEAD is a single cheap call, only when has_rec.
     pv = _rec_playable(bucket, key) if (presign and has_rec) else {"playable": False, "size_bytes": 0}
     playable = bool(pv.get("playable"))
+    # REC-FIX: the row's recording_status is stamped "recording" at room-create and nothing ever flips
+    # it (the W9 finalize-poller is mis-keyed / a no-op). So on READ, once the object is HEAD-verified
+    # playable, report the HONEST terminal status "completed" — every UI that gates on
+    # recording_status == completed/uploaded then shows the player. Read-only rewrite of the SHAPE only;
+    # the underlying calls.json row is left untouched here (a separate best-effort persist does that).
+    eff_status = rstatus or ("disabled" if not key else "")
+    if playable:
+        eff_status = "completed"
     item = {
         "call_id": rec.get("id", ""),
         "direction": "outbound",
@@ -5335,13 +5951,23 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
         "started_at": rec.get("started_at", ""),
         "duration_s": int(rec.get("duration_s", 0) or 0),
         "status": rec.get("status", ""),
-        "recording_status": rstatus or ("disabled" if not key else ""),
+        "recording_status": eff_status,
         "has_recording": has_rec,
         "playable": playable,
         "size_bytes": int(pv.get("size_bytes", 0) or 0),
         # only hand the FE a URL for a VERIFIED playable object -> the FE renders <audio> iff this is set.
         "recording_presigned_url": (_rec_presign(bucket, key) if playable else ""),
     }
+    # REC-FIX: best-effort mutate the IN-MEMORY call row's status to the verified terminal state. This
+    # makes GET /calls/{id} (which returns this same `rec` object) and the list report "completed"
+    # immediately, and it gets durably persisted on the next normal _write(CALLS_FILE, CALLS) (call
+    # finalize / scheduler sweep). We do NOT force a disk write from the read path (avoids lock
+    # contention + write amplification on every recording open). NEVER raises into the read path.
+    if playable and rstatus != "completed":
+        try:
+            rec["recording_status"] = "completed"
+        except Exception:  # noqa: BLE001
+            pass
     return item
 
 
@@ -5472,6 +6098,218 @@ async def contact_recordings(request: Request, phone: str):
                          "with_recording": n_rec, "with_playable": n_play})
 
 
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# W14 — REAL-TIME REPORTING ROUTES (REPORTING_ENABLED). Purely additive; touch no existing route.
+# Tenant is TOKEN-derived (resolve_tenant), NEVER from the body. The read-model store is filled by a
+# SEPARATE consumer worker tailing the W8 event stream; with REPORTING_ENABLED off these return 503.
+# Every response echoes the resolved range {preset,from,to,tz} so the panel renders the window
+# unambiguously and the "1 day ago" off-by-one is fixed (UTC store + vendor-tz day math).
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+def _w14_filters(campaign, lead_status, source, agent, call_status, booking_status):  # noqa: ANN001
+    return {k: v for k, v in {
+        "campaign": campaign, "lead_status": lead_status, "source": source,
+        "agent": agent, "call_status": call_status, "booking_status": booking_status,
+    }.items() if v}
+
+
+def _enrich_report_temperature(rep, tenant_id, preset, frm, to, filters):  # noqa: ANN001
+    """R5P4-1: add `temperature_distribution` + `hot_leads` to a /report payload IN PLACE.
+
+    The panel dashboard (`report.temperature_distribution` -> donut) and Report page read these two
+    top-level keys; the base report only carried `totals.{hot,warm,cold,dead}` + `by_status`. We
+    DERIVE the distribution from the SAME `totals` already in `rep` (so the donut can never diverge
+    from the KPI counts), and pull `hot_leads` from the live reporting service (the identical scan the
+    dashboard's hot-lead widget uses). Purely additive; if `rep` is not a dict we leave it untouched.
+    """
+    if not isinstance(rep, dict):
+        return
+    totals = rep.get("totals") or {}
+    by_status = rep.get("by_status") or {}
+    # prefer the explicit by_status breakdown; fall back to the totals counters (same numbers).
+    def _band(name):  # noqa: ANN001
+        v = by_status.get(name)
+        if v is None:
+            v = totals.get(name, 0)
+        try:
+            return int(v or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+    bands = {k: _band(k) for k in ("hot", "warm", "cold", "dead")}
+    tot = sum(bands.values())
+    # FE TemperatureBucket shape: {tier, count, pct, delta?}. pct = share of the 4 temperature bands.
+    rep["temperature_distribution"] = [
+        {"tier": tier, "count": bands[tier],
+         "pct": round((bands[tier] * 100.0 / tot), 1) if tot else 0.0}
+        for tier in ("hot", "warm", "cold", "dead")
+    ]
+    # mirror onto by_status too so any client reading `report.by_status.{hot,...}` also sees the bands.
+    rep.setdefault("by_status", {})
+    for k, v in bands.items():
+        rep["by_status"].setdefault(k, v)
+    # hot_leads (named rows for the panel list). Best-effort; absent service -> []. The service signature
+    # is hot_leads(tenant, preset, *, frm, to, limit) -> list[{call_id,name,phone_masked,score?,...}].
+    rows = []
+    if _REPSVC is not None and "hot_leads" not in rep:
+        try:
+            rows = _REPSVC.hot_leads(tenant_id, preset, frm=frm, to=to, limit=25) or []
+        except TypeError:
+            try:
+                rows = _REPSVC.hot_leads(tenant_id, preset, frm=frm, to=to) or []
+            except Exception:  # noqa: BLE001
+                rows = []
+        except Exception:  # noqa: BLE001
+            rows = []
+        # surface a flat `score` (0-100) alongside conversion_prob so the panel can render either.
+        # conversion_prob may already be a 0-100 percentage OR a 0-1 fraction — normalize to 0-100.
+        for r in rows:
+            if isinstance(r, dict) and "score" not in r and r.get("conversion_prob") is not None:
+                try:
+                    cp = float(r["conversion_prob"])
+                    r["score"] = int(round(cp if cp > 1 else cp * 100))
+                except Exception:  # noqa: BLE001
+                    pass
+    rep.setdefault("hot_leads", rows)
+
+
+@app.get("/report")
+async def report_query(
+    request: Request,
+    preset: str = "today", frm: str = "", to: str = "",
+    campaign: str = "", lead_status: str = "", source: str = "",
+    agent: str = "", call_status: str = "", booking_status: str = "",
+):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    filters = _w14_filters(campaign, lead_status, source, agent, call_status, booking_status)
+    try:
+        rep = _REPSVC.report(t["tenant_id"], preset, frm=frm, to=to, filters=filters or None)
+        # R5P4-1 (ADDITIVE): the panel dashboard + Report read `hot_leads` + `temperature_distribution`
+        # off the SAME /report payload (they were rendering empty). Source both from the live read-model
+        # already in `rep` — never a second store, never a divergent number. NEVER raises into the route.
+        try:
+            _enrich_report_temperature(rep, t["tenant_id"], preset, frm, to, filters)
+        except Exception:  # noqa: BLE001 — enrichment is best-effort; the base report still returns
+            pass
+        return JSONResponse(rep)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": repr(exc)}, status_code=500)
+
+
+@app.get("/report/funnel")
+async def report_funnel(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.funnel(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/timeline")
+async def report_timeline(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.timeline(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/agents")
+async def report_agents(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.agents(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/sources")
+async def report_sources(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.sources(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/campaigns")
+async def report_campaigns(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.campaigns(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/followups")
+async def report_followups(request: Request, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.followups(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/hot-leads")
+async def report_hot_leads(request: Request, preset: str = "today", frm: str = "", to: str = "",
+                           limit: int = 25):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    try:
+        return JSONResponse(_REPSVC.hot_leads(t["tenant_id"], preset, frm=frm, to=to, limit=limit))
+    except TypeError:
+        return JSONResponse(_REPSVC.hot_leads(t["tenant_id"], preset, frm=frm, to=to))
+
+
+@app.get("/report/metric/{key}")
+async def report_metric(request: Request, key: str, preset: str = "today", frm: str = "", to: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _REPSVC is None:
+        return JSONResponse({"error": "reporting not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: replay the W8 stream into the in-proc read-model
+    return JSONResponse(_REPSVC.metric(t["tenant_id"], key, preset, frm=frm, to=to))
+
+
+@app.post("/ai-manager/report")
+async def ai_manager_report(request: Request):
+    """W14b: AI-Manager live-data command box. POST {"message":"how many calls today"} -> the SAME
+    LIVE reporting numbers the dashboard shows (can never diverge into a stale cache). Token-scoped."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _AIM_LIVE is None:
+        return JSONResponse({"error": "ai-manager live not enabled"}, status_code=503)
+    await _w14_hydrate(t["tenant_id"])  # W14-WIRE: AI-Manager reads the SAME live read-model as /report
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    msg = (body.get("message") or body.get("command") or "").strip()
+    try:
+        return JSONResponse(_AIM_LIVE.handle(t["tenant_id"], msg))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": repr(exc)}, status_code=500)
 
 
 # ==============================================================================================
@@ -5607,6 +6445,16 @@ async def stats(request: Request):
     if not t:
         return need_auth()
     rows = calls_for(t)
+    # W14-WIRE: OPTIONAL date-range filtering (the panel may send from_/to_ or from/to; YYYY-MM-DD).
+    # Absent -> lifetime totals (back-compat with the current bare /stats call). started_at is now
+    # tz-labelled UTC; the [:10] / >= comparisons are date-prefix based so they remain correct.
+    qp = request.query_params
+    _frm = (qp.get("from_") or qp.get("from") or "").strip()
+    _to = (qp.get("to_") or qp.get("to") or "").strip()
+    if _frm:
+        rows = [c for c in rows if (c.get("started_at") or "") >= _frm]
+    if _to:
+        rows = [c for c in rows if (c.get("started_at") or "") <= (_to + "T23:59:59+00:00")]
     total = len(rows)
 
     def _is_answered(c):
@@ -7238,7 +8086,50 @@ async def scheduler_loop():
             # 🚨 KILL-SWITCH: only DIAL due retries/callbacks when explicitly enabled.
             # Default OFF → zero redials go out while the retry engine is rebuilt. The
             # reconciliation/classify sweep below still runs (outcomes/scores stay correct).
-            if RETRY_SCHEDULER_ENABLED:
+            # ── W10 smart cadence dial (CALLBACK_CADENCE_ENABLED + RETRY_SCHEDULER_ENABLED): fire_due
+            #    owns due-check + max-retries cap + terminal skip + per-lead lock + DND + priority
+            #    order (anti-runaway: a pickup -> CALLED -> never redials; attempts monotonic; hard
+            #    EXPIRE after max_retries). When armed it REPLACES the flat-file dial below.
+            if RETRY_SCHEDULER_ENABLED and _CB_STORE is not None and _cb_fire_due is not None:
+                try:
+                    for job in await _cb_fire_due(store=_CB_STORE, config=_CB_CFG, bus=_get_event_bus()):
+                        camp_fields = (get_campaign(job.campaign_id) or {}).get("fields", {}) or {}
+                        if not _in_window(camp_fields)[0]:
+                            continue                               # respect calling window
+                        if norm(job.phone) in _suppressed_set(job.tenant_id):
+                            try:
+                                await _cb_release(_CB_STORE, job.tenant_id, job.phone)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            continue                               # opted out since enqueue
+                        # NCPR / DND scrub-before-dial (flag-gated, fail-closed): a hit OR an
+                        # unscrubbed (cache-miss) number is NOT dialed — released for re-scrub.
+                        if _NCPR_SCRUBBER is not None:
+                            try:
+                                _scrub = _NCPR_SCRUBBER.scrub(job.tenant_id, job.phone)
+                            except Exception:  # noqa: BLE001 — fail-closed on a Tier-A check error
+                                _scrub = None
+                            if _scrub is None or _scrub.block:
+                                try:
+                                    await _cb_release(_CB_STORE, job.tenant_id, job.phone)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                                continue                           # NCPR-listed / unscrubbed -> skip
+                        _spawn_retry_job({
+                            "id": f"{job.tenant_id}:{job.phone}",
+                            "tenant_id": job.tenant_id, "campaign_id": job.campaign_id,
+                            "phone": job.phone, "name": "", "attempt": getattr(job, "attempt", 0),
+                            "reason": getattr(job, "reason", "callback"),
+                            "recap": getattr(job, "last_summary", ""),
+                        })
+                except Exception as _cbexc:  # noqa: BLE001 — cadence dial can NEVER kill the loop
+                    try:
+                        import logging as _lg_cb
+                        _lg_cb.getLogger("w10.cadence").warning("fire_due tick failed: %r", _cbexc)
+                    except Exception:  # noqa: BLE001
+                        pass
+            elif RETRY_SCHEDULER_ENABLED:
+                # LEGACY flat-file dial (cadence OFF). Unchanged behavior.
                 due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
                 for r in due:
                     camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
@@ -7280,21 +8171,35 @@ async def scheduler_loop():
                         await _flip_lead_status(tid, phone, "opted_out")
                 else:
                     camp_fields = (get_campaign(cid) or {}).get("fields", {}) or {}
-                    maxa = int(camp_fields.get("retry_max_attempts", 3))
-                    backoff = camp_fields.get("retry_backoff_mins") or [120, 360, 1440]
-                    cb = tr.get("callback_at")
-                    already = any(r.get("phone") == norm(phone) and r.get("campaign_id") == cid
-                                  for r in _read(RETRY_FILE, []))
-                    if cb and not already:
-                        await _enqueue_retry(tid, cid, c.get("name", ""), phone, 0, maxa, cb, "callback")
-                        await _emit_webhook(tid, "callback.scheduled",
-                                            {"phone": phone, "campaign_id": cid,
-                                             "name": c.get("name", ""), "when": cb,
-                                             "callback_raw": tr.get("callback_raw", "")})
-                    elif outcome in ("no_answer", "voicemail", "busy") and not already:
-                        next_at = _clamp_to_window(now_ist() + timedelta(minutes=backoff[0]), camp_fields)
-                        await _enqueue_retry(tid, cid, c.get("name", ""), phone, 1, maxa,
-                                             next_at.isoformat(), outcome)
+                    # ── W10 recon enqueue (CALLBACK_CADENCE_ENABLED): idempotent + monotonic — a recon
+                    #    tick can NEVER reset attempts or re-enqueue an answered/opted-out lead.
+                    _cb_recon_owned = False
+                    if _CB_STORE is not None and _cb_enqueue_smart is not None:
+                        try:
+                            await _cb_enqueue_smart(
+                                tid, cid, c, tr, outcome, 0, camp_fields,
+                                store=_CB_STORE, config=_CB_CFG, bus=_get_event_bus(),
+                                from_reconcile=True,
+                            )
+                            _cb_recon_owned = True
+                        except Exception:  # noqa: BLE001
+                            _cb_recon_owned = False
+                    if not _cb_recon_owned:
+                        maxa = int(camp_fields.get("retry_max_attempts", 3))
+                        backoff = camp_fields.get("retry_backoff_mins") or [120, 360, 1440]
+                        cb = tr.get("callback_at")
+                        already = any(r.get("phone") == norm(phone) and r.get("campaign_id") == cid
+                                      for r in _read(RETRY_FILE, []))
+                        if cb and not already:
+                            await _enqueue_retry(tid, cid, c.get("name", ""), phone, 0, maxa, cb, "callback")
+                            await _emit_webhook(tid, "callback.scheduled",
+                                                {"phone": phone, "campaign_id": cid,
+                                                 "name": c.get("name", ""), "when": cb,
+                                                 "callback_raw": tr.get("callback_raw", "")})
+                        elif outcome in ("no_answer", "voicemail", "busy") and not already:
+                            next_at = _clamp_to_window(now_ist() + timedelta(minutes=backoff[0]), camp_fields)
+                            await _enqueue_retry(tid, cid, c.get("name", ""), phone, 1, maxa,
+                                                 next_at.isoformat(), outcome)
                 # WAVE3 Unit2: emit completion + qualified for late-reconciled calls.
                 # Only if _finalize_call hadn't already emitted (it emits with an empty
                 # transcript; here we re-emit ONCE with the real summary/score).
