@@ -11,7 +11,7 @@ import Table from "@/components/Table";
 import Select from "@/components/Select";
 import Modal from "@/components/Modal";
 import VirtualRows from "@/components/VirtualRows";
-import { StatusBadge, LeadBadge } from "@/lib/badges";
+import { StatusBadge } from "@/lib/badges";
 // Shared temperature classification — the SAME source CRM uses, so the
 // Hot/Warm/Cold/Dead column + filter never drift between the two pages.
 import { TempBadge, tempOf, type Temperature } from "@/app/crm/_ui";
@@ -71,12 +71,14 @@ type LeadSortKey =
 
 // Every column header is clickable. `className` mirrors the responsive
 // hide-on-narrow rules already on the body cells so header + cell stay aligned.
+// ROUND-6 LANE 4 — the duplicate "Lead" column (LeadBadge, also a temperature
+// tier) was REMOVED: the dedicated "Temperature" column already shows the same
+// heat signal, so the two read as duplicates. Temperature is the single source.
 const LEAD_COLS: { label: string; key: LeadSortKey; className?: string }[] = [
     { label: "Name", key: "name" },
     { label: "Phone", key: "phone" },
     { label: "Temperature", key: "temperature" },
     { label: "Status", key: "status", className: "max-md:hidden" },
-    { label: "Lead", key: "score" },
     { label: "Last outcome", key: "last_outcome", className: "max-lg:hidden" },
     { label: "Added", key: "added_at", className: "text-right" },
 ];
@@ -350,13 +352,12 @@ export default function LeadsPage() {
             <th>Phone</th>
             <th>Temperature</th>
             <th className="max-md:hidden">Status</th>
-            <th>Lead</th>
             <th className="max-lg:hidden">Last outcome</th>
             <th className="text-right">Added</th>
             {writable && <th className="w-12 text-right" />}
         </>
     );
-    const colCount = writable ? 9 : 7;
+    const colCount = writable ? 8 : 6;
 
     return (
         <Layout title="Leads">
@@ -813,10 +814,6 @@ function renderLeadRow(
             </td>
             <td className="max-md:hidden">
                 <StatusBadge status={l.status} />
-            </td>
-            <td>
-                {/* W15 §4 — business-friendly tier (Hot/Warm/Cold/…), not a raw score */}
-                <LeadBadge lead={l} />
             </td>
             <td className="text-t-secondary text-caption capitalize max-lg:hidden">
                 {l.last_outcome ? l.last_outcome.replace(/_/g, " ") : "—"}

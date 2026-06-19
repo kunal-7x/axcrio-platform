@@ -27,15 +27,17 @@ import {
 import { StageBadge, TempBadge, tempOf, initials, fmtRelative } from "./_ui";
 
 // Stage filter tabs (mirrors §4.1 derivation order). "all" is special.
+// ROUND-6 LANE 4 — "Won"/"Lost" REMOVED from the stage filter per founder: the
+// active pipeline stages are new → contacted → engaged → qualified (Booked kept
+// as the conversion stage). Won/Lost are terminal outcomes shown elsewhere, not
+// a working-pipeline filter. The `won`/`lost` STAGE VALUES still render via
+// StageBadge if a contact carries them; only the FILTER options are trimmed.
 const STAGE_TABS = [
     { id: 1, name: "All", key: "all" },
     { id: 2, name: "New", key: "new" },
     { id: 3, name: "Contacted", key: "contacted" },
     { id: 4, name: "Engaged", key: "engaged" },
     { id: 5, name: "Qualified", key: "qualified" },
-    { id: 6, name: "Booked", key: "booked" },
-    { id: 7, name: "Won", key: "won" },
-    { id: 8, name: "Lost", key: "lost" },
 ];
 
 // Lifecycle/heat filter — maps to the contact's lifecycle_state field.

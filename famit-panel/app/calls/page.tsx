@@ -762,19 +762,59 @@ function CallLogsInner() {
 /* Sorting                                                             */
 /* ------------------------------------------------------------------ */
 
-type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "score";
+type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "temp" | "score";
 type SortDir = "asc" | "desc";
 
 // Map the UI sort key onto the backend sort_by column so the cursor query sorts
 // across ALL records server-side (the client sort stays as a graceful fallback).
+// `temp` (Hot/Warm/Cold) is derived from the same `interest` score, so it sorts
+// on the same backend column — the client sort handles the tier bucketing.
 const SORT_COLUMN: Record<SortKey, string> = {
     lead: "name",
     campaign: "campaign_name",
     status: "status",
     placed: "started_at",
     duration: "duration_s",
+    temp: "interest",
     score: "interest",
 };
+
+/* ------------------------------------------------------------------ */
+/* Lead temperature (Hot / Warm / Cold) — derived from the interest    */
+/* score, the SAME 70 / 40 thresholds the CRM + Warm-leads tab use.    */
+/* ------------------------------------------------------------------ */
+
+type LeadTemp = "hot" | "warm" | "cold" | "none";
+
+function leadTemp(interest?: number | null): LeadTemp {
+    if (interest == null) return "none";
+    if (interest >= 70) return "hot";
+    if (interest >= 40) return "warm";
+    return "cold";
+}
+
+// Numeric rank for sorting: hot > warm > cold > none.
+const TEMP_RANK: Record<LeadTemp, number> = { hot: 3, warm: 2, cold: 1, none: 0 };
+
+const TEMP_META: Record<
+    Exclude<LeadTemp, "none">,
+    { label: string; variant: "success" | "warning" | "info" }
+> = {
+    hot: { label: "Hot", variant: "success" },
+    warm: { label: "Warm", variant: "warning" },
+    cold: { label: "Cold", variant: "info" },
+};
+
+function TempBadge({ interest }: { interest?: number | null }) {
+    const t = leadTemp(interest);
+    if (t === "none") return <span className="text-t-tertiary">—</span>;
+    const { label, variant } = TEMP_META[t];
+    return (
+        <Badge variant={variant} dot={t === "hot"}>
+            {label}
+        </Badge>
+    );
+}
 
 function cmp(a: number | string, b: number | string): number {
     if (typeof a === "number" && typeof b === "number") return a - b;
@@ -793,6 +833,8 @@ function sortKeyValue(c: CallLog, key: SortKey): number | string {
             return c.started_at ? new Date(toUTC(c.started_at)).getTime() : 0;
         case "duration":
             return c.duration_s ?? -1;
+        case "temp":
+            return TEMP_RANK[leadTemp(c.interest)];
         case "score":
             return c.interest ?? -1;
     }
@@ -847,14 +889,15 @@ function CallsListPanel() {
     // The bounded scroll box the table virtualizes against (sticky <thead> on top).
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // PERF UNIT-4: cursor-paged newest-first slim pages (backend UNIT-1 contract).
-    // Loads ONE page (~60 slim rows) at a time and fetches the next as you scroll
-    // near the end — the call-logs page no longer loads every row at once. Tab-back
-    // is instant (react-query keeps the fetched pages cached + revalidates in bg).
-    // Map the clicked column onto the backend sort column so sorting spans ALL
-    // records (not just the loaded pages). A new sort re-keys the cursor query →
-    // fresh page-0 fetch in the chosen order; the client sort below is the fallback
-    // for a backend that ignores sort_by.
+    // PERF: cursor-paged newest-first slim pages (backend UNIT-1 contract).
+    // Loads ONE SMALL page (10 slim rows) at a time and only fetches the next when
+    // the user clicks "Load more" — NOT auto-on-scroll. This fixes the prior bug
+    // where the viewport-triggered onEndReached fired repeatedly and pulled
+    // 300-400 rows at once → the table hung. Tab-back is instant (react-query
+    // keeps the fetched pages cached + revalidates in bg). Map the clicked column
+    // onto the backend sort column so sorting spans ALL records (not just loaded
+    // pages); a new sort re-keys the cursor query → fresh page-0 fetch.
+    const PAGE_SIZE = 10;
     const {
         data,
         isLoading,
@@ -862,7 +905,7 @@ function CallsListPanel() {
         hasNextPage,
         isFetchingNextPage,
     } = useCallsInfinite({
-        pageSize: 60,
+        pageSize: PAGE_SIZE,
         sort_by: SORT_COLUMN[sortKey],
         order: sortDir,
     });
@@ -926,6 +969,7 @@ function CallsListPanel() {
             <SortTh label="Campaign" sortKey="campaign" active={sortKey === "campaign"} dir={sortDir} onSort={onSort} className="max-lg:hidden" />
             <SortTh label="Status" sortKey="status" active={sortKey === "status"} dir={sortDir} onSort={onSort} />
             <SortTh label="Placed" sortKey="placed" active={sortKey === "placed"} dir={sortDir} onSort={onSort} />
+            <SortTh label="Lead temp" sortKey="temp" active={sortKey === "temp"} dir={sortDir} onSort={onSort} className="max-md:hidden" />
             <th className="text-right max-md:hidden">Recording</th>
             <SortTh label="Duration" sortKey="duration" active={sortKey === "duration"} dir={sortDir} onSort={onSort} className="text-right [&>button]:flex-row-reverse" />
             <SortTh label="Score" sortKey="score" active={sortKey === "score"} dir={sortDir} onSort={onSort} className="text-right max-md:hidden [&>button]:flex-row-reverse" />
@@ -983,7 +1027,7 @@ function CallsListPanel() {
                         <Table cellsThead={tableHead}>
                             {[...Array(8)].map((_, i) => (
                                 <tr key={i}>
-                                    {[...Array(7)].map((__, j) => (
+                                    {[...Array(8)].map((__, j) => (
                                         <td key={j}>
                                             <div className="skeleton h-4 w-20" />
                                         </td>
@@ -1015,22 +1059,34 @@ function CallsListPanel() {
                                     items={visibleCalls}
                                     rowKey={(c) => c.id}
                                     scrollRef={scrollRef}
-                                    colSpan={7}
+                                    colSpan={8}
                                     estimateRowH={73}
-                                    onEndReached={
-                                        searching || !hasNextPage || isFetchingNextPage
-                                            ? undefined
-                                            : () => fetchNextPage()
-                                    }
                                     renderRow={(c) => renderCallRow(c, setSelectedCallId)}
                                 />
                             </tbody>
                         </table>
                     )}
-                    {isFetchingNextPage && (
-                        <div className="flex items-center justify-center gap-2 py-3 text-caption text-t-tertiary">
-                            <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
-                            Loading more…
+                    {/* Explicit "Load more" — NOT auto-on-scroll (that was the bug
+                        that yanked 300-400 rows at once and hung the table). When a
+                        search/custom-sort narrows what's loaded we hide it (the user
+                        is filtering loaded rows, not paging further). */}
+                    {!loading && visibleCalls.length > 0 && hasNextPage && !searching && (
+                        <div className="flex items-center justify-center py-4">
+                            <Button
+                                isStroke
+                                className="!h-10 !px-6"
+                                onClick={() => fetchNextPage()}
+                                disabled={isFetchingNextPage}
+                            >
+                                {isFetchingNextPage ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
+                                        Loading…
+                                    </span>
+                                ) : (
+                                    `Load more${total != null ? ` (${calls.length} of ${total})` : ""}`
+                                )}
+                            </Button>
                         </div>
                     )}
                 </div>
@@ -1936,10 +1992,24 @@ function ScorePill({ score }: { score: number }) {
 // One call row as a plain <tr> (so the virtualizer can attach its measurement ref —
 // a native <tr> forwards refs; the <TableRow> wrapper does not). Classes mirror the
 // Core_2 <TableRow> + the shared <Table> cell rules so the look is unchanged.
+// A recording is shown for a row when the slim CallLog already carries a URL
+// OR the call clearly connected + produced talk time (the .ogg is uploaded for
+// every answered call; the player URL is minted on open via /calls/{id}/recording).
+// This is why the cell is no longer perpetually empty — it surfaces the recording
+// the moment a call has real duration, then plays on row-click.
+const CONNECTED = new Set([
+    "answered", "done", "called", "qualified", "interested",
+    "not_interested", "callback", "no_human", "voicemail",
+]);
+function hasRecording(c: CallLog): boolean {
+    if (recordingUrlOf(c)) return true;
+    return (c.duration_s ?? 0) > 0 && CONNECTED.has((c.status ?? "").toLowerCase());
+}
+
 function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
     const status = c.status ?? "";
     const isLive = LIVE.has(status);
-    const recUrl = recordingUrlOf(c);
+    const recUrl = hasRecording(c);
     return (
         <tr
             className="group relative cursor-pointer [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3"
@@ -1980,16 +2050,21 @@ function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
                     </div>
                 )}
             </td>
-            {/* Recording — icon + clock when a recording exists, em-dash else.
-                The row click opens the detail modal where it actually plays. */}
+            {/* Lead temperature — Hot / Warm / Cold from the AI interest score. */}
+            <td className="max-md:hidden">
+                <TempBadge interest={c.interest} />
+            </td>
+            {/* Recording — a play/recording BADGE (reuses the AI-Manager call-
+                history "camera-video" recording chip) when a recording exists,
+                em-dash else. The row click opens the detail modal where it plays. */}
             <td className="text-right max-md:hidden">
                 {recUrl ? (
-                    <span className="inline-flex items-center gap-1.5 text-t-secondary tabular-nums">
+                    <span className="inline-flex items-center gap-1.5 h-7 pl-2 pr-2.5 rounded-full bg-primary-01/10 text-primary-01 text-caption font-medium tabular-nums">
                         <Icon
-                            name="video"
+                            name="camera-video"
                             className="size-3.5 fill-primary-01"
                         />
-                        {fmtClock(c.duration_s)}
+                        {fmtClock(c.duration_s) || "Play"}
                     </span>
                 ) : (
                     <span className="text-t-tertiary">—</span>

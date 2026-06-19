@@ -95,7 +95,7 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
     const [providersAvail, setProvidersAvail] = useState<Record<string, boolean>>({});
 
     // campaign-persisted config
-    const [tier, setTier] = useState<CampaignTier>("lean");
+    const [tier, setTier] = useState<CampaignTier>("standard");
     const [voiceId, setVoiceId] = useState<string>("");
     const [sttP, setSttP] = useState<string>("");
     const [llmP, setLlmP] = useState<string>("");
@@ -150,7 +150,10 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                 if (cancelled) return;
                 const f = (c?.fields ?? {}) as CampaignFields;
                 baseFields.current = f;
-                const t = (f.tier as CampaignTier) || "lean";
+                // "lean" is retired → present it as Standard (only Standard + Premium offered).
+                const t = ((f.tier as CampaignTier) === "lean" || !f.tier
+                    ? "standard"
+                    : (f.tier as CampaignTier));
                 setTier(t);
                 setVoiceId(typeof f.voice_id === "string" ? f.voice_id : "");
                 setSttP(typeof f.stt_provider === "string" ? f.stt_provider : "");
@@ -268,9 +271,8 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
 
     // ── recommended-tier heuristic (cheap, client-side) ──
     const recommended = useMemo<string>(() => {
-        // Big cold list -> protect budget with Lean. Small/qualified list -> Premium reads as worth it.
-        // Standard is the safe middle default.
-        if (audienceCount >= 200) return "lean";
+        // Only Standard + Premium are offered. Small/qualified list -> Premium reads
+        // as worth it; otherwise Standard is the safe default.
         if (audienceCount > 0 && audienceCount <= 25) return "premium";
         return "standard";
     }, [audienceCount]);
@@ -379,7 +381,12 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
         });
     };
 
-    const order = tiersData?.order || ["lean", "standard", "premium"];
+    // Only Standard + Premium are offered. The legacy "lean" tier is hidden from
+    // the picker (and from the compare strip) — campaigns still on "lean" are
+    // shown/persisted as Standard.
+    const order = (tiersData?.order || ["lean", "standard", "premium"]).filter(
+        (k) => k !== "lean"
+    );
     const noCampaign = !campaignId;
 
     // provider-health row: only the three headline providers used by the tiers
@@ -411,7 +418,7 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
     }
 
     return (
-        <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-4 items-start max-lg:grid-cols-1">
             {/* shared hidden audio element for ALL voice previews */}
             <audio
                 ref={audioRef}
@@ -450,7 +457,7 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                     </span>
                                 )}
                             </div>
-                            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-full bg-b-surface1 border border-s-subtle dark:bg-shade-04/40">
+                            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-full bg-b-surface1 border border-s-subtle dark:bg-shade-04/40">
                                 {order.map((key) => {
                                     const t = tierMap[key];
                                     if (!t) return null;
@@ -462,7 +469,7 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                             type="button"
                                             disabled={!writable || saving}
                                             onClick={() => pickTier(key as CampaignTier)}
-                                            className={`relative flex flex-col items-center justify-center h-14 rounded-full text-center transition-all ${
+                                            className={`relative flex flex-col items-center justify-center h-12 rounded-full text-center transition-all ${
                                                 on
                                                     ? "bg-b-surface2 shadow-depth text-t-primary"
                                                     : "text-t-secondary hover:text-t-primary"
@@ -474,9 +481,6 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                                         >
                                             <span className="text-button leading-none">
                                                 {t.name}
-                                            </span>
-                                            <span className="mt-1 text-caption text-t-tertiary tabular-nums leading-none">
-                                                ≈ {inr(t.est_inr_per_min)}/min
                                             </span>
                                             {rec && (
                                                 <span className="absolute -top-2 right-1.5">
@@ -705,8 +709,8 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                     </div>
                 </Card>
 
-                {/* ══ CARD ③ — PROVIDERS ════════════════════════════════════════ */}
-                <Card title="Providers">
+                {/* ══ CARD ③ — PROVIDERS (full-width below the 2-up row) ═════════ */}
+                <Card title="Providers" className="col-span-2 max-lg:col-span-1">
                     <div className="px-5 pb-5 max-lg:px-3 space-y-5">
                         {/* ── WAVE C: provider-lock banner (CONFIG-ONLY today) ── */}
                         <ProviderLock
@@ -787,22 +791,6 @@ export default function VoiceProviders({ campaignId, audienceCount, writable }: 
                             )}
                         </div>
 
-                        {/* ── Phase-2 honesty note ── */}
-                        {tiersData?.ob_prov_pending && (
-                            <div className="flex items-start gap-2 p-3 rounded-2xl bg-primary-05/8 text-body-2">
-                                <Icon
-                                    name="info"
-                                    className="size-4 fill-primary-05 shrink-0 mt-0.5"
-                                />
-                                <span className="text-caption text-t-secondary">
-                                    Voice selection and tier config apply now.
-                                    Switching the live-call STT/LLM/TTS{" "}
-                                    <span className="text-t-primary">provider</span>{" "}
-                                    on the outbound leg (e.g. Sarvam → ElevenLabs)
-                                    is coming in Phase 2 (needs founder approval).
-                                </span>
-                            </div>
-                        )}
                     </div>
                 </Card>
         </div>
@@ -829,7 +817,9 @@ function TierCompare({
     onPick: (key: string) => void;
     writable: boolean;
 }) {
-    if (!rateCard || tiers.length === 0) return null;
+    // Only Standard + Premium are offered — drop the retired "lean" column.
+    const shownTiers = tiers.filter((t) => t.key !== "lean");
+    if (!rateCard || shownTiers.length === 0) return null;
     const a = rateCard.assumptions;
     const m = avgMin || a.default_avg_call_min || 1.5;
     const perCall = (t: Tier): number => {
@@ -852,8 +842,8 @@ function TierCompare({
                     voice cost only — telephony extra
                 </span>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-                {tiers.map((t) => {
+            <div className="grid grid-cols-2 gap-2">
+                {shownTiers.map((t) => {
                     const on = active === t.key;
                     const pc = perCall(t);
                     const proj = pc * (audienceCount || 0);

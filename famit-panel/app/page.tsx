@@ -928,7 +928,7 @@ function DashboardInner() {
                                                         </span>
                                                         {s.step_conv > 0 && s.stage !== "uploaded" && (
                                                             <span className="text-t-tertiary tabular-nums">
-                                                                {s.step_conv}%
+                                                                {Math.min(100, s.step_conv)}%
                                                             </span>
                                                         )}
                                                     </div>

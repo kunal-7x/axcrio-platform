@@ -15,12 +15,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Card from "@/components/Card";
+import KpiCard from "@/components/KpiCard";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import { useMe, canWrite } from "@/lib/auth";
 import {
-    AimStat,
     ErrorBanner,
     parseRiskVariant,
     parseRiskLabel,
@@ -193,46 +193,36 @@ export default function HomeTab() {
                         </div>
                     </div>
 
-                    {/* KPI strip — real engine aggregates, plain language */}
+                    {/* KPI strip — same Core_2 KpiCard the dashboard uses, so the
+                        AI-Manager home reads as one product with the dashboard. */}
                     <div className="grid grid-cols-4 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
-                        <AimStat
+                        <KpiCard
                             label="Commands today"
-                            glyph="dashboard"
-                            glyphClass="fill-primary-01"
-                            accent="var(--primary-01)"
-                            loading={loading && !s}
-                            value={s?.commands_today ?? 0}
-                            foot="Across all channels"
+                            icon="dashboard"
+                            tone="info"
+                            value={loading && !s ? <SkVal /> : (s?.commands_today ?? 0).toLocaleString()}
+                            sub="Across all channels"
                         />
-                        <AimStat
+                        <KpiCard
                             label="Succeeded"
-                            glyph="check-circle"
-                            glyphClass="fill-primary-02"
-                            accent="var(--primary-02)"
-                            delay={50}
-                            loading={loading && !s}
-                            value={s?.commands_succeeded ?? 0}
-                            foot="Executed cleanly"
+                            icon="check-circle"
+                            tone="success"
+                            value={loading && !s ? <SkVal /> : (s?.commands_succeeded ?? 0).toLocaleString()}
+                            sub="Executed cleanly"
                         />
-                        <AimStat
+                        <KpiCard
                             label="Needs approval"
-                            glyph="lock"
-                            glyphClass="fill-primary-04"
-                            accent="var(--primary-04)"
-                            delay={100}
-                            loading={loading && !s}
-                            value={s?.pending_approvals ?? pendingRows.length}
-                            foot="Awaiting confirm / PIN"
+                            icon="lock"
+                            tone="warning"
+                            value={loading && !s ? <SkVal /> : (s?.pending_approvals ?? pendingRows.length).toLocaleString()}
+                            sub="Awaiting confirm / PIN"
                         />
-                        <AimStat
+                        <KpiCard
                             label="Credit impact"
-                            glyph="wallet"
-                            glyphClass="fill-primary-05"
-                            accent="var(--primary-05)"
-                            delay={150}
-                            loading={loading && !s}
-                            value={rupees(s?.credit_impact_minor ?? 0)}
-                            foot={
+                            icon="wallet"
+                            tone="danger"
+                            value={loading && !s ? <SkVal /> : rupees(s?.credit_impact_minor ?? 0)}
+                            sub={
                                 s?.wallet_balance_minor != null
                                     ? `Balance ${rupees(s.wallet_balance_minor)}`
                                     : "Spent by the AI Manager today"
@@ -326,6 +316,11 @@ export default function HomeTab() {
 function pretty(p?: string | null): string {
     if (!p || p === "none") return "Not set";
     return p.charAt(0).toUpperCase() + p.slice(1);
+}
+
+// Skeleton value placeholder for a loading KpiCard (matches the dashboard).
+function SkVal() {
+    return <span className="skeleton inline-block h-7 w-20 align-middle" />;
 }
 
 function QuickTest({ onRun }: { onRun: (text: string) => void }) {

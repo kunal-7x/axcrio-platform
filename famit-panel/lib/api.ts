@@ -1,3 +1,9 @@
+// ROUND-6 LANE 4 — DYNAMIC permission registry: merge nav-derived module/page
+// nodes into the static FEATURE_REGISTRY so the super-admin matrix auto-tracks the
+// live sidebar (navRegistry imports only the TYPE back from here → no runtime
+// cycle; the runtime edge is api → navRegistry → contstants/navigation only).
+import { mergeNavRegistry } from "@/lib/navRegistry";
+
 // W15: exported (additive) so the reporting client (lib/report.ts) can hit the
 // W14 /report* seam through the SAME base + auth as every other call. No behaviour
 // change — these were already the module-internal base/auth used everywhere.
@@ -1562,8 +1568,17 @@ export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
 
 // Compose the fallback resolved matrix: every catalog node resolves to "on" with
 // provenance "global" (the resting/default-plan state — byte-identical to today).
+//
+// ROUND-6 LANE 4 — the matrix is now DYNAMIC: we merge the static seed with the
+// registry DERIVED FROM THE LIVE SIDEBAR NAV (lib/navRegistry) so any module the
+// founder can see in the rail (Creative Studio, Message/WhatsApp, Revenue Tools,
+// Knowledge Base, Integrations, the campaign SCRIPT / render-brain locks) shows up
+// as a lockable On/Lock/Hide row WITHOUT hand-editing this seed. The merge is
+// additive + dedup-by-key (navRegistry.mergeNavRegistry); the seed keeps authoring
+// any key it already defines. navRegistry imports only the TYPE from this module
+// (erased at runtime) so there is no import cycle.
 function fallbackEntitlements(): ResolvedEntitlement[] {
-    return FEATURE_REGISTRY.map((n) => ({
+    return mergeNavRegistry(FEATURE_REGISTRY).map((n) => ({
         ...n,
         mode: "on" as FeatureMode,
         provenance: "global" as EntitlementProvenance,

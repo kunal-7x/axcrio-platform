@@ -179,8 +179,10 @@ export default function RunPage() {
     // How many times an unanswered/busy lead is re-dialed, and how many minutes
     // to wait between attempts. Feeds the backend callback/retry scheduler
     // (max_retries / retry_interval_min in the run payload). 0 retries = call once.
-    const [maxRetries, setMaxRetries] = useState(2);
-    const [retryIntervalMin, setRetryIntervalMin] = useState(60);
+    // Default to 0 — only re-dial when the user explicitly opts in. A run dials
+    // each lead exactly once unless retry attempts are set above zero.
+    const [maxRetries, setMaxRetries] = useState(0);
+    const [retryIntervalMin, setRetryIntervalMin] = useState(0);
 
     // ── Retention & storage (recordings + transcripts) ──
     // Compliance-friendly default: store both, auto-trash after 30 days. The
@@ -1090,7 +1092,7 @@ export default function RunPage() {
 
                     {/* ③ Pacing & Handoff ────────────────────────────────── */}
                     {step === 2 && (
-                        <div key="step-2" className="step-reveal flex flex-col gap-4">
+                        <div key="step-2" className="step-reveal grid grid-cols-2 gap-4 items-start max-lg:grid-cols-1">
                             <Card title="Pacing & caps">
                                 <div className="px-5 pb-5 max-lg:px-3">
                                     {/* WAVE C: smart pacing-defaults chip (one-click, DID-protective, override-able) */}
@@ -1215,16 +1217,16 @@ export default function RunPage() {
                                             <Field
                                                 label="Minutes between attempts"
                                                 type="number"
-                                                min={5}
+                                                min={0}
                                                 step={5}
                                                 value={String(retryIntervalMin)}
                                                 onChange={(e) =>
                                                     setRetryIntervalMin(
                                                         Math.max(
-                                                            5,
+                                                            0,
                                                             parseInt(
                                                                 e.target.value
-                                                            ) || 5
+                                                            ) || 0
                                                         )
                                                     )
                                                 }
@@ -1255,6 +1257,7 @@ export default function RunPage() {
                             key="step-retention"
                             className="step-reveal flex flex-col gap-4"
                         >
+                          <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                             <Card title="Recordings">
                                 <div className="px-5 pb-5 max-lg:px-3">
                                     <RetentionToggle
@@ -1318,6 +1321,7 @@ export default function RunPage() {
                                     </p>
                                 </div>
                             </Card>
+                          </div>
 
                             <div className="flex items-start gap-2 p-3.5 rounded-3xl surface text-body-2 text-t-secondary">
                                 <Icon

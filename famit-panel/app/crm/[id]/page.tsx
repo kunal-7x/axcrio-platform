@@ -165,39 +165,57 @@ export default function ContactProfilePage() {
             .finally(() => setTlLoading(false));
     }, [id, kind, detail]);
 
-    // Lazy recordings — only fetched when the Recordings section is opened,
-    // paginated (recLimit rows). Re-fetches on recLimit change for "Load more".
+    // REFRESH-LOOP FIX: the contact `load` above refetches every 10s and hands a
+    // BRAND-NEW `detail` object each tick. Effects that depended on `detail` (the
+    // whole object) therefore refired every 10s — re-fetching the recordings +
+    // memory, swapping the presigned <audio src> for a fresh one mid-listen, and
+    // resetting the player so you could never click/play. We collapse the only
+    // thing those effects actually need — the contact's phone key — into a STABLE
+    // primitive string. It only changes when you open a different contact, so the
+    // 10s contact refresh no longer churns the recordings/memory queries.
+    const contactPhone = useMemo(() => {
+        const c = detail?.contact;
+        if (!c) return "";
+        return c.phone_key || c.phone_display || id || "";
+    }, [detail?.contact?.phone_key, detail?.contact?.phone_display, id]);
+
+    // Lazy recordings — fetched ONCE when the section opens (or the contact
+    // changes), keyed on the STABLE phone (not `detail`) so the 10s contact
+    // refresh never reloads the player out from under the user. "Load more" is a
+    // pure CLIENT slice (`recLimit`) over this single fetch — it does NOT re-hit
+    // the API, so incrementing it never mints fresh presigned URLs that would
+    // reset a row's <audio src> mid-listen.
+    const [allRecordings, setAllRecordings] = useState<Recording[]>([]);
     useEffect(() => {
         if (!recOpen) return;
-        const c = detail?.contact;
-        if (!c) return;
-        const phone = c.phone_key || c.phone_display || id;
-        if (!phone) return;
+        if (!contactPhone) return;
         setRecLoading(true);
-        getContactRecordings(phone)
-            .then((r) => setRecordings((r.recordings || []).slice(0, recLimit)))
-            .catch(() => setRecordings([]))
+        getContactRecordings(contactPhone)
+            .then((r) => setAllRecordings(r.recordings || []))
+            .catch(() => setAllRecordings([]))
             .finally(() => setRecLoading(false));
-    }, [recOpen, recLimit, detail, id]);
+    }, [recOpen, contactPhone]);
 
-    // Load the lead's durable memory + episode history (W4). Same phone key as
-    // recordings. Both client calls never throw -> the section degrades calmly.
+    // Client-side pagination: show `recLimit` of the fetched recordings.
     useEffect(() => {
-        const c = detail?.contact;
-        if (!c) return;
-        const phone = c.phone_key || c.phone_display || id;
-        if (!phone) {
+        setRecordings(allRecordings.slice(0, recLimit));
+    }, [allRecordings, recLimit]);
+
+    // Load the lead's durable memory + episode history (W4). Same STABLE phone key
+    // as recordings. Both client calls never throw -> the section degrades calmly.
+    useEffect(() => {
+        if (!contactPhone) {
             setMemLoading(false);
             return;
         }
         setMemLoading(true);
         Promise.all([
-            getLeadMemory(phone).then((r) => setMemory(r.memory)).catch(() => setMemory(null)),
-            getLeadEpisodes(phone, { limit: 50 })
+            getLeadMemory(contactPhone).then((r) => setMemory(r.memory)).catch(() => setMemory(null)),
+            getLeadEpisodes(contactPhone, { limit: 50 })
                 .then((r) => setEpisodes(r.episodes || []))
                 .catch(() => setEpisodes([])),
         ]).finally(() => setMemLoading(false));
-    }, [detail, id]);
+    }, [contactPhone]);
 
     const contact = detail?.contact;
     // Live API projects lead truth INTO `contact` (no separate top-level lead);
@@ -419,7 +437,7 @@ export default function ContactProfilePage() {
                                 onOpen={() => setRecOpen(true)}
                                 loading={recLoading}
                                 recordings={recordings}
-                                hasMore={recordings.length >= recLimit}
+                                hasMore={allRecordings.length > recordings.length}
                                 onLoadMore={() => setRecLimit((l) => l + 10)}
                             />
                         )}
