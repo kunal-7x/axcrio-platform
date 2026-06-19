@@ -145,10 +145,13 @@ class BrainPacks:
         directives.append(render_objection_directive(use_case))
         directives.append(language_directive())
         # W-VOICE-HEART: human-delivery rules — exactly ONE greeting (no re-greet/
-        # double-intro) + the name said sparingly at constant, un-emphasised volume.
-        # These are the PROMPT-side guarantees that ride with the worker-opener
-        # suppression so the kernel-ON outbound never re-greets or shouts the name.
-        directives.append(delivery_directive())
+        # double-intro), a time-aware "good morning/afternoon, hello sir" wish (never
+        # 'namaste'), identity confirmed BY THE LEAD'S REAL NAME, and the name said
+        # sparingly at constant, un-emphasised volume. These are the PROMPT-side
+        # guarantees that ride with the worker-opener suppression so the kernel-ON
+        # outbound never re-greets or shouts the name. `lead_name` is threaded from the
+        # live campaign fields (the agent injects it before assemble_prefix).
+        directives.append(delivery_directive(_str(fields, "lead_name")))
         objective_str = " ".join(d for d in directives if d).strip()
 
         return ModeLayer(
@@ -237,7 +240,7 @@ class BrainPacks:
             tier = self.default_disclosure_tier
         cfg = DisclosureConfig(
             tier=tier,
-            record_consent=bool(f.get("record_consent", True)),
+            record_consent=bool(f.get("record_consent", False)),  # OPT-IN; never say recording unless campaign asks
             channel=_str(f, "direction", "outbound") or "outbound",
             language="english" if _str(f, "language").lower().startswith("eng") else "hinglish",
             vendor_script_disclosure=_str(f, "vendor_script_disclosure"),

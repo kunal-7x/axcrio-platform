@@ -141,7 +141,10 @@ class DisclosureConfig:
     aligned, in-force-compliant)."""
 
     tier: DisclosureTier = DisclosureTier.BRAND_IDENTITY
-    record_consent: bool = True  # DPDP record-notice cue ON by default
+    # FOUNDER HARD-RULE: the call must NEVER say "यह कॉल रिकॉर्डिंग के लिए सेव हो सकती है".
+    # The record-consent cue is OPT-IN, OFF by default — emitted ONLY when a campaign
+    # explicitly sets record_consent=True. Default False => no recording line is ever spoken.
+    record_consent: bool = False
     channel: str = "outbound"  # outbound | inbound
     language: str = "hinglish"  # hinglish | english (mirrors lead at runtime)
     # vendor_script_disclosure: an OPTIONAL tenant-provided disclosure line. It is
@@ -316,7 +319,7 @@ def build_structural_identity(fields: dict, *, safety_rules: str = "", agent_nam
     lang = str(f.get("language", "")).strip().lower()
     cfg = DisclosureConfig(
         tier=_tier_from_fields(f),
-        record_consent=bool(f.get("record_consent", True)),
+        record_consent=bool(f.get("record_consent", False)),  # OPT-IN; never say recording unless campaign asks
         channel=str(f.get("direction", "outbound")).strip() or "outbound",
         language="english" if lang.startswith("eng") else "hinglish",
         # vendor free-text disclosure is UNTRUSTED -> block-list-scanned, not trusted verbatim.

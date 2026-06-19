@@ -6,11 +6,17 @@ delivers it, and these are PROMPT rules (not TTS knobs):
   * #1/#5  double greeting + double intro -> exactly ONE greeting; after the opener
            turn, NEVER re-greet or repeat the intro (the kernel owns the single
            greeting; the worker's spoken opener is suppressed on KERNEL_OUTBOUND).
+  * STYLE  the greeting is a time-aware English-Hindi wish ("good morning / good
+           afternoon / good evening, hello sir") — NEVER 'namaste'/'namaskar' — and
+           confirms identity BY THE LEAD'S REAL NAME ("क्या मेरी बात {name} से हो रही है?"),
+           never the generic 'सही व्यक्ति'.
   * #3a    the lead's name said again and again every line -> say the name AT MOST
            once or twice in the WHOLE call, naturally, never as a per-turn prefix.
   * #3b    the name too LOUD / too fast -> say it at the SAME normal volume + pace
            as every other word; no exclamation, ALL-CAPS, or emphasis markup on the
-           name (loud-on-name is a TEXT->prosody artifact, killed in the prompt).
+           name (loud-on-name is a TEXT->prosody artifact, killed in the prompt). The
+           same no-shout rule covers fillers/acknowledgements: 'ठीक है' never 'ठीक है!',
+           never an ALL-CAPS Hindi word.
 
 These render as ONE compact directive block appended to the L1 objective layer, so
 they ship on the kernel-ON outbound path (and inbound). They are pure BEHAVIOR text
@@ -28,36 +34,64 @@ SINGLE_GREETING_CUE = "SINGLE GREETING:"
 NO_EMPHASIS_CUE = "no emphasis"
 
 
-def name_directive() -> str:
-    """How to use the lead's name (sparingly + at constant volume). Behavioral —
-    contains NO actual name; the runtime lead_name is referenced abstractly."""
+def name_directive(lead_name: str = "") -> str:
+    """How to use the lead's name (sparingly + at constant volume, NEVER shouted).
+    `lead_name` is the runtime caller name (may be empty); when present we instruct
+    the model to confirm identity BY NAME, never with a generic 'sahi vyakti'."""
+    name = (lead_name or "").strip()
+    name_clause = (
+        f"The caller's name is '{name}'. "
+        if name else "If you know the caller's name, "
+    )
     return (
-        f"{NAME_DIRECTIVE_CUE} use the caller's name AT MOST once or twice in the WHOLE call "
+        f"{NAME_DIRECTIVE_CUE} {name_clause}use it AT MOST once or twice in the WHOLE call "
         "(naturally, e.g. once at the greeting to confirm identity) — NEVER prefix every turn "
-        "with their name and never repeat it line after line. Say the name at the SAME normal "
-        f"volume and pace as the rest of the sentence: {NO_EMPHASIS_CUE} — no exclamation, no "
-        "ALL-CAPS, no drawn-out or louder/faster delivery on the name token."
+        "with their name and never repeat it line after line. Say the name at the SAME normal, "
+        f"calm volume and pace as the rest of the sentence: {NO_EMPHASIS_CUE} — no exclamation "
+        "mark, no ALL-CAPS, no drawn-out or louder/faster delivery on the name token. The SAME "
+        "no-shout rule applies to EVERY word: never write a whole Hindi/Hinglish word in CAPITALS "
+        "and never put an exclamation mark ('!') on a filler or acknowledgement (e.g. write "
+        "'ठीक है', NEVER 'ठीक है!' or ' बढ़िया!') — keep all fillers/acknowledgements soft and even."
     )
 
 
-def single_greeting_directive() -> str:
+def single_greeting_directive(lead_name: str = "") -> str:
     """Exactly ONE greeting for the whole call; after the opening turn never re-greet
     or repeat the self-intro. This is the PROMPT-side single-greeting guarantee that
     rides ALONGSIDE the worker-opener suppression (Hunk H) — so even if the model is
     nudged to open, it greets ONCE and then only advances the conversation. Closes the
-    red-team's 'kernel prefix has no opener-already-said' gap directly."""
+    red-team's 'kernel prefix has no opener-already-said' gap directly.
+
+    GREETING STYLE (founder hard-rule): the time-of-day wish is the ENGLISH-Hindi mix
+    "good morning / good afternoon / good evening, hello sir" (chosen by the real IST
+    time of day) — NEVER 'namaste'/'namaskar'. Identity is confirmed BY NAME when the
+    caller's name is known: "क्या मेरी बात {name} से हो रही है?" — never the generic
+    "क्या मैं सही व्यक्ति से बात कर रहा/रही हूँ"."""
+    name = (lead_name or "").strip()
+    confirm = (
+        f"confirm you are speaking with them BY NAME — say exactly "
+        f"\"क्या मेरी बात {name} से हो रही है?\" (use the real name '{name}', "
+        f"NEVER the generic 'सही व्यक्ति'/'right person')"
+        if name else
+        "confirm you are speaking with the right person by their name if you have it"
+    )
     return (
-        f"{SINGLE_GREETING_CUE} greet the caller EXACTLY ONCE, in your opening turn "
-        "(time-of-day wish -> greetings from the company -> confirm you're speaking with the "
-        "right person -> WAIT for their reply -> reason for calling + permission). After that "
-        "opening turn, do NOT greet again, do NOT say 'namaste/hello' again, and do NOT repeat "
-        "your name/company/intro — just respond and move the conversation forward."
+        f"{SINGLE_GREETING_CUE} greet the caller EXACTLY ONCE, in your opening turn, like this: "
+        "open with a warm time-of-day wish in English-Hindi mix — \"good morning\" before noon, "
+        "\"good afternoon\" till evening, else \"good evening\", followed by \"hello sir\" "
+        "(or \"hello ma'am\") — NEVER say 'namaste' or 'namaskar'. Then briefly say who you are "
+        f"and the company, {confirm} -> WAIT for their reply -> then the reason for calling + "
+        "permission. After that opening turn, do NOT greet again, do NOT say any greeting "
+        "('namaste'/'hello'/'good morning') again, and do NOT repeat your name/company/intro — "
+        "just respond to what they said and move the conversation forward. If the conversation "
+        "has already started, you have ALREADY greeted: never restate the intro or greeting."
     )
 
 
-def delivery_directive() -> str:
-    """The combined single-greeting + name-use delivery block for the prompt."""
-    return f"{single_greeting_directive()} {name_directive()}"
+def delivery_directive(lead_name: str = "") -> str:
+    """The combined single-greeting + name-use delivery block for the prompt. Threads
+    the runtime `lead_name` so the greeting confirms identity by the real name."""
+    return f"{single_greeting_directive(lead_name)} {name_directive(lead_name)}"
 
 
 # --------------------------------------------------------------------------- #

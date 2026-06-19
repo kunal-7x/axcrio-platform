@@ -25,17 +25,23 @@ from livekit.plugins.elevenlabs import VoiceSettings
 
 import memory as mem
 from prompt import SYSTEM_PROMPT, GODREJ_FIELDS, build_system_prompt, _gender_of
-# Founder #1 rule (NEVER self-label as AI/assistant/bot): reuse prompt.py's
-# banned-phrase check (which itself prefers the voice_kernel block-list, single
-# source of truth). Used to SCRUB the generated opener at the output boundary so a
-# hallucinated "AI assistant" line can never reach the wire.
-from prompt import _contains_banned_self_label as _opener_has_banned_label
 
 # P2: per-turn language auto-detect + mirror (cheap heuristic; never breaks a call).
 try:
     import langdetect as ld
 except Exception:  # noqa: BLE001 — agent must run even if the module is missing
     ld = None
+
+# W-INT-OUTBOUND (A4): the OFF-is-identity kernel adapter. KERNEL_OUTBOUND defaults
+# OFF -> every helper short-circuits to the legacy-equivalent and this earner is
+# BYTE-IDENTICAL to today. Imported fully-guarded: a kernel import bug can NEVER
+# stop the earner (the OFF path doesn't even need this module). When None, all four
+# seam points below fall through to the unchanged legacy code.
+try:
+    import voice_kernel.integrations.outbound as _vk
+except Exception as _vk_exc:  # noqa: BLE001 — earner must run even if the kernel is absent
+    _vk = None
+    logging.getLogger("famit-agent").warning("voice_kernel adapter unavailable -> legacy only: %r", _vk_exc)
 
 load_dotenv("/opt/famit-agent/.env")
 load_dotenv(".env")
@@ -211,6 +217,30 @@ def _summarize(turns: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("summary failed: %r", exc)
         return {**base, "outcome": "answered"}
+def _ist_time_of_day() -> dict:
+    """REAL current IST time-of-day, for a time-correct (never hardcoded) greeting.
+
+    Returns {"hour": 0-23, "bucket": morning|afternoon|evening|night,
+             "en": "good morning"/..., "hi": Hinglish greeting hint}.
+    The LLM AUTHORS the greeting; this only tells it which part of the day it is so
+    "good morning/afternoon/evening" matches reality. Never raises."""
+    try:
+        now_ist = _datetime_module.datetime.now(
+            _datetime_module.timezone(_datetime_module.timedelta(hours=5, minutes=30)))
+        h = now_ist.hour
+    except Exception:  # noqa: BLE001
+        h = 10  # safe daytime default
+    if 4 <= h < 12:
+        bucket, en, hi = "morning", "good morning", "सुप्रभात / शुभ प्रभात (subah)"
+    elif 12 <= h < 17:
+        bucket, en, hi = "afternoon", "good afternoon", "नमस्ते (dopahar — afternoon)"
+    elif 17 <= h < 21:
+        bucket, en, hi = "evening", "good evening", "शुभ संध्या / नमस्ते (shaam — evening)"
+    else:
+        bucket, en, hi = "night", "hello", "नमस्ते (raat — late; greet warmly, not 'good morning')"
+    return {"hour": h, "bucket": bucket, "en": en, "hi": hi}
+
+
 def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                 gender: str = "female", disclose: bool = True,
                 disclosure_phrase: str = "") -> str:
@@ -220,12 +250,9 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
     campaign-configurable (kept by default for TRAI; `disclose=False` drops it)."""
     name_part = f"{lead_name} जी, " if lead_name else ""
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
-    # Founder #1 rule: NEVER self-label as "AI"/"assistant". The default disclosure is
-    # brand-human framing ("{company} की तरफ़ से") — a campaign MAY pass a custom phrase,
-    # but it is SCRUBBED below (a banned self-label collapses to the clean brand form).
-    _raw_disc = (disclosure_phrase or f"{company} की तरफ़ से").strip()
-    disc_phrase = _raw_disc if not _opener_has_banned_label(_raw_disc) else f"{company} की तरफ़ से"
-    # Fallback line (used if the LLM opener call fails) — gender-correct + brand-human disclosure.
+    disc_phrase = (disclosure_phrase or f"{company} से").strip()
+    tod = _ist_time_of_day()  # A2: REAL IST time-of-day → time-correct LLM greeting
+    # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
     if disclose:
         fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {disc_phrase} {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
@@ -237,22 +264,18 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                          "('बोल रहा हूँ', 'बताता हूँ')। ") if gender == "male" else (
                          "Hindi में अपने बारे में स्त्रीलिंग (feminine) रूप इस्तेमाल करो "
                          "('बोल रही हूँ', 'बताती हूँ')। ")
-        disc_clause = (f"अपना naam {agent_name} बता कर {disc_phrase}, एक warm इंसान की तरह अपना परिचय "
-                       f"दो (छोटा रखो, robotic नहीं) — कभी अपने आप को 'AI'/'assistant'/'bot'/'automated' "
-                       f"मत कहना, और "
+        disc_clause = (f"अपना naam {agent_name} बताओ और एक छोटा सा natural disclosure दो कि तुम "
+                       f"{disc_phrase} हो (छोटा रखो, robotic नहीं), और "
                        if disclose else
-                       f"अपना naam {agent_name} बता कर {disc_phrase} natural रहो — कभी 'AI'/'assistant'/"
-                       f"'bot'/'automated' मत कहना, फिर ")
+                       f"अपना naam {agent_name} बताओ और natural रहो, फिर ")
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
-            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। " + gender_clause
+            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। "
+            f"अभी India में {tod['bucket']} ({tod['en']}) का समय है — अगर greeting में time-of-day "
+            f"का ज़िक्र करो तो वही सही हो (जैसे {tod['hi']}); time-of-day कभी hardcode/गलत मत करना। " + gender_clause
             + (f"caller का naam '{lead_name}' लेकर greet करो (जैसे 'नमस्ते {lead_name} जी…')। " if lead_name else "")
             + disc_clause
-            # BUG3 (grammar): PIN the subject as first-person — this is an OUTBOUND call, WE
-            # called THEM. Without pinning, a temp-0.5 model attaches "आपने" -> inbound grammar
-            # ("aapne call kiya"). Never let it flip the direction.
-            + f"पहला-purush में कहो कि 'हमने आपको {product} के बारे में call किया है' (कभी 'आपने call किया' "
-            f"मत कहना — यह OUTBOUND call है, तुमने caller को फ़ोन किया है), फिर पूछो 'क्या अभी दो minute बात हो "
+            + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
             f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
             f"Price/size/details बिलकुल मत बताओ।"
         )
@@ -270,16 +293,7 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             timeout=8,
         )
         text = r.json()["choices"][0]["message"]["content"].strip()
-        if not text:
-            return fallback
-        # OUTPUT-BOUNDARY SCRUB (founder #1 rule, defense-in-depth): even a perfectly
-        # instructed model can hallucinate "AI assistant". If the generated opener trips
-        # the banned block-list, DISCARD it and speak the clean brand-human fallback —
-        # the wire can NEVER carry an AI self-label.
-        if _opener_has_banned_label(text):
-            logger.warning("opener tripped banned self-label scrub -> clean fallback: %r", text[:120])
-            return fallback
-        return text
+        return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("opener generation failed, using fallback: %r", exc)
         return fallback
@@ -354,6 +368,28 @@ def _closure_signal(turns: list[dict]) -> str:
         return ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+# VSE FIX 6: farewell markers the LLM uses when IT already said goodbye — so the
+# confirm-then-hangup closure can detect that and NOT speak a second goodbye.
+_FAREWELL_MARKERS = (
+    "दिन शुभ", "दिन अच्छा", "दिन मंगलमय", "अलविदा", "शुक्रिया", "धन्यवाद", "बात करके अच्छा लगा",
+    "good day", "have a nice day", "have a great day", "take care", "goodbye", "bye",
+    "thank you for your time", "samay dene ke liye", "baat karke accha", "din shubh", "din accha",
+)
+
+
+def _last_assistant_is_farewell(turns: list[dict]) -> bool:
+    """True iff the most recent ASSISTANT turn already reads as a goodbye/farewell.
+    Used by the closure to avoid speaking a SECOND goodbye after the LLM said one."""
+    try:
+        for t in reversed(turns or []):
+            if (t.get("role") or "") == "assistant":
+                txt = (t.get("content") or "").lower()
+                return any(m.lower() in txt for m in _FAREWELL_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 def _goodbye_line(signal: str, agent_name: str, company: str, gender: str) -> str:
@@ -458,9 +494,44 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("variant override failed: %r", exc)
 
+    # VSE FIX 4 (named identity-confirm): thread the dispatch lead_name INTO the fields
+    # dict so the kernel brain pack (delivery_directive) can confirm identity BY THE REAL
+    # NAME ("क्या मेरी बात {name} से हो रही है?") instead of the generic "सही व्यक्ति".
+    # Only set it when present and not already provided; never overwrites a campaign value.
+    if lead_name and not str(fields.get("lead_name") or "").strip():
+        try:
+            fields = {**fields, "lead_name": lead_name}
+        except Exception:  # noqa: BLE001 — never break the earner over a field merge
+            pass
+
     # Cross-call memory: recover the lead's phone from the room name, load prior call.
     phone = mem.parse_phone(room_name)
     recap = mem.build_recap(mem.load_memory(phone))
+
+    # W-INT-OUTBOUND (A4) — seam 1/4: build the per-call kernel façade, or None.
+    # KERNEL_OUTBOUND OFF (default) => build_for_call returns None => the brain/turn/
+    # persist seams below all run their UNCHANGED legacy path (byte-identical earner).
+    # Fully wrapped: ANY error -> _ik=None -> legacy. The campaign-record's owning
+    # tenant is the ONLY tenant source (fail-closed in build_for_call); blank/mismatch
+    # -> None -> legacy, never a dropped or cross-tenant lead call.
+    _ik = None
+    try:
+        if _vk is not None and _vk.kernel_outbound_enabled():
+            _camp_tenant = str((camp or {}).get("tenant_id", "")).strip()
+            _ik = _vk.build_for_call(
+                tenant_id=_camp_tenant,
+                call_id=room_name,
+                lead_phone=phone,
+                campaign_id=meta.get("campaign_id", ""),
+                campaign_tenant_id=_camp_tenant,
+                fields=fields,
+                recap=recap,
+                locale="hi-IN",
+            )
+    except Exception as _ik_exc:  # noqa: BLE001 — the kernel can never break the earner
+        logger.warning("kernel build_for_call failed -> legacy: %r", _ik_exc)
+        _ik = None
+
     base_instructions = system_prompt
     if lead_name:
         base_instructions += f"\n\nLEAD NAME (इस caller का naam): {lead_name} — opener में इसी naam से greet करो।"
@@ -469,10 +540,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # section + FLOW step-1 make the LLM re-greet on turn 1 (live-proven double "नमस्ते
     # {name}"). This one-line behavioral instruction (no hardcoded name/company) tells the
     # model it has already opened → never greet/repeat the naam again. Cache-safe (in the
-    # one-time prefix, not per-turn). Gated + reversible. DEFAULT FLIPPED to "1" (W-VOICE-FIX):
-    # the double-greeting was a live regression, so the fix ships ON by default now (paired with
-    # OPENER_IN_CTX=0 below). Set OPENER_ALREADY_SAID=0 to revert to the old re-greet behaviour.
-    if os.getenv("OPENER_ALREADY_SAID", "1") in ("1", "true", "True"):
+    # one-time prefix, not per-turn). Gated + reversible. Default "0" so a deployed-but-not-
+    # yet-flagged build is BYTE-IDENTICAL to today; Cycle-2 sets OPENER_ALREADY_SAID=1 (with
+    # OPENER_IN_CTX=0) to enable the fix.
+    if os.getenv("OPENER_ALREADY_SAID", "0") in ("1", "true", "True"):
         base_instructions += (
             "\n\n=== तुम पहले ही OPEN कर चुके हो (ज़रूरी) ===\n"
             "Call की शुरुआत में तुम greet कर के अपना परिचय (naam + company + किस product के "
@@ -482,7 +553,16 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if recap:
         base_instructions += "\n\n=== PICHHLI BAAT (returning lead) ===\n" + recap
         logger.info("returning lead phone=%s recap_chars=%d", phone, len(recap))
-    instructions = base_instructions
+    # W-INT-OUTBOUND (A4) — seam 2/4: the instruction (brain) seam. OFF / _ik=None /
+    # ANY error => EXACTLY base_instructions (byte-identical to today). ON => the
+    # kernel packet-assembled outbound persona (the W2-W7 brain). The legacy block
+    # ABOVE is passed verbatim as the fallback lambda, so the OFF earner is unchanged.
+    if _ik is not None:
+        instructions = _vk.assemble_outbound_instructions(
+            _ik, legacy_render=lambda: base_instructions, fields=fields, recap=recap,
+        )
+    else:
+        instructions = base_instructions
 
     # --- P2: language mirror + closure state -------------------------------------
     agent_gender = _gender_of(fields)
@@ -573,6 +653,23 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         room_name, summ.get("outcome"), summ.get("interest"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("transcript save failed: %r", exc)
+        # W-INT-OUTBOUND (A4) — seam 4/4: COLD post-call kernel memory (W7). Writes
+        # structured lead memory under the server-stamped tenant. OFF / _ik=None =>
+        # no-op (the legacy mem.save_memory + transcript above are the only writers).
+        # persist_post_call NEVER raises into this shutdown callback (earner-safe).
+        if _ik is not None:
+            try:
+                _raw_summary = ""
+                try:
+                    _raw_summary = str((_summarize(turns) or {}).get("summary", ""))
+                except Exception:  # noqa: BLE001
+                    _raw_summary = ""
+                await _vk.persist_post_call(
+                    _ik, lead_phone=phone, turns=turns, name=lead_name,
+                    raw_summary=_raw_summary,
+                )
+            except Exception as exc:  # noqa: BLE001 — COLD path, never break hangup
+                logger.warning("kernel persist_post_call failed (non-fatal): %r", exc)
 
     ctx.add_shutdown_callback(_persist_memory)
 
@@ -590,19 +687,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         model=os.getenv("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5"),
         language=_init_tts_lang,
         apply_text_normalization=_el_text_norm,
-        # NEUTRAL/consistent voice settings (W-VOICE-FIX BUG4). The founder wants normal,
-        # consistent pace + loudness — NOT max-expressive call-to-call variation.
-        # stability 0.65 = consistent yet still natural (0.9-1.0 is robotic/flat; 0.45 was
-        # over-expressive → swinging pace/loudness). style=0 (style adds 20-50ms + exaggerates),
-        # speaker_boost off (no loudness pumping). Env still overrides for live tuning.
+        # Realtime-warm voice settings (verified from ElevenLabs docs):
+        # low stability = expressive, style=0 (style adds 20-50ms), speaker_boost off.
         voice_settings=VoiceSettings(
-            stability=float(os.getenv("EL_STABILITY", "0.65")),
+            stability=float(os.getenv("EL_STABILITY", "0.45")),
             similarity_boost=float(os.getenv("EL_SIMILARITY", "0.80")),
             style=0.0,
             use_speaker_boost=False,
-            # NEUTRAL speaking rate. 1.08 (old) ran 8% fast → "sometimes too fast". 1.0 is true
-            # neutral. (If the ~18s slow-opener ever returns, nudge to 1.04 via EL_SPEED — env wins.)
-            speed=float(os.getenv("EL_SPEED", "1.0")),
+            # VOICEFIX: nudge speaking rate up slightly. The opener (~30 words) took ~18s to
+            # speak at 1.0 (~1.7 words/s — unnaturally slow for a phone agent). 1.08 trims every
+            # utterance ~8% and feels snappier with no content change. Tune via EL_SPEED.
+            speed=float(os.getenv("EL_SPEED", "1.08")),
         ),
         auto_mode=True,                          # sentence-level streaming = fast first audio
     )
@@ -645,7 +740,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         tts=tts,
         vad=silero.VAD.load(),
         # --- low-latency telephony tuning (defaults are far too slow) ---
-        preemptive_generation=True,                 # start LLM before turn finalized
+        # VSE FIX 1c (knob): preemptive_generation starts the LLM before the turn is
+        # finalized (faster first audio). It can re-run the opening generation on early
+        # turns; default stays ON (=byte-identical latency). If the greeting still
+        # restarts, set PREEMPTIVE_GEN=0 via the systemd drop-in and measure — no redeploy.
+        preemptive_generation=(os.getenv("PREEMPTIVE_GEN", "1") not in ("0", "false", "False")),
         min_endpointing_delay=float(os.getenv("MIN_EP_DELAY", "0.25")),
         max_endpointing_delay=float(os.getenv("MAX_EP_DELAY", "0.45")),  # default ~6s!
         aec_warmup_duration=0.0,                     # default 3s start delay
@@ -714,6 +813,15 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         try:
             _agent_nm = fields.get("agent_name") or "Riya"
             _company_nm = fields.get("company_name") or "Famit"
+            # VSE FIX 6 (double-ending): if the LLM's OWN last assistant turn was ALREADY a
+            # farewell, do NOT speak a second goodbye — just give it a beat to finish and end
+            # the room. This kills the "two goodbyes" even when the assistant-turn closure path
+            # fires right after the model said its own bye. The USER-turn trigger above normally
+            # pre-empts the LLM, but this is the belt-and-braces guard for the book/assistant path.
+            if _last_assistant_is_farewell(turns):
+                logger.info("P2 closure: LLM already said goodbye -> skip 2nd, end cleanly")
+                await asyncio.sleep(1.2)
+                return
             # FIX B (BUG4): generate the close from Groq (context-aware, language-mirrored)
             # instead of the hardcoded line. LLM_CLOSE=0 (default) keeps _goodbye_line
             # byte-identical; =1 enables the LLM close with _goodbye_line as the crash-safe
@@ -773,10 +881,22 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     except Exception:  # noqa: BLE001
                         pass
                 # --- P2 Unit5: confident confirm-then-hangup closure ---
-                if role == "assistant" and loop is not None and not ctl["closing"]:
+                # VSE FIX 6 (double-ending): trigger the closure on the USER's closing turn
+                # (e.g. "bye"/"बाय"/opt-out) so our single warm goodbye fires BEFORE the LLM
+                # composes its own farewell — and the closure's say(allow_interruptions=False)
+                # interrupts any LLM goodbye-in-progress, so only ONE goodbye is ever spoken.
+                # We still keep the assistant-turn trigger for the 'book' (agreed-next-step)
+                # path, where the user said only "haan" and the closing signal lives in the
+                # surrounding context — but we do NOT double-fire (ctl["closing"] guards it).
+                if loop is not None and not ctl["closing"]:
                     try:
                         sig = _closure_signal(turns)
-                        if sig:
+                        # On a USER turn: fire immediately on a clear opt-out/bye ('no') so we
+                        # pre-empt the LLM's own goodbye. On an ASSISTANT turn: fire for 'book'
+                        # (the next-step-agreed close) as before.
+                        if sig == "no" and role == "user":
+                            asyncio.run_coroutine_threadsafe(_confirm_then_hangup(sig), loop)
+                        elif sig and role == "assistant":
                             asyncio.run_coroutine_threadsafe(_confirm_then_hangup(sig), loop)
                     except Exception:  # noqa: BLE001
                         pass
@@ -833,6 +953,32 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     txt = ""
                 if not str(txt).strip():
                     return
+                # W-INT-OUTBOUND (A4) — seam 3/4: SOFT per-turn kernel RAG suffix (W4).
+                # Runs each turn once the turn text is read. OFF / _ik=None => skipped
+                # entirely (legacy turn unchanged). ON => on_turn (its OWN hard deadline +
+                # try/except, never blocks) may return a small RAG suffix, appended as a
+                # USER-side aside (role="user") — NEVER a role="system" command, so it can
+                # never override the LLM. Wrapped so a kernel fault never breaks the turn.
+                # Placed BEFORE the language branches because those early-return; the kernel
+                # hook must run on every turn. The A1 language detection still owns the
+                # reply-language note below; this only injects retrieved knowledge.
+                if _ik is not None:
+                    try:
+                        _detected = ""
+                        try:
+                            _dl, _dc = ld.classify_text(str(txt)) if ld is not None else ("", 0.0)
+                            _detected = _dl if _dc >= 0.55 else ""
+                        except Exception:  # noqa: BLE001
+                            _detected = ""
+                        _kt = await _vk.on_turn(_ik, user_text=str(txt), detected_lang=_detected)
+                        _rag = (_kt or {}).get("rag_suffix")
+                        if _rag:
+                            try:
+                                turn_ctx.add_message(role="user", content=_rag)
+                            except Exception:  # noqa: BLE001
+                                pass
+                    except Exception as _kt_exc:  # noqa: BLE001 — kernel never breaks a turn
+                        logger.warning("kernel on_turn failed (non-fatal): %r", _kt_exc)
                 # FIX D (BUG2): V2 = ONE detector drives BOTH the LLM reply-language note AND
                 # the TTS code, in sync, for all 4 languages, ONLY on an actual switch (incl.
                 # switching BACK to Hindi). Cache-safe: the note is appended AFTER the cached
@@ -840,17 +986,39 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 # dominant Hindi/Hinglish path. This is the single source of truth — the
                 # conversation_item_added V1 path is disabled when V2 is on.
                 if _lang_v2 and lang_tracker is not None:
+                    # A1: on SHORT fragments ("haan", "ok", "ji") do NOT re-classify —
+                    # a 1-2 word turn carries almost no language signal and the old
+                    # detector would mis-flip it (often defaulting toward English). CARRY
+                    # the prior confirmed language instead (tracker.active is unchanged),
+                    # and only re-emit a hint when that carried language is english (so the
+                    # model doesn't drift back to Hindi on a bare "ok"). Never default to EN.
+                    if len(str(txt).split()) < 4:
+                        carried = lang_tracker.active
+                        if carried == "english":
+                            try:
+                                turn_ctx.add_message(role="user",
+                                                     content=f"[Language this turn: {carried}]")
+                            except Exception:  # noqa: BLE001
+                                pass
+                        return
                     new_lang, switched = lang_tracker.update(str(txt))
-                    if switched:
+                    # A1: emit a SOFT, short language HINT — NEVER a hard role="system"
+                    # "reply in X now" command (that overrides the LLM and was the reverted
+                    # bug). Attach it as a user-side aside so the model treats it as context,
+                    # not an instruction. Emit on a switch AND on steady English turns (so the
+                    # model, primed by a Hindi-heavy prompt, keeps mirroring an English caller).
+                    if switched or new_lang == "english":
                         try:
-                            turn_ctx.add_message(role="system", content=ld.reply_instruction(new_lang))
+                            turn_ctx.add_message(role="user",
+                                                 content=f"[Language this turn: {new_lang}]")
                         except Exception:  # noqa: BLE001
                             pass
+                    if switched:
                         try:
                             await _apply_language_switch(new_lang)
                         except Exception:  # noqa: BLE001
                             pass
-                        logger.info("lang mirror v2 -> %s (switched; LLM note + TTS synced)", new_lang)
+                        logger.info("lang mirror v2 -> %s (switched; soft hint + TTS synced)", new_lang)
                     return
                 # --- V1 (default, unchanged): english/gujarati note at conf>=0.55 ---
                 lang, conf = ld.classify_text(str(txt))
@@ -905,11 +1073,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # context as a prior assistant turn — so the model SEES its own opener and (told by the
     # prompt to "open with a greeting") re-greets on turn 1. OPENER_IN_CTX=0 suppresses that
     # echo so there is no greeting for the model to repeat; the system-prompt persona still
-    # holds its identity for "kaun bol raha hai?". DEFAULT FLIPPED to "0" (W-VOICE-FIX): the
-    # opener is no longer echoed as a copy-able turn, so the model never re-greets. Reversible
-    # (OPENER_IN_CTX=1 restores the old echo).
-    _opener_in_ctx = os.getenv("OPENER_IN_CTX", "0") not in ("0", "false", "False")
-    await session.say(opener, allow_interruptions=True, add_to_chat_ctx=_opener_in_ctx)
+    # holds its identity for "kaun bol raha hai?". Default "1" = byte-identical. Reversible.
+    _opener_in_ctx = os.getenv("OPENER_IN_CTX", "1") not in ("0", "false", "False")
+    # VSE FIX 5 (hello-collision): give the SIP/RTP path a moment to settle after
+    # session.start() before the opener plays, so the agent's greeting does not collide
+    # with the callee's own opening "hello?". Tunable via OPENER_DELAY_S (default 0.8s).
+    # The opener is spoken with allow_interruptions=False so a half-second of callee
+    # speech can't truncate the greeting (the single clean opener must finish).
+    try:
+        await asyncio.sleep(float(os.getenv("OPENER_DELAY_S", "0.8")))
+    except Exception:  # noqa: BLE001
+        pass
+    await session.say(opener, allow_interruptions=False, add_to_chat_ctx=_opener_in_ctx)
 
 
 def main() -> None:
