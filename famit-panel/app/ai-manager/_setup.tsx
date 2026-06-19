@@ -16,6 +16,7 @@ import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
+import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { useMe, canWrite, isAdmin } from "@/lib/auth";
 import {
     ErrorBanner,
@@ -1270,12 +1271,15 @@ function NumbersCard({
     onAdded: (msg: string) => void;
 }) {
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [delTarget, setDelTarget] = useState<AimNumber | null>(null);
 
     const rows = numbers?.kind === "ok" ? numbers.data.numbers : [];
     const numsDormant = dormant || numbers?.kind === "dormant";
 
-    async function handleDelete(n: AimNumber) {
-        if (!confirm(`Remove ${n.phone} (${n.label || "unlabelled"})? This cannot be undone.`)) return;
+    async function confirmDelete() {
+        const n = delTarget;
+        if (!n) return;
+        setDelTarget(null);
         setDeletingId(n.number_id);
         try {
             await deleteAimNumber(n.number_id);
@@ -1374,7 +1378,7 @@ function NumbersCard({
                                                     icon="delete"
                                                     label={deletingId === n.number_id ? "Removing…" : "Remove"}
                                                     danger
-                                                    onClick={() => handleDelete(n)}
+                                                    onClick={() => setDelTarget(n)}
                                                 />
                                             </td>
                                         )}
@@ -1393,6 +1397,24 @@ function NumbersCard({
                     onError={onError}
                 />
             )}
+
+            <ConfirmDeleteModal
+                open={!!delTarget}
+                onClose={() => setDelTarget(null)}
+                onConfirm={confirmDelete}
+                title="Remove this number?"
+                message={
+                    <>
+                        Remove{" "}
+                        <span className="text-t-primary tabular-nums">
+                            {delTarget?.phone}
+                        </span>{" "}
+                        ({delTarget?.label || "unlabelled"}) from AI Manager?
+                        This cannot be undone.
+                    </>
+                }
+                confirmLabel="Remove"
+            />
         </>
     );
 }

@@ -55,16 +55,45 @@ const TEMP_VIEWS: (SelectOption & { key: "all" | Temperature })[] = [
     { id: 5, name: "Dead", key: "dead" },
 ];
 
-// Sort options — map to the backend GET /leads `sort` param. "recent" (newest
-// first) is the default the founder asked for. Each option's `id` carries the
-// raw sort key the API expects.
-const SORTS: (SelectOption & { sort: string })[] = [
-    { id: 1, name: "Newest first", sort: "recent" },
-    { id: 2, name: "Oldest first", sort: "oldest" },
-    { id: 3, name: "Name (A–Z)", sort: "name" },
-    { id: 4, name: "Status", sort: "status" },
-    { id: 5, name: "Score (high→low)", sort: "score" },
+// ROUND-5 LANE A — CLICK-TO-SORT column headers (mirrors CRM exactly). Every
+// header is clickable; clicking sorts across ALL records via the backend
+// `sort_by`/`order` params (same contract CRM uses), with a client-side sort over
+// the loaded pages as the graceful fallback. The sortable columns + the backend
+// sort_by key each maps to. The `added` column maps to the box's recency sort.
+type LeadSortKey =
+    | "name"
+    | "phone"
+    | "temperature"
+    | "status"
+    | "score"
+    | "last_outcome"
+    | "added_at";
+
+// Every column header is clickable. `className` mirrors the responsive
+// hide-on-narrow rules already on the body cells so header + cell stay aligned.
+const LEAD_COLS: { label: string; key: LeadSortKey; className?: string }[] = [
+    { label: "Name", key: "name" },
+    { label: "Phone", key: "phone" },
+    { label: "Temperature", key: "temperature" },
+    { label: "Status", key: "status", className: "max-md:hidden" },
+    { label: "Lead", key: "score" },
+    { label: "Last outcome", key: "last_outcome", className: "max-lg:hidden" },
+    { label: "Added", key: "added_at", className: "text-right" },
 ];
+
+// Temperature ordering for the client-side fallback sort (hot is "highest").
+const LEAD_TEMP_RANK: Record<string, number> = { hot: 4, warm: 3, cold: 2, dead: 1 };
+
+// Map a sort key + direction onto the backend GET /leads `sort` token (the legacy
+// param the box already understands) so the server-side fast path stays wired even
+// where `sort_by`/`order` are not yet honored.
+function legacySortToken(key: LeadSortKey, dir: "asc" | "desc"): string | undefined {
+    if (key === "added_at") return dir === "asc" ? "oldest" : "recent";
+    if (key === "name") return "name";
+    if (key === "status") return "status";
+    if (key === "score" || key === "temperature") return "score";
+    return undefined;
+}
 
 export default function LeadsPage() {
     const [text, setText] = useState("");
@@ -73,7 +102,10 @@ export default function LeadsPage() {
     const [toast, setToast] = useState("");
     const [toastErr, setToastErr] = useState(false);
     const [view, setView] = useState<SelectOption>(TEMP_VIEWS[0]);
-    const [sort, setSort] = useState<SelectOption>(SORTS[0]);
+    // ROUND-5 LANE A — click-to-sort header state (mirrors CRM). Default = newest
+    // added first.
+    const [sortKey, setSortKey] = useState<LeadSortKey>("added_at");
+    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
     const [query, setQuery] = useState("");
     // ── Multi-select + delete state ──
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -89,18 +121,36 @@ export default function LeadsPage() {
     const tempKey = (TEMP_VIEWS.find((v) => v.id === view.id) ?? TEMP_VIEWS[0]).key;
     // Hot uses the server-side fast path; warm/cold/dead are derived client-side.
     const hotOnly = tempKey === "hot";
-    const sortKey = (SORTS.find((s) => s.id === sort.id) ?? SORTS[0]).sort;
+
+    // Click-to-sort header toggle (identical UX to CRM): clicking the active column
+    // flips direction; clicking a new column selects it ascending.
+    function handleSort(key: LeadSortKey) {
+        if (sortKey === key) {
+            setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        } else {
+            setSortKey(key);
+            setSortDir("asc");
+        }
+    }
 
     // PERF UNIT-4: cursor-paged read keyed by the hot filter + sort. Loads ONE
     // page (~60 rows) at a time and fetches the next as you scroll near the end.
-    // Switching All<->Hot, changing the sort, and tab-back are instant.
+    // ROUND-5: the active column + direction re-key the query so a header click
+    // starts a fresh page-0 fetch ordered across ALL records (sort_by/order, like
+    // CRM); `sort` carries the legacy token for the box's server-side fast path.
     const {
         data,
         isLoading,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useLeadsInfinite({ pageSize: 60, hot: hotOnly, sort: sortKey });
+    } = useLeadsInfinite({
+        pageSize: 60,
+        hot: hotOnly,
+        sort: legacySortToken(sortKey, sortDir),
+        sort_by: sortKey,
+        order: sortDir,
+    });
     const leads: Lead[] = useMemo(
         () => (data?.pages ?? []).flatMap((p) => p.leads),
         [data]
@@ -167,13 +217,42 @@ export default function LeadsPage() {
             rows = rows.filter((l) => tempOf(l) === tempKey);
         }
         const q = query.trim().toLowerCase();
-        if (!q) return rows;
-        return rows.filter(
-            (l) =>
-                l.name?.toLowerCase().includes(q) ||
-                l.phone?.toLowerCase().includes(q)
-        );
-    }, [leads, query, tempFiltering, tempKey]);
+        if (q) {
+            rows = rows.filter(
+                (l) =>
+                    l.name?.toLowerCase().includes(q) ||
+                    l.phone?.toLowerCase().includes(q)
+            );
+        }
+        // ROUND-5 client-side sort fallback (mirrors CRM): the backend sort_by/order
+        // orders across ALL records; this re-orders the loaded set so a header click
+        // is instant and stays correct even when the box ignores the params.
+        const dir = sortDir === "asc" ? 1 : -1;
+        return [...rows].sort((a, b) => {
+            switch (sortKey) {
+                case "name":
+                    return dir * (a.name || "").localeCompare(b.name || "");
+                case "phone":
+                    return dir * (a.phone || "").localeCompare(b.phone || "");
+                case "temperature":
+                    return (
+                        dir *
+                        ((LEAD_TEMP_RANK[tempOf(a)] ?? 0) -
+                            (LEAD_TEMP_RANK[tempOf(b)] ?? 0))
+                    );
+                case "status":
+                    return dir * (a.status || "").localeCompare(b.status || "");
+                case "score":
+                    return dir * ((a.score ?? 0) - (b.score ?? 0));
+                case "last_outcome":
+                    return dir * (a.last_outcome || "").localeCompare(b.last_outcome || "");
+                case "added_at":
+                    return dir * ((a.added_at || "").localeCompare(b.added_at || ""));
+                default:
+                    return 0;
+            }
+        });
+    }, [leads, query, tempFiltering, tempKey, sortKey, sortDir]);
 
     // ── Selection helpers (scoped to the currently visible/loaded rows) ──
     const allVisibleSelected =
@@ -315,19 +394,15 @@ export default function LeadsPage() {
                                 isGray
                             />
                             <Select
-                                className="w-40 mr-3 max-md:w-full max-md:mr-0"
+                                className="w-40 mr-4 max-md:w-full max-md:mr-0"
                                 classButton="!h-10"
                                 value={view}
                                 onChange={setView}
                                 options={TEMP_VIEWS}
                             />
-                            <Select
-                                className="w-44 mr-4 max-md:w-full max-md:mr-0"
-                                classButton="!h-10"
-                                value={sort}
-                                onChange={setSort}
-                                options={SORTS}
-                            />
+                            {/* ROUND-5: the sort Select is gone — every column header
+                                below is click-to-sort (Name/Phone/Temperature/Status/
+                                Lead/Last outcome/Added), sorting across ALL records. */}
                         </div>
 
                         {/* ── Bulk action toolbar (writable only) ── */}
@@ -471,13 +546,42 @@ export default function LeadsPage() {
                                                     />
                                                 </th>
                                             )}
-                                            <th>Name</th>
-                                            <th>Phone</th>
-                                            <th>Temperature</th>
-                                            <th className="max-md:hidden">Status</th>
-                                            <th>Lead</th>
-                                            <th className="max-lg:hidden">Last outcome</th>
-                                            <th className="text-right">Added</th>
+                                            {/* ROUND-5: every column header click-to-sorts
+                                                across ALL records (same UX as CRM). */}
+                                            {LEAD_COLS.map((col) => {
+                                                const active = sortKey === col.key;
+                                                return (
+                                                    <th
+                                                        key={col.label}
+                                                        className={`cursor-pointer select-none ${col.className ?? ""}`}
+                                                        onClick={() => handleSort(col.key)}
+                                                        aria-sort={
+                                                            active
+                                                                ? sortDir === "asc"
+                                                                    ? "ascending"
+                                                                    : "descending"
+                                                                : "none"
+                                                        }
+                                                    >
+                                                        <span
+                                                            className={`inline-flex items-center gap-1 ${
+                                                                col.className?.includes("text-right")
+                                                                    ? "justify-end"
+                                                                    : ""
+                                                            }`}
+                                                        >
+                                                            {col.label}
+                                                            <span className="text-t-tertiary text-caption">
+                                                                {active
+                                                                    ? sortDir === "asc"
+                                                                        ? "↑"
+                                                                        : "↓"
+                                                                    : ""}
+                                                            </span>
+                                                        </span>
+                                                    </th>
+                                                );
+                                            })}
                                             {writable && <th className="w-12 text-right" />}
                                         </tr>
                                     </thead>

@@ -1,13 +1,20 @@
+"use client";
+
 // ProviderLogo — a single reusable vendor brand mark.
 //
 // Replaces the ad-hoc colour-blob placeholders that stood in for vendor logos
-// (ElevenLabs / Sarvam / Vobiz / Groq / SambaNova / OpenRouter …). Each mark is
-// an inline SVG (no network fetch, no next/image host allow-listing, dark-mode
-// safe via currentColor where possible) framed in a Core_2 surface chip so it
-// sits consistently next to a Card title or in a provider row.
+// (ElevenLabs / Sarvam / Vobiz / Groq / SambaNova / OpenRouter …). The REAL
+// brand mark ships as a static SVG under /public/vendors/<slug>.svg and is
+// rendered with a plain <img> (no next/image host allow-listing, no runtime
+// sharp — the build ships images.unoptimized so the .svg is pure-static and
+// Linux-portable). The SVGs use `currentColor`, so the brand-accent class on
+// the wrapper tints them and they stay dark-mode safe. If the file is missing
+// the inline <Mark/> geometry is the fallback so a logo never blanks out.
 //
 // Unknown providers fall back to a tidy monogram chip (first letter on the
 // surface token) — never a raw coloured blob.
+
+import { useState } from "react";
 
 type ProviderLogoProps = {
     /** provider slug/name — case-insensitive, spaces/underscores tolerated */
@@ -23,6 +30,20 @@ type ProviderLogoProps = {
 function slug(p: string): string {
     return (p || "").toLowerCase().replace(/[\s_-]+/g, "");
 }
+
+// Providers that have a REAL brand SVG shipped under /public/vendors/<slug>.svg.
+// Aliases (e.g. "11labs") normalise to the canonical file slug.
+const SVG_ALIAS: Record<string, string> = {
+    elevenlabs: "elevenlabs",
+    "11labs": "elevenlabs",
+    eleven: "elevenlabs",
+    groq: "groq",
+    sarvam: "sarvam",
+    sarvamai: "sarvam",
+    vobiz: "vobiz",
+    sambanova: "sambanova",
+    openrouter: "openrouter",
+};
 
 // Brand marks. Kept compact + monochromatic-friendly; brand hue only where it
 // reads as the logo, otherwise currentColor so it inherits the chip foreground.
@@ -98,13 +119,30 @@ const ACCENT: Record<string, string> = {
 
 const ProviderLogo = ({ provider, className, size = 36, bare }: ProviderLogoProps) => {
     const id = slug(provider);
+    const fileSlug = SVG_ALIAS[id];
     const glyphSize = Math.round(size * 0.56);
-    const accent = ACCENT[id] || "text-t-secondary";
-    const hasMark = id in ACCENT;
+    const accent = ACCENT[fileSlug ?? id] || "text-t-secondary";
+    const hasMark = (fileSlug ?? id) in ACCENT;
 
-    const glyph = hasMark ? (
+    // If a real brand SVG exists, render it (tinted via currentColor by `accent`),
+    // and fall back to the inline <Mark/> only if the file fails to load.
+    const [imgFailed, setImgFailed] = useState(false);
+
+    const glyph = fileSlug && !imgFailed ? (
+        <span className={`inline-grid place-items-center ${accent}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+                src={`/vendors/${fileSlug}.svg`}
+                alt={`${provider} logo`}
+                width={glyphSize}
+                height={glyphSize}
+                onError={() => setImgFailed(true)}
+                style={{ width: glyphSize, height: glyphSize }}
+            />
+        </span>
+    ) : hasMark ? (
         <span className={accent}>
-            <Mark id={id} size={glyphSize} />
+            <Mark id={fileSlug ?? id} size={glyphSize} />
         </span>
     ) : (
         // tidy monogram fallback — never a raw colour blob

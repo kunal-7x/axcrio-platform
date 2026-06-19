@@ -31,6 +31,7 @@ import BatchProgress from "./_components/BatchProgress";
 import UploadClip from "./_components/UploadClip";
 import { useVideoStatus, type VideoBatch } from "@/lib/video";
 import { listAssets, type Asset } from "@/lib/assets";
+import { useEntitlement } from "@/lib/entitlements";
 
 const HOW_IT_WORKS = [
     { glyph: "magic-pencil", title: "Write the script", note: "AI drafts N distinct-angle ad scripts from your campaign." },
@@ -41,6 +42,10 @@ const HOW_IT_WORKS = [
 
 const Page = () => {
     const { enabled, composite, loading } = useVideoStatus();
+    // Super-admin per-vendor LOCK/HIDE on the render brain (compose/render). This
+    // is cosmetic only — the backend choke-point (402/404) is the real boundary —
+    // but it spares the vendor a feature they can't use and drives the upsell.
+    const renderEnt = useEntitlement("creative.render_brain");
 
     const [batchId, setBatchId] = useState<string | null>(null);
     const [expected, setExpected] = useState(1);
@@ -98,7 +103,22 @@ const Page = () => {
 
     return (
         <Layout title="Video Studio">
-            {!enabled ? (
+            {renderEnt === "HIDE" ? (
+                // Admin HID the render brain for this vendor — render the same calm
+                // "does not exist" surface as a dormant feature (never an error wall).
+                <DormantCard
+                    title="Video Studio isn't part of your plan"
+                    message="The render brain isn't enabled on your workspace. Talk to your account manager to add AI video rendering."
+                    icon="camera-video"
+                />
+            ) : renderEnt === "LOCK" ? (
+                // Admin LOCKED it — visible upsell, feature dimmed but discoverable.
+                <DormantCard
+                    title="Video rendering is locked"
+                    message="The render brain is available on a higher plan. Upgrade to compose and render ad-ready video clips from your campaigns."
+                    icon="lock"
+                />
+            ) : !enabled ? (
                 <DormantCard
                     title="Video Studio activates with Creative Studio"
                     message="Describe a reel and watch the AI write the script, voice it, burn captions and render a batch of ad-ready clips — composite-cheap by default, AI-motion when you want it. They land in your library, ready to reuse on WhatsApp and ads."

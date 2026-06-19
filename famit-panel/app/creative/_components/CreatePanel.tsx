@@ -37,6 +37,7 @@ import {
     type CampaignContextSnapshot,
 } from "@/lib/assets";
 import type { Campaign } from "@/lib/api";
+import { useEntitlement } from "@/lib/entitlements";
 
 type CreatePanelProps = {
     /** kept for API-compat with the page; CampaignSelect now self-fetches the list */
@@ -143,6 +144,12 @@ const CreatePanel = ({
     const [customPrompt, setCustomPrompt] = useState("");
     const [advanced, setAdvanced] = useState(false);
     const [providers, setProviders] = useState<AssetProvider[]>([]);
+    // Super-admin per-vendor LOCK/HIDE on AI script generation (the Stage-1 LLM
+    // that turns a campaign + instruction into the image prompt). When not ON, the
+    // vendor must supply their OWN raw prompt (which bypasses Stage-1 server-side).
+    // Cosmetic only — the backend choke-point is the real boundary.
+    const scriptEnt = useEntitlement("creative.script");
+    const scriptOn = scriptEnt === "ON";
     const [submitting, setSubmitting] = useState(false);
     const [notice, setNotice] = useState<{ kind: "warning" | "info"; text: string } | null>(null);
     const [phIndex] = useState(() => Math.floor(Math.random() * PLACEHOLDERS.length));
@@ -183,8 +190,11 @@ const CreatePanel = ({
 
     // A custom prompt bypasses the Stage-1 builder, so it counts as the instruction:
     // the vendor can generate with EITHER the campaign instruction OR their own prompt.
-    const hasInstruction =
-        instruction.trim().length > 0 || customPrompt.trim().length > 0;
+    // When AI script generation is locked/hidden, the campaign instruction (Stage-1
+    // LLM) is disallowed — only the vendor's own raw prompt counts.
+    const hasInstruction = scriptOn
+        ? instruction.trim().length > 0 || customPrompt.trim().length > 0
+        : customPrompt.trim().length > 0;
     const canGenerate =
         enabled && !!selectedCampaign && hasInstruction && !submitting;
 
@@ -270,21 +280,35 @@ const CreatePanel = ({
                     />
                 </div>
 
-                {/* the hero command box */}
-                <Field
-                    textarea
-                    label="What should I make?"
-                    placeholder={PLACEHOLDERS[phIndex]}
-                    value={instruction}
-                    onChange={(e) => setInstruction(e.target.value)}
-                    classInput="!h-28"
-                />
+                {/* the hero command box — only when AI script generation is ON.
+                    Locked/hidden by a super-admin -> a calm notice + the raw-prompt
+                    path becomes the required way in (cosmetic; backend is authority). */}
+                {scriptOn ? (
+                    <Field
+                        textarea
+                        label="What should I make?"
+                        placeholder={PLACEHOLDERS[phIndex]}
+                        value={instruction}
+                        onChange={(e) => setInstruction(e.target.value)}
+                        classInput="!h-28"
+                    />
+                ) : (
+                    <div className="flex items-start gap-2.5 p-3.5 rounded-2xl border border-primary-05/20 bg-primary-05/10 text-body-2 text-primary-05">
+                        <Icon className="!size-4 shrink-0 mt-0.5 fill-current" name="lock" />
+                        <span>
+                            {scriptEnt === "HIDE"
+                                ? "AI script writing isn't part of your plan. Type your own exact image prompt below to generate."
+                                : "AI script writing is locked on your plan. Type your own exact image prompt below, or upgrade to let the AI draft it from your campaign."}
+                        </span>
+                    </div>
+                )}
 
-                {/* the vendor's own raw image prompt — goes STRAIGHT to the image AI */}
+                {/* the vendor's own raw image prompt — goes STRAIGHT to the image AI.
+                    Required when AI script generation is locked/hidden. */}
                 <div className="mt-4">
                     <Field
                         textarea
-                        label="Your own prompt (optional)"
+                        label={scriptOn ? "Your own prompt (optional)" : "Your image prompt"}
                         tooltip="Type an exact image prompt to send straight to the image AI. Leave blank to use the auto campaign prompt."
                         placeholder="e.g. cinematic product shot of a gold watch on black marble, soft studio light, ultra-detailed"
                         value={customPrompt}
@@ -292,8 +316,9 @@ const CreatePanel = ({
                         classInput="!h-24"
                     />
                     <p className="mt-2 text-caption text-t-tertiary">
-                        Leave blank to use the auto campaign prompt. When filled, this goes
-                        directly to the image AI.
+                        {scriptOn
+                            ? "Leave blank to use the auto campaign prompt. When filled, this goes directly to the image AI."
+                            : "This goes directly to the image AI."}
                     </p>
                 </div>
 

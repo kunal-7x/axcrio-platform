@@ -85,9 +85,10 @@ export const navigation = [
             // tab inside /crm; the CRM link is the home. Keep BOTH keys live so an
             // entitlement that hides either page still resolves (the page self-gates).
             { title: "Leads & CRM", href: "/crm", feature_key: "sell.crm" },
-            // Leads — RESTORED standalone people page (was folded into a CRM tab; the
-            // standalone route is real on disk).
-            { title: "Leads", href: "/leads", feature_key: "sell.leads" },
+            // ROUND-5: the standalone "Lead" page MOVED OUT of Work into GROW (it is
+            // an acquisition surface — the raw dialing queue you grow). The /leads
+            // route is unchanged and the page is NOT deleted; only the nav parent
+            // moves. See the Grow group below for the re-parented entry.
             // Call Logs — ONE call surface. The calls page owns Callbacks + Do-Not-Call
             // as in-page tabs now, so the standalone Callbacks rail child is RETIRED
             // (the route still resolves; it is just not duplicated in the rail).
@@ -118,7 +119,13 @@ export const navigation = [
         icon: "promote",
         feature_key: "mod.grow",
         list: [
-            { title: "Campaigns", href: "/campaigns", feature_key: "grow.campaigns" },
+            // ROUND-5 ORDER: Lead → Campaign → Run Campaign (the acquisition flow:
+            // load the leads, build the campaign, then run it).
+            // Lead — RE-PARENTED here from Work (the standalone people page is real on
+            // disk; only the nav home moved, the page/route are untouched). Keeps the
+            // verbatim sell.leads page key so per-page entitlements still gate it.
+            { title: "Lead", href: "/leads", feature_key: "sell.leads" },
+            { title: "Campaign", href: "/campaigns", feature_key: "grow.campaigns" },
             // Run Campaign — the founder's named multi-card audience+config launcher.
             // Lives in GROW next to Campaigns (build → run). Relabelled "Run Campaign".
             { title: "Run Campaign", href: "/run", feature_key: "engage.run" },

@@ -9,6 +9,7 @@ import Icon from "@/components/Icon";
 import Search from "@/components/Search";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
+import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { StatusBadge } from "@/lib/badges";
 import {
     extract,
@@ -63,6 +64,7 @@ export default function CampaignsPage() {
     const [fieldsJson, setFieldsJson] = useState("");
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<Toast | null>(null);
+    const [delTarget, setDelTarget] = useState<string | null>(null);
 
     // Voice
     const [voices, setVoices] = useState<Voice[]>([]);
@@ -187,8 +189,10 @@ export default function CampaignsPage() {
         }
     }
 
-    async function handleDelete(id: string) {
-        if (!confirm("Delete this campaign?")) return;
+    async function confirmDelete() {
+        const id = delTarget;
+        if (!id) return;
+        setDelTarget(null);
         try {
             await deleteCampaign(id);
             showToast("Campaign deleted", "success");
@@ -359,7 +363,7 @@ export default function CampaignsPage() {
                                                             isStroke
                                                             className="!h-9 !px-4 hover:!border-primary-03/30 hover:!text-primary-03"
                                                             onClick={() =>
-                                                                handleDelete(c.id)
+                                                                setDelTarget(c.id)
                                                             }
                                                         >
                                                             Delete
@@ -634,6 +638,14 @@ export default function CampaignsPage() {
                     onSaved={refreshCampaigns}
                 />
             )}
+
+            <ConfirmDeleteModal
+                open={!!delTarget}
+                onClose={() => setDelTarget(null)}
+                onConfirm={confirmDelete}
+                title="Delete this campaign?"
+                message="This permanently deletes the campaign and its configuration. This action cannot be undone."
+            />
         </Layout>
     );
 }

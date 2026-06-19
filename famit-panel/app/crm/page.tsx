@@ -13,6 +13,7 @@ import Tabs from "@/components/Tabs";
 import Select from "@/components/Select";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
+import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import {
     getContacts,
     getSegments,
@@ -112,6 +113,7 @@ function CrmWorkspaceInner() {
     // Delete in-progress set
     const [deleting, setDeleting] = useState<Set<string>>(new Set());
     const [deleteError, setDeleteError] = useState("");
+    const [delTarget, setDelTarget] = useState<{ id: string; name: string } | null>(null);
 
     const [segments, setSegments] = useState<Segment[]>([]);
 
@@ -538,7 +540,12 @@ function CrmWorkspaceInner() {
                                                         type="button"
                                                         disabled={isDeleting}
                                                         onClick={() =>
-                                                            handleDelete(c.id)
+                                                            setDelTarget({
+                                                                id: c.id,
+                                                                name:
+                                                                    c.name ||
+                                                                    "this contact",
+                                                            })
                                                         }
                                                         className="inline-flex items-center justify-center size-7 rounded-full text-t-tertiary hover:text-primary-03 hover:bg-primary-03/10 transition-colors disabled:opacity-40"
                                                         title="Delete contact"
@@ -576,6 +583,25 @@ function CrmWorkspaceInner() {
                     </div>
                 </div>
             )}
+
+            <ConfirmDeleteModal
+                open={!!delTarget}
+                onClose={() => setDelTarget(null)}
+                onConfirm={() => {
+                    if (delTarget) handleDelete(delTarget.id);
+                    setDelTarget(null);
+                }}
+                title="Delete this contact?"
+                message={
+                    <>
+                        Delete{" "}
+                        <span className="text-t-primary">
+                            {delTarget?.name}
+                        </span>{" "}
+                        from your CRM? This action cannot be undone.
+                    </>
+                }
+            />
         </Layout>
     );
 }

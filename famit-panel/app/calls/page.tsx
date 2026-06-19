@@ -14,6 +14,7 @@ import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import Tabs from "@/components/Tabs";
 import VirtualRows from "@/components/VirtualRows";
+import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import { useCallsInfinite } from "@/lib/queries";
 import {
@@ -1038,42 +1039,122 @@ function CallsListPanel() {
     );
 }
 
+/* ------------------------------------------------------------------ */
+/* Callback status + reason derivation (ROUND5 lane-B)                 */
+/* ------------------------------------------------------------------ */
+/* The backend callback/retry row carries no explicit `status`; it is   */
+/* derived from next_attempt_at (future = scheduled, past = due now)    */
+/* and attempts vs max_attempts (exhausted). A row whose reason is       */
+/* literally "callback" is an explicit in-call "call me at X" / panel    */
+/* request; any OTHER reason (no_answer, busy, warm follow-up, …) is an  */
+/* AI-auto-scheduled retry/follow-up. Both are surfaced in one section.  */
+
+type CbStatus = "scheduled" | "due" | "exhausted";
+
+function cbStatus(item: CallbackEntry): CbStatus {
+    if (
+        typeof item.attempts === "number" &&
+        typeof item.max_attempts === "number" &&
+        item.max_attempts > 0 &&
+        item.attempts >= item.max_attempts
+    )
+        return "exhausted";
+    const at = item.next_attempt_at
+        ? new Date(toUTC(item.next_attempt_at)).getTime()
+        : NaN;
+    if (!isNaN(at) && at <= Date.now()) return "due";
+    return "scheduled";
+}
+
+const CB_STATUS_META: Record<
+    CbStatus,
+    { label: string; variant: "info" | "warning" | "neutral" }
+> = {
+    scheduled: { label: "Scheduled", variant: "info" },
+    due: { label: "Due now", variant: "warning" },
+    exhausted: { label: "Exhausted", variant: "neutral" },
+};
+
+function CbStatusBadge({ item }: { item: CallbackEntry }) {
+    const { label, variant } = CB_STATUS_META[cbStatus(item)];
+    return (
+        <Badge variant={variant} dot={variant === "info"}>
+            {label}
+        </Badge>
+    );
+}
+
+// Human reason + whether this row is an AI-auto-scheduled follow-up (vs an
+// explicit "callback" request the customer/agent asked for).
+function cbReason(item: CallbackEntry): { label: string; auto: boolean } {
+    const r = (item.reason || "").toLowerCase();
+    if (r === "callback") return { label: "Callback requested", auto: false };
+    const MAP: Record<string, string> = {
+        no_answer: "Auto follow-up · no answer",
+        busy: "Auto follow-up · line busy",
+        failed: "Auto follow-up · call failed",
+        voicemail: "Auto follow-up · voicemail",
+        warm: "Warm-lead follow-up",
+        warm_lead: "Warm-lead follow-up",
+        follow_up: "Warm-lead follow-up",
+    };
+    return {
+        label: MAP[r] || `Auto follow-up${r ? ` · ${r.replace(/_/g, " ")}` : ""}`,
+        auto: true,
+    };
+}
+
 // W15 — Callbacks panel (folded in from the old /callbacks page). Same Core_2
-// Card + Tabs + Table chrome; the scheduled callbacks/retries the dialer queued.
+// Card + Tabs + Table chrome. Lists explicit "call me at X" callbacks AND the
+// AI-auto-scheduled warm-lead / retry follow-ups the dialer queued, each with a
+// derived live status (Scheduled / Due now / Exhausted). Real-time: polls every
+// 20s so a callback an in-call agent just queued appears without a refresh.
 function CallbacksPanel() {
     const [items, setItems] = useState<CallbackEntry[]>([]);
     const [loading, setLoading] = useState(true);
-    const [showAll, setShowAll] = useState(false);
+    // Default to the full follow-up view so AI-auto-scheduled warm follow-ups are
+    // visible alongside explicit callback requests (the section's whole point).
+    const [showAll, setShowAll] = useState(true);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+    const [cancelTarget, setCancelTarget] = useState<string | null>(null);
 
     const VIEWS: TabsOption[] = useMemo(
         () => [
-            { id: 1, name: "Callbacks" },
-            { id: 2, name: "All retries" },
+            { id: 2, name: "All follow-ups" },
+            { id: 1, name: "Callback requests" },
         ],
         []
     );
-    const view = showAll ? VIEWS[1] : VIEWS[0];
+    const view = showAll ? VIEWS[0] : VIEWS[1];
 
     const showToast = (msg: string, ok = true) => {
         setToast({ msg, ok });
         setTimeout(() => setToast(null), 4000);
     };
 
-    const load = useCallback(() => {
-        setLoading(true);
-        getCallbacks(showAll)
-            .then((r) => setItems(r.items))
-            .catch(() => {})
-            .finally(() => setLoading(false));
-    }, [showAll]);
+    const load = useCallback(
+        (silent = false) => {
+            if (!silent) setLoading(true);
+            getCallbacks(showAll)
+                .then((r) => setItems(r.items))
+                .catch(() => {})
+                .finally(() => setLoading(false));
+        },
+        [showAll]
+    );
 
     useEffect(() => {
         load();
+        // Real-time: background refresh so a just-queued callback/follow-up appears
+        // within seconds (no manual reload). Silent = keeps current rows on screen.
+        const t = setInterval(() => load(true), 20000);
+        return () => clearInterval(t);
     }, [load]);
 
-    async function handleCancel(id: string) {
-        if (!confirm("Cancel this scheduled callback/retry?")) return;
+    async function confirmCancel() {
+        const id = cancelTarget;
+        if (!id) return;
+        setCancelTarget(null);
         try {
             await cancelCallback(id);
             showToast("Cancelled");
@@ -1085,11 +1166,10 @@ function CallbacksPanel() {
 
     const tableHead = (
         <>
-            <th>Name</th>
-            <th>Phone</th>
-            <th className="max-lg:hidden">Campaign</th>
+            <th>Lead</th>
             <th>Scheduled for</th>
-            <th className="max-md:hidden">Reason</th>
+            <th>Reason</th>
+            <th>Status</th>
             <th className="max-lg:hidden">Attempts</th>
             <th className="text-right">Action</th>
         </>
@@ -1115,7 +1195,13 @@ function CallbacksPanel() {
 
             <div className="card">
                 <div className="flex items-center min-h-12 max-md:flex-wrap">
-                    <div className="mr-auto pl-5 text-h6 max-lg:pl-3">Scheduled callbacks</div>
+                    <div className="mr-auto pl-5 max-lg:pl-3">
+                        <div className="text-h6">Callbacks &amp; follow-ups</div>
+                        <div className="text-caption text-t-tertiary">
+                            Scheduled callbacks and AI-auto-scheduled warm-lead
+                            follow-ups the dialer will dial automatically
+                        </div>
+                    </div>
                     <Tabs items={VIEWS} value={view} setValue={(t) => setShowAll(t.id === 2)} />
                 </div>
 
@@ -1125,7 +1211,7 @@ function CallbacksPanel() {
                             <Table cellsThead={tableHead}>
                                 {[...Array(4)].map((_, i) => (
                                     <TableRow key={i}>
-                                        {[...Array(7)].map((__, j) => (
+                                        {[...Array(6)].map((__, j) => (
                                             <td key={j}>
                                                 <div className="skeleton h-4 w-20" />
                                             </td>
@@ -1139,46 +1225,87 @@ function CallbacksPanel() {
                             <span className="state-glyph">
                                 <Icon name="calendar" className="fill-inherit" />
                             </span>
-                            <div className="state-title">No scheduled callbacks</div>
+                            <div className="state-title">
+                                {showAll
+                                    ? "No callbacks or follow-ups scheduled"
+                                    : "No callback requests"}
+                            </div>
                             <div className="state-sub">
-                                Callbacks and automatic retries scheduled by the dialer appear here.
+                                {showAll
+                                    ? "Explicit callbacks (“call me at 5pm”) and AI-auto-scheduled warm-lead follow-ups appear here the moment the dialer queues them."
+                                    : "When a lead asks to be called back at a specific time, it lands here. Switch to All follow-ups to see AI-scheduled retries."}
                             </div>
                         </div>
                     ) : (
                         <div className="px-1 max-lg:px-0">
                             <Table cellsThead={tableHead}>
-                                {items.map((item) => (
-                                    <TableRow key={item.id}>
-                                        <td className="text-sub-title-1">{item.name || "—"}</td>
-                                        <td className="text-t-secondary td-num">{item.phone}</td>
-                                        <td className="text-t-secondary text-caption max-lg:hidden">
-                                            {item.campaign_id}
-                                        </td>
-                                        <td className="text-t-secondary whitespace-nowrap">
-                                            {fmtShort(item.next_attempt_at)}
-                                        </td>
-                                        <td className="max-md:hidden">
-                                            <StatusBadge status={item.reason} />
-                                        </td>
-                                        <td className="text-t-secondary td-num max-lg:hidden">
-                                            {item.attempts} / {item.max_attempts}
-                                        </td>
-                                        <td className="text-right">
-                                            <Button
-                                                isStroke
-                                                className="!h-9 !px-4"
-                                                onClick={() => handleCancel(item.id)}
-                                            >
-                                                Cancel
-                                            </Button>
-                                        </td>
-                                    </TableRow>
-                                ))}
+                                {items.map((item) => {
+                                    const reason = cbReason(item);
+                                    return (
+                                        <TableRow key={item.id}>
+                                            <td className="text-sub-title-1">
+                                                <div className="truncate">
+                                                    {item.name || "Unknown"}
+                                                </div>
+                                                <div className="text-caption text-t-tertiary td-num">
+                                                    {item.phone}
+                                                </div>
+                                            </td>
+                                            <td className="text-t-secondary whitespace-nowrap">
+                                                <div>{fmtShort(item.next_attempt_at)}</div>
+                                                {fmtRelative(item.next_attempt_at) && (
+                                                    <div className="text-caption text-t-tertiary">
+                                                        {fmtRelative(item.next_attempt_at)}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td>
+                                                <span className="text-body-2 text-t-secondary">
+                                                    {reason.label}
+                                                </span>
+                                                {reason.auto && (
+                                                    <span className="ml-2 inline-flex items-center gap-1 text-caption text-primary-01 align-middle">
+                                                        <Icon
+                                                            name="feather"
+                                                            className="size-3 fill-primary-01"
+                                                        />
+                                                        AI
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td>
+                                                <CbStatusBadge item={item} />
+                                            </td>
+                                            <td className="text-t-secondary td-num max-lg:hidden">
+                                                {item.attempts} / {item.max_attempts}
+                                            </td>
+                                            <td className="text-right">
+                                                <Button
+                                                    isStroke
+                                                    className="!h-9 !px-4"
+                                                    onClick={() => setCancelTarget(item.id)}
+                                                >
+                                                    Cancel
+                                                </Button>
+                                            </td>
+                                        </TableRow>
+                                    );
+                                })}
                             </Table>
                         </div>
                     )}
                 </div>
             </div>
+
+            <ConfirmDeleteModal
+                open={!!cancelTarget}
+                onClose={() => setCancelTarget(null)}
+                onConfirm={confirmCancel}
+                title="Cancel this follow-up?"
+                message="This cancels the scheduled callback/retry. It won't be dialed."
+                confirmLabel="Cancel it"
+                cancelLabel="Keep"
+            />
         </>
     );
 }
@@ -1560,6 +1687,7 @@ function DoNotCallPanel() {
     const [file, setFile] = useState<File | null>(null);
     const [adding, setAdding] = useState(false);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+    const [delTarget, setDelTarget] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const showToast = (msg: string, ok = true) => {
@@ -1599,8 +1727,10 @@ function DoNotCallPanel() {
         }
     }
 
-    async function handleDelete(phone: string) {
-        if (!confirm(`Remove ${phone} from the Do-Not-Call list?`)) return;
+    async function confirmDelete() {
+        const phone = delTarget;
+        if (!phone) return;
+        setDelTarget(null);
         try {
             await deleteSuppression(phone);
             showToast(`Removed ${phone}`);
@@ -1705,7 +1835,7 @@ function DoNotCallPanel() {
                                                 <Button
                                                     isStroke
                                                     className="!h-9 !px-4 !text-body-2 !font-normal hover:!border-primary-03/40 hover:!text-primary-03"
-                                                    onClick={() => handleDelete(e.phone)}
+                                                    onClick={() => setDelTarget(e.phone)}
                                                 >
                                                     Remove
                                                 </Button>
@@ -1771,6 +1901,24 @@ function DoNotCallPanel() {
                     </Card>
                 </div>
             </div>
+
+            <ConfirmDeleteModal
+                open={!!delTarget}
+                onClose={() => setDelTarget(null)}
+                onConfirm={confirmDelete}
+                title="Remove from Do-Not-Call?"
+                message={
+                    <>
+                        Remove{" "}
+                        <span className="text-t-primary tabular-nums">
+                            {delTarget}
+                        </span>{" "}
+                        from the Do-Not-Call list? This number can be dialed
+                        again.
+                    </>
+                }
+                confirmLabel="Remove"
+            />
         </>
     );
 }

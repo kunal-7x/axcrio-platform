@@ -570,6 +570,12 @@ export async function getLeads(opts?: {
     to?: string;
     campaign_id?: string;
     status?: string;
+    // ROUND-5 LANE A — column-header sort across ALL records (like CRM): `sort_by`
+    // names the column, `order` the direction. Forwarded to the box; if the live
+    // /leads ignores either (extra params are dropped, not errored) the Leads page's
+    // client-side sort fallback still orders the loaded rows.
+    sort_by?: string;
+    order?: "asc" | "desc";
 }): Promise<LeadsPage> {
     const params = new URLSearchParams();
     if (opts?.hot) params.set("hot", "1");
@@ -581,6 +587,8 @@ export async function getLeads(opts?: {
     if (opts?.to) params.set("to", opts.to);
     if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
     if (opts?.status) params.set("status", opts.status);
+    if (opts?.sort_by) params.set("sort_by", opts.sort_by);
+    if (opts?.order) params.set("order", opts.order);
     const qs = params.toString();
     const res = await fetch(`${BASE}/leads${qs ? `?${qs}` : ""}`, {
         headers: authHeaders(),

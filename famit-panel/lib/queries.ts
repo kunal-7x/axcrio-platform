@@ -132,9 +132,24 @@ export function useLeads(
 // PERF UNIT-4: consume the backend UNIT-1 `{leads,total,offset,limit,next}` cursor.
 // The leads page virtualizes the flattened rows and fetches the next page as the
 // viewport nears the end. `hot` re-keys the query (All<->Hot starts a fresh fetch).
-export function useLeadsInfinite(opts?: { pageSize?: number; hot?: boolean; sort?: string }) {
+export function useLeadsInfinite(opts?: {
+    pageSize?: number;
+    hot?: boolean;
+    sort?: string;
+    // ROUND-5 LANE A — column-header sort across ALL records (like CRM). Re-keys the
+    // query so a header click starts a fresh page-0 fetch; the page keeps a client
+    // sort fallback for when the box ignores these params.
+    sort_by?: string;
+    order?: "asc" | "desc";
+}) {
     const pageSize = opts?.pageSize ?? 60;
-    const base = { limit: pageSize, hot: opts?.hot, sort: opts?.sort };
+    const base = {
+        limit: pageSize,
+        hot: opts?.hot,
+        sort: opts?.sort,
+        sort_by: opts?.sort_by,
+        order: opts?.order,
+    };
     return useInfiniteQuery<LeadsPage, Error>({
         queryKey: qk.leadsInfinite(base),
         queryFn: ({ pageParam }) =>
