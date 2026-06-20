@@ -1,0 +1,5 @@
+# False positives in the earner-golden restore snapshot (no real secrets present).
+# llm_router/tiers.py "rate_key" values like "groq-llama-3.3-70b" are model rate-bucket
+# labels, NOT credentials.
+earner-golden/llm_router/tiers.py:generic-api-key:83
+earner-golden/llm_router/tiers.py:generic-api-key:94
