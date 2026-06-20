@@ -576,6 +576,12 @@ export const executeCommand = (id: string, pin?: string) =>
         pin ? { pin } : {}
     );
 
+// Answer a follow-up question the assistant asked (slot-fill). The engine merges
+// the reply into the held command and either asks the next question or finalizes
+// into a needs-confirm / needs-PIN / executed card — keeping the chat in-context.
+export const sendSlotReply = (id: string, text: string) =>
+    write<AimParse>(`/ai-manager/commands/${encodeURIComponent(id)}/slot`, { text });
+
 /* ============================================================================
  * F3 — COMMAND HISTORY · SESSION DETAIL · PENDING APPROVALS · CAPABILITIES
  * ----------------------------------------------------------------------------
