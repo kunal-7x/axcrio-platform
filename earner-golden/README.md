@@ -8,8 +8,11 @@ only the code + an `ENV.example.md` listing the var NAMES (empty values).
 - Box: `famit@168.144.153.145`, `/opt/famit-agent/`, service `famit-agent` (systemd).
 - **`agent.py` md5 `10662d32fc857d88c62c7cc2549134cb`** — ROUND-6 penalty brain + the additive
   R7 GROQ_POOL rotation block (OFF path byte-identical to the penalty brain `ee3e4b5e`).
-- **`prompt.py` md5 `ffe640e27411e84d6faace00900e137c`** — ROUND-6 brain + the R7 prompt-leak
-  fix (stage-directions wrapped in `[...]` = SILENT, never voiced).
+- **`prompt.py` md5 `b99c25eaa9dc80edffb9ce615d5892c7`** — ROUND-6 brain + the R7 prompt-leak
+  fix (stage-directions wrapped `[...]`=SILENT) + the R7 PROSE-REWRITE that cures the
+  structured-output `"key": "value"` degeneration (the flow/opener/rules rewritten from
+  numbered/quoted/bracketed scaffolding into natural Hindi prose; explicit no-JSON/no-labels
+  guard + never-give-up-on-budget closer).
 - **`llm_router/`** — the shared least-used pool + per-key 429 cooldown + instant re-pick
   (`GROQ_POOL`, `PoolLLM`). The earner wires it behind `EARNER_POOL_LLM=1`, sticky-per-call.
 - **systemd drop-in** = `kernel-outbound.conf` here. Key flags: `EARNER_POOL_LLM=1`,
@@ -51,7 +54,7 @@ ssh -i $KEY famit@168.144.153.145 '
   # assert voice law
   test "$(sed -n "1161,1185p" agent.py | md5sum | cut -d" " -f1)" = "7b36c4f9d57cd76d5116d93156560dcb" || { echo "TTS SPAN CHANGED — ABORT"; exit 1; }
   test "$(md5sum agent.py | cut -d" " -f1)" = "10662d32fc857d88c62c7cc2549134cb"
-  test "$(md5sum prompt.py | cut -d" " -f1)" = "ffe640e27411e84d6faace00900e137c"
+  test "$(md5sum prompt.py | cut -d" " -f1)" = "b99c25eaa9dc80edffb9ce615d5892c7"
   sudo systemctl daemon-reload && sudo systemctl restart famit-agent
   systemctl is-active famit-agent
 '

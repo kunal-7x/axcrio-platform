@@ -6,7 +6,7 @@ set -euo pipefail
 G="/opt/famit-agent/_GOLDEN_ROUND7"
 A="/opt/famit-agent"
 AGENT_MD5="10662d32fc857d88c62c7cc2549134cb"
-PROMPT_MD5="ffe640e27411e84d6faace00900e137c"
+PROMPT_MD5="b99c25eaa9dc80edffb9ce615d5892c7"
 TTS_SPAN_MD5="7b36c4f9d57cd76d5116d93156560dcb"
 
 echo "[restore] copying golden agent.py / prompt.py / llm_router + drop-in ..."
