@@ -249,6 +249,19 @@ def _summarize(turns: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("summary failed: %r", exc)
         return {**base, "outcome": "answered"}
+def _ist_greeting() -> str:
+    """ROUND-10: an English, time-appropriate greeting (founder wants this, NOT 'नमस्ते')."""
+    try:
+        h = (_datetime_module.datetime.utcnow() + _datetime_module.timedelta(hours=5, minutes=30)).hour
+        if 4 <= h < 12:
+            return "Good morning"
+        if 12 <= h < 17:
+            return "Good afternoon"
+        return "Good evening"
+    except Exception:  # noqa: BLE001
+        return "Hello"
+
+
 def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                 gender: str = "female", disclose: bool = True,
                 disclosure_phrase: str = "") -> str:
@@ -256,15 +269,16 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
     Identity + company + product NAME + 'abhi free?' — NO pitch. Falls back to a fixed line.
     P2: gender drives the Hindi verb form (no hardcoded feminine); AI disclosure is
     campaign-configurable (kept by default for TRAI; `disclose=False` drops it)."""
-    name_part = f"{lead_name} जी, " if lead_name else ""
+    name_part = f"{lead_name} जी, " if lead_name else "sir, "
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
     disc_phrase = (disclosure_phrase or f"{company} से").strip()
+    greeting = _ist_greeting()  # ROUND-10: "Good morning/afternoon/evening" — never नमस्ते
     # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
     if disclose:
-        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {disc_phrase} {speaking}। "
+        fallback = (f"{greeting} {name_part}मैं {agent_name}, {disc_phrase} {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     else:
-        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {company} से {speaking}। "
+        fallback = (f"{greeting} {name_part}मैं {agent_name}, {company} से {speaking}। "
                     f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     try:
         gender_clause = ("Hindi में अपने बारे में पुल्लिंग (masculine) रूप इस्तेमाल करो "
@@ -278,7 +292,9 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
             f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। " + gender_clause
-            + (f"caller का naam '{lead_name}' लेकर greet करो (जैसे 'नमस्ते {lead_name} जी…')। " if lead_name else "")
+            + f"शुरुआत हमेशा इस English greeting से करो: '{greeting}' — कभी 'नमस्ते'/'namaste'/'नमस्कार' मत बोलो। "
+            + (f"caller का naam लेकर greet करो (जैसे '{greeting} {lead_name} जी…')। " if lead_name
+               else f"(जैसे '{greeting} sir…')। ")
             + disc_clause
             + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
             f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
@@ -959,50 +975,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             logger.warning("apply_language_switch failed: %r", exc)
 
     async def _confirm_then_hangup(signal: str) -> None:
-        """Unit 5: when the outcome is clear, confirm the next step, say a warm goodbye,
-        THEN end the call cleanly — never an abrupt mid-sentence cut."""
+        """ROUND-10: the caller gave an explicit end-signal. The model already replies with a
+        natural, language-matched goodbye on this same turn — let THAT play, then end the call.
+        We no longer say a SECOND scripted goodbye here (that was the double 'bye')."""
         if ctl["closing"]:
             return
-        # WAVE 2 (BUG-1): consent floor for the BOOK auto-cut. Never auto-book+cut on a thin
-        # exchange or without the caller having actually given explicit consent. Require:
-        #   (a) >=3 caller turns (a real conversation happened), AND
-        #   (b) at least one caller turn that passes _explicit_book_consent.
-        # The 'no'/opt-out path is exempt (a caller who says bye / not-interested SHOULD be let
-        # go promptly). If the floor isn't met we DON'T set closing — let the call continue so
-        # the AI asks for a concrete time instead of phantom-booking.
-        if signal == "book":
-            try:
-                user_turns = [t for t in turns if t.get("role") == "user"]
-                consented = any(
-                    _explicit_book_consent((t.get("content") or "").lower()) for t in user_turns
-                )
-                if len(user_turns) < 3 or not consented:
-                    logger.info("P2 closure SUPPRESSED (consent floor): user_turns=%d consented=%s",
-                                len(user_turns), consented)
-                    return
-            except Exception:  # noqa: BLE001
-                return
         ctl["closing"] = True
         try:
-            _agent_nm = fields.get("agent_name") or "Riya"
-            _company_nm = fields.get("company_name") or "Famit"
-            # FIX B (BUG4): generate the close from Groq (context-aware, language-mirrored)
-            # instead of the hardcoded line. LLM_CLOSE=0 (default) keeps _goodbye_line
-            # byte-identical; =1 enables the LLM close with _goodbye_line as the crash-safe
-            # fallback (never dead air at hangup). Instant env revert.
-            if os.getenv("LLM_CLOSE", "0") in ("1", "true", "True"):
-                line = _llm_close(signal, _agent_nm, _company_nm, agent_gender, turns)
-            else:
-                line = _goodbye_line(signal, _agent_nm, _company_nm, agent_gender)
-            logger.info("P2 closure signal=%s -> goodbye: %s", signal, line[:120])
-            handle = session.say(line, allow_interruptions=False)
-            try:
-                await handle.wait_for_playout()      # let the goodbye fully play
-            except Exception:  # noqa: BLE001
-                await asyncio.sleep(2.5)             # fallback grace if handle API differs
-            await asyncio.sleep(0.4)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("closure say failed: %r", exc)
+            # let the model's own goodbye finish speaking, then hang up cleanly
+            await asyncio.sleep(float(os.getenv("HANGUP_GRACE_S", "6.0")))
+        except Exception:  # noqa: BLE001
+            pass
         finally:
             try:
                 await ctx.delete_room(room_name=room_name)  # clean end
