@@ -39,6 +39,36 @@ _TIME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ROUND-10: Hindi / Devanagari time normalization. The STT returns spoken Hindi times in
+# Devanagari ("कल … तीन बजे") which the Latin-only parser above can't read → bad_slot. We map
+# Devanagari digits + number-words + day/period words to the Latin forms the resolver knows,
+# BEFORE parsing. Pure string work; never raises.
+_DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_HI_NUM_WORDS = {  # whole-hour number words (longest first so 'ग्यारह' wins over 'एक')
+    "ग्यारह": "11", "बारह": "12", "तीन": "3", "चार": "4", "पाँच": "5", "पांच": "5",
+    "सात": "7", "आठ": "8", "दस": "10", "एक": "1", "दो": "2", "छह": "6", "छः": "6", "नौ": "9",
+}
+_HI_TIME_WORDS = {  # day + period + clock markers -> the resolver's Latin tokens
+    "बजे": " baje ", "परसों": " parso ", "कल": " kal ", "आज": " aaj ",
+    "सुबह": " subah ", "शाम": " shaam ", "दोपहर": " dopahar ", "रात": " raat ",
+}
+
+
+def _hindi_normalize_timeref(text: str) -> str:
+    if not text:
+        return text
+    try:
+        s = text.translate(_DEVA_DIGITS)
+        for hi, en in _HI_TIME_WORDS.items():
+            if hi in s:
+                s = s.replace(hi, en)
+        for hi, en in _HI_NUM_WORDS.items():
+            if hi in s:
+                s = s.replace(hi, " " + en + " ")
+        return s
+    except Exception:  # noqa: BLE001
+        return text
+
 
 def tz_offset_minutes(tz: str) -> int:
     """IANA tz -> current UTC offset minutes. IST(+330) fallback. Pure-ish (uses zoneinfo)."""
@@ -80,7 +110,7 @@ def resolve_slot_start(
     if iso is not None and re.search(r"\d{4}-\d{2}-\d{2}", ref):
         return iso
 
-    text = ref.strip().lower()
+    text = _hindi_normalize_timeref(ref.strip()).lower()
     off = tz_offset_minutes(tz)
     # local "now" wall clock
     local_now = now.astimezone(_dt.timezone.utc) + _dt.timedelta(minutes=off)
@@ -113,10 +143,14 @@ def resolve_slot_start(
                         or "raat" in text or "night" in text)
             _afternoon = ("dopahar" in text or "afternoon" in text or "lunch" in text
                           or "noon" in text)
+            _morning = ("subah" in text or "morning" in text or "saver" in text)
             if not ap and _evening and 1 <= h <= 11:
                 h += 12
             elif not ap and _afternoon and 1 <= h <= 5:
                 h += 12  # "dopahar 2/3 baje" -> 14:00/15:00 (not 02:00/03:00)
+            elif not ap and not _morning and not _evening and not _afternoon and 1 <= h <= 7:
+                h += 12  # ROUND-10: bare "teen baje"/"3 baje" with no am/pm/period -> 3 PM
+                #          (site visits are daytime; "subah 6 baje" stays 6 AM via _morning).
             if 0 <= h <= 23 and 0 <= mm <= 59:
                 hour, minute = h, mm
         except Exception:  # noqa: BLE001

@@ -59,8 +59,22 @@ live dispatch / unit at the v2 code; rollback = point back to `capsy` (instant).
 - [x] PROVE: offline replay on box (70b) = ALL_CLEAN — objection→keeps selling (NOT cut),
       "not interested"→reframes, English→English, price→one number in words (no loop),
       yes-no-time→asks for time (no fake-book), no ## Step / ₹ / digit-spam.
-- [ ] TEST-DISPATCH: one-shot call to founder's number routed to capsy-v2 (mirror caller.py 3549-3552)
-- [ ] FOUNDER real call to capsy-v2 = the verdict (I do NOT say "done")
+- [x] TEST-DISPATCH: `test_call_v2.py` dials founder + dispatches capsy-v2 (live path untouched)
+- [x] FOUNDER REAL CALL #1 (room famit-916375548830-cfeda3, 14:54): brain behaved CORRECTLY —
+      budget objection (5cr vs 6cr) handled w/o cut + value reframe; English switch mirrored
+      (`lang mirror v2 -> english`); replied by name; TTFT 0.24–0.34s; one number in words; no
+      cut/loop/CoT. BUG found+FIXED live: booking save threw ImportError (voice_ops.booking
+      __init__ eager-imports store+transfer; partial copy) → copied full package, restart, OK.
+- CALL #2 (15:01): booking LLM @tool LEAKED `<function=book_site_visit>{}` as SPOKEN text on
+  llama-3.3-70b (Groq emits tool-calls in content) + never executed. FIX: dropped the tool
+  (BOOKING_HTTP_ENABLED=0) + CODE-SIDE booking in _on_item (on explicit consent+time → _do_booking_http).
+- CALL #3 (15:14): CLEAN — no leak; adaptive discovery (took founder's coaching); 5cr-vs-6cr handled;
+  verbally confirmed "kal teen baje" visit; clean close on explicit "bye bye" (closure end-signal-only ✓).
+  REMAINING: booking SAVE = `bad_slot` — `resolve_slot_start` can't parse Devanagari time "तीन बजे"
+  (needs Hindi/Devanagari numeral+time normalization before resolve). Minor: slight double-goodbye.
+- [ ] FIX booking-save: normalize Devanagari time ("कल/तीन बजे") → parseable before resolve_slot_start
+- [ ] (polish) double-goodbye: suppress model reply when closure fires on the bye turn
+- [ ] FOUNDER VERDICT on how it SOUNDED + next step (flip live / re-test / tweak)
 
 ## RUNBOOK
 - v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`

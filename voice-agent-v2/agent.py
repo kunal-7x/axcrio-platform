@@ -42,8 +42,8 @@ try:
 except Exception:  # noqa: BLE001 — agent must run even if the module is missing
     ld = None
 
-load_dotenv("/opt/famit-agent/.env")
-load_dotenv(".env")
+load_dotenv("/opt/famit-agent-v2/.env")   # v2: load OUR OWN env first (own model + agent_name);
+load_dotenv(".env")                        # dotenv won't override an already-set var, so ours wins.
 
 logger = logging.getLogger("famit-agent")
 
@@ -1054,6 +1054,25 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         sig = _closure_signal(turns)
                         if sig:
                             asyncio.run_coroutine_threadsafe(_confirm_then_hangup(sig), loop)
+                    except Exception:  # noqa: BLE001
+                        pass
+                # ROUND-10: CODE-SIDE booking. The LLM @function_tool leaked "<function=...>" as
+                # SPOKEN text on llama-3.3-70b (Groq emits the call in content, not structured) and
+                # never executed. So we DROP the tool and book deterministically: when the caller's
+                # OWN turn carries real consent + a concrete time, persist the visit ONCE in the
+                # background; the model confirms it warmly in words (prompt-driven). Never blocks.
+                if role == "user" and loop is not None and not ctl.get("booked"):
+                    try:
+                        if _explicit_book_consent(text):
+                            ctl["booked"] = True
+                            def _do_bk(_when=text):
+                                try:
+                                    res = _do_booking_http(phone, when_text=_when,
+                                                           lead_name=lead_name, campaign_id=campaign_id)
+                                    logger.info("ROUND10 code-side booking -> %r", res)
+                                except Exception as _e:  # noqa: BLE001
+                                    logger.warning("code-side booking failed: %r", _e)
+                            loop.run_in_executor(None, _do_bk)
                     except Exception:  # noqa: BLE001
                         pass
         except Exception:  # noqa: BLE001
