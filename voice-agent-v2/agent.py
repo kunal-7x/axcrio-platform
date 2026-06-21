@@ -273,13 +273,17 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
     disc_phrase = (disclosure_phrase or f"{company} से").strip()
     greeting = _ist_greeting()  # ROUND-10: "Good morning/afternoon/evening" — never नमस्ते
-    # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
-    if disclose:
-        fallback = (f"{greeting} {name_part}मैं {agent_name}, {disc_phrase} {speaking}। "
-                    f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
+    # ROUND-11 two-beat opener. WITH a name: BEAT-1 = warm greeting + name-confirm ONLY (the brain
+    # does BEAT-2 — the intro + "do minute baat?" — on its first turn). WITHOUT a name: one warm
+    # intro+permission line. These fallbacks are used only if the LLM opener call fails.
+    if lead_name:
+        fallback = f"{greeting}, क्या मेरी बात {lead_name} जी से हो रही है?"
+    elif disclose:
+        fallback = (f"{greeting} sir, मैं {agent_name}, {disc_phrase} {speaking} — "
+                    f"क्या अभी दो minute बात हो सकती है?")
     else:
-        fallback = (f"{greeting} {name_part}मैं {agent_name}, {company} से {speaking}। "
-                    f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
+        fallback = (f"{greeting} sir, मैं {agent_name}, {company} से {speaking} — "
+                    f"क्या अभी दो minute बात हो सकती है?")
     try:
         gender_clause = ("Hindi में अपने बारे में पुल्लिंग (masculine) रूप इस्तेमाल करो "
                          "('बोल रहा हूँ', 'बताता हूँ')। ") if gender == "male" else (
@@ -289,17 +293,22 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                        f"{disc_phrase} हो (छोटा रखो, robotic नहीं), और "
                        if disclose else
                        f"अपना naam {agent_name} बताओ और natural रहो, फिर ")
-        sysmsg = (
-            f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
-            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। " + gender_clause
-            + f"शुरुआत हमेशा इस English greeting से करो: '{greeting}' — कभी 'नमस्ते'/'namaste'/'नमस्कार' मत बोलो। "
-            + (f"caller का naam लेकर greet करो (जैसे '{greeting} {lead_name} जी…')। " if lead_name
-               else f"(जैसे '{greeting} sir…')। ")
-            + disc_clause
-            + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
-            f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
-            f"Price/size/details बिलकुल मत बताओ।"
-        )
+        if lead_name:
+            # BEAT-1 ONLY: greeting + name-confirm. The brain does intro + permission next turn.
+            sysmsg = (
+                f"तुम {agent_name} हो, {company} की warm telecaller। सिर्फ BEAT-1 बोलो: एक English "
+                f"greeting '{greeting}' से शुरू करके caller का naam लेकर confirm करो कि सही इंसान से "
+                f"बात हो रही है — जैसे '{greeting}, क्या मेरी बात {lead_name} जी से हो रही है?'। "
+                f"company, product, ya 'do minute' अभी मत बोलो — वो अगले turn में आएगा। कभी 'नमस्ते'/"
+                f"'namaste'/'नमस्कार' मत बोलो। बस एक छोटी बोली जाने वाली line, कोई symbol/list नहीं।"
+            )
+        else:
+            sysmsg = (
+                f"तुम {agent_name} हो, {company} की warm telecaller। एक बहुत छोटी (15-25 शब्द) "
+                f"opener दो — '{greeting} sir' से शुरू करके। " + gender_clause + disc_clause
+                + f"फिर पूछो 'क्या अभी दो minute बात हो सकती है?'। कभी 'नमस्ते' मत बोलो। बस एक बोली "
+                f"जाने वाली line — कोई symbol/list/दूसरा वाक्य नहीं। Price/size/details मत बताओ।"
+            )
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": "Bearer " + _next_groq_key()},

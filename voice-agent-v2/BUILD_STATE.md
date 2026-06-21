@@ -116,6 +116,26 @@ NEXT (carefully, reversible, tested): research how production voice-AI is built 
 architecture → incremental brain polish (the 4 asks) → production hardening (latency/turn-taking, evals,
 RAG-when-needed, robustness/STT). NO rebuild; additive only.
 
+## ✅ RESEARCH VERDICT (3 scouts, 2026-06-21): architecture is PRODUCTION-LEGITIMATE
+Same pattern as Vapi/Retell/Bland (LiveKit streaming STT→LLM→TTS + prompt brain). Not a rebuild — refine.
+Convergent #1 finding (all 3 scouts): the brain DUMPED facts + pitched too early instead of qualifying.
+Gaps (additive, ordered): (B0) brain "character-not-script" + 4 asks [DONE Wave A] · (B1) eval suite
+[DONE Wave A] · (B2) semantic turn-detection · (B3) light state layer (QUALIFY→PITCH, +20% conv) · (B4)
+hardening (provider fallback, observability, RAG-on-demand). Brain-design secret: phrase rules as CHARACTER
+TRAITS ("you are someone who…") → model embodies, doesn't recite → also stops the small-model breakage.
+
+## ✅ WAVE A DONE (brain v2 + eval gate, 2026-06-21) — eval-gated, deployed to capsy
+- `prompt.py` rewritten to CHARACTER framing + the founder's 4 asks + 2 bug fixes: two-beat open
+  (opener does beat-1 name-confirm, brain does beat-2 intro+permission) · QUALIFY-before-dump (ask one
+  discovery Q first, price only on budget/ask) · curiosity-chain (one point + "aur sunna chahenge") ·
+  language-mirror · STT-garble→ask-to-repeat · callback-sanity (no "2 saal") · clean bye (no re-intro).
+- `agent.py` `_llm_opener` → beat-1 only (greeting + name-confirm).
+- `tests/replay.py` → EVAL SUITE (9 scenarios + auto-checks) = the anti-Black-Day gate. Result: **8/9**
+  (the 1 fail = garble-ask-to-repeat; the LLM can't reliably self-detect Devanagari gibberish, but it now
+  DEGRADES GRACEFULLY — stays on-topic + alive instead of the call dying). Every future brain change runs
+  this offline FIRST. Deployed to capsy (NRestarts=0). Voice byte-identical. Rollback = git tag.
+- [ ] FOUNDER live test of Wave A brain.
+
 ## RUNBOOK
 - v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`
 - STOP v2 (no effect on earner): `sudo systemctl stop famit-agent-v2`
