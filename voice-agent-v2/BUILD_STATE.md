@@ -50,8 +50,19 @@ live dispatch / unit at the v2 code; rollback = point back to `capsy` (instant).
 - [x] Copy proven support modules verbatim (memory/langdetect/voice_ops)
 - [x] prompt.py clean (py_compile OK)
 - [x] agent.py — 2 subtractive edits (closure→end-signal-only) (py_compile OK)
-- [ ] README + .env.example + tests/replay.py
-- [ ] commit + gitleaks scan + push
-- [ ] DEPLOY isolated `famit-agent-v2` (capsy-v2) + health-check + live capsy byte-identical
-- [ ] PROVE: offline replay on box (70b) — objection-not-cut, no number-loop, lang-mirror
-- [ ] FOUNDER real call to capsy-v2 = the verdict
+- [x] README + .env.example + tests/replay.py
+- [x] commit + gitleaks scan (0 leaks) + push (origin/rebuild/voice-telecaller-v2)
+- [x] DEPLOY isolated `famit-agent-v2` (capsy-v2) — **registered worker agent_name=capsy-v2**,
+      NRestarts=0, live `capsy` active+untouched. Port 8092 (8090=live out, 8091=live inbound).
+      v2 .env = live .env + GROQ_LLM_MODEL=llama-3.3-70b-versatile + GROQ_MAX_TOKENS=120 +
+      LIVEKIT_AGENT_NAME=capsy-v2 + AGENT_HTTP_PORT=8092 + opener flags. Voice env golden (EL_STABILITY=0.55).
+- [x] PROVE: offline replay on box (70b) = ALL_CLEAN — objection→keeps selling (NOT cut),
+      "not interested"→reframes, English→English, price→one number in words (no loop),
+      yes-no-time→asks for time (no fake-book), no ## Step / ₹ / digit-spam.
+- [ ] TEST-DISPATCH: one-shot call to founder's number routed to capsy-v2 (mirror caller.py 3549-3552)
+- [ ] FOUNDER real call to capsy-v2 = the verdict (I do NOT say "done")
+
+## RUNBOOK
+- v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`
+- STOP v2 (no effect on earner): `sudo systemctl stop famit-agent-v2`
+- live `capsy` untouched throughout; nothing to roll back on the earner.
