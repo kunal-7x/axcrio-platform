@@ -86,7 +86,16 @@ class ProviderPool:
                 pass
 
         # carry over runtime state for keys that survive (match by secret value)
-        by_value = {st["key"]: st for st in self._keys.values()}
+        # Per secret, keep the MOST-protective prior state: a secret may have 2 live copies
+        # (env + store); on reconcile we must NOT lose a cooldown set on one of them, else a
+        # 429'd key re-enters rotation immediately and the pool re-picks a dead key forever.
+        by_value: dict[str, dict] = {}
+        for st in self._keys.values():
+            prev = by_value.get(st["key"])
+            if (prev is None
+                    or st["cooling_until"] > prev["cooling_until"]
+                    or st["pick_count"] > prev["pick_count"]):
+                by_value[st["key"]] = st
         new_map: dict[str, dict] = {}
         for kid, meta in wanted.items():
             prev = by_value.get(meta["key"])
@@ -131,11 +140,12 @@ class ProviderPool:
                 cool = DEFAULT_COOLDOWN
         now = time.time()
         with self._lock:
+            # cool EVERY copy of this secret (the same key may appear twice: env seed +
+            # panel hot-store) so a re-pick can't land on an un-cooled twin of a dead key.
             for st in self._keys.values():
                 if st["key"] == key:
                     st["cooling_until"] = now + cool
                     st["last_429_at"] = now
-                    return
 
     def mark_ok(self, key: str) -> None:
         now = time.time()

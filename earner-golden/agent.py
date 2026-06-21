@@ -14,48 +14,23 @@ import datetime as _datetime_module
 import json
 import logging
 import os
-import re
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import Agent, AgentSession, WorkerOptions, cli
-# A3: booking voice-tool (gated). function_tool/RunContext imported guarded so an
-# older livekit (without them) can NEVER stop the earner from importing — the tool
-# is only ever attached when BOTH KERNEL_OUTBOUND=1 and BOOKING_TOOL_ENABLED=1.
-try:
-    from livekit.agents import RunContext as _LkRunContext  # type: ignore
-    from livekit.agents import function_tool as _lk_function_tool  # type: ignore
-except Exception:  # noqa: BLE001
-    _LkRunContext = None  # type: ignore
-    _lk_function_tool = None  # type: ignore
 from livekit.plugins import elevenlabs, groq, sarvam, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 
 import memory as mem
 from prompt import SYSTEM_PROMPT, GODREJ_FIELDS, build_system_prompt, _gender_of
-try:
-    from prompt import resolve_providers as _resolve_providers  # R6: TTS provider routing
-except Exception:  # noqa: BLE001 — older prompt.py without the resolver -> EL default always
-    _resolve_providers = None
 
 # P2: per-turn language auto-detect + mirror (cheap heuristic; never breaks a call).
 try:
     import langdetect as ld
 except Exception:  # noqa: BLE001 — agent must run even if the module is missing
     ld = None
-
-# W-INT-OUTBOUND (A4): the OFF-is-identity kernel adapter. KERNEL_OUTBOUND defaults
-# OFF -> every helper short-circuits to the legacy-equivalent and this earner is
-# BYTE-IDENTICAL to today. Imported fully-guarded: a kernel import bug can NEVER
-# stop the earner (the OFF path doesn't even need this module). When None, all four
-# seam points below fall through to the unchanged legacy code.
-try:
-    import voice_kernel.integrations.outbound as _vk
-except Exception as _vk_exc:  # noqa: BLE001 — earner must run even if the kernel is absent
-    _vk = None
-    logging.getLogger("famit-agent").warning("voice_kernel adapter unavailable -> legacy only: %r", _vk_exc)
 
 load_dotenv("/opt/famit-agent/.env")
 load_dotenv(".env")
@@ -111,208 +86,54 @@ _GROQ_KEYS = _collect_groq_keys()
 _GROQ_CYCLE = _itertools.cycle(_GROQ_KEYS) if _GROQ_KEYS else None
 _GROQ_LOCK = _threading.Lock()
 
-# ── R7 INSTANT-429-FALLBACK ROTATION (flag-gated, OFF = byte-identical legacy) ─────
-# EARNER_POOL_LLM=1 wires the existing llm_router GROQ_POOL (least-used pick + per-key
-# 429 cooldown + INSTANT re-pick of a healthy key) into the hot-path LLM, with a
-# STICKY-PER-CALL binding: ONE key is pinned for the whole conversation (preserves
-# Groq's prompt-cache + per-key rate accounting) and is switched mid-call ONLY on a
-# 429 (instant re-pick of a healthy key). OFF (default) -> the legacy
-# _next_groq_key()/groq.LLM path below is UNCHANGED (byte-identical). Import is fully
-# guarded: any llm_router import error degrades silently to the legacy path -> the
-# earner can never break over rotation.
-EARNER_POOL_LLM = (os.getenv("EARNER_POOL_LLM", "0") in ("1", "true", "True"))
-_GROQ_POOL = None
-_PoolLLM = None
-_pool_is_429 = None
-_pool_parse_retry_after = None
-_lk_llm_mod = None
-if EARNER_POOL_LLM:
-    try:
-        from llm_router import GROQ_POOL as _GROQ_POOL  # type: ignore
-        from llm_router.pool_llm import PoolLLM as _PoolLLM  # type: ignore
-        from llm_router.provider_pool import is_429 as _pool_is_429  # type: ignore
-        from llm_router.provider_pool import parse_retry_after as _pool_parse_retry_after  # type: ignore
-        from livekit.agents import llm as _lk_llm_mod  # type: ignore
-        logging.getLogger("famit-agent").info(
-            "R7 EARNER_POOL_LLM=1 -> GROQ_POOL wired (available=%d)",
-            _GROQ_POOL.available_count() if _GROQ_POOL else -1)
-    except Exception as _pool_exc:  # noqa: BLE001 — degrade to legacy, never break the earner
-        _GROQ_POOL = None
-        _PoolLLM = None
-        logging.getLogger("famit-agent").warning(
-            "R7 EARNER_POOL_LLM=1 but llm_router import failed -> legacy key path: %r", _pool_exc)
-
-
-def _make_sticky_pool_llm(delegate):
-    """Wrap a built groq.LLM delegate in a STICKY-PER-CALL PoolLLM (one instance per call).
-
-    Returns None if the pool isn't available (caller then uses the legacy delegate as-is).
-    The returned LLM pins the call's key (a least-used pick at construction) for every turn
-    and switches ONLY on a 429 — instant re-pick of a healthy key via GROQ_POOL.
-    """
-    if _GROQ_POOL is None or _PoolLLM is None or _lk_llm_mod is None:
-        return None
-    try:
-        _is429 = _pool_is_429
-        _parse_ra = _pool_parse_retry_after
-
-        class _StickyStream(_lk_llm_mod.LLMStream):
-            """Per-call sticky stream: reuse the pinned key; on 429 cool it + instant re-pick."""
-
-            def __init__(self, sticky_llm, *, chat_ctx, tools, conn_options, extra):
-                super().__init__(sticky_llm, chat_ctx=chat_ctx, tools=tools,
-                                 conn_options=conn_options)
-                self._sticky_llm = sticky_llm
-                self._extra = extra
-
-            async def _run(self) -> None:
-                pool = self._sticky_llm.pool
-                delegate = self._sticky_llm.delegate
-                attempts = max(1, pool.available_count())
-                last_exc = None
-                tried = set()  # secrets already 429'd THIS turn -> never retry them
-                for _ in range(attempts):
-                    # prefer the call's sticky key; only re-pick if it's cooling/unset
-                    # or already 429'd this turn (handles duplicate-secret pool entries).
-                    key = self._sticky_llm.sticky_key
-                    if key is None or key in tried:
-                        chosen = pool.pick()
-                        # skip any pick that's a secret we already 429'd this turn
-                        _guard = 0
-                        while chosen is not None and chosen["key"] in tried and _guard < attempts:
-                            chosen = pool.pick()
-                            _guard += 1
-                        if chosen is None or chosen["key"] in tried:
-                            break  # whole pool cooling/exhausted -> let caller surface/fallback
-                        key = chosen["key"]
-                        self._sticky_llm.sticky_key = key
-                    try:
-                        client = getattr(delegate, "_client", None)
-                        if client is not None:
-                            client.api_key = key
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        stream = delegate.chat(
-                            chat_ctx=self._chat_ctx,
-                            tools=self._tools or None,
-                            conn_options=self._conn_options,
-                            **self._extra,
-                        )
-                        async with stream:
-                            async for chunk in stream:
-                                self._event_ch.send_nowait(chunk)
-                        pool.mark_ok(key)
-                        return
-                    except Exception as exc:  # noqa: BLE001
-                        last_exc = exc
-                        if _is429(exc):
-                            ra = _parse_ra(exc)
-                            tried.add(key)
-                            pool.mark_429(key, ra)
-                            # cool EVERY pool entry that carries this same secret (the pool
-                            # can hold the same key in both .env-seed and the hot store; its
-                            # mark_429 cools only the first match) so it isn't re-handed-out.
-                            try:
-                                for _st in list(pool._keys.values()):  # noqa: SLF001
-                                    if _st.get("key") == key and _st.get("cooling_until", 0) <= 0:
-                                        pool.mark_429(_st["key"], ra)
-                            except Exception:  # noqa: BLE001
-                                pass
-                            self._sticky_llm.sticky_key = None  # drop dead key -> re-pick
-                            logging.getLogger("famit-agent").info(
-                                "R7 sticky key 429 -> cooling + instant re-pick")
-                            continue
-                        raise
-                if last_exc is not None:
-                    raise last_exc
-                raise _lk_llm_mod.LLMError("R7 sticky pool: all keys cooling")
-
-        class _StickyPoolLLM(_PoolLLM):
-            """PoolLLM with a per-call sticky key (one instance per call)."""
-
-            def __init__(self, *, pool, delegate, label=""):
-                super().__init__(pool=pool, delegate=delegate, label=label)
-                self.sticky_key = None
-                try:
-                    _c = pool.pick()
-                    if _c:
-                        self.sticky_key = _c["key"]
-                except Exception:  # noqa: BLE001
-                    self.sticky_key = None
-
-            def chat(self, *, chat_ctx, tools=None, conn_options=None,
-                     parallel_tool_calls=None, tool_choice=None, extra_kwargs=None):
-                from livekit.agents.types import DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN
-                if conn_options is None:
-                    conn_options = DEFAULT_API_CONNECT_OPTIONS
-                extra = {}
-                if parallel_tool_calls is not None and parallel_tool_calls is not NOT_GIVEN:
-                    extra["parallel_tool_calls"] = parallel_tool_calls
-                if tool_choice is not None and tool_choice is not NOT_GIVEN:
-                    extra["tool_choice"] = tool_choice
-                if extra_kwargs is not None and extra_kwargs is not NOT_GIVEN:
-                    extra["extra_kwargs"] = extra_kwargs
-                return _StickyStream(self, chat_ctx=chat_ctx, tools=tools,
-                                     conn_options=conn_options, extra=extra)
-
-        return _StickyPoolLLM(pool=_GROQ_POOL, delegate=delegate, label="groq-sticky")
-    except Exception as _mk_exc:  # noqa: BLE001 — never break a call over the wrap
-        logging.getLogger("famit-agent").warning(
-            "R7 sticky pool wrap failed -> legacy delegate: %r", _mk_exc)
-        return None
-# A6: 429 / quota cooling. When a key returns a 429 (rate-limit/quota), mark it
-# "cooling" until now+GROQ_COOL_SECONDS; _next_groq_key SKIPS cooling keys so the
-# round-robin stops handing out an exhausted key (the live TTFT-spike cause). Pure
-# brain/logic — NOTHING in the TTS/voice path. Safe no-op on a single key: if every
-# key is cooling we still return one (never starve a call). Default cool window 60s.
-_GROQ_COOLING: dict[str, float] = {}  # masked-or-raw key -> epoch when it un-cools
-_GROQ_COOL_SECONDS = float(os.getenv("GROQ_COOL_SECONDS", "60") or 60)
-
 def _mask_key(k: str) -> str:
     if not k:
         return "<none>"
     return (k[:6] + "…" + k[-4:]) if len(k) > 12 else "<short>"
 
-def mark_groq_key_cooling(key: str, *, seconds: float | None = None) -> None:
-    """Mark a Groq key as cooling after a 429/quota error. Thread-safe; never raises.
-    The key is skipped by _next_groq_key until the cool window elapses."""
-    try:
-        if not key:
-            return
-        import time as _t
-        secs = _GROQ_COOL_SECONDS if seconds is None else float(seconds)
-        with _GROQ_LOCK:
-            _GROQ_COOLING[key] = _t.time() + max(1.0, secs)
-        logging.getLogger("famit-agent").warning(
-            "groq key cooling %s for %.0fs (429/quota)", _mask_key(key), max(1.0, secs))
-    except Exception:  # noqa: BLE001 — cooling bookkeeping must never break a call
-        pass
-
 def _next_groq_key() -> str:
-    """Round-robin the next Groq API key (thread-safe), SKIPPING keys currently
-    cooling from a recent 429/quota (A6). Falls back to the single GROQ_API_KEY /
-    env if no keys were collected. If ALL keys are cooling, returns the next one
-    anyway (never starve a live call). Never raises."""
+    """Round-robin the next Groq API key (thread-safe). Falls back to the single
+    GROQ_API_KEY / env if no keys were collected. Never raises."""
     try:
-        if _GROQ_CYCLE is not None and _GROQ_KEYS:
-            import time as _t
-            now = _t.time()
+        if _GROQ_CYCLE is not None:
             with _GROQ_LOCK:
-                # at most len(_GROQ_KEYS) probes: take the first non-cooling key.
-                for _ in range(len(_GROQ_KEYS)):
-                    k = next(_GROQ_CYCLE)
-                    cool_until = _GROQ_COOLING.get(k, 0.0)
-                    if cool_until and cool_until > now:
-                        continue  # still cooling -> skip to the next key
-                    if cool_until:
-                        _GROQ_COOLING.pop(k, None)  # window elapsed -> clear
-                    return k
-                # every key cooling: return the next anyway (don't starve the call).
                 return next(_GROQ_CYCLE)
     except Exception:  # noqa: BLE001 — never break a call over key selection
         pass
     return (os.getenv("GROQ_API_KEY") or "").strip()
+
+def _groq_keys_for_call(room_name: str) -> list[str]:
+    """FORK-SAFE per-call Groq key ORDER for the hot-path LLM.
+
+    ROOT-CAUSE FIX for the dead-air peg: ``_GROQ_CYCLE`` is a module-level
+    ``itertools.cycle`` copied at index 0 into every forked LiveKit worker, so
+    EVERY call started on key #0 (GROQ_API_KEY) → that one org pegged at its
+    per-day token cap (429 → dead air) while ~13 other keys sat idle.
+
+    The cure is a per-call DETERMINISTIC seed that does NOT depend on any forked
+    in-process counter: hash the unique room name (identical across every
+    prewarmed/forked worker process) into the key list so call#1→keyA,
+    call#2→keyB … spread UNIFORMLY across ALL keys regardless of fork state.
+
+    Returns the keys rotated so the seeded key is FIRST (the sticky primary,
+    preserving Groq's per-key prompt cache for the whole call) followed by the
+    rest in order (the instant 429-fallback chain). Never raises; on any problem
+    falls back to the legacy single-key behaviour.
+    """
+    try:
+        keys = list(_GROQ_KEYS)
+        if not keys:
+            single = (os.getenv("GROQ_API_KEY") or "").strip()
+            return [single] if single else []
+        if len(keys) == 1:
+            return keys
+        import hashlib as _hl
+        seed = int(_hl.sha1((room_name or "").encode("utf-8")).hexdigest(), 16)
+        start = seed % len(keys)
+        return keys[start:] + keys[:start]
+    except Exception:  # noqa: BLE001 — never break a call over key selection
+        single = (os.getenv("GROQ_API_KEY") or "").strip()
+        return [single] if single else []
 
 def _collect_sarvam_keys() -> list[str]:
     keys: list[str] = []
@@ -378,11 +199,10 @@ def _summarize(turns: list[dict]) -> dict:
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     now_ist = _dt.now(_tz(_td(hours=5, minutes=30)))
     now_str = now_ist.strftime("%Y-%m-%dT%H:%M:%S")
-    _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
     try:
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _gk},
+            headers={"Authorization": "Bearer " + _next_groq_key()},
             json={"model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
                   "temperature": 0.1, "max_tokens": 300,
                   "response_format": {"type": "json_object"},
@@ -405,8 +225,6 @@ def _summarize(turns: list[dict]) -> dict:
                   ]},
             timeout=12,
         )
-        if getattr(r, "status_code", 200) == 429:
-            mark_groq_key_cooling(_gk)
         d = json.loads(r.json()["choices"][0]["message"]["content"])
         opt_out = bool(d.get("opt_out", False))
         outcome = d.get("outcome", "answered")
@@ -421,133 +239,44 @@ def _summarize(turns: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.warning("summary failed: %r", exc)
         return {**base, "outcome": "answered"}
-def _ist_time_of_day() -> dict:
-    """REAL current IST time-of-day, for a time-correct (never hardcoded) greeting.
-
-    Returns {"hour": 0-23, "bucket": morning|afternoon|evening,
-             "en": "good morning"/..., "hi": ENGLISH greeting hint (kept English on
-             purpose — pure-Hindi wishes like सुप्रभात/शुभ रात्रि are BANNED)}.
-    The LLM AUTHORS the greeting; this only tells it which part of the day it is so
-    the ENGLISH wish "good morning/afternoon/evening" matches reality. The buckets
-    are computed in REAL IST (UTC+5:30), so 11:00 IST => 'morning'. Never raises."""
-    try:
-        now_ist = _datetime_module.datetime.now(
-            _datetime_module.timezone(_datetime_module.timedelta(hours=5, minutes=30)))
-        h = now_ist.hour
-    except Exception:  # noqa: BLE001
-        h = 10  # safe daytime default
-    # Labels are ENGLISH only — never emit Hindi wishes (सुप्रभात/शुभ रात्रि/नमस्ते).
-    if 4 <= h < 12:
-        bucket, en, hi = "morning", "good morning", "good morning (subah — say it in ENGLISH)"
-    elif 12 <= h < 17:
-        bucket, en, hi = "afternoon", "good afternoon", "good afternoon (dopahar — say it in ENGLISH)"
-    elif 17 <= h < 21:
-        bucket, en, hi = "evening", "good evening", "good evening (shaam — say it in ENGLISH)"
-    else:
-        # Late night / very early: still greet in clean English, never 'good morning' wrongly.
-        bucket, en, hi = "evening", "good evening", "good evening (raat — greet warmly in ENGLISH, not 'good morning')"
-    return {"hour": h, "bucket": bucket, "en": en, "hi": hi}
-
-
-def _first_name(full: str) -> str:
-    """The first token of a name, for natural address ('कुणाल कुमार' -> 'कुणाल').
-    A telecaller greets by FIRST name + 'जी', never the full legal name. Never raises."""
-    return (full or "").strip().split()[0] if (full or "").strip() else ""
-
-
-# VP3: pure-Hindi greeting wishes are BANNED (the wish must be ENGLISH 'good morning'…).
-# Deterministic scrub so a banned word never reaches TTS even if the LLM disobeys: drop the
-# banned token; if that leaves the opener with no greeting, prepend the correct English wish.
-# NOTE: Python re '\b' is ASCII-only, so it does NOT anchor a Devanagari word; a trailing
-# Devanagari lookahead is also unsafe (words end in combining vowel signs). These greeting
-# words are distinctive — strip them directly + any trailing separator. Latin forms get an
-# ASCII boundary so we never clip an unrelated English word.
-_BANNED_GREETING_RE = re.compile(
-    r"(?:सुप्रभात|शुभ\s*प्रभात|शुभ\s*रात्रि|शुभ\s*संध्या|नमस्ते|नमस्कार"
-    r"|(?<![A-Za-z])(?:subratri|shubh\s*ratri|suprabhat)(?![A-Za-z]))"
-    r"[\s,!।]*",
-    re.IGNORECASE,
-)
-
-
-def _fix_opener_greeting(text: str, english_wish: str) -> str:
-    """Strip any BANNED pure-Hindi greeting from an LLM opener; ensure it opens with the
-    ENGLISH time-of-day wish. `english_wish` is e.g. 'good morning'. Never raises."""
-    try:
-        had_banned = bool(_BANNED_GREETING_RE.search(text or ""))
-        out = _BANNED_GREETING_RE.sub("", text or "").strip()
-        low = out.lower()
-        wish_present = ("good morning" in low or "good afternoon" in low or "good evening" in low)
-        if had_banned and not wish_present:
-            # we removed the greeting and there's no English wish -> lead with the correct one
-            out = f"{english_wish.capitalize()}, hello {out}".strip()
-        return re.sub(r"^[\s,!।]+", "", out).strip() or text or ""
-    except Exception:  # noqa: BLE001
-        return text or ""
-
-
 def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
                 gender: str = "female", disclose: bool = True,
                 disclosure_phrase: str = "") -> str:
     """LLM-authored opening line, per-campaign + by-name, delivered via session.say().
     Identity + company + product NAME + 'abhi free?' — NO pitch. Falls back to a fixed line.
     P2: gender drives the Hindi verb form (no hardcoded feminine); AI disclosure is
-    campaign-configurable (kept by default for TRAI; `disclose=False` drops it).
-    VP3: greeting wish is ENGLISH ('good morning/afternoon/evening') + 'hello' — pure-Hindi
-    greetings (सुप्रभात/नमस्ते) are BANNED — and the lead is addressed by FIRST name + 'जी'."""
-    fname = _first_name(lead_name)            # VP3: 'कुणाल कुमार' -> 'कुणाल' (first name only)
-    name_part = f"{fname} जी, " if fname else ""
+    campaign-configurable (kept by default for TRAI; `disclose=False` drops it)."""
+    name_part = f"{lead_name} जी, " if lead_name else ""
     speaking = "बोल रहा हूँ" if gender == "male" else "बोल रही हूँ"
     disc_phrase = (disclosure_phrase or f"{company} से").strip()
-    tod = _ist_time_of_day()  # A2: REAL IST time-of-day → time-correct LLM greeting
-    # Fallback line (used if the LLM opener call fails) — ENGLISH time-of-day wish + 'hello',
-    # NEVER 'namaste'/'suprabhat'; gender-correct + configurable disclosure; first-name address.
-    # R6: the spoken opener is STEP-A ONLY — an English time-wish + 'hello {name} जी' +
-    # a NAME-CONFIRM question, then STOP and WAIT. Company / product / permission come in
-    # STEP-B on the NEXT turn (after the caller says 'haan') — guided by prompt.py's
-    # opener_section state machine, never dumped in one breath.
-    if name_part:
-        fallback = (f"{tod['en'].capitalize()} sir, hello {name_part}"
-                    f"क्या मेरी बात {fname} जी से हो रही है?")
+    # Fallback line (used if the LLM opener call fails) — gender-correct + configurable disclosure.
+    if disclose:
+        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {disc_phrase} {speaking}। "
+                    f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     else:
-        fallback = (f"{tod['en'].capitalize()} sir, hello — "
-                    f"क्या मेरी बात सही व्यक्ति से हो रही है?")
+        fallback = (f"नमस्ते {name_part}…! मैं {agent_name}, {company} से {speaking}। "
+                    f"{product} के बारे में बात करनी थी — क्या अभी दो minute बात हो सकती है?")
     try:
         gender_clause = ("Hindi में अपने बारे में पुल्लिंग (masculine) रूप इस्तेमाल करो "
                          "('बोल रहा हूँ', 'बताता हूँ')। ") if gender == "male" else (
                          "Hindi में अपने बारे में स्त्रीलिंग (feminine) रूप इस्तेमाल करो "
                          "('बोल रही हूँ', 'बताती हूँ')। ")
-        # R6: STEP-A only — name-confirm. Company/product/permission are explicitly
-        # FORBIDDEN in this spoken opener; they belong to STEP-B (next turn, after 'haan').
-        confirm_clause = (
-            f"फिर तुरंत caller से सिर्फ़ NAAM-CONFIRM करो — पूछो 'क्या मेरी बात {fname} जी से हो रही है?' "
-            f"(real naam '{fname}' इस्तेमाल करो, कभी rude 'सही व्यक्ति' नहीं)। "
-            if fname else
-            "फिर तुरंत politely पूछो 'क्या मेरी बात सही व्यक्ति से हो रही है?'। ")
+        disc_clause = (f"अपना naam {agent_name} बताओ और एक छोटा सा natural disclosure दो कि तुम "
+                       f"{disc_phrase} हो (छोटा रखो, robotic नहीं), और "
+                       if disclose else
+                       f"अपना naam {agent_name} बताओ और natural रहो, फिर ")
         sysmsg = (
-            f"तुम {agent_name} हो, {company} की telecaller। यह call का पहला step है: सिर्फ़ एक बहुत "
-            f"छोटी (8-15 शब्द) NAAM-CONFIRM line दो, फिर रुक जाओ — बोलचाल की Hinglish में, Hindi "
-            f"Devanagari में (पर नीचे बताए English शब्द English में ही रखो)। "
-            f"अभी India में {tod['bucket']} का समय है, इसलिए greeting की शुरुआत ENGLISH में "
-            f"'{tod['en']}' से करो (जैसे '{tod['en']} sir'), फिर एक soft 'hello'। time-of-day का wish हमेशा "
-            f"ENGLISH में बोलो ('good morning'/'good afternoon'/'good evening') — कभी गलत समय मत बोलो। "
-            f"ये greeting शब्द बिलकुल मना हैं, कभी मत बोलो: 'सुप्रभात', 'शुभ प्रभात', 'शुभ रात्रि', "
-            f"'शुभ संध्या', 'नमस्ते', 'नमस्कार'। " + gender_clause
-            + (f"caller को FIRST naam '{fname}' से 'जी' लगाकर greet करो (जैसे '{tod['en'].capitalize()} sir, "
-               f"hello {fname} जी…') — पूरा naam मत बोलो, सिर्फ़ '{fname} जी'। " if fname else "")
-            + confirm_clause
-            + f"🚫 इस पहली line में अपना naam, company ('{company}'), product ('{product}'), 'do minute' "
-            f"permission या call की वजह बिलकुल मत बताओ — वो अगले turn में, caller के 'हाँ' कहने के बाद। "
-            f"अभी सिर्फ़ greeting + naam-confirm, फिर STOP. "
-            f"कोई भी English brand/proper-noun ('{company}', '{product}') English अक्षरों में ही लिखो — "
-            f"Devanagari में transliterate मत करो। "
-            f"बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
+            f"तुम {agent_name} हो, {company} की telecaller। एक बहुत छोटी (15-25 शब्द), गर्मजोशी "
+            f"वाली एक-line opener दो — बोलचाल की Hinglish में, Hindi Devanagari में। " + gender_clause
+            + (f"caller का naam '{lead_name}' लेकर greet करो (जैसे 'नमस्ते {lead_name} जी…')। " if lead_name else "")
+            + disc_clause
+            + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
+            f"सकती है?'। बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
             f"Price/size/details बिलकुल मत बताओ।"
         )
-        _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _gk},
+            headers={"Authorization": "Bearer " + _next_groq_key()},
             json={
                 "model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
                 "temperature": 0.5, "max_tokens": 70,
@@ -558,10 +287,7 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             },
             timeout=8,
         )
-        if getattr(r, "status_code", 200) == 429:
-            mark_groq_key_cooling(_gk)
         text = r.json()["choices"][0]["message"]["content"].strip()
-        text = _fix_opener_greeting(text, tod["en"])  # VP3: ban Hindi greeting, force English wish
         return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("opener generation failed, using fallback: %r", exc)
@@ -639,62 +365,6 @@ def _closure_signal(turns: list[dict]) -> str:
         return ""
 
 
-# VSE FIX 6: farewell markers the LLM uses when IT already said goodbye — so the
-# confirm-then-hangup closure can detect that and NOT speak a second goodbye.
-_FAREWELL_MARKERS = (
-    "दिन शुभ", "दिन अच्छा", "दिन मंगलमय", "अलविदा", "शुक्रिया", "धन्यवाद", "बात करके अच्छा लगा",
-    "good day", "have a nice day", "have a great day", "take care", "goodbye", "bye",
-    "thank you for your time", "samay dene ke liye", "baat karke accha", "din shubh", "din accha",
-)
-
-
-def _last_assistant_is_farewell(turns: list[dict]) -> bool:
-    """True iff a RECENT ASSISTANT turn already reads as a goodbye/farewell.
-    Used by the closure to avoid speaking a SECOND goodbye after the LLM said one.
-    R6: scan the last TWO assistant turns (not just the very last) — the LLM sometimes
-    says its farewell, then a booking-confirm/short ack lands between it and the user's
-    "bye", which would otherwise hide the farewell from a single-turn check and let a
-    duplicate goodbye through."""
-    try:
-        seen = 0
-        for t in reversed(turns or []):
-            if (t.get("role") or "") == "assistant":
-                txt = (t.get("content") or "").lower()
-                if any(m.lower() in txt for m in _FAREWELL_MARKERS):
-                    return True
-                seen += 1
-                if seen >= 2:
-                    return False
-    except Exception:  # noqa: BLE001
-        return False
-    return False
-
-
-# VP3: 'अलविदा' (Alvida/goodbye) is BANNED. Even though the close prompt forbids it,
-# this deterministic scrub guarantees it never reaches TTS if the LLM disobeys: strip the
-# word (and any trailing separator) so the rest of the warm line is still spoken.
-# '\b' is ASCII-only (won't anchor 'अलविदा'), and a trailing Devanagari lookahead is unsafe
-# (the word ends in a combining vowel sign). The word is distinctive enough to strip directly,
-# plus any separator/punctuation around it. Latin forms are guarded with an ASCII boundary.
-_ALVIDA_RE = re.compile(
-    r"[\s,–—-]*(?:अलविदा|(?<![A-Za-z])(?:alvida|alavida)(?![A-Za-z]))[।.!\s]*",
-    re.IGNORECASE,
-)
-
-
-def _strip_alvida(text: str) -> str:
-    """Remove the banned farewell word 'अलविदा' (and transliterations) from a spoken
-    line, leaving the rest intact. Never raises; returns a stripped, tidy string."""
-    try:
-        out = _ALVIDA_RE.sub(" ", text or "").strip()
-        # tidy any leftover dangling separators at the end (', ' / '— ' / '. ')
-        out = re.sub(r"[\s,।.–—-]+$", "", out).strip()
-        # if the line now ends without terminal punctuation, add a soft '।'
-        return out or (text or "")
-    except Exception:  # noqa: BLE001
-        return text or ""
-
-
 def _goodbye_line(signal: str, agent_name: str, company: str, gender: str) -> str:
     """A warm, gender-correct closing line spoken before we end the call."""
     fem = gender != "male"
@@ -722,33 +392,22 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
                          "अपने बारे में स्त्रीलिंग (feminine) रूप इस्तेमाल करो।")
         if signal == "book":
             intent = ("Caller एक next step (site visit / callback / WhatsApp details) के लिए राज़ी "
-                      "हो गया है। एक छोटी, गर्मजोशी भरी closing line बोलो जो उसी ACTUAL agreed step "
-                      "को (जैसे 'कल शाम site visit' / 'WhatsApp पर details' / 'callback') naturally "
-                      "उसके अपने नाम से confirm करे और thank करे — जैसे एक असली इंसान करता है।")
+                      "हो गया है। एक छोटी, गर्मजोशी भरी closing line बोलो जो उसी agreed step को "
+                      "naturally confirm करे और शुक्रिया कहे।")
         else:
             intent = ("Caller ने अभी interest नहीं दिखाया / दोबारा call न करने को कहा है। एक छोटी, "
-                      "respectful closing line बोलो — politely thank करो, बिना बहस, बिना दोबारा pitch।")
+                      "respectful closing line बोलो — politely शुक्रिया, बिना बहस, बिना दोबारा pitch।")
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। {gender_clause} {intent} "
             f"सिर्फ़ एक ही छोटी (12-22 शब्द) बोली जाने वाली line दो — caller ने call में जिस भाषा "
-            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से।\n"
-            f"🔑 हर बार बिलकुल अलग, ताज़ी line बनाओ — कोई fixed/रटा-रटाया closing template मत दोहराओ। "
-            f"line इसी call के outcome से जुड़ी हो (ऊपर दी 'हाल की बातचीत' को देखकर) — हर call पर अलग "
-            f"शब्द, अलग वाक्य। तुम्हारा thank-you और sign-off हर बार natural variation के साथ हो "
-            f"(जैसे कभी 'बात करके अच्छा लगा', कभी 'time देने के लिए शुक्रिया', कभी 'मिलते हैं', कभी "
-            f"'अच्छा रहेगा आपसे' — पर इनमें से किसी एक को रट कर मत दोहराओ, हर बार अपने शब्दों में)। "
-            f"कभी मत बोलो/लिखो: 'अलविदा' (alvida)। company/product और कोई भी English brand-name English "
-            f"अक्षरों में ही लिखो। कोई symbol/list/दूसरा वाक्य नहीं, कोई नया सवाल नहीं, कोई price/legal "
-            f"promise नहीं।")
-        _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
+            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से। कोई symbol/list/दूसरा "
+            f"वाक्य नहीं, कोई नया सवाल नहीं, कोई price/legal promise नहीं।")
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _gk},
+            headers={"Authorization": "Bearer " + _next_groq_key()},
             json={
                 "model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-                # CLOSE_TEMP higher (default 0.8) so the close VARIES per call (the old 0.4 +
-                # a canned-phrase steer made every goodbye identical — the founder's BUG2).
-                "temperature": float(os.getenv("CLOSE_TEMP", "0.8")), "max_tokens": int(os.getenv("CLOSE_MAX_TOKENS", "60")),
+                "temperature": 0.4, "max_tokens": int(os.getenv("CLOSE_MAX_TOKENS", "60")),
                 "messages": [
                     {"role": "system", "content": sysmsg},
                     {"role": "user", "content": "हाल की बातचीत:\n" + (recent or "(—)") + "\n\nअब closing line बोलो।"},
@@ -756,162 +415,11 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
             },
             timeout=8,
         )
-        if getattr(r, "status_code", 200) == 429:
-            mark_groq_key_cooling(_gk)
         text = (r.json()["choices"][0]["message"]["content"] or "").strip()
-        text = _strip_alvida(text)  # VP3: hard-guarantee no 'अलविदा' reaches TTS
         return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("llm close failed, using fallback: %r", exc)
         return fallback
-
-
-# ── A3: booking voice-tool support ────────────────────────────────────────────
-# The agent can BOOK a real appointment when the prospect agrees a slot. Runs
-# IN-PROCESS on the box (booking.core uses its own RLS db session, tenant-scoped),
-# exactly like lead-memory persists — NO new cross-box HTTP / service token. Fully
-# wrapped: any failure returns a spoken-safe "couldn't book" string, never raises
-# into the call. Pure brain/logic — NOTHING in the TTS/voice path.
-def booking_tool_enabled() -> bool:
-    """ON only when BOTH the kernel is on AND BOOKING_TOOL_ENABLED=1 (default OFF =>
-    no tool attached => the agent is byte-identical to today)."""
-    try:
-        if _lk_function_tool is None or _LkRunContext is None:
-            return False
-        kern = os.getenv("KERNEL_OUTBOUND", "0") in ("1", "true", "True")
-        flag = os.getenv("BOOKING_TOOL_ENABLED", "0") in ("1", "true", "True")
-        return kern and flag
-    except Exception:  # noqa: BLE001
-        return False
-
-
-# ── R5VF: booking voice-tool over the caller.py HTTP contract ──────────────────
-# A SECOND booking path that works on the LIVE P0 brain (KERNEL_OUTBOUND=0), where
-# the in-process `booking_tool_enabled()` tool above can NEVER attach (it is gated on
-# the kernel being ON). This one POSTs the slot to the caller.py endpoint on the SAME
-# box — `POST http://127.0.0.1:8209/booking/book` {phone, lead_name, datetime_iso,
-# campaign_id, notes} — so the real booking is created by the backend (the team
-# building that endpoint in parallel). Gated behind its OWN flag, INDEPENDENT of the
-# kernel, DEFAULT OFF => no tool attached => the agent is byte-identical to today. Pure
-# brain/logic + one localhost HTTP call — NOTHING in the TTS/voice path. Fully wrapped:
-# any failure returns a spoken-safe string, never raises into the call.
-def booking_http_tool_enabled() -> bool:
-    """ON only when BOOKING_HTTP_ENABLED=1 (default OFF). Works on the P0 brain
-    (does NOT require KERNEL_OUTBOUND) — that is the whole point: the live earner runs
-    KERNEL_OUTBOUND=0, so this is the booking tool that can actually attach today. OFF
-    => no tool => byte-identical to today."""
-    try:
-        if _lk_function_tool is None or _LkRunContext is None:
-            return False
-        return os.getenv("BOOKING_HTTP_ENABLED", "0") in ("1", "true", "True")
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _do_booking_http(phone: str, *, when_text: str, lead_name: str = "",
-                     campaign_id: str = "", notes: str = "",
-                     tz: str = "Asia/Kolkata") -> dict:
-    """Resolve the spoken slot to an ISO datetime, then POST it to the caller.py
-    booking endpoint on localhost (the R5 contract). Returns a small dict:
-      {"ok": True, ...}  on success
-      {"ok": False, "reason": "bad_slot"|"http_<code>"|"no_phone"|"post_error"}  otherwise
-    Never raises. The endpoint is on the SAME box (127.0.0.1:8209); an optional
-    BOOKING_HTTP_TOKEN is sent as a Bearer header if configured (the backend decides
-    whether it is required)."""
-    if not phone:
-        return {"ok": False, "reason": "no_phone"}
-    # Natural-language slot ("kal sham 5 baje", "tomorrow 11am") -> ISO 8601, reusing
-    # the same resolver the in-process tool uses (consistent slot parsing both ways).
-    iso = ""
-    try:
-        from datetime import datetime as _d3, timezone as _z3
-        from voice_ops.booking.datetime_resolve import resolve_slot_start  # type: ignore
-        slot = resolve_slot_start(when_text or "", now=_d3.now(_z3.utc), tz=tz)
-        if slot is not None:
-            iso = slot.isoformat()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("http booking slot resolve failed: %r", exc)
-        iso = ""
-    if not iso:
-        return {"ok": False, "reason": "bad_slot"}
-    url = os.getenv("BOOKING_HTTP_URL", "http://127.0.0.1:8209/booking/book")
-    payload = {
-        "phone": phone,
-        "lead_name": lead_name or "",
-        "datetime_iso": iso,
-        "campaign_id": campaign_id or "",
-        "notes": notes or "",
-    }
-    headers = {"Content-Type": "application/json"}
-    _tok = (os.getenv("BOOKING_HTTP_TOKEN", "") or "").strip()
-    if _tok:
-        headers["Authorization"] = "Bearer " + _tok
-    try:
-        r = httpx.post(url, json=payload, headers=headers,
-                       timeout=float(os.getenv("BOOKING_HTTP_TIMEOUT", "6")))
-        code = getattr(r, "status_code", 0)
-        if 200 <= code < 300:
-            try:
-                body = r.json()
-            except Exception:  # noqa: BLE001
-                body = {}
-            # Honor an explicit conflict/ok flag from the backend if present.
-            if isinstance(body, dict) and body.get("ok") is False:
-                return {"ok": False, "reason": str(body.get("reason") or "rejected"),
-                        "datetime_iso": iso, **({k: body[k] for k in ("conflict",) if k in body})}
-            return {"ok": True, "datetime_iso": iso, "resp": body}
-        # 409 => slot conflict (common booking semantics); surface it for a re-offer.
-        if code == 409:
-            return {"ok": False, "reason": "slot_taken", "datetime_iso": iso}
-        return {"ok": False, "reason": f"http_{code}", "datetime_iso": iso}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("http booking POST failed url=%s err=%r", url, exc)
-        return {"ok": False, "reason": "post_error"}
-
-
-def _resolve_default_resource_id(org_id: str) -> str:
-    """First active booking resource for the tenant (the slot we book against).
-    Returns "" if none / not configured. Never raises."""
-    try:
-        from db import engine as _eng  # type: ignore
-        with _eng.session(tenant_id=org_id, is_admin=False) as s:
-            from sqlalchemy import text as _sqltext  # type: ignore
-            row = s.execute(_sqltext(
-                "SELECT id FROM booking_resources WHERE org_id=:org "
-                "ORDER BY created_at ASC LIMIT 1"
-            ), {"org": org_id}).fetchone()
-            return str(row[0]) if row else ""
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("booking resource resolve failed org=%s err=%r", org_id, exc)
-        return ""
-
-
-def _do_booking(org_id: str, phone: str, *, when_text: str, name: str = "",
-                campaign_id: str = "", tz: str = "Asia/Kolkata") -> dict:
-    """Resolve a default resource + a spoken slot time, then atomically claim it via
-    booking.core.book (in-box RLS). Returns the core.book dict (ok/conflict/error)."""
-    if not org_id:
-        return {"ok": False, "reason": "no_tenant"}
-    rid = _resolve_default_resource_id(org_id)
-    if not rid:
-        return {"ok": False, "reason": "no_resource"}
-    try:
-        from datetime import datetime as _d2, timezone as _z2
-        from voice_ops.booking.datetime_resolve import resolve_slot_start  # type: ignore
-        slot = resolve_slot_start(when_text or "", now=_d2.now(_z2.utc), tz=tz)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("slot resolve failed: %r", exc)
-        slot = None
-    if slot is None:
-        return {"ok": False, "reason": "bad_slot"}
-    try:
-        from booking import core as _bk  # type: ignore
-        return _bk.book(org_id, rid, phone, slot_start=slot.isoformat(), name=name,
-                        title="Appointment", source="voice", campaign_id=campaign_id,
-                        is_admin=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("booking.core.book failed: %r", exc)
-        return {"ok": False, "reason": "book_error"}
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
@@ -959,44 +467,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("variant override failed: %r", exc)
 
-    # VSE FIX 4 (named identity-confirm): thread the dispatch lead_name INTO the fields
-    # dict so the kernel brain pack (delivery_directive) can confirm identity BY THE REAL
-    # NAME ("क्या मेरी बात {name} से हो रही है?") instead of the generic "सही व्यक्ति".
-    # Only set it when present and not already provided; never overwrites a campaign value.
-    if lead_name and not str(fields.get("lead_name") or "").strip():
-        try:
-            fields = {**fields, "lead_name": lead_name}
-        except Exception:  # noqa: BLE001 — never break the earner over a field merge
-            pass
-
     # Cross-call memory: recover the lead's phone from the room name, load prior call.
     phone = mem.parse_phone(room_name)
     recap = mem.build_recap(mem.load_memory(phone))
-
-    # W-INT-OUTBOUND (A4) — seam 1/4: build the per-call kernel façade, or None.
-    # KERNEL_OUTBOUND OFF (default) => build_for_call returns None => the brain/turn/
-    # persist seams below all run their UNCHANGED legacy path (byte-identical earner).
-    # Fully wrapped: ANY error -> _ik=None -> legacy. The campaign-record's owning
-    # tenant is the ONLY tenant source (fail-closed in build_for_call); blank/mismatch
-    # -> None -> legacy, never a dropped or cross-tenant lead call.
-    _ik = None
-    try:
-        if _vk is not None and _vk.kernel_outbound_enabled():
-            _camp_tenant = str((camp or {}).get("tenant_id", "")).strip()
-            _ik = _vk.build_for_call(
-                tenant_id=_camp_tenant,
-                call_id=room_name,
-                lead_phone=phone,
-                campaign_id=meta.get("campaign_id", ""),
-                campaign_tenant_id=_camp_tenant,
-                fields=fields,
-                recap=recap,
-                locale="hi-IN",
-            )
-    except Exception as _ik_exc:  # noqa: BLE001 — the kernel can never break the earner
-        logger.warning("kernel build_for_call failed -> legacy: %r", _ik_exc)
-        _ik = None
-
     base_instructions = system_prompt
     if lead_name:
         base_instructions += f"\n\nLEAD NAME (इस caller का naam): {lead_name} — opener में इसी naam से greet करो।"
@@ -1018,28 +491,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     if recap:
         base_instructions += "\n\n=== PICHHLI BAAT (returning lead) ===\n" + recap
         logger.info("returning lead phone=%s recap_chars=%d", phone, len(recap))
-    # W-INT-OUTBOUND (A4) — seam 2/4: the instruction (brain) seam. OFF / _ik=None /
-    # ANY error => EXACTLY base_instructions (byte-identical to today). ON => the
-    # kernel packet-assembled outbound persona (the W2-W7 brain). The legacy block
-    # ABOVE is passed verbatim as the fallback lambda, so the OFF earner is unchanged.
-    if _ik is not None:
-        instructions = _vk.assemble_outbound_instructions(
-            _ik, legacy_render=lambda: base_instructions, fields=fields, recap=recap,
-        )
-    else:
-        instructions = base_instructions
-
-    # R5VF: when the HTTP booking tool is attached, tell the model it can book — and to
-    # ONLY book after the caller agrees a concrete day & time. Gated => when the tool is
-    # OFF this line is not added => instructions byte-identical to today.
-    if booking_http_tool_enabled():
-        instructions += (
-            "\n\n=== BOOKING (site visit) ===\n"
-            "तुम्हारे पास एक tool है `book_site_visit(when, notes)`। जब caller किसी concrete दिन-समय "
-            "पर site visit के लिए साफ़ राज़ी हो जाए (जैसे 'कल शाम पाँच बजे', 'tomorrow 5pm'), तभी यह "
-            "tool call करो — caller के बोले हुए time को 'when' में उसके अपने शब्दों में भेजो। पहले "
-            "खुद से booked मत कह देना; tool के नतीजे के बाद ही naturally confirm करो। अगर slot नहीं "
-            "मिला/busy है तो politely पास का दूसरा time offer कर के दोबारा book करो।")
+    instructions = base_instructions
 
     # --- P2: language mirror + closure state -------------------------------------
     agent_gender = _gender_of(fields)
@@ -1130,23 +582,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                         room_name, summ.get("outcome"), summ.get("interest"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("transcript save failed: %r", exc)
-        # W-INT-OUTBOUND (A4) — seam 4/4: COLD post-call kernel memory (W7). Writes
-        # structured lead memory under the server-stamped tenant. OFF / _ik=None =>
-        # no-op (the legacy mem.save_memory + transcript above are the only writers).
-        # persist_post_call NEVER raises into this shutdown callback (earner-safe).
-        if _ik is not None:
-            try:
-                _raw_summary = ""
-                try:
-                    _raw_summary = str((_summarize(turns) or {}).get("summary", ""))
-                except Exception:  # noqa: BLE001
-                    _raw_summary = ""
-                await _vk.persist_post_call(
-                    _ik, lead_phone=phone, turns=turns, name=lead_name,
-                    raw_summary=_raw_summary,
-                )
-            except Exception as exc:  # noqa: BLE001 — COLD path, never break hangup
-                logger.warning("kernel persist_post_call failed (non-fatal): %r", exc)
 
     ctx.add_shutdown_callback(_persist_memory)
 
@@ -1181,97 +616,54 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     ctl["tts"] = tts
     ctl["tts_code"] = _init_tts_lang             # FIX D: track the TTS's current language code
 
-    # ── R6 (bug 8): Sarvam-TTS routing for a "standard"/"lean"/Sarvam-plan campaign ──────
-    # THE LAW: the ElevenLabs constructor ABOVE is BYTE-IDENTICAL and runs unchanged — this
-    # block is purely ADDITIVE and runs AFTER it. resolve_providers(fields) (prompt.py, the
-    # already-shipped observability resolver) maps tier 'standard'/'lean'/explicit
-    # tts_provider='sarvam' → Sarvam Bulbul; every other campaign (default/premium/unknown)
-    # resolves to 'elevenlabs' → this block is a NO-OP and the EL `tts` above is used
-    # unchanged. Previously a Sarvam-plan campaign STILL got ElevenLabs (the resolver was
-    # never wired to TTS construction) — and on the live call that path went SILENT. Now a
-    # Sarvam-plan campaign actually speaks via Sarvam. Flag SARVAM_TTS_ENABLED (default ON)
-    # is the kill-switch: =0 reverts to EL-for-all with no redeploy. Fully wrapped — any
-    # failure falls back to the EL `tts` already built (never dead air, never breaks a call).
-    if os.getenv("SARVAM_TTS_ENABLED", "1") not in ("0", "false", "False") and _resolve_providers is not None:
+    # GROQ key selection for this CALL's hot-path LLM.
+    # ROOT-CAUSE FIX (fork-index-0 dead-air peg): seed the key ORDER by a stable hash
+    # of the unique room name → call#1→keyA, call#2→keyB spread UNIFORMLY across ALL
+    # keys regardless of which forked worker process handles the job (the old
+    # module-level itertools.cycle made EVERY fresh worker start on key #0, pegging
+    # that one org at its per-day token cap → 429 → dead air). The seeded key stays
+    # STICKY for the whole call (preserving Groq's per-key prompt cache); the remaining
+    # keys form an INSTANT 429-fallback chain via FallbackAdapter (no surfaced error).
+    # Gated by GROQ_FALLBACK (default on); set 0 to revert to the legacy single-key
+    # round-robin instantly. Voice path (stt/tts/vad below) is UNTOUCHED = byte-identical.
+    _groq_order = _groq_keys_for_call(room_name)
+    _call_groq_key = _groq_order[0] if _groq_order else _next_groq_key()
+    logger.info("groq key for this call: %s (pool=%d, order=%d)",
+                _mask_key(_call_groq_key), len(_GROQ_KEYS), len(_groq_order))
+
+    def _mk_groq_llm(_api_key: str):
+        return groq.LLM(
+            model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            api_key=_api_key,
+            temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
+            # CONCISE-BRAIN: this is a RUNAWAY BACKSTOP, NOT the length rule. Brevity is the
+            # prompt's job (rule 2 = "1-2 short sentences then stop"); this cap only bounds the
+            # worst case so a model that ever ignores the prompt can't wall-of-speech for 8-12s.
+            # Measured on box: Devanagari is token-EXPENSIVE in llama BPE — a normal 1-2 sentence
+            # Hinglish beat is only ~35-50 tokens, so 90 leaves comfortable headroom (a legit beat
+            # ends well under the cap → NO mid-sentence truncation / clipped fillers) while bounding
+            # a runaway to ~5-6s of speech. The OLD 140 ≈ 3-4 sentences = the monologue we're killing.
+            # If completion_tokens ever PEGS at the cap on real calls, the model is being guillotined
+            # → RAISE GROQ_MAX_TOKENS and tighten the prompt instead. Env-overridable, fully reversible.
+            # NOTE: the param is `max_completion_tokens` (groq.LLM extends OpenAILLM); the
+            # OpenAI-style `max_tokens` kwarg does NOT exist here → TypeError that crashes calls.
+            max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "90")),
+        )
+
+    # Build the hot LLM. With >=2 keys and GROQ_FALLBACK on, wrap the seeded sticky
+    # primary + fallback chain in the LiveKit-native FallbackAdapter so a 429/error on
+    # the active key transparently fails over to the next healthy key mid-call with NO
+    # surfaced error and NO dead air. With 1 key (or the flag off) this is byte-identical
+    # to the legacy single groq.LLM(api_key=_call_groq_key).
+    _groq_fallback_on = os.getenv("GROQ_FALLBACK", "1") not in ("0", "false", "False")
+    if _groq_fallback_on and len(_groq_order) >= 2:
         try:
-            _prov = _resolve_providers(fields)
-            if str(_prov.get("tts") or "").lower() == "sarvam":
-                # Map our language bucket → a Sarvam TTS target language code. flash-side
-                # 'hi' is Sarvam 'hi-IN'; 'en' is 'en-IN'. Hinglish/unknown → hi-IN (Sarvam
-                # bulbul handles Hindi+English code-mix). Never an unsupported code.
-                _sv_lang = {"hi": "hi-IN", "en": "en-IN"}.get(_init_tts_lang, "hi-IN")
-                # gender-correct default speaker; both overridable per-campaign / via env.
-                _sv_speaker = (str(fields.get("sarvam_speaker") or "").strip()
-                               or os.getenv("SARVAM_TTS_SPEAKER", "")
-                               or ("abhilash" if agent_gender == "male" else "anushka"))
-                _sv_tts = sarvam.TTS(
-                    api_key=_next_sarvam_key(),
-                    target_language_code=_sv_lang,
-                    model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
-                    speaker=_sv_speaker,
-                )
-                tts = _sv_tts
-                ctl["tts"] = tts
-                ctl["tts_code"] = _sv_lang
-                logger.info("R6 TTS routing -> Sarvam Bulbul (lang=%s speaker=%s) for tier=%s",
-                            _sv_lang, _sv_speaker, fields.get("tier") or fields.get("plan_tier"))
-        except Exception as _sv_exc:  # noqa: BLE001 — never break a call; keep the EL tts above
-            logger.warning("R6 Sarvam TTS routing failed -> keeping ElevenLabs: %r", _sv_exc)
-
-    # GROQ key round-robin: pick this CALL's key for the hot-path LLM (rotates across
-    # GROQ_API_KEY/_2/_3 so concurrent calls spread load → less free-tier queueing/429).
-    _call_groq_key = _next_groq_key()
-    logger.info("groq key for this call: %s (pool=%d)", _mask_key(_call_groq_key), len(_GROQ_KEYS))
-
-    # FINAL-FIX (garbage/repetition cure): build the hot-path LLM first so we can
-    # attach a repetition penalty. groq.LLM extends the OpenAI plugin LLM; its __init__
-    # does NOT accept frequency_penalty/presence_penalty/extra_body, BUT the OpenAI
-    # plugin's chat() forwards self._opts.extra_body into chat.completions.create(...)
-    # (openai/llm.py: `extra["extra_body"] = self._opts.extra_body`). Groq's API is
-    # OpenAI-compatible and honours frequency_penalty/presence_penalty as top-level
-    # request params. So we set _opts.extra_body AFTER construction = the only correct,
-    # non-crashing way to pass penalties through this plugin stack. The penalty stops the
-    # llama-4-scout repetition loop ("yes yes yes" / "## Step 1") at the source, which is
-    # what let GROQ_MAX_TOKENS=220 run to the cap. Env-overridable / fully reversible:
-    # GROQ_FREQ_PENALTY (default 0.5), GROQ_PRES_PENALTY (default 0.3); 0 disables either.
-    _hot_llm = groq.LLM(
-        model=os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-        api_key=_call_groq_key,
-        temperature=float(os.getenv("GROQ_LLM_TEMPERATURE", "0.3")),
-        max_completion_tokens=int(os.getenv("GROQ_MAX_TOKENS", "90")),
-    )
-    try:
-        _freq_pen = float(os.getenv("GROQ_FREQ_PENALTY", "0.5") or 0.0)
-        _pres_pen = float(os.getenv("GROQ_PRES_PENALTY", "0.3") or 0.0)
-        _pen_body = {}
-        if _freq_pen:
-            _pen_body["frequency_penalty"] = _freq_pen
-        if _pres_pen:
-            _pen_body["presence_penalty"] = _pres_pen
-        if _pen_body:
-            # merge with any existing extra_body the plugin may have set (NOT_GIVEN -> {})
-            _existing = getattr(_hot_llm._opts, "extra_body", None)
-            _merged = dict(_existing) if isinstance(_existing, dict) else {}
-            _merged.update(_pen_body)
-            _hot_llm._opts.extra_body = _merged
-            logger.info("FINAL-FIX repetition penalty wired: %s", _pen_body)
-    except Exception as _pen_exc:  # noqa: BLE001 - never break a call over the penalty
-        logger.warning("FINAL-FIX penalty wiring skipped (non-fatal): %r", _pen_exc)
-
-    # R7: when EARNER_POOL_LLM=1, wrap the (fully-configured, penalty-wired) hot LLM in a
-    # sticky-per-call PoolLLM so a 429 on this call's key instantly re-picks a healthy key
-    # (no surfaced 429). OFF -> _hot_llm is used as-is (byte-identical legacy path). The
-    # wrap re-uses the SAME delegate (same model/temp/max_completion_tokens/extra_body
-    # penalty) so STT/TTS/voice are untouched.
-    _call_llm = _hot_llm
-    if EARNER_POOL_LLM:
-        _wrapped = _make_sticky_pool_llm(_hot_llm)
-        if _wrapped is not None:
-            _call_llm = _wrapped
-            logger.info("R7 hot-path LLM = sticky GROQ_POOL (available=%d)",
-                        _GROQ_POOL.available_count() if _GROQ_POOL else -1)
-        else:
-            logger.warning("R7 EARNER_POOL_LLM=1 but pool wrap unavailable -> legacy _hot_llm")
+            _llm = agents.llm.FallbackAdapter([_mk_groq_llm(k) for k in _groq_order])
+        except Exception as _fb_exc:  # noqa: BLE001 — never break a call over fallback wiring
+            logger.warning("groq FallbackAdapter init failed (%r) -> single sticky key", _fb_exc)
+            _llm = _mk_groq_llm(_call_groq_key)
+    else:
+        _llm = _mk_groq_llm(_call_groq_key)
 
     session = AgentSession(
         stt=sarvam.STT(
@@ -1284,15 +676,11 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             language=os.getenv("SARVAM_STT_LANG", "unknown"),
             model=os.getenv("SARVAM_STT_MODEL", "saarika:v2.5"),
         ),
-        llm=_call_llm,
+        llm=_llm,
         tts=tts,
         vad=silero.VAD.load(),
         # --- low-latency telephony tuning (defaults are far too slow) ---
-        # VSE FIX 1c (knob): preemptive_generation starts the LLM before the turn is
-        # finalized (faster first audio). It can re-run the opening generation on early
-        # turns; default stays ON (=byte-identical latency). If the greeting still
-        # restarts, set PREEMPTIVE_GEN=0 via the systemd drop-in and measure — no redeploy.
-        preemptive_generation=(os.getenv("PREEMPTIVE_GEN", "1") not in ("0", "false", "False")),
+        preemptive_generation=True,                 # start LLM before turn finalized
         min_endpointing_delay=float(os.getenv("MIN_EP_DELAY", "0.25")),
         max_endpointing_delay=float(os.getenv("MAX_EP_DELAY", "0.45")),  # default ~6s!
         aec_warmup_duration=0.0,                     # default 3s start delay
@@ -1333,18 +721,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             # so a Gujarati/Marathi/etc. caller hears Hindi audio instead of dead air.
             try:
                 code = ld.safe_tts_language_code(new_lang)
-                # R6: Sarvam TTS uses `target_language_code` ('hi-IN'/'en-IN'), NOT the
-                # ElevenLabs `language` ('hi'/'en') kwarg — so on a Sarvam-routed call we must
-                # send the right kwarg or the switch raises + silently no-ops. _is_sarvam_tts
-                # is True only when the R6 routing built a Sarvam object; otherwise this is the
-                # unchanged ElevenLabs path (byte-identical behavior for the live EL earner).
-                _is_sarvam_tts = type(tts).__module__.startswith("livekit.plugins.sarvam")
-                if _is_sarvam_tts:
-                    _sv_code = {"hi": "hi-IN", "en": "en-IN"}.get(code, "hi-IN")
-                    if _sv_code != ctl.get("tts_code"):
-                        tts.update_options(target_language_code=_sv_code)
-                        ctl["tts_code"] = _sv_code
-                elif _lang_v2:
+                if _lang_v2:
                     # FIX D: track the last-sent TTS code and send update_options ONLY on a
                     # real change (incl. reverting EN->HI, which the V1 'skip hi' branch
                     # below never did — leaving the TTS stuck on 'en'). The plugin itself
@@ -1369,30 +746,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         if ctl["closing"]:
             return
         ctl["closing"] = True
-        # R6 (double-ending kill): the moment we decide to close, CANCEL any LLM reply that is
-        # already being generated/spoken (preemptive_generation often has the model's OWN
-        # farewell in flight by the time the user says "bye"). session.interrupt() clears that
-        # in-progress speech so our SINGLE warm close is the only goodbye the caller hears.
-        # Without this, the racing LLM goodbye lands right after our close = the two-goodbye bug.
-        # Fully wrapped — interrupt() failing must never block the clean hangup.
-        try:
-            _intr = session.interrupt()
-            if _intr is not None and hasattr(_intr, "__await__"):
-                await _intr
-        except Exception as _ie:  # noqa: BLE001
-            logger.info("closure interrupt (non-fatal): %r", _ie)
         try:
             _agent_nm = fields.get("agent_name") or "Riya"
             _company_nm = fields.get("company_name") or "Famit"
-            # VSE FIX 6 (double-ending): if the LLM's OWN last assistant turn was ALREADY a
-            # farewell, do NOT speak a second goodbye — just give it a beat to finish and end
-            # the room. This kills the "two goodbyes" even when the assistant-turn closure path
-            # fires right after the model said its own bye. The USER-turn trigger above normally
-            # pre-empts the LLM, but this is the belt-and-braces guard for the book/assistant path.
-            if _last_assistant_is_farewell(turns):
-                logger.info("P2 closure: LLM already said goodbye -> skip 2nd, end cleanly")
-                await asyncio.sleep(1.2)
-                return
             # FIX B (BUG4): generate the close from Groq (context-aware, language-mirrored)
             # instead of the hardcoded line. LLM_CLOSE=0 (default) keeps _goodbye_line
             # byte-identical; =1 enables the LLM close with _goodbye_line as the crash-safe
@@ -1452,22 +808,10 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     except Exception:  # noqa: BLE001
                         pass
                 # --- P2 Unit5: confident confirm-then-hangup closure ---
-                # VSE FIX 6 (double-ending): trigger the closure on the USER's closing turn
-                # (e.g. "bye"/"बाय"/opt-out) so our single warm goodbye fires BEFORE the LLM
-                # composes its own farewell — and the closure's say(allow_interruptions=False)
-                # interrupts any LLM goodbye-in-progress, so only ONE goodbye is ever spoken.
-                # We still keep the assistant-turn trigger for the 'book' (agreed-next-step)
-                # path, where the user said only "haan" and the closing signal lives in the
-                # surrounding context — but we do NOT double-fire (ctl["closing"] guards it).
-                if loop is not None and not ctl["closing"]:
+                if role == "assistant" and loop is not None and not ctl["closing"]:
                     try:
                         sig = _closure_signal(turns)
-                        # On a USER turn: fire immediately on a clear opt-out/bye ('no') so we
-                        # pre-empt the LLM's own goodbye. On an ASSISTANT turn: fire for 'book'
-                        # (the next-step-agreed close) as before.
-                        if sig == "no" and role == "user":
-                            asyncio.run_coroutine_threadsafe(_confirm_then_hangup(sig), loop)
-                        elif sig and role == "assistant":
+                        if sig:
                             asyncio.run_coroutine_threadsafe(_confirm_then_hangup(sig), loop)
                     except Exception:  # noqa: BLE001
                         pass
@@ -1524,32 +868,6 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                     txt = ""
                 if not str(txt).strip():
                     return
-                # W-INT-OUTBOUND (A4) — seam 3/4: SOFT per-turn kernel RAG suffix (W4).
-                # Runs each turn once the turn text is read. OFF / _ik=None => skipped
-                # entirely (legacy turn unchanged). ON => on_turn (its OWN hard deadline +
-                # try/except, never blocks) may return a small RAG suffix, appended as a
-                # USER-side aside (role="user") — NEVER a role="system" command, so it can
-                # never override the LLM. Wrapped so a kernel fault never breaks the turn.
-                # Placed BEFORE the language branches because those early-return; the kernel
-                # hook must run on every turn. The A1 language detection still owns the
-                # reply-language note below; this only injects retrieved knowledge.
-                if _ik is not None:
-                    try:
-                        _detected = ""
-                        try:
-                            _dl, _dc = ld.classify_text(str(txt)) if ld is not None else ("", 0.0)
-                            _detected = _dl if _dc >= 0.55 else ""
-                        except Exception:  # noqa: BLE001
-                            _detected = ""
-                        _kt = await _vk.on_turn(_ik, user_text=str(txt), detected_lang=_detected)
-                        _rag = (_kt or {}).get("rag_suffix")
-                        if _rag:
-                            try:
-                                turn_ctx.add_message(role="user", content=_rag)
-                            except Exception:  # noqa: BLE001
-                                pass
-                    except Exception as _kt_exc:  # noqa: BLE001 — kernel never breaks a turn
-                        logger.warning("kernel on_turn failed (non-fatal): %r", _kt_exc)
                 # FIX D (BUG2): V2 = ONE detector drives BOTH the LLM reply-language note AND
                 # the TTS code, in sync, for all 4 languages, ONLY on an actual switch (incl.
                 # switching BACK to Hindi). Cache-safe: the note is appended AFTER the cached
@@ -1557,39 +875,17 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 # dominant Hindi/Hinglish path. This is the single source of truth — the
                 # conversation_item_added V1 path is disabled when V2 is on.
                 if _lang_v2 and lang_tracker is not None:
-                    # A1: on SHORT fragments ("haan", "ok", "ji") do NOT re-classify —
-                    # a 1-2 word turn carries almost no language signal and the old
-                    # detector would mis-flip it (often defaulting toward English). CARRY
-                    # the prior confirmed language instead (tracker.active is unchanged),
-                    # and only re-emit a hint when that carried language is english (so the
-                    # model doesn't drift back to Hindi on a bare "ok"). Never default to EN.
-                    if len(str(txt).split()) < 4:
-                        carried = lang_tracker.active
-                        if carried == "english":
-                            try:
-                                turn_ctx.add_message(role="user",
-                                                     content=f"[Language this turn: {carried}]")
-                            except Exception:  # noqa: BLE001
-                                pass
-                        return
                     new_lang, switched = lang_tracker.update(str(txt))
-                    # A1: emit a SOFT, short language HINT — NEVER a hard role="system"
-                    # "reply in X now" command (that overrides the LLM and was the reverted
-                    # bug). Attach it as a user-side aside so the model treats it as context,
-                    # not an instruction. Emit on a switch AND on steady English turns (so the
-                    # model, primed by a Hindi-heavy prompt, keeps mirroring an English caller).
-                    if switched or new_lang == "english":
+                    if switched:
                         try:
-                            turn_ctx.add_message(role="user",
-                                                 content=f"[Language this turn: {new_lang}]")
+                            turn_ctx.add_message(role="system", content=ld.reply_instruction(new_lang))
                         except Exception:  # noqa: BLE001
                             pass
-                    if switched:
                         try:
                             await _apply_language_switch(new_lang)
                         except Exception:  # noqa: BLE001
                             pass
-                        logger.info("lang mirror v2 -> %s (switched; soft hint + TTS synced)", new_lang)
+                        logger.info("lang mirror v2 -> %s (switched; LLM note + TTS synced)", new_lang)
                     return
                 # --- V1 (default, unchanged): english/gujarati note at conf>=0.55 ---
                 lang, conf = ld.classify_text(str(txt))
@@ -1611,114 +907,9 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-    # A3: booking voice-tool — attached ONLY when booking_tool_enabled() (KERNEL_OUTBOUND=1
-    # AND BOOKING_TOOL_ENABLED=1). DEFAULT OFF => _MirrorAgent(instructions=...) is built with
-    # NO tools, byte-identical to today. ON => one extra @function_tool the LLM can call to book
-    # a real appointment in-process (RLS-scoped, no HTTP). Fully wrapped; never breaks the call.
-    _booking_tools: list = []
-    if booking_tool_enabled():
-        try:
-            _bk_tenant = _camp_tenant
-            _bk_phone = phone
-            _bk_name = lead_name
-            _bk_campaign = campaign_id
-
-            @_lk_function_tool
-            async def book_appointment(context: "_LkRunContext", when: str) -> str:  # noqa: F821
-                """Book the prospect's site-visit / meeting AFTER they verbally agree a day & time.
-                Only call this once the caller has clearly agreed to a specific slot.
-
-                Args:
-                    when: the slot the caller agreed, in their words (e.g. "kal sham 5 baje",
-                          "tomorrow 11am", "Friday evening") or an ISO datetime if known.
-                """
-                try:
-                    res = await asyncio.to_thread(
-                        _do_booking, _bk_tenant, _bk_phone, when_text=when,
-                        name=_bk_name, campaign_id=_bk_campaign,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("book_appointment tool error: %r", exc)
-                    return ("booking_failed: I couldn't lock that slot just now — tell the caller "
-                            "you'll confirm the appointment shortly; do NOT claim it is booked.")
-                if res and res.get("ok"):
-                    return ("booked=true: the appointment is confirmed. Warmly confirm the day & time "
-                            "back to the caller in their language.")
-                reason = str((res or {}).get("reason", "")) or "unknown"
-                if reason == "slot_taken":
-                    return ("slot_taken: that exact time is already booked — politely offer a nearby "
-                            "time and call book_appointment again with the new time.")
-                if reason in ("bad_slot",):
-                    return ("need_time: I didn't catch an exact day & time — ask the caller to confirm "
-                            "a specific day and time, then call book_appointment again.")
-                # no_resource / not_configured / errors -> never fake a booking
-                return ("booking_unavailable: do NOT tell the caller it is booked — say you'll confirm "
-                        "the appointment shortly and continue the conversation naturally.")
-
-            _booking_tools = [book_appointment]
-            logger.info("A3 booking tool ATTACHED (tenant=%s)", _bk_tenant)
-        except Exception as _bt_exc:  # noqa: BLE001 — tool wiring never breaks the earner
-            logger.warning("A3 booking tool wiring failed -> no tool: %r", _bt_exc)
-            _booking_tools = []
-
-    # R5VF: booking voice-tool over the caller.py HTTP contract — attaches on the LIVE
-    # P0 brain (KERNEL_OUTBOUND=0), where the in-process tool above cannot. Only when
-    # BOOKING_HTTP_ENABLED=1 (default OFF => byte-identical to today) AND no tool already
-    # attached. The LLM calls book_site_visit(when, notes) once the caller agrees a slot;
-    # it POSTs to 127.0.0.1:8209/booking/book and confirms naturally. Fully wrapped.
-    if not _booking_tools and booking_http_tool_enabled():
-        try:
-            _bkh_phone = phone
-            _bkh_name = lead_name
-            _bkh_campaign = meta.get("campaign_id", "") or ""
-
-            @_lk_function_tool
-            async def book_site_visit(context: "_LkRunContext", when: str,
-                                      notes: str = "") -> str:  # noqa: F821
-                """Book the prospect's site visit / meeting AFTER they verbally agree a day & time.
-                Only call this once the caller has clearly agreed to a specific slot.
-
-                Args:
-                    when: the slot the caller agreed, in their words (e.g. "kal sham 5 baje",
-                          "tomorrow 5pm", "Friday evening") or an ISO datetime if known.
-                    notes: any short context to attach (optional, e.g. "wants 3 BHK, self-use").
-                """
-                try:
-                    res = await asyncio.to_thread(
-                        _do_booking_http, _bkh_phone, when_text=when,
-                        lead_name=_bkh_name, campaign_id=_bkh_campaign, notes=notes,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("book_site_visit tool error: %r", exc)
-                    return ("booking_failed: I couldn't lock that slot just now — tell the caller "
-                            "you'll confirm the appointment shortly; do NOT claim it is booked.")
-                if res and res.get("ok"):
-                    return ("booked=true: the site visit is confirmed. Warmly confirm the day & time "
-                            "back to the caller in their language, in one short line.")
-                reason = str((res or {}).get("reason", "")) or "unknown"
-                if reason == "slot_taken":
-                    return ("slot_taken: that exact time is already booked — politely offer a nearby "
-                            "time and call book_site_visit again with the new time.")
-                if reason == "bad_slot":
-                    return ("need_time: I didn't catch an exact day & time — ask the caller to confirm "
-                            "a specific day and time, then call book_site_visit again.")
-                # no_phone / http_* / post_error -> never fake a booking
-                return ("booking_unavailable: do NOT tell the caller it is booked — say you'll confirm "
-                        "the appointment shortly and continue the conversation naturally.")
-
-            _booking_tools = [book_site_visit]
-            logger.info("R5VF http booking tool ATTACHED (phone=%s campaign=%s)",
-                        _bkh_phone, _bkh_campaign)
-        except Exception as _bth_exc:  # noqa: BLE001 — tool wiring never breaks the earner
-            logger.warning("R5VF http booking tool wiring failed -> no tool: %r", _bth_exc)
-            _booking_tools = []
-
     # P2: capture the running loop + agent so the sync conversation callback can hand
     # async work (language switch / closure) back to this event loop.
-    agent = (
-        _MirrorAgent(instructions=instructions, tools=_booking_tools)
-        if _booking_tools else _MirrorAgent(instructions=instructions)
-    )
+    agent = _MirrorAgent(instructions=instructions)
     ctl["agent"] = agent
     ctl["session"] = session
     try:
@@ -1751,16 +942,7 @@ async def entrypoint(ctx: agents.JobContext) -> None:
     # echo so there is no greeting for the model to repeat; the system-prompt persona still
     # holds its identity for "kaun bol raha hai?". Default "1" = byte-identical. Reversible.
     _opener_in_ctx = os.getenv("OPENER_IN_CTX", "1") not in ("0", "false", "False")
-    # VSE FIX 5 (hello-collision): give the SIP/RTP path a moment to settle after
-    # session.start() before the opener plays, so the agent's greeting does not collide
-    # with the callee's own opening "hello?". Tunable via OPENER_DELAY_S (default 0.8s).
-    # The opener is spoken with allow_interruptions=False so a half-second of callee
-    # speech can't truncate the greeting (the single clean opener must finish).
-    try:
-        await asyncio.sleep(float(os.getenv("OPENER_DELAY_S", "0.8")))
-    except Exception:  # noqa: BLE001
-        pass
-    await session.say(opener, allow_interruptions=False, add_to_chat_ctx=_opener_in_ctx)
+    await session.say(opener, allow_interruptions=True, add_to_chat_ctx=_opener_in_ctx)
 
 
 def main() -> None:
