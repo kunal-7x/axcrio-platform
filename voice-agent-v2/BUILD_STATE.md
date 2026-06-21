@@ -81,7 +81,18 @@ live dispatch / unit at the v2 code; rollback = point back to `capsy` (instant).
       clean close on "बाय बाय". Full flow works end-to-end.
 - [ ] (polish, non-blocking) slight double-goodbye; opener says "नमस्ते" (founder prefers "good morning/
       hello sir"); summarizer mislabels bye as opt_out; Latin-transliterated Hindi numerals not parsed.
-- [ ] FOUNDER VERDICT on the overall feel + next step (flip live / polish / more tests)
+- [x] POLISH: single goodbye (drop scripted close, let model's goodbye play + grace) + time-of-day
+      English greeting ("Good morning/afternoon/evening", never नमस्ते).
+- [x] BRAIN sharpened (founder ask): curiosity-led, engaging questions ("kya aap janna chahenge…"),
+      30-yr master telecaller, read+adapt, step-by-step desire — still script-free, facts+history only.
+- [x] **WIRED LIVE (the flip)**: famit-caller drop-in `/etc/systemd/system/famit-caller.service.d/
+      agentflip.conf` → `Environment=LIVEKIT_AGENT_NAME=capsy-v2`. Now ALL caller dispatches
+      (panel Run-Campaign, website calls, campaigns, callbacks) route to capsy-v2. Realtime
+      backbone already ON in caller (EVENTBUS_ENABLED=1, RECORDING_FINALIZE_ENABLED=1) → stats/
+      recordings fire on finalize. Agent uses NO redis (campaign JSON + memory files = the context).
+      ROLLBACK: `sudo rm /etc/systemd/system/famit-caller.service.d/agentflip.conf && sudo systemctl
+      daemon-reload && sudo systemctl restart famit-caller` → back to old capsy instantly.
+- [ ] FOUNDER tests FROM THE WEBSITE (Run Campaign / place a call) → new brain + stats update.
 
 ## RUNBOOK
 - v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`
