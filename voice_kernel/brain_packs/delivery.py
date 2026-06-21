@@ -89,9 +89,12 @@ def single_greeting_directive(lead_name: str = "") -> str:
         "BANNED as the greeting (never say/write): 'नमस्ते'/'namaste', 'नमस्कार'/'namaskar', "
         "'सुप्रभात', 'शुभ रात्रि'/'shubh ratri'. "
         f"Then briefly say who you are + the company, {confirm} -> WAIT for their reply -> then "
-        "the reason for calling + permission. After that opening turn NEVER greet again and "
-        "NEVER repeat your name/company/intro — you have ALREADY greeted; just answer what they "
-        "said and move the conversation forward."
+        "the reason for calling + permission. This is an OUTBOUND call — YOU called the caller, "
+        "they did NOT call you — so frame the reason in the first person (\"मैंने आपको <product> "
+        "के बारे में call किया है\" / \"आपने <product> में interest dikhaya tha इसलिए call कर रही/रहा "
+        "हूँ\"); NEVER say \"आपने call किया था\" / \"you contacted us\" (that is inbound framing and is "
+        "wrong). After that opening turn NEVER greet again and NEVER repeat your name/company/intro "
+        "— you have ALREADY greeted; just answer what they said and move the conversation forward."
     )
 
 

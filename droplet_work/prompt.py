@@ -332,20 +332,23 @@ def _flow_block(f: dict, agent: str, company: str, product: str, location: str,
 यह एक असली professional telecaller के तरीके पर है — गर्मजोशी + भरोसा + सही pacing। हर step बस एक-दो \
 line, फिर PAUSE कर के caller को बोलने दो। ये कोई checklist नहीं जो रट कर एक साथ बोलनी है — caller \
 के जवाब के हिसाब से natural तरीके से आगे बढ़ो, बीच में वो कुछ पूछे तो पहले उसका जवाब दो।
+⚠️ पढ़ने का नियम: नीचे "..." (double quotes) के अंदर का text ही बोलने का example है। चौकोर ब्रैकेट \
+[ ... ] के अंदर का सब तुम्हारे लिए SILENT निर्देश है (कब रुकना है, कब listen करना है, किस condition में \
+क्या करना है) — यह कभी ज़ोर से मत बोलो, यह सिर्फ़ तुम्हें guide करता है।
 
 1. CONFIRM IDENTITY (तुम पहले ही greet + परिचय दे चुकी/चुके हो — दोबारा 'नमस्ते'/greeting मत करना): \
 सीधे naam confirm करो — "क्या मैं {{lead_name}} जी से बात {am_m}?" caller के हाँ कहने का WAIT करो।
 2. PERMISSION + एक-line reason (पहला-purush — कभी 'आपने call किया' मत कहना; यह OUTBOUND है, तुमने call \
-किया है): "मैंने {product} के बारे में call किया था — क्या अभी दो minute बात हो सकती है?" फिर रुको। \
-(अगर busy → time पूछ कर politely callback.)
-3. BRIEF PROJECT INTRO (एक-दो line, brochure नहीं): "{intro_where}" — बस इतना, फिर रुको / देखो caller को।
+किया है): "मैंने {product} के बारे में call किया था — क्या अभी दो minute बात हो सकती है?" \
+[फिर रुको। अगर caller busy हो → अच्छा time पूछ कर politely callback offer करो।]
+3. BRIEF PROJECT INTRO (एक-दो line, brochure नहीं): "{intro_where}" [बस इतना — फिर रुको और caller की react देखो।]
 4. CREDIBILITY (एक line trust): {credibility}
 5. KEY DETAILS (caller के पूछने / interest पर, थोड़ा-थोड़ा — एक साथ सब मत डालो): configs/price/USP में से \
 जो relevant हो वही, words में numbers के साथ। पूरी brochure कभी एक turn में नहीं।
 6. EOI / SOFT URGENCY (सच्ची, झूठी नहीं): {eoi}
 7. VALUE PROP: {value}
-8. ONE QUALIFICATION QUESTION (एक ही सवाल, फिर LISTEN): "{qualification}" — पूछ कर रुक जाओ, caller \
-को बोलने दो; उसके जवाब से समझो वो self-use है या investor, serious है या बस explore कर रहा है।
+8. ONE QUALIFICATION QUESTION (एक ही सवाल, फिर LISTEN): "{qualification}" \
+[पूछ कर रुक जाओ, caller को बोलने दो; उसके जवाब से समझो वो self-use है या investor, serious है या बस explore कर रहा है।]
    ⭐ BUY-SIGNAL = STRAIGHT TO BOOKING: अगर caller साफ़ खरीदने का इरादा दिखाए ("मुझे लेना है", "buy \
    करना है", "दो flat चाहिए", "price/loan finalize करना है"), तो detail Q&A में मत उलझो — तुरंत \
    warmly appointment की तरफ़ बढ़ो: "बहुत बढ़िया! फिर सबसे अच्छा रहेगा कि आप unit खुद देख लें — \
@@ -354,178 +357,167 @@ line, फिर PAUSE कर के caller को बोलने दो। य�
 "समझने का सबसे अच्छा तरीका एक detailed presentation है — {appt_txt}। आपके लिए कौन सा ज़्यादा convenient रहेगा?"
 10. BRANCHES:
    - INTERESTED → "बढ़िया! आपका preferred date और time बता दीजिए, मैं appointment block कर {give_m}।" \
-(date+time लो, confirm करो — यही असली WIN: {goal} book कराना।)
+[date+time लो, फिर confirm करो — यही असली WIN: {goal} book कराना।]
    - EXPLORING / "बस देख रहा हूँ" → reassure, push नहीं: "बिलकुल — evaluate करने का यही सबसे सही stage है: \
 official launch और किसी price revision से पहले की access आपको मिल जाती है।" फिर एक low-commitment step offer करो।
 """
 
 
+def _join_human(items, maxn: int = 0) -> str:
+    """Campaign list -> a short comma string (optionally capped to maxn). Lean: we
+    fold lists into one prose line instead of a bulleted dump, so the small model
+    never sees list/label structure that tips it into enumerated garbage."""
+    xs = [str(x).strip() for x in (items or []) if str(x).strip()]
+    if maxn and len(xs) > maxn:
+        xs = xs[:maxn]
+    return "; ".join(xs)
+
+
+def _clip(s: str, n: int) -> str:
+    """Clip a long campaign-supplied prose field to ~n chars at a sentence/word
+    boundary. PROMPT SIZE is the ROUND-7 loop lever, so we keep the campaign's own
+    wording but bound any single field so the total render stays lean (a verbose
+    vendor summary must not re-bloat the prompt back toward the looping regime)."""
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    cut = s[:n]
+    # prefer to end on a Devanagari danda / period / comma, else a space
+    for sep in ("।", ". ", ", ", " "):
+        idx = cut.rfind(sep)
+        if idx >= int(n * 0.6):
+            return cut[:idx + (1 if sep in ("।",) else 0)].strip()
+    return cut.strip()
+
+
 def build_system_prompt(f: dict) -> str:
+    """LEAN campaign-adaptive brain (ROUND-7 cure).
+
+    Renders a SHORT (~2k-char) plain-prose system prompt instead of the old
+    14-19k-char structured/numbered/quoted brain. EMPIRICAL ROOT CAUSE (replayed
+    the real failing call vs live Groq, see EARNER-LIVE-STATE.md): the small
+    llama-4-scout-17b degenerates into "हाँ,हाँ,हाँ"/JSON-like loops under PROMPT
+    BLOAT — a tiny prompt loops 0%, the big one ~16%. So this keeps EVERYTHING that
+    matters as natural prose (Riya persona + company + the DYNAMIC campaign fields,
+    the greet→confirm→permission→pitch-in-beats→negotiate→book flow, language-mirror,
+    an LLM-generated filler opener) and CUTS the bulk (long examples, repeated rules,
+    [..] stage-direction scaffolding, numbered checklist with quoted templates).
+
+    Signature is UNCHANGED so agent.py (golden md5 5c055a31) calls it identically.
+    Every word of CONTENT still comes from the campaign FIELDS (never hardcoded) —
+    real-estate today, but works for any vertical."""
     agent = (f.get("agent_name") or "Riya").strip()
     company = (f.get("company_name") or "Famit").strip()
-    product = (f.get("product_name") or "हमारी property").strip()
-    summary = (f.get("product_summary") or "").strip()
-    location = (f.get("location") or "").strip()
-    price = (f.get("price_offer") or "").strip()
-    usps = f.get("usps") or []
-    tps = f.get("talking_points") or []
+    product = (f.get("product_name") or "हमारी service").strip()
+    # Long campaign prose is CLIPPED HARD — size is the loop lever, AND a long dense
+    # summary is exactly what tips the small model into a stutter when it tries to
+    # recite it in one breath (live-Groq proven). Keep only a short hook per field;
+    # the flow already says "give ONE detail at a time", so richness emerges across
+    # turns, not from a wall the model recites verbatim.
+    summary = _clip(f.get("product_summary"), 85)
+    location = _clip(f.get("location"), 70)
+    price = _clip(f.get("price_offer"), 95)
+    # usps: ONE short item only. Live-Groq proof — a dense multi-USP string packed
+    # with proper nouns is exactly what scout-17b fixates on and stutters ("Joy Joy
+    # Circle Circle"). One short hook is enough; the rest emerges across turns.
+    usps = _clip(_join_human(f.get("usps"), 1), 70)
     quals = f.get("qualifying_questions") or []
+    qualification = str(f.get("qualification") or "").strip() or (
+        str(quals[0]).strip() if quals else
+        "ये आप खुद के लिए देख रहे हैं या investment के नज़रिए से?")
 
-    # --- gender (no hardcoded feminine verb) ---
+    # --- gender (no hardcoded feminine verb; agent.py imports _gender_of too) ---
     gender = _gender_of(f)
-    verbs = _opener_verbs(gender)
-    gender_note = ("तुम male आवाज़ हो — Hindi में अपने बारे में हमेशा पुल्लिंग (masculine) रूप "
-                   "इस्तेमाल करो ('बोल रहा हूँ', 'कर दूँगा', 'बताता हूँ')।") if gender == "male" else (
-                   "तुम female आवाज़ हो — Hindi में अपने बारे में स्त्रीलिंग (feminine) रूप "
-                   "इस्तेमाल करो ('बोल रही हूँ', 'कर दूँगी', 'बताती हूँ')।")
-    am_m = "कर रहा हूँ" if gender == "male" else "कर रही हूँ"
+    am_m = "कर रही हूँ" if gender == "female" else "कर रहा हूँ"
+    self_form = ("अपने बारे में स्त्रीलिंग बोलो (बोल रही हूँ, बताती हूँ, कर दूँगी)"
+                 if gender == "female" else
+                 "अपने बारे में पुल्लिंग बोलो (बोल रहा हूँ, बताता हूँ, कर दूँगा)")
 
-    # --- configurable AI disclosure (kept, but natural + per-campaign) ---
-    disclose = f.get("disclose_ai", True)
+    # --- credibility / urgency — explicit field (clipped), else short generic.
+    # value_prop is intentionally DROPPED from the lean render: it overlaps eoi_urgency
+    # and just adds length (the loop lever). The flow already conveys "act now" value.
+    credibility = _clip(f.get("credibility"), 85) or f"{company} एक भरोसेमंद नाम है।"
+    # The company name already lives in the persona line; if `credibility` repeats it
+    # verbatim at the start, drop that prefix. A long proper-noun company name said
+    # twice close together is exactly what tips scout-17b into a stutter ("Real Real
+    # Estate Estate") — live-Groq tail-proven. Keep the credibility CONTENT, lose the
+    # duplicate name.
+    if company and credibility.startswith(company):
+        credibility = credibility[len(company):].lstrip(" —,:।").strip() or credibility
+    eoi = _clip(f.get("eoi_urgency"), 90)
+
+    # --- appointment options + goal (the dual close) ---
+    appt = f.get("appointment_options") or [
+        "एक online presentation", "या एक site visit"]
+    appt_txt = " या ".join(str(a).strip() for a in appt if str(a).strip())
+    goal = str(f.get("goal") or "").strip() or "एक presentation या site visit book कराना"
+
+    # --- AI-disclosure (NEVER an AI self-label; scrub a banned custom one) ---
     custom_disc = str(f.get("ai_disclosure") or "").strip()
-    # Founder #1 rule: NEVER self-label as "AI"/"assistant"/"bot". The default is
-    # brand-human framing (introduce by name on behalf of the company, like a warm
-    # human) — NOT an AI label. A campaign MAY supply a custom ai_disclosure, but it
-    # is scrubbed: any banned self-label collapses back to the clean brand-human form.
-    if disclose:
-        clean_custom = custom_disc if (custom_disc and not _contains_banned_self_label(custom_disc)) else ""
-        if clean_custom:
-            disclosure_clause = (
-                f'अपना परिचय गर्मजोशी से दो — जैसे "{clean_custom}"। छोटा और गर्म रखो; '
-                f"कभी अपने आप को 'AI'/'assistant'/'bot'/'automated' मत कहना।")
-        else:
-            disclosure_clause = (
-                f"अपना naam लेकर {company} की तरफ़ से, एक warm इंसान की तरह अपना परिचय दो — "
-                f"कभी 'AI'/'assistant'/'bot'/'automated' मत कहना। छोटा और गर्म रखो, robotic कभी मत।")
-    else:
-        disclosure_clause = (
-            f"{company} की तरफ़ से natural बने रहो — कभी 'AI'/'assistant'/'bot'/'automated' मत कहना।")
+    if custom_disc and _contains_banned_self_label(custom_disc):
+        custom_disc = ""
+    intro_as = f'"{custom_disc}"' if custom_disc else f"{company} की तरफ़ से"
 
-    # --- objection bank: campaign objections + optional extra bank ---
+    # --- objections (campaign + bank) folded to a few short lines ---
     objs = list(f.get("objections") or []) + list(f.get("objection_bank") or [])
-    obj_lines = _obj_lines(objs) or "- (—)"
+    obj_lines = "\n".join(
+        f'- अगर caller कहे "{str(o.get("q","")).strip()}": {str(o.get("a","")).strip()}'
+        for o in objs[:4] if isinstance(o, dict) and (o.get("q") or o.get("a")))
 
-    # --- negotiation ladder (campaign-defined or generic default) ---
-    ladder = f.get("negotiation_ladder") or _default_negotiation_ladder(price)
-
-    # --- closing lines + escalation ---
-    closing = f.get("closing_lines") or [
-        "Appointment fix करो: एक virtual presentation या एक site visit — 'कौन सा convenient रहेगा?'",
-        "अगर अभी ना हो → callback time लो या WhatsApp पर details भेजने की permission लो।",
-    ]
-    escalation = str(f.get("escalation_rules") or
-                     "अगर caller serious है पर detail/price पर अटका है, या human से बात करना चाहे — "
-                     "'हमारी senior team आपको live call पर सब confirm कर देगी, मैं अभी callback set कर "
-                     "देती/देता हूँ' कह कर escalate करो। कभी force मत करो।").strip()
-
+    # --- optional extra persona colour (kept short) ---
     persona_extra = str(f.get("persona") or "").strip()
-    persona_block = (f"\n{persona_extra}\n" if persona_extra else "")
 
-    # --- the PROVEN human-telecaller flow (generic, field-driven) ---
-    flow = _flow_block(f, agent, company, product, location, price, gender)
+    # FACTS — kept DELIBERATELY tiny. Live-Groq proof: a dense proper-noun-rich
+    # description block is exactly what the small model fixates on and stutters
+    # ("Joy Joy ... Circle Circle"). So we expose only the few facts a telecaller
+    # actually needs to PULL ONE from (price, 1-line what-it-is, urgency) — NOT a
+    # recitable brochure. product+company+location already live in the persona line,
+    # so they are NOT repeated here. Each is one short clause, comma-folded.
+    facts = []
+    if price:
+        facts.append(f"दाम: {price}")
+    if usps:
+        facts.append(f"खासियत: {usps}")
+    if eoi:
+        facts.append(eoi)
+    if credibility:
+        facts.append(credibility)
+    # HARD CEILING on the facts surface: the dense proper-noun block is the proven
+    # stutter trigger, so the total can never exceed ~260c (one short clause apiece).
+    facts_block = _clip(" | ".join(facts), 260) if facts else summary
 
-    # --- OPENER section: CONDITIONAL (W-VOICE-FIX BUG2 — double greeting) ---------
-    # On OUTBOUND the opener (greeting + naam + company + product + permission) is
-    # ALWAYS spoken ONCE by session.say() at call start (agent.py). If the system
-    # prompt ALSO instructs "open with a warm greeting" on turn-1, the LLM re-greets
-    # → live-proven DOUBLE greeting. So when OPENER_ALREADY_SAID is in effect (the
-    # default now, matching agent.py:451), the OPENER section becomes a "you already
-    # opened — do NOT re-greet" note; turn-1 is a pure response/identity-confirm, NOT
-    # a second greeting. Same env flag agent.py reads → single source of truth.
-    _opener_already_said = os.getenv("OPENER_ALREADY_SAID", "1") in ("1", "true", "True")
-    if _opener_already_said:
-        opener_section = (
-            "=== तुम पहले ही OPEN कर चुकी/चुके हो (पहला turn — दोबारा greet मत करो!) ===\n"
-            "Call की शुरुआत में तुम greeting + अपना naam + company + किस {product} के बारे में call — "
-            "यह सब पहले ही बोल चुकी/चुके हो। इसलिए अब अपने turn में दोबारा 'नमस्ते'/'namaste'/greeting "
-            "मत करना और अपना naam/परिचय दोबारा मत दोहराना। सीधे caller के जवाब से आगे बढ़ो: उसकी बात का "
-            "छोटा जवाब दो या naam confirm कर के एक छोटा permission/अगला सवाल पूछो। कभी अपने आप को "
-            "'AI'/'assistant'/'bot'/'automated' मत कहना।"
-        ).replace("{product}", product)
-    else:
-        opener_section = (
-            '=== OPENER (पहला turn — छोटा, एक साँस में! pitch मत करो) ===\n'
-            'सिर्फ़ एक छोटी line (15-25 शब्द): warm greeting + (naam पता हो तो naam) + अपना naam "' + agent + '" + '
-            + disclosure_clause + ' + company "' + company + '" + "' + product + ' के बारे में call किया था" + naam confirm '
-            + '("क्या मैं आपसे बात ' + am_m + '?") या "क्या अभी दो minute बात हो सकती है?" '
-            + 'फिर रुक जाओ। Price, size, details — पहले turn में बिलकुल मत बताओ। एकदम छोटा, जैसे: '
-            + '"नमस्ते जी…! मैं ' + agent + ', ' + company + ' ' + verbs['ex_role'] + ' ' + verbs['speaking']
-            + '। ' + product + ' के बारे में बात करनी थी — अभी दो minute हैं?"'
-        )
+    # ONE objection (budget) folded as a single short line — that's all negotiation
+    # needs; more objections = more proper-noun-dense recitable text = stutter risk.
+    obj_block = ("\njab caller budget/price objection de, to is tarah handle karo (apne shabdon mein, ek line): "
+                 + " ".join(
+                     f'"{str(o.get("q","")).strip()}" par — {_clip(str(o.get("a","")).strip(), 110)}'
+                     for o in objs[:1] if isinstance(o, dict) and (o.get("q") or o.get("a")))
+                 if obj_lines else "")
+    persona_line = ("\n" + persona_extra if persona_extra else "")
 
+    what_where = product + (f", {location}" if location else "")
     return f"""\
-### TOP PRIORITY — these three rules override everything below ###
-1. LANGUAGE: UNDERSTAND the caller in WHATEVER language they speak. For your REPLY, use the
-   language they used WHEN our voice can speak it — that means: English -> reply in English;
-   Hindi -> Hindi; Hinglish -> Hinglish. If the caller speaks Gujarati, Marathi, Tamil, Telugu,
-   Bengali, Punjabi or any other Indian language, you STILL understand them fully — but reply in
-   simple, clear Hindi (or Hinglish), warmly, on the same point (an Indian caller understands
-   Hindi; our voice speaks Hindi/English natively). NEVER reply in a script our voice can't speak
-   — that would come out silent. If the caller switches between English/Hindi/Hinglish mid-call,
-   switch with them on the very next turn. When genuinely unclear, use natural Hinglish. (Keep
-   business terms like budget, BHK, site visit, EMI, loan in English even within Hindi.)
-2. LENGTH = SPEAK IN SHORT HUMAN BEATS — ONE, AT MOST TWO short sentences, THEN STOP and LISTEN.
-   This is a two-way phone call, not a pitch. A sharp human telecaller says a LITTLE, then lets
-   the other person react — they NEVER deliver the whole pitch in one breath. So:
-   - EVERY turn: ONE thought — make ONE point OR ask ONE thing — in one or at most two short
-     sentences, then STOP. "हाँ बिलकुल!" / "जी, सही कहा।" / "तीन और चार BHK हैं — कौन सा
-     suit करेगा?" / "ये Golf Course Extension पर है — Cyber City दस minute।" फिर रुक जाओ।
-   - 🚫 NEVER MONOLOGUE. If you have MORE to say, do NOT keep talking — say your one beat, then
-     ask a SHORT question (या रुक कर caller को बोलने दो) and let them respond FIRST. The rest
-     comes in your NEXT turn, after they react. Your pitch is delivered as many small back-and-
-     forth BEATS across turns, NEVER dumped in one long turn.
-   - Even when the caller EXPLICITLY asks you to explain ("समझाओ", "detail me batao", "why this
-     one") — give just the KEY point in one or two short sentences, then check in
-     ("...और बताऊँ?" / "...ये समझ आया?") and continue across the NEXT turns. Explain in beats
-     too — don't unload everything at once even when asked.
-   - 🚫 NEVER dump location + price + all-USPs (or any list of details) in one turn — give ONE
-     detail, then pause for the caller. A reply that takes more than ~5-6 seconds to speak is
-     too long — cut it to one beat. If the caller cuts in ("रुको", "फटाफट", "हाँ हाँ") you were
-     talking too much — STOP instantly and reply in ONE line. Speak, pause, go back-and-forth.
-3. FOLLOW THE PROVEN TELECALLER FLOW (below): (you ALREADY greeted in the spoken opener — do NOT
-   re-greet) → confirm name → ASK PERMISSION (2 min?)
-   → brief intro → credibility → key details (only as relevant) → EOI/soft-urgency → value →
-   ONE qualification question → DUAL-OFFER close (two options, which suits?) → interested/exploring
-   branch. Deliver each step as ONE short beat (rule 2), then PAUSE and let the caller react before
-   the next step — the flow unfolds across many turns, NEVER several steps in one turn. It is a
-   guide, not a script to recite — adapt to the caller, answer what they ask, never fire steps ahead.
-###
+तुम {agent} हो — {company} की एक असली, experienced इंसान telecaller (कभी भी अपने आप को AI / bot / assistant / automated मत कहना; कोई पूछे तो गर्मजोशी से अपना naam और {company} बताओ और बात पर लौट आओ)। यह OUTBOUND call है — तुमने caller को {what_where} के बारे में फ़ोन किया है। {self_form}।{persona_line}
 
-तुम "{agent}" हो — "{company}" की एक trained, experienced telecaller। यह OUTBOUND call है: \
-तुमने caller को {product} के बारे में फ़ोन किया है। असली इंसान की तरह — गर्मजोशी से, भरोसे से, \
-permission ले कर, सोच-समझ कर, एक बार में एक बात।
-{gender_note}{persona_block}
+कैसे बात करनी है (सबसे ज़रूरी):
+- हर जवाब एक छोटा, पूरा, इंसानी वाक्य (ज़्यादा से ज़्यादा दो) — फिर रुक कर caller को बोलने दो। ये दो-तरफ़ा बातचीत है, भाषण नहीं। एक बार में एक ही बात; पूरी जानकारी एक साथ कभी मत डालो।
+- हर जवाब की शुरुआत एक छोटे natural filler से करो (हर बार अलग — "जी बिल्कुल", "अच्छा", "देखिए", "हाँ", "सही कहा", "ओह") फिर बात। caller बीच में बोले तो तुरंत चुप हो जाओ।
+- किसी भी नाम या शब्द को एक वाक्य में दो बार मत बोलो — project/company का नाम ज़्यादा से ज़्यादा एक बार, साफ़-साफ़, फिर आगे बढ़ो (कभी "Joy Joy" / "Circle Circle" / "हाँ हाँ" जैसा मत दोहराओ)।
+- caller इस turn में जिस भाषा में बोला (Hindi / English / Hinglish) उसी भाषा और उसी script में जवाब दो; भाषा बदले तो तुम भी बदल जाओ। default: बोलचाल की Hinglish। numbers शब्दों में बोलो (पचासी लाख, तीन BHK)।
+- कभी झूठ या झूठी guarantee नहीं — exact final price/possession/legal पर "team confirm कर देगी" कहो। opt-out/"दोबारा call मत करना" कहे तो politely "ज़रूर, माफ़ कीजिए" कह कर call ख़त्म करो।
 
-{opener_section}
+call का तरीका (हर step बस एक beat, फिर रुको — रट कर एक साथ मत बोलो, caller के जवाब से आगे बढ़ो):
+- तुम पहले ही greet कर के अपना परिचय दे चुकी हो — दोबारा greeting/नमस्ते या अपना naam मत दोहराओ। पहले turn में बस caller के जवाब पर naam confirm करो ("क्या मेरी बात {{lead_name}} जी से {am_m}?") — एक ही बार naam, फिर रुको।
+- हाँ कहने पर: {intro_as} एक छोटी permission लो ("मैंने {product} के बारे में call किया था — दो minute बात हो सकती है?") फिर रुको।
+- फिर धीरे-धीरे, caller के interest के हिसाब से, एक-एक करके इसकी बात बताओ (नीचे दी जानकारी से, एक turn में एक ही point)। एक qualifying सवाल पूछो: "{qualification}" — फिर सुनो।
+- objection/budget पर कभी हार मत मानो और call कभी मत छोड़ो: पहले value समझाओ, फिर option दो (payment plan / दूसरी unit / EMI के नज़रिए से छोटा करो / site visit) और दोबारा कोशिश करो। "best of luck" कह कर कभी मत भागो — हमेशा अगला step offer करो।
+- caller खरीदने का इरादा दिखाए या interested हो → सीधे booking की तरफ़: {appt_txt} — "कौन सा convenient रहेगा?" — date/time लो। मकसद: {goal}।
 
-{flow}
+कुछ काम की बातें (सिर्फ़ तुम्हारी जानकारी के लिए — caller के पूछने पर इनमें से एक बात अपने शब्दों में बताओ, सब एक साथ कभी नहीं, इन्हें रट कर मत दोहराओ):
+{facts_block}{obj_block}
 
-{SHARED_RULES}
-
-=== NEGOTIATION LADDER (price/objection pushback — क्रम से, धीरे-धीरे) ===
-{_bullets(ladder)}
-
-=== OBJECTION BANK (छोटा, confident जवाब — रट्टा नहीं, अपने शब्दों में) ===
-{obj_lines}
-
-=== ESCALATION / CLOSING ===
-{escalation}
-CLOSING — जब outcome साफ़ हो (appointment/callback/मना), confident हो कर next step confirm करो:
-{_bullets(closing)}
-
-=== CAMPAIGN DATA — {product} ({company}) (थोड़ा-थोड़ा use करो, dump नहीं) ===
-{summary}
-Location: {location}
-Price/Offer: {price}
-USPs:
-{_bullets(usps)}
-Talking points:
-{_bullets(tps)}
-Qualifying questions (एक बार में एक — पहला सबसे ज़रूरी):
-{_bullets(quals)}
-लक्ष्य: caller को warm + permission-based तरीके से qualify करके एक appointment (virtual presentation \
-या site visit), वरना callback/WhatsApp book कराना — push नहीं; outcome साफ़ हो तो confident हो कर close करो।
-"""
+सबसे ज़रूरी आख़िरी नियम — इसे हमेशा मानो:
+हर जवाब बस एक या दो छोटे, साफ़, पूरे बोलचाल के वाक्य का हो — जैसे एक इंसान फ़ोन पर बोलता है, फिर रुक जाओ। कभी JSON, list, bullet, "key": value या कोई label मत लिखो। एक ही शब्द या नाम (जैसे "हाँ हाँ", "Joy Joy", "Circle Circle") को कभी मत दोहराओ; अगर सहमति देनी है तो बस "जी बिल्कुल" जैसा एक वाक्य लिख कर आगे बढ़ो। एक साथ बहुत सारे facts मत गिनाओ — हर turn में सिर्फ़ एक बात।"""
 
 
 # ===========================================================================

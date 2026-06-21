@@ -1,0 +1,210 @@
+--- agent.py	2026-06-19 19:09:19.996978694 +0000
++++ _agent_r6b_test.py	2026-06-20 06:20:55.888954545 +0000
+@@ -436,13 +436,32 @@
+ # Phrases that signal a CLEAR terminal outcome → confirm-then-hangup closure.
+ # We only end the call after the agent has confirmed a next step (or a hard no/opt-out),
+ # never mid-conversation. Detection is on the FULL recent transcript, cheaply.
+-_CLOSE_BOOK = (  # caller agreed to a concrete next step (Latin + Devanagari STT forms)
+-    "site visit", "visit fix", "visit रख", "visit kar", "aa jaung", "aa jaaung", "आ जाऊँ",
++# R6b CLOSURE FIX (book-request != book-close): the OLD list contained REQUEST phrasings
++# ("book kar", "बुक कर", "बुक कर दो", "visit kar", "haan visit", "theek hai book", "विज़िट बुक")
++# so a caller ASKING to book ("haan site visit book kar do") was misread as a CLOSING signal —
++# the confirm-then-hangup fired and the agent went silent INSTEAD of booking. The close must
++# only fire once a next step is actually LOCKED/CONFIRMED, never on the request itself.
++# _CLOSE_BOOK now holds only AGENT-side / locked next-step context markers (a real next step
++# was set up), and _closure_signal additionally REQUIRES an explicit confirmation marker
++# (_CLOSE_CONFIRMED) in the tail before returning "book".
++_CLOSE_BOOK = (  # a concrete next step is on the table (context markers, Latin + Devanagari)
++    "site visit", "visit fix", "visit रख", "aa jaung", "aa jaaung", "आ जाऊँ",
+     "callback", "call back", "kal call", "baad me call", "बाद में call", "whatsapp bhej",
+-    "details bhej", "theek hai book", "book kar", "haan visit", "हाँ visit",
++    "details bhej",
+     # Devanagari/transliterated forms (Sarvam often writes these in Devanagari):
+-    "विज़िट", "विजिट", "साइट विज़िट", "बुक कर", "बुक कर दो", "विज़िट बुक", "मिलते हैं",
+-    "व्हाट्सएप", "कॉल बैक", "डिटेल भेज",
++    "विज़िट", "विजिट", "साइट विज़िट", "मिलते हैं", "व्हाट्सएप", "कॉल बैक", "डिटेल भेज",
++)
++
++# R6b: a next step is CONFIRMED/LOCKED only when one of these appears — the booking tool's
++# success marker (booked=true) OR explicit agent/caller confirmation language that the step is
++# DONE (not merely requested). The "book" closure requires one of these, so "book kar do"
++# (a request) can never trigger a hangup; only a real confirmed booking/next-step can.
++_CLOSE_CONFIRMED = (
++    "booked=true", "book कर दिया", "book कर दी", "book ho gaya", "book ho gayi",
++    "बुक कर दिया", "बुक हो गया", "बुक हो गई", "appointment fix", "appointment set",
++    "fix kar diya", "fix कर दिया", "set kar diya", "set कर दिया", "confirm kar diya",
++    "confirm कर दिया", "confirmed", "confirm हो गया", "block कर दिया", "note kar liya",
++    "note कर लिया", "schedule kar diya", "schedule कर दिया",
+ )
+ _CLOSE_NO = (  # caller is clearly done / not interested / opt-out (Latin + Devanagari)
+     "not interested", "interest nahi", "interested nahi", "नहीं चाहिए", "nahi chahiye",
+@@ -466,9 +485,12 @@
+ 
+     Conservative on purpose — we'd rather keep talking than cut early:
+       - 'no'   : the LATEST caller turn is a clear not-interested / opt-out / bye.
+-      - 'book' : a concrete next step (site visit/callback/WhatsApp) appears in the recent
+-                 tail AND the LATEST caller turn is an affirmative agreement. So we only
+-                 close AFTER the caller has agreed to the step the agent proposed.
++      - 'book' : a next step is on the table (site visit/callback/WhatsApp) AND it is
++                 actually CONFIRMED/LOCKED (a _CLOSE_CONFIRMED marker — e.g. the booking
++                 tool's booked=true, or "appointment fix"/"confirm कर दिया") AND the
++                 LATEST caller turn is an affirmative. R6b: we no longer close on a book
++                 REQUEST ("book kar do") — only after the step is truly locked, so the
++                 agent BOOKS/ANSWERS instead of going silent on the booking-agreement turn.
+     Cheap substring scan; never raises."""
+     try:
+         if len(turns) < 4:  # need a real exchange before we consider closing
+@@ -481,7 +503,13 @@
+         tail = " ".join((t.get("content") or "") for t in turns[-4:]).lower()
+         affirm = ("haan", "हाँ", "ok", "okay", "theek hai", "ठीक है", "sure", "kar do",
+                   "kar lo", "chalega", "fix kar", "yes", "बिलकुल", "bilkul", "ji haan")
+-        if any(k in tail for k in _CLOSE_BOOK) and any(k in last_user for k in affirm):
++        # R6b: require BOTH a next-step context marker AND an explicit CONFIRMED/LOCKED marker
++        # in the recent tail (not just request phrasing) before closing on 'book'. This is what
++        # stops a "book kar do" REQUEST turn from misfiring the confirm-then-hangup (the dead-air
++        # bug). The caller's affirmative is still required too.
++        if (any(k in tail for k in _CLOSE_BOOK)
++                and any(c in tail for c in _CLOSE_CONFIRMED)
++                and any(k in last_user for k in affirm)):
+             return "book"
+         return ""
+     except Exception:  # noqa: BLE001
+@@ -544,6 +572,79 @@
+         return text or ""
+ 
+ 
++# ── R6b NUMBER/UNIT NORMALIZER (post-LLM TTS safety net) ──────────────────────────────
++# The prompt BANS digits/₹/RS/"sq. ft" and tells the model to speak words ("पचासी लाख rupees",
++# "square feet"), but a 17B model occasionally leaks a symbol/abbreviation. This is a
++# DETERMINISTIC last line of defence applied in _MirrorAgent.tts_node — it rewrites the text
++# AFTER the LLM and BEFORE the TTS, so a stray "₹85 लाख" / "850 sq. ft" is spoken correctly
++# instead of the TTS reading "rupee-symbol" / "ess-cue-dot-ef-tee". It is CONSERVATIVE on
++# purpose: it normalises currency SYMBOLS + unit/scale ABBREVIATIONS to words (the things TTS
++# garbles) but does NOT try to spell out bare digits (the deferred A3b experiment proved
++# digit-to-Hindi-words mangles dates/ranges — that stays the prompt's job). Touches ONLY the
++# text stream; it NEVER touches the TTS constructor / voice settings (THE LAW). Never raises.
++_RE_SQFT = re.compile(r"\bsq\.?\s*ft\.?|\bsqft\b|\bsq\s*feet\b", re.IGNORECASE)
++_RE_RUPEE_SYMBOL = re.compile(r"₹\s*")                     # "₹85" -> "85 ... rupees"
++_RE_RS_PREFIX = re.compile(r"\b(?:RS|Rs|Rs\.)\s*(?=[\d०-९])", re.IGNORECASE)  # "Rs 200" -> "200 rupees"
++_RE_CRORE = re.compile(r"(?<=[\d०-९])\s*(?:Cr|crore)\b", re.IGNORECASE)
++_RE_LAKH = re.compile(r"(?<=[\d०-९])\s*(?:L|Lac|Lakh)\b", re.IGNORECASE)
++
++
++def _normalize_speech_units(text: str) -> str:
++    """Rewrite TTS-garbling currency symbols + unit/scale abbreviations to spoken words.
++    Conservative, deterministic, never raises. Examples:
++      "₹85 लाख"      -> "85 लाख rupees"
++      "Rs 200"        -> "200 rupees"
++      "850 sq. ft"    -> "850 square feet"
++      "6.13 Cr"       -> "6.13 crore"   ;  "85L" -> "85 lakh"
++    (Bare digits are left as-is — the prompt + EL text-normalization handle spelling them.)"""
++    if not text:
++        return text or ""
++    try:
++        out = text
++        # sq.ft family -> "square feet" (do this first so the dot isn't read aloud)
++        out = _RE_SQFT.sub("square feet", out)
++        # scale abbreviations attached to a number -> words
++        out = _RE_CRORE.sub(" crore", out)
++        out = _RE_LAKH.sub(" lakh", out)
++        # currency: "₹85" -> "85 rupees" ; "Rs 200" -> "200 rupees".
++        # We move the unit AFTER the number (how it is spoken in Hindi/English) by tagging a
++        # trailing " rupees". To avoid double-tagging when "rupees"/"rupaye" already follows,
++        # only append when not already present right after.
++        def _rupee_repl(m: "re.Match") -> str:  # noqa: F821
++            return ""  # drop the leading symbol/prefix; the trailing word is added below
++        # find the rupee marker position BEFORE we strip it, so we can place "rupees"
++        # right after the amount phrase that FOLLOWS the marker (not the first number anywhere).
++        mk = _RE_RUPEE_SYMBOL.search(out) or _RE_RS_PREFIX.search(out)
++        had_rupee = bool(mk)
++        mk_pos = mk.start() if mk else -1
++        out = _RE_RUPEE_SYMBOL.sub(_rupee_repl, out)
++        out = _RE_RS_PREFIX.sub("", out)
++        if had_rupee and "rupee" not in out.lower() and "rupaye" not in out.lower() and "रुपये" not in out:
++            # the amount phrase = a number run + ANY trailing scale words (लाख/करोड़/हज़ार/
++            # crore/lakh/thousand), so "85 लाख" -> "85 लाख rupees" (not "85 rupees लाख").
++            # Search from the original marker position so we tag the RIGHT amount.
++            scan_from = max(0, mk_pos)
++            amt = re.compile(
++                r"[\d०-९][\d,.०-९\s]*"
++                r"(?:\s*(?:लाख|करोड़|हज़ार|हजार|crore|cr|lakh|lac|thousand|hazaar))*",
++                re.IGNORECASE,
++            )
++            m = amt.search(out, scan_from) or amt.search(out)
++            if m and m.group().strip():
++                end = m.end()
++                head = out[:end].rstrip()
++                tail = out[end:]
++                sep = "" if tail[:1] in (" ", "") else " "
++                out = head + " rupees" + sep + tail
++            else:
++                out = out.rstrip() + " rupees"
++        # collapse any double spaces we introduced
++        out = re.sub(r"[ \t]{2,}", " ", out)
++        return out.strip() or (text or "")
++    except Exception:  # noqa: BLE001
++        return text or ""
++
++
+ def _goodbye_line(signal: str, agent_name: str, company: str, gender: str) -> str:
+     """A warm, gender-correct closing line spoken before we end the call."""
+     fem = gender != "male"
+@@ -1426,6 +1527,30 @@
+             except Exception:  # noqa: BLE001
+                 pass
+ 
++        # ── R6b TTS-NODE NUMBER/UNIT NORMALIZER (post-LLM, pre-TTS safety net) ──────────
++        # THE LAW: this does NOT touch the ElevenLabs/Sarvam TTS CONSTRUCTOR or any voice
++        # setting — it only rewrites the TEXT stream flowing INTO the unchanged TTS. A stray
++        # "₹85 लाख" / "850 sq. ft" the LLM leaked (despite the prompt ban) is normalized to
++        # spoken words ("85 लाख rupees" / "850 square feet") so the voice never reads a symbol
++        # or "sq dot ft". Flag TTS_NORMALIZE (default ON) is the kill-switch: =0 -> delegate
++        # straight to the default node (byte-identical behaviour, no normalization). Fully
++        # wrapped — any failure falls through to the unmodified text so a call never breaks.
++        def tts_node(self, text, model_settings):  # noqa: ANN001
++            if os.getenv("TTS_NORMALIZE", "1") in ("0", "false", "False"):
++                return Agent.default.tts_node(self, text, model_settings)
++
++            async def _normalized_stream():
++                async for chunk in text:
++                    try:
++                        if isinstance(chunk, str) and chunk:
++                            yield _normalize_speech_units(chunk)
++                        else:
++                            yield chunk
++                    except Exception:  # noqa: BLE001 — never break the audio stream
++                        yield chunk
++
++            return Agent.default.tts_node(self, _normalized_stream(), model_settings)
++
+     # A3: booking voice-tool — attached ONLY when booking_tool_enabled() (KERNEL_OUTBOUND=1
+     # AND BOOKING_TOOL_ENABLED=1). DEFAULT OFF => _MirrorAgent(instructions=...) is built with
+     # NO tools, byte-identical to today. ON => one extra @function_tool the LLM can call to book
+@@ -1498,6 +1623,27 @@
+                           "tomorrow 5pm", "Friday evening") or an ISO datetime if known.
+                     notes: any short context to attach (optional, e.g. "wants 3 BHK, self-use").
+                 """
++                # R6b DEAD-AIR FIX: speak a tiny filler while the booking POST runs so the caller
++                # never hears silence. The POST is already non-blocking (asyncio.to_thread below),
++                # but the LLM doesn't emit its confirmation until the tool returns — that gap is the
++                # silence. A short, NON-interrupting say() fills it. Flag BOOKING_FILLER (default ON);
++                # fully wrapped — a filler failure must NEVER affect the booking or the call.
++                if os.getenv("BOOKING_FILLER", "1") not in ("0", "false", "False"):
++                    try:
++                        _bk_sess = getattr(context, "session", None) or ctl.get("session")
++                        if _bk_sess is not None:
++                            _fillers = ("एक second sir, मैं अभी book कर रही हूँ…",
++                                        "जी, एक second — अभी lock कर रही हूँ…",
++                                        "बस एक पल, मैं slot block कर रही हूँ…")
++                            if agent_gender == "male":
++                                _fillers = ("एक second sir, मैं अभी book कर रहा हूँ…",
++                                            "जी, एक second — अभी lock कर रहा हूँ…",
++                                            "बस एक पल, मैं slot block कर रहा हूँ…")
++                            import random as _rnd
++                            _bk_sess.say(_rnd.choice(_fillers), allow_interruptions=True,
++                                         add_to_chat_ctx=False)
++                    except Exception as _fexc:  # noqa: BLE001
++                        logger.info("booking filler (non-fatal): %r", _fexc)
+                 try:
+                     res = await asyncio.to_thread(
+                         _do_booking_http, _bkh_phone, when_text=when,

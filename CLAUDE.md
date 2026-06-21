@@ -1,3 +1,14 @@
+# 🔒 BINDING — AUTONOMOUS ENGINEERING OS (read first, every session, every task)
+> The Black Day (2026-06-21) proved prose rules get skipped under pressure. These are ENFORCED by hooks.
+> READ `AUTONOMOUS_ENGINEERING_OS.md` (binding) + `OPERATING_SYSTEM.md` (live enforcement detail) before touching code.
+> CORE LOOP on every request (hardest on "simple" ones): intent → empirical research → multi-domain design →
+> red-team → build COMPLETE → VERIFY on the real flow → done. Whack-a-mole = you skipped research; revert + prove.
+> THE 3 HARD GATES (a hook re-injects them every prompt — honor them):
+> • GATE 1 INTENT-NOT-SPEC — build the whole production thing; founder words are rough intent; auto-add nano-details (pagination, authz, error states). Defer → MISSING_LAYERS.md.
+> • GATE 2 PROVE-DON'T-OBEY — never run a guessed fix (his OR mine) without a measurement confirming the cause; his debug guesses are HYPOTHESES to test.
+> • GATE 3 VERIFY-BEFORE-DONE — no "done/fixed/deployed" without proof on the real flow; never make the founder QA unverified work; `done-gate.ps1` blocks it.
+> You are the WHOLE team (9 domains) + delegator. Earner law overrides all: one box-mutating change, real-flow smoke, revert path; agent.py voice/.env byte-identical.
+
 # CLAUDE.md — axcrio-platform (Famit / Axcrio)
 
 Repo map for any agent or teammate working here. Read this + `ARCHITECTURE.md`

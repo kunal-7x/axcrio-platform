@@ -21,6 +21,15 @@ import httpx
 from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import Agent, AgentSession, WorkerOptions, cli
+# A3: booking voice-tool (gated). function_tool/RunContext imported guarded so an
+# older livekit (without them) can NEVER stop the earner from importing — the tool
+# is only ever attached when BOTH KERNEL_OUTBOUND=1 and BOOKING_TOOL_ENABLED=1.
+try:
+    from livekit.agents import RunContext as _LkRunContext  # type: ignore
+    from livekit.agents import function_tool as _lk_function_tool  # type: ignore
+except Exception:  # noqa: BLE001
+    _LkRunContext = None  # type: ignore
+    _lk_function_tool = None  # type: ignore
 from livekit.plugins import elevenlabs, groq, sarvam, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 
@@ -97,18 +106,54 @@ def _collect_groq_keys() -> list[str]:
 _GROQ_KEYS = _collect_groq_keys()
 _GROQ_CYCLE = _itertools.cycle(_GROQ_KEYS) if _GROQ_KEYS else None
 _GROQ_LOCK = _threading.Lock()
+# A6: 429 / quota cooling. When a key returns a 429 (rate-limit/quota), mark it
+# "cooling" until now+GROQ_COOL_SECONDS; _next_groq_key SKIPS cooling keys so the
+# round-robin stops handing out an exhausted key (the live TTFT-spike cause). Pure
+# brain/logic — NOTHING in the TTS/voice path. Safe no-op on a single key: if every
+# key is cooling we still return one (never starve a call). Default cool window 60s.
+_GROQ_COOLING: dict[str, float] = {}  # masked-or-raw key -> epoch when it un-cools
+_GROQ_COOL_SECONDS = float(os.getenv("GROQ_COOL_SECONDS", "60") or 60)
 
 def _mask_key(k: str) -> str:
     if not k:
         return "<none>"
     return (k[:6] + "…" + k[-4:]) if len(k) > 12 else "<short>"
 
-def _next_groq_key() -> str:
-    """Round-robin the next Groq API key (thread-safe). Falls back to the single
-    GROQ_API_KEY / env if no keys were collected. Never raises."""
+def mark_groq_key_cooling(key: str, *, seconds: float | None = None) -> None:
+    """Mark a Groq key as cooling after a 429/quota error. Thread-safe; never raises.
+    The key is skipped by _next_groq_key until the cool window elapses."""
     try:
-        if _GROQ_CYCLE is not None:
+        if not key:
+            return
+        import time as _t
+        secs = _GROQ_COOL_SECONDS if seconds is None else float(seconds)
+        with _GROQ_LOCK:
+            _GROQ_COOLING[key] = _t.time() + max(1.0, secs)
+        logging.getLogger("famit-agent").warning(
+            "groq key cooling %s for %.0fs (429/quota)", _mask_key(key), max(1.0, secs))
+    except Exception:  # noqa: BLE001 — cooling bookkeeping must never break a call
+        pass
+
+def _next_groq_key() -> str:
+    """Round-robin the next Groq API key (thread-safe), SKIPPING keys currently
+    cooling from a recent 429/quota (A6). Falls back to the single GROQ_API_KEY /
+    env if no keys were collected. If ALL keys are cooling, returns the next one
+    anyway (never starve a live call). Never raises."""
+    try:
+        if _GROQ_CYCLE is not None and _GROQ_KEYS:
+            import time as _t
+            now = _t.time()
             with _GROQ_LOCK:
+                # at most len(_GROQ_KEYS) probes: take the first non-cooling key.
+                for _ in range(len(_GROQ_KEYS)):
+                    k = next(_GROQ_CYCLE)
+                    cool_until = _GROQ_COOLING.get(k, 0.0)
+                    if cool_until and cool_until > now:
+                        continue  # still cooling -> skip to the next key
+                    if cool_until:
+                        _GROQ_COOLING.pop(k, None)  # window elapsed -> clear
+                    return k
+                # every key cooling: return the next anyway (don't starve the call).
                 return next(_GROQ_CYCLE)
     except Exception:  # noqa: BLE001 — never break a call over key selection
         pass
@@ -178,10 +223,11 @@ def _summarize(turns: list[dict]) -> dict:
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     now_ist = _dt.now(_tz(_td(hours=5, minutes=30)))
     now_str = now_ist.strftime("%Y-%m-%dT%H:%M:%S")
+    _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
     try:
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _next_groq_key()},
+            headers={"Authorization": "Bearer " + _gk},
             json={"model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
                   "temperature": 0.1, "max_tokens": 300,
                   "response_format": {"type": "json_object"},
@@ -204,6 +250,8 @@ def _summarize(turns: list[dict]) -> dict:
                   ]},
             timeout=12,
         )
+        if getattr(r, "status_code", 200) == 429:
+            mark_groq_key_cooling(_gk)
         d = json.loads(r.json()["choices"][0]["message"]["content"])
         opt_out = bool(d.get("opt_out", False))
         outcome = d.get("outcome", "answered")
@@ -326,15 +374,20 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             + (f"caller को FIRST naam '{fname}' से 'जी' लगाकर greet करो (जैसे '{tod['en'].capitalize()}, "
                f"hello {fname} जी…') — पूरा naam मत बोलो, सिर्फ़ '{fname} जी'। " if fname else "")
             + disc_clause
-            + f"कहो कि '{product}' के बारे में call किया था, फिर पूछो 'क्या अभी दो minute बात हो "
+            + f"साफ़ बताओ कि यह OUTBOUND call है — TUMNE caller को call किया है, उसने तुम्हें नहीं। "
+            f"इसलिए पहला-purush (first person) में framing करो — जैसे 'मैंने आपको '{product}' के "
+            f"बारे में call किया है' या 'आपने '{product}' में interest dikhaya tha, इसलिए call कर "
+            f"रही/रहा हूँ' (gender-appropriate)। कभी मत कहो 'आपने call किया था' / 'आपने हमें contact "
+            f"किया था' (वो INBOUND framing है, यह call OUTBOUND है)। फिर पूछो 'क्या अभी दो minute बात हो "
             f"सकती है?'। company और product के नाम ('{company}', '{product}') और कोई भी English "
             f"brand/proper-noun English अक्षरों में ही लिखो — Devanagari में transliterate मत करो। "
             f"बस एक ही छोटी बोली जाने वाली line — कोई symbol/list नहीं, कोई दूसरा वाक्य नहीं। "
             f"Price/size/details बिलकुल मत बताओ।"
         )
+        _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _next_groq_key()},
+            headers={"Authorization": "Bearer " + _gk},
             json={
                 "model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
                 "temperature": 0.5, "max_tokens": 70,
@@ -345,6 +398,8 @@ def _llm_opener(agent_name: str, company: str, product: str, lead_name: str,
             },
             timeout=8,
         )
+        if getattr(r, "status_code", 200) == 429:
+            mark_groq_key_cooling(_gk)
         text = r.json()["choices"][0]["message"]["content"].strip()
         text = _fix_opener_greeting(text, tod["en"])  # VP3: ban Hindi greeting, force English wish
         return text or fallback
@@ -498,25 +553,33 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
                          "अपने बारे में स्त्रीलिंग (feminine) रूप इस्तेमाल करो।")
         if signal == "book":
             intent = ("Caller एक next step (site visit / callback / WhatsApp details) के लिए राज़ी "
-                      "हो गया है। एक छोटी, गर्मजोशी भरी closing line बोलो जो उसी agreed step को "
-                      "naturally confirm करे और शुक्रिया कहे।")
+                      "हो गया है। एक छोटी, गर्मजोशी भरी closing line बोलो जो उसी ACTUAL agreed step "
+                      "को (जैसे 'कल शाम site visit' / 'WhatsApp पर details' / 'callback') naturally "
+                      "उसके अपने नाम से confirm करे और thank करे — जैसे एक असली इंसान करता है।")
         else:
             intent = ("Caller ने अभी interest नहीं दिखाया / दोबारा call न करने को कहा है। एक छोटी, "
-                      "respectful closing line बोलो — politely शुक्रिया, बिना बहस, बिना दोबारा pitch।")
+                      "respectful closing line बोलो — politely thank करो, बिना बहस, बिना दोबारा pitch।")
         sysmsg = (
             f"तुम {agent_name} हो, {company} की telecaller। {gender_clause} {intent} "
             f"सिर्फ़ एक ही छोटी (12-22 शब्द) बोली जाने वाली line दो — caller ने call में जिस भाषा "
-            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से। "
-            f"ये शब्द बिलकुल मना है — कभी मत बोलो/लिखो: 'अलविदा' (alvida)। उसके बजाय शुक्रिया कहकर "
-            f"'आपका दिन अच्छा रहे' जैसी natural, warm line से बात ख़त्म करो। company/product और कोई भी "
-            f"English brand-name English अक्षरों में ही लिखो। कोई symbol/list/दूसरा वाक्य नहीं, कोई "
-            f"नया सवाल नहीं, कोई price/legal promise नहीं।")
+            f"(Hindi/English/Hinglish) में बात की उसी भाषा में, गर्मजोशी से।\n"
+            f"🔑 हर बार बिलकुल अलग, ताज़ी line बनाओ — कोई fixed/रटा-रटाया closing template मत दोहराओ। "
+            f"line इसी call के outcome से जुड़ी हो (ऊपर दी 'हाल की बातचीत' को देखकर) — हर call पर अलग "
+            f"शब्द, अलग वाक्य। तुम्हारा thank-you और sign-off हर बार natural variation के साथ हो "
+            f"(जैसे कभी 'बात करके अच्छा लगा', कभी 'time देने के लिए शुक्रिया', कभी 'मिलते हैं', कभी "
+            f"'अच्छा रहेगा आपसे' — पर इनमें से किसी एक को रट कर मत दोहराओ, हर बार अपने शब्दों में)। "
+            f"कभी मत बोलो/लिखो: 'अलविदा' (alvida)। company/product और कोई भी English brand-name English "
+            f"अक्षरों में ही लिखो। कोई symbol/list/दूसरा वाक्य नहीं, कोई नया सवाल नहीं, कोई price/legal "
+            f"promise नहीं।")
+        _gk = _next_groq_key()  # A6: capture so a 429 can cool THIS key
         r = httpx.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + _next_groq_key()},
+            headers={"Authorization": "Bearer " + _gk},
             json={
                 "model": os.getenv("GROQ_LLM_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
-                "temperature": 0.4, "max_tokens": int(os.getenv("CLOSE_MAX_TOKENS", "60")),
+                # CLOSE_TEMP higher (default 0.8) so the close VARIES per call (the old 0.4 +
+                # a canned-phrase steer made every goodbye identical — the founder's BUG2).
+                "temperature": float(os.getenv("CLOSE_TEMP", "0.8")), "max_tokens": int(os.getenv("CLOSE_MAX_TOKENS", "60")),
                 "messages": [
                     {"role": "system", "content": sysmsg},
                     {"role": "user", "content": "हाल की बातचीत:\n" + (recent or "(—)") + "\n\nअब closing line बोलो।"},
@@ -524,12 +587,162 @@ def _llm_close(signal: str, agent_name: str, company: str, gender: str,
             },
             timeout=8,
         )
+        if getattr(r, "status_code", 200) == 429:
+            mark_groq_key_cooling(_gk)
         text = (r.json()["choices"][0]["message"]["content"] or "").strip()
         text = _strip_alvida(text)  # VP3: hard-guarantee no 'अलविदा' reaches TTS
         return text or fallback
     except Exception as exc:  # noqa: BLE001
         logger.warning("llm close failed, using fallback: %r", exc)
         return fallback
+
+
+# ── A3: booking voice-tool support ────────────────────────────────────────────
+# The agent can BOOK a real appointment when the prospect agrees a slot. Runs
+# IN-PROCESS on the box (booking.core uses its own RLS db session, tenant-scoped),
+# exactly like lead-memory persists — NO new cross-box HTTP / service token. Fully
+# wrapped: any failure returns a spoken-safe "couldn't book" string, never raises
+# into the call. Pure brain/logic — NOTHING in the TTS/voice path.
+def booking_tool_enabled() -> bool:
+    """ON only when BOTH the kernel is on AND BOOKING_TOOL_ENABLED=1 (default OFF =>
+    no tool attached => the agent is byte-identical to today)."""
+    try:
+        if _lk_function_tool is None or _LkRunContext is None:
+            return False
+        kern = os.getenv("KERNEL_OUTBOUND", "0") in ("1", "true", "True")
+        flag = os.getenv("BOOKING_TOOL_ENABLED", "0") in ("1", "true", "True")
+        return kern and flag
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# ── R5VF: booking voice-tool over the caller.py HTTP contract ──────────────────
+# A SECOND booking path that works on the LIVE P0 brain (KERNEL_OUTBOUND=0), where
+# the in-process `booking_tool_enabled()` tool above can NEVER attach (it is gated on
+# the kernel being ON). This one POSTs the slot to the caller.py endpoint on the SAME
+# box — `POST http://127.0.0.1:8209/booking/book` {phone, lead_name, datetime_iso,
+# campaign_id, notes} — so the real booking is created by the backend (the team
+# building that endpoint in parallel). Gated behind its OWN flag, INDEPENDENT of the
+# kernel, DEFAULT OFF => no tool attached => the agent is byte-identical to today. Pure
+# brain/logic + one localhost HTTP call — NOTHING in the TTS/voice path. Fully wrapped:
+# any failure returns a spoken-safe string, never raises into the call.
+def booking_http_tool_enabled() -> bool:
+    """ON only when BOOKING_HTTP_ENABLED=1 (default OFF). Works on the P0 brain
+    (does NOT require KERNEL_OUTBOUND) — that is the whole point: the live earner runs
+    KERNEL_OUTBOUND=0, so this is the booking tool that can actually attach today. OFF
+    => no tool => byte-identical to today."""
+    try:
+        if _lk_function_tool is None or _LkRunContext is None:
+            return False
+        return os.getenv("BOOKING_HTTP_ENABLED", "0") in ("1", "true", "True")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _do_booking_http(phone: str, *, when_text: str, lead_name: str = "",
+                     campaign_id: str = "", notes: str = "",
+                     tz: str = "Asia/Kolkata") -> dict:
+    """Resolve the spoken slot to an ISO datetime, then POST it to the caller.py
+    booking endpoint on localhost (the R5 contract). Returns a small dict:
+      {"ok": True, ...}  on success
+      {"ok": False, "reason": "bad_slot"|"http_<code>"|"no_phone"|"post_error"}  otherwise
+    Never raises. The endpoint is on the SAME box (127.0.0.1:8209); an optional
+    BOOKING_HTTP_TOKEN is sent as a Bearer header if configured (the backend decides
+    whether it is required)."""
+    if not phone:
+        return {"ok": False, "reason": "no_phone"}
+    # Natural-language slot ("kal sham 5 baje", "tomorrow 11am") -> ISO 8601, reusing
+    # the same resolver the in-process tool uses (consistent slot parsing both ways).
+    iso = ""
+    try:
+        from datetime import datetime as _d3, timezone as _z3
+        from voice_ops.booking.datetime_resolve import resolve_slot_start  # type: ignore
+        slot = resolve_slot_start(when_text or "", now=_d3.now(_z3.utc), tz=tz)
+        if slot is not None:
+            iso = slot.isoformat()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("http booking slot resolve failed: %r", exc)
+        iso = ""
+    if not iso:
+        return {"ok": False, "reason": "bad_slot"}
+    url = os.getenv("BOOKING_HTTP_URL", "http://127.0.0.1:8209/booking/book")
+    payload = {
+        "phone": phone,
+        "lead_name": lead_name or "",
+        "datetime_iso": iso,
+        "campaign_id": campaign_id or "",
+        "notes": notes or "",
+    }
+    headers = {"Content-Type": "application/json"}
+    _tok = (os.getenv("BOOKING_HTTP_TOKEN", "") or "").strip()
+    if _tok:
+        headers["Authorization"] = "Bearer " + _tok
+    try:
+        r = httpx.post(url, json=payload, headers=headers,
+                       timeout=float(os.getenv("BOOKING_HTTP_TIMEOUT", "6")))
+        code = getattr(r, "status_code", 0)
+        if 200 <= code < 300:
+            try:
+                body = r.json()
+            except Exception:  # noqa: BLE001
+                body = {}
+            # Honor an explicit conflict/ok flag from the backend if present.
+            if isinstance(body, dict) and body.get("ok") is False:
+                return {"ok": False, "reason": str(body.get("reason") or "rejected"),
+                        "datetime_iso": iso, **({k: body[k] for k in ("conflict",) if k in body})}
+            return {"ok": True, "datetime_iso": iso, "resp": body}
+        # 409 => slot conflict (common booking semantics); surface it for a re-offer.
+        if code == 409:
+            return {"ok": False, "reason": "slot_taken", "datetime_iso": iso}
+        return {"ok": False, "reason": f"http_{code}", "datetime_iso": iso}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("http booking POST failed url=%s err=%r", url, exc)
+        return {"ok": False, "reason": "post_error"}
+
+
+def _resolve_default_resource_id(org_id: str) -> str:
+    """First active booking resource for the tenant (the slot we book against).
+    Returns "" if none / not configured. Never raises."""
+    try:
+        from db import engine as _eng  # type: ignore
+        with _eng.session(tenant_id=org_id, is_admin=False) as s:
+            from sqlalchemy import text as _sqltext  # type: ignore
+            row = s.execute(_sqltext(
+                "SELECT id FROM booking_resources WHERE org_id=:org "
+                "ORDER BY created_at ASC LIMIT 1"
+            ), {"org": org_id}).fetchone()
+            return str(row[0]) if row else ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("booking resource resolve failed org=%s err=%r", org_id, exc)
+        return ""
+
+
+def _do_booking(org_id: str, phone: str, *, when_text: str, name: str = "",
+                campaign_id: str = "", tz: str = "Asia/Kolkata") -> dict:
+    """Resolve a default resource + a spoken slot time, then atomically claim it via
+    booking.core.book (in-box RLS). Returns the core.book dict (ok/conflict/error)."""
+    if not org_id:
+        return {"ok": False, "reason": "no_tenant"}
+    rid = _resolve_default_resource_id(org_id)
+    if not rid:
+        return {"ok": False, "reason": "no_resource"}
+    try:
+        from datetime import datetime as _d2, timezone as _z2
+        from voice_ops.booking.datetime_resolve import resolve_slot_start  # type: ignore
+        slot = resolve_slot_start(when_text or "", now=_d2.now(_z2.utc), tz=tz)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slot resolve failed: %r", exc)
+        slot = None
+    if slot is None:
+        return {"ok": False, "reason": "bad_slot"}
+    try:
+        from booking import core as _bk  # type: ignore
+        return _bk.book(org_id, rid, phone, slot_start=slot.isoformat(), name=name,
+                        title="Appointment", source="voice", campaign_id=campaign_id,
+                        is_admin=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("booking.core.book failed: %r", exc)
+        return {"ok": False, "reason": "book_error"}
 
 
 async def entrypoint(ctx: agents.JobContext) -> None:
@@ -646,6 +859,18 @@ async def entrypoint(ctx: agents.JobContext) -> None:
         )
     else:
         instructions = base_instructions
+
+    # R5VF: when the HTTP booking tool is attached, tell the model it can book — and to
+    # ONLY book after the caller agrees a concrete day & time. Gated => when the tool is
+    # OFF this line is not added => instructions byte-identical to today.
+    if booking_http_tool_enabled():
+        instructions += (
+            "\n\n=== BOOKING (site visit) ===\n"
+            "तुम्हारे पास एक tool है `book_site_visit(when, notes)`। जब caller किसी concrete दिन-समय "
+            "पर site visit के लिए साफ़ राज़ी हो जाए (जैसे 'कल शाम पाँच बजे', 'tomorrow 5pm'), तभी यह "
+            "tool call करो — caller के बोले हुए time को 'when' में उसके अपने शब्दों में भेजो। पहले "
+            "खुद से booked मत कह देना; tool के नतीजे के बाद ही naturally confirm करो। अगर slot नहीं "
+            "मिला/busy है तो politely पास का दूसरा time offer कर के दोबारा book करो।")
 
     # --- P2: language mirror + closure state -------------------------------------
     agent_gender = _gender_of(fields)
@@ -1123,9 +1348,114 @@ async def entrypoint(ctx: agents.JobContext) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+    # A3: booking voice-tool — attached ONLY when booking_tool_enabled() (KERNEL_OUTBOUND=1
+    # AND BOOKING_TOOL_ENABLED=1). DEFAULT OFF => _MirrorAgent(instructions=...) is built with
+    # NO tools, byte-identical to today. ON => one extra @function_tool the LLM can call to book
+    # a real appointment in-process (RLS-scoped, no HTTP). Fully wrapped; never breaks the call.
+    _booking_tools: list = []
+    if booking_tool_enabled():
+        try:
+            _bk_tenant = _camp_tenant
+            _bk_phone = phone
+            _bk_name = lead_name
+            _bk_campaign = campaign_id
+
+            @_lk_function_tool
+            async def book_appointment(context: "_LkRunContext", when: str) -> str:  # noqa: F821
+                """Book the prospect's site-visit / meeting AFTER they verbally agree a day & time.
+                Only call this once the caller has clearly agreed to a specific slot.
+
+                Args:
+                    when: the slot the caller agreed, in their words (e.g. "kal sham 5 baje",
+                          "tomorrow 11am", "Friday evening") or an ISO datetime if known.
+                """
+                try:
+                    res = await asyncio.to_thread(
+                        _do_booking, _bk_tenant, _bk_phone, when_text=when,
+                        name=_bk_name, campaign_id=_bk_campaign,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("book_appointment tool error: %r", exc)
+                    return ("booking_failed: I couldn't lock that slot just now — tell the caller "
+                            "you'll confirm the appointment shortly; do NOT claim it is booked.")
+                if res and res.get("ok"):
+                    return ("booked=true: the appointment is confirmed. Warmly confirm the day & time "
+                            "back to the caller in their language.")
+                reason = str((res or {}).get("reason", "")) or "unknown"
+                if reason == "slot_taken":
+                    return ("slot_taken: that exact time is already booked — politely offer a nearby "
+                            "time and call book_appointment again with the new time.")
+                if reason in ("bad_slot",):
+                    return ("need_time: I didn't catch an exact day & time — ask the caller to confirm "
+                            "a specific day and time, then call book_appointment again.")
+                # no_resource / not_configured / errors -> never fake a booking
+                return ("booking_unavailable: do NOT tell the caller it is booked — say you'll confirm "
+                        "the appointment shortly and continue the conversation naturally.")
+
+            _booking_tools = [book_appointment]
+            logger.info("A3 booking tool ATTACHED (tenant=%s)", _bk_tenant)
+        except Exception as _bt_exc:  # noqa: BLE001 — tool wiring never breaks the earner
+            logger.warning("A3 booking tool wiring failed -> no tool: %r", _bt_exc)
+            _booking_tools = []
+
+    # R5VF: booking voice-tool over the caller.py HTTP contract — attaches on the LIVE
+    # P0 brain (KERNEL_OUTBOUND=0), where the in-process tool above cannot. Only when
+    # BOOKING_HTTP_ENABLED=1 (default OFF => byte-identical to today) AND no tool already
+    # attached. The LLM calls book_site_visit(when, notes) once the caller agrees a slot;
+    # it POSTs to 127.0.0.1:8209/booking/book and confirms naturally. Fully wrapped.
+    if not _booking_tools and booking_http_tool_enabled():
+        try:
+            _bkh_phone = phone
+            _bkh_name = lead_name
+            _bkh_campaign = meta.get("campaign_id", "") or ""
+
+            @_lk_function_tool
+            async def book_site_visit(context: "_LkRunContext", when: str,
+                                      notes: str = "") -> str:  # noqa: F821
+                """Book the prospect's site visit / meeting AFTER they verbally agree a day & time.
+                Only call this once the caller has clearly agreed to a specific slot.
+
+                Args:
+                    when: the slot the caller agreed, in their words (e.g. "kal sham 5 baje",
+                          "tomorrow 5pm", "Friday evening") or an ISO datetime if known.
+                    notes: any short context to attach (optional, e.g. "wants 3 BHK, self-use").
+                """
+                try:
+                    res = await asyncio.to_thread(
+                        _do_booking_http, _bkh_phone, when_text=when,
+                        lead_name=_bkh_name, campaign_id=_bkh_campaign, notes=notes,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("book_site_visit tool error: %r", exc)
+                    return ("booking_failed: I couldn't lock that slot just now — tell the caller "
+                            "you'll confirm the appointment shortly; do NOT claim it is booked.")
+                if res and res.get("ok"):
+                    return ("booked=true: the site visit is confirmed. Warmly confirm the day & time "
+                            "back to the caller in their language, in one short line.")
+                reason = str((res or {}).get("reason", "")) or "unknown"
+                if reason == "slot_taken":
+                    return ("slot_taken: that exact time is already booked — politely offer a nearby "
+                            "time and call book_site_visit again with the new time.")
+                if reason == "bad_slot":
+                    return ("need_time: I didn't catch an exact day & time — ask the caller to confirm "
+                            "a specific day and time, then call book_site_visit again.")
+                # no_phone / http_* / post_error -> never fake a booking
+                return ("booking_unavailable: do NOT tell the caller it is booked — say you'll confirm "
+                        "the appointment shortly and continue the conversation naturally.")
+
+            _booking_tools = [book_site_visit]
+            logger.info("R5VF http booking tool ATTACHED (phone=%s campaign=%s)",
+                        _bkh_phone, _bkh_campaign)
+        except Exception as _bth_exc:  # noqa: BLE001 — tool wiring never breaks the earner
+            logger.warning("R5VF http booking tool wiring failed -> no tool: %r", _bth_exc)
+            _booking_tools = []
+
     # P2: capture the running loop + agent so the sync conversation callback can hand
     # async work (language switch / closure) back to this event loop.
-    agent = _MirrorAgent(instructions=instructions)
+    agent = (
+        _MirrorAgent(instructions=instructions, tools=_booking_tools)
+        if _booking_tools else _MirrorAgent(instructions=instructions)
+    )
     ctl["agent"] = agent
     ctl["session"] = session
     try:

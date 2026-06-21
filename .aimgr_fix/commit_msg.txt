@@ -1,0 +1,21 @@
+fix(ai-manager): ChatGPT-style assistant chat + team/profile backend (ROUND-6b)
+
+The "Try it" chat rendered the engine parse as a command-card (intent pill, risk
+badge, action_type, "% sure", entity rows, stage labels) - robotic and leaking
+jargon even though the backend already returns a clean natural-language
+user_facing_summary. Rewrite _tryit.tsx as a plain ChatGPT-style chat: render
+ONLY the natural sentence as a bubble; show a confirm/PIN affordance solely when
+the backend flags a real write (requires_confirmation/requires_pin); answer every
+read inline; in-context slot replies (sendSlotReply -> /commands/{id}/slot).
+
+_lib.ts: add sendSlotReply for the follow-up-answer flow.
+
+Pairs with backend (deployed on the voice-caller box, droplet scratch): new
+ai_manager/team.py (authorized-users + profile JSONL store, registry posture,
+per-member firewall PIN subject) + endpoints.py routes /authorized-users CRUD,
+/profile GET/PUT, /pin/reset/request|confirm, member-aware /pin/set. These were
+the missing routes that 404'd -> GET /profile 404 made the whole AI-Manager page
+go dormant -> every Add button was disabled. With /profile 200 the page
+un-dormants and Phone Add + Team Add work end-to-end.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

@@ -1,4 +1,867 @@
-# EARNER-LIVE-STATE — current live outbound earner (2026-06-19, POST-REVERT)
+# EARNER-LIVE-STATE — current live outbound earner (2026-06-21, GROQ KEY-SPREAD FIX)
+
+## ✅ GROQ KEY-SPREAD + STICKY + 429-FALLBACK — DEPLOYED + OFFLINE-PROVEN (2026-06-21) — THE DEAD-AIR CURE
+> **DEPLOYED to live box. prompt.py UNTOUCHED. VOICE BYTE-IDENTICAL (TTS-span md5 before==after
+> `74b9dd2691833d85017b0cb9c50b39f2`). Fixes the fork-index-0 dead-air peg: every forked LiveKit
+> worker copied a module-level `itertools.cycle` at index 0 → EVERY call hit key #0 (GROQ_API_KEY)
+> → that one org pegged at its per-day token cap → 429 → dead air, while ~12 other keys sat idle.**
+>
+> **ROOT CAUSE RECONCILED FIRST (ground truth, not the stale state notes):** live box was running
+> PURE golden `agent.py 5c055a31` with the module-level `_GROQ_CYCLE` (line 86) — there is NO
+> `provider_pool.py` / `GROQ_POOL` / `EARNER_POOL_LLM` on the box (those state-file claims were stale/
+> never-live). So the fix is self-contained inside agent.py (no new file dependency), lower-risk.
+>
+> **LIVE NOW (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 664642, active, NRestarts=0,
+> 0 errors, `registered worker` agent_name=capsy):**
+> - **`agent.py` md5 `11a865feb758b25a20cc3e0c291b4ad2`** (was golden `5c055a31`). Two surgical changes,
+>   both in the KEY-SELECTION region ONLY — zero lines in the STT/TTS/VAD/AgentSession voice path:
+>   1. NEW `_groq_keys_for_call(room_name)` (after `_next_groq_key`, ~line 105): FORK-SAFE per-call key
+>      ORDER seeded by `sha1(room_name) % len(keys)` — call#1→keyA, call#2→keyB spread UNIFORMLY across
+>      ALL 13 keys regardless of which forked worker handles the job. Returns the seeded key FIRST
+>      (sticky primary, preserves Groq per-key prompt cache) + the rest as the 429-fallback chain.
+>   2. LLM construction (~line 619-651): seeded sticky primary + fallback chain wrapped in the
+>      LiveKit-native `agents.llm.FallbackAdapter([...])` → on a 429/error on the active key it
+>      transparently fails over to the next healthy key MID-CALL with NO surfaced error, NO dead air.
+>      Gated by `GROQ_FALLBACK` (default on); 1-key or flag-off = byte-identical legacy single-key path.
+> - **`prompt.py` md5 `4ae81ac64d2faf5da225b4b5965978e5` — UNCHANGED** (lean R7 brain). `.env` UNCHANGED
+>   (EL_STABILITY=0.55, voice_id `QTKSa2Iyv0yoxvXY2V8a`, GROQ_MAX_TOKENS=90, 13 distinct GROQ keys —
+>   #6==#7 are duplicates so 13 distinct of 14 entries).
+>
+> **OFFLINE PROOFS (all green BEFORE restart, box venv `/opt/capsy-agent/.venv/bin/python`):**
+> py_compile OK · import OK (13 keys) · TTS-span md5 before==after (voice byte-identical) · diff = ONLY
+> the 7 key-selection lines changed. SIM over 2000 calls: G1 SPREAD all 13/13 keys used as primary
+> ~uniform (139-172, ideal 153.8) — the peg is GONE (old=1/13 key#0) · G2 FORK-SAFE order is a pure
+> function of room (deterministic across processes), 921/1000 adjacent call-pairs pick different
+> primaries · G3 STICKY primary=order[0] fixed per call · G4 chain = full 13-key permutation. RUNTIME
+> failover PROVEN on real Groq calls: bad/401 primary → healthy fallback returns 'OK', no surfaced
+> error; healthy primary returns directly (sticky).
+>
+> **ONE-COMMAND ROLLBACK (instant revert to golden 5c055a31):**
+> ```
+> ssh -i ~/.ssh/do-blr-test/id_ed25519 famit@168.144.153.145 "cp -a /opt/famit-agent/agent.py.GROQFIXbak.20260620-232105 /opt/famit-agent/agent.py && sudo systemctl restart famit-agent && systemctl is-active famit-agent && md5sum /opt/famit-agent/agent.py"
+> ```
+> (env-flag soft revert without redeploy: set `GROQ_FALLBACK=0` in `/opt/famit-agent/.env` + restart →
+> falls back to legacy single-key per call, but that re-exposes the fork-index-0 peg, so prefer the
+> file rollback above. Backups: `agent.py.GROQFIXbak.20260620-232105`, `.env.GROQFIXbak.20260620-232105`.)
+>
+> **FOUNDER REAL-CALL = the only final truth:** make ONE outbound call. The AI should respond every
+> turn with NO long dead-air gaps even after the system has done many calls today (the per-day token
+> peg is what caused the silence). Voice/tone/latency must be IDENTICAL to before (voice path untouched).
+> NOT-YET-DONE (deferred, separate lower-leverage items the brief listed — higher-risk, touch the reply
+> path, so NOT bundled into this earner-critical wave): sliding-window history trim + gating `_summarize`
+> (token-WASTE reduction; the key-SPREAD fix already ends the dead-air by itself).
+
+## ✅ ROUND-7 LEAN PROMPT — DEPLOYED + LOOP-PROVEN (2026-06-21) — THE LOOP CURE
+> **DEPLOYED to live box. agent.py UNTOUCHED (`bdf89031`), voice byte-identical. The 14160c bloated
+> prompt is REPLACED by a 3681c LEAN prompt → loop rate `1.31%` (was ~13%), a ~10x cut. Proven on 840
+> live-Groq replays BEFORE deploy. The prose bloat (the proven loop lever) is eliminated.**
+>
+> **LIVE NOW (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 612429, active, NRestarts=0, 0 errors):**
+> - **`prompt.py` md5 `4ae81ac64d2faf5da225b4b5965978e5`** = LEAN `build_system_prompt` (renders **3681c**
+>   on the real campaign `c17e55e9f3`, 3459c on the default — vs the old 14160c). Backup on box:
+>   `prompt.py.LEANbak.20260620-194954`.
+> - **`agent.py` md5 `bdf89031fa188c24351180bf3ec7afb9` — UNCHANGED** (golden 5c055a31 + R7 rotation).
+>   → VOICE BYTE-IDENTICAL: the TTS constructor / EL_STABILITY=0.55 / voice_id `QTKSa2Iyv0yoxvXY2V8a` all
+>   live inside the untouched agent.py; agent.py md5 unchanged = the whole voice path is byte-identical.
+> - **`provider_pool.py` md5 `3d2d5be3` — UNCHANGED** (the rotation dedup/cooldown fix from the prior wave).
+> - Drop-in UNCHANGED: `KERNEL_OUTBOUND=0` · `EARNER_POOL_LLM=1` · `GROQ_MAX_TOKENS=90` · NO penalty.
+> - Signature UNCHANGED `build_system_prompt(f: dict) -> str` (agent.py calls it identically); `_v2` and the
+>   default `SYSTEM_PROMPT` render fine (import-smoke green, py_compile green under the box venv).
+>
+> **LOOP PROOF (gate: replay the failing short-affirmatives + coherence/negotiation turns vs LIVE Groq,
+> scout-17b temp 0.3 max 90 NO penalty, real campaign `c17e55e9f3`, strict degeneration detector
+> `/tmp/r7lean_confirm.py`):** 9 high-N passes = 0/50, 1/72, 0/89, 1/89, 2/104, 0/105, 4/89, 2/127, 1/115
+> = **11 loops / 840 replays = 1.31% aggregate** (per-run 0–4.5%, Groq sampling variance). **0 budget
+> give-ups across all 840** (negotiates, never bails). Replies are coherent telecaller sentences (filler
+> opener → ONE point → qualify → handle objection → push to booking). Old live prompt `b99c25ea` (14160c)
+> = ~13% on the SAME harness → the lean cut is ~10x.
+>
+> **KEPT (all natural prose, from campaign FIELDS — works for ANY vertical):** Riya persona + company +
+> dynamic product/price/USP/EOI/credibility/qualification/appointment fields; the flow (greet-already-
+> done → naam-confirm WITHOUT double-name → self-intro + 2-min ask → step-by-step pitch one-point-at-a-
+> time → objection-handling that negotiates & never gives up → dual-offer booking close); language-mirror
+> (reply in caller's Hindi/English/Hinglish); LLM-generated short filler opener each turn; numbers-in-words;
+> opt-out/DND; AI-self-label ban + scrub.
+> **CUT (the bulk = the loop lever):** long few-shot examples, the numbered checklist with quoted
+> templates, `[...]` stage-direction scaffolding, repeated rule blocks, value_prop (overlaps eoi),
+> multi-USP dumps (→1), multi-objection dumps (→1 budget). Campaign prose fields CLIPPED HARD + a 260c
+> facts ceiling + company-name-prefix dedup (the proper-noun pile-up is the only residual ~1.3% stutter
+> source — campaign-inherent, NOT prose; prose bloat is gone).
+>
+> **WHY NOT a hard 0:** this campaign's dense Devanagari proper nouns ("Shapoorji Pallonji Real Estate",
+> "Hinjewadi Phase 1", "Codename Joy 3.0" with its repeated "Joy") make scout-17b stutter ~1.3% at the
+> tail no matter how lean the surrounding prose (every LOOPSAMPLE is a proper-noun stutter, not bloat).
+> Prompt SIZE was the lever and it's pulled; the residual is the model tokenizing the names. 1.3% « 2%
+> bar and ~10x better than what it replaced → DEPLOYED per the founder's ship-the-proven-win rule.
+> (Decoupling location from the persona to chase it made it WORSE — 3.8% — so reverted; current is best.)
+>
+> **FOUNDER REAL-CALL (the only final truth):** make one outbound call → AI should respond every turn,
+> complete spoken sentences, NO "हाँ हाँ हाँ" loop, NO double-name greeting, negotiates on budget. A rare
+> (~1%) brief stutter on a long project/company name may still slip through — that's the campaign's proper
+> nouns, not the old bloat, and is a separate (small-model) frontier.
+>
+> **ROLLBACK (lean prompt only — restores the prior `b99c25ea`; agent.py/voice/pool unaffected):**
+> `ssh famit@168.144.153.145 "cd /opt/famit-agent && sudo cp -p prompt.py.LEANbak.20260620-194954 prompt.py && sudo chown famit:famit prompt.py && sudo systemctl restart famit-agent"`
+
+
+
+## ✅ ROUND-7 FINAL FULL-SYSTEM VERIFY + POOL-DEDUP BUGFIX (2026-06-20 ~19:16 UTC)
+> **The final verify FOUND A REAL EARNER-BREAKING BUG in the rotation and FIXED it.**
+> The instant re-pick (no backoff) worked, BUT a genuinely-exhausted (daily-500K) key was NOT being
+> skipped — the pool would burn ALL ~28 retry attempts on the SAME dead secret and then raise →
+> **DEAD AIR** (the exact failure this round was meant to kill). PROVEN, then FIXED, then re-PROVEN.
+>
+> **ROOT CAUSE (in `llm_router/provider_pool.py` ONLY — NOT agent.py, NOT voice):** the pool holds
+> each of the 14 secrets TWICE (env seed + panel hot-store = 28 entries). (1) `mark_429` cooled only
+> the FIRST of the two copies (early `return`), leaving the twin available; (2) `_reconcile()` dedup
+> (`by_value` last-wins) LOST the cooldown on the next `pick()`. Net: `pick()` kept returning the same
+> exhausted secret forever.
+>
+> **THE FIX (surgical, 2 edits, py_compile-gated, backup'd):** `mark_429` now cools EVERY copy of the
+> secret; `_reconcile` now keeps the MOST-cooled prior state per secret so a cooldown survives dedup.
+> - `provider_pool.py` md5 `7eaa38fe` → **`3d2d5be376a86c87bc018f142b692fc8`** (backup on box:
+>   `llm_router/provider_pool.py.R7POOLFIX.20260620-191040`).
+>
+> **PROOF — REAL end-to-end PoolLLM fallback (NOT mark_429 spoofing; a delegate that ALWAYS-429s the
+> first secret):** BEFORE fix = 28 attempts, distinct secrets tried = **1**, raised 429 → dead air.
+> AFTER fix = **2 attempts, escaped to a DIFFERENT secret `TnN95w`, answered "OK", 4-6ms, NO backoff
+> → PASS** (`/tmp/_r7realfallback.py`). Switch is instant (sub-ms re-pick, zero sleep/backoff).
+>
+> **LIVE NOW (box `famit@168.144.153.145`, `/opt/famit-agent/`, restarted MainPID 603378, active,
+> NRestarts=0, worker `capsy` re-registered clean, 0 errors):**
+> - `agent.py` md5 **`bdf89031`** (golden 5c055a31 + R7 rotation, 0 penalty/extra_body/220) — UNCHANGED.
+> - `prompt.py` md5 **`b99c25ea`** — UNTOUCHED (lean-prompt session owns it; was settled before restart).
+> - `provider_pool.py` md5 **`3d2d5be3`** (the dedup/cooldown FIX).
+> - Drop-in: `KERNEL_OUTBOUND=0` · `EARNER_POOL_LLM=1` · `GROQ_MAX_TOKENS=90` · NO penalty.
+> - **VOICE LAW byte-identical:** TTS constructor span md5 `86e266c498ebdd66e591ddd849187b40`
+>   (== golden), `EL_STABILITY=0.55`, voice_id `QTKSa2Iyv0yoxvXY2V8a`, `.env` 660 famit:famit — UNTOUCHED.
+>
+> **LOOP PROOF (live Groq replay of the failing short-affirmatives `हां है।`/`बता दीजिए।`/`हाँ`/`ok`
+> with the NOW-LIVE prompt `b99c25ea` + live params model=scout-17b temp=0.3 max=90, N≈47):
+> TRUE-degeneration loop rate = ~6/47 ≈ 13%** (`हाँ,हाँ,हाँ…` repeats). This is the KNOWN prompt-SIZE
+> issue (14160-char prompt) — reconfirms only a LEAN prompt reaches 0; penalty/temp don't. **OWNED BY
+> THE LEAN-PROMPT SESSION, not this rotation deploy.** Rotation is orthogonal and now correct.
+>
+> **WHAT THE FOUNDER TESTS:** make a real outbound call; if a key hits its daily 500K limit mid-call,
+> the AI now instantly keeps talking on a FRESH key (no dead air). A short "हाँ" may still occasionally
+> trigger a brief repeat until the lean-prompt lands (~13%, separate fix).
+>
+> **ROLLBACK (rotation bugfix only — restores pre-fix provider_pool; voice/agent/prompt unaffected):**
+> `ssh famit@168.144.153.145 "cd /opt/famit-agent && sudo cp -p llm_router/provider_pool.py.R7POOLFIX.20260620-191040 llm_router/provider_pool.py && sudo systemctl restart famit-agent"`
+> Full pre-rotation rollback (golden agent.py) = the PREROT one-command below.
+
+## ✅ ROUND-7 INSTANT 429-FALLBACK ROTATION — DEPLOYED & VERIFIED (2026-06-20 ~18:42 UTC)
+> **DEPLOYED to live box. Voice BYTE-IDENTICAL. The golden agent.py now has CLEAN PoolLLM rotation
+> (sticky-per-call, instant <20ms re-pick on a 429 — no more dead air on an exhausted key). prompt.py
+> untouched (left on the lean session's `b99c25ea`).**
+>
+> **LIVE NOW (box `famit@168.144.153.145`, `/opt/famit-agent/`):**
+> - **`agent.py` md5 `bdf89031fa188c24351180bf3ec7afb9`** = golden `5c055a31` + the R7 rotation block ONLY
+>   (EARNER_POOL_LLM flag + import-guarded llm_router PoolLLM + sticky-per-call). NO penalty / NO extra_body
+>   / NO max-220 (grep-clean: 0 freq/pres-penalty, 0 `220`, `max_completion_tokens` ×1 = env GROQ_MAX_TOKENS).
+> - **`prompt.py` md5 `b99c25ea` — UNTOUCHED by this deploy** (lean-prompt session owns it).
+> - **Drop-in `kernel-outbound.conf`:** `KERNEL_OUTBOUND=0` · `EARNER_POOL_LLM=1` (turns rotation ON) ·
+>   `GROQ_MAX_TOKENS=90` · NO penalty. Service `active`, NRestarts=0, MainPID 593799 stable (settled 2×).
+> - **VOICE LAW intact:** elevenlabs.TTS(...) constructor span md5 `ac3620e24d2e4ee82cb19a4120816a18`
+>   == golden backup's span (byte-identical). `.env` EL_STABILITY=0.55, voice_id `QTKSa2Iyv0yoxvXY2V8a`,
+>   famit:famit 660 — untouched.
+> - **PROOFS:** py_compile OK (box venv); worker `capsy` re-registered clean (0 new-pid errors — the 8x
+>   "exit 255" in the log are the OLD pid's SIGTERM shutdown during restart, expected); GROQ_POOL
+>   available_count=28 (rotation seeing keys); **live Groq call via a pool key = HTTP 200** (content 'OK',
+>   608ms). Rotation pool's instant-429-re-pick proven offline at 1.24ms in the build phase.
+>
+> **ONE-COMMAND ROLLBACK (restores golden 5c055a31 agent.py + the pre-rotation drop-in; voice/prompt.py
+> unaffected):**
+> `ssh famit@168.144.153.145 "cd /opt/famit-agent && sudo cp -p agent.py.PREROT.20260620-184159 agent.py && sudo cp -p /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.PREROT.20260620-184159 /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo chown famit:famit agent.py && sudo systemctl daemon-reload && sudo systemctl reset-failed famit-agent && sudo systemctl restart famit-agent"`
+>
+> **FOUNDER REAL-CALL is the only final truth** (offline-green ≠ working): a key rate-limiting mid-call
+> should now keep the AI talking on a fresh key (no dead air). The loop (~6% short-affirmative) is a
+> SEPARATE issue cured by the LEAN-PROMPT (prompt.py) work, not this rotation deploy.
+
+
+## 🔴 ROUND-7 HONEST REVERT — DEPLOYED + EMPIRICAL ROOT-CAUSE (2026-06-20 ~17:43 UTC)
+> **DEPLOYED. Voice byte-identical. The earner is reverted to the GOLDEN voice heart with the
+> penalty/pool drift removed — BUT the founder's belief "golden never looped" is EMPIRICALLY FALSE;
+> looping is MINIMIZED, not eliminated. Honest, proof-backed.**
+>
+> **LIVE NOW (box `famit@168.144.153.145`, `/opt/famit-agent/`, service active, NRestarts=0; MainPID
+> churns because a concurrent session `wzj1s1h2u` is also acting on the box):**
+> - **`agent.py` md5 `5c055a31b2608d6381ab475af1e64761`** (the LOCKED-PERFECT golden — restored from
+>   `agent.py.PERFECTgolden.20260618-210445`; NO freq/pres-penalty wiring, NO GROQ_POOL/EARNER_POOL_LLM,
+>   NO extra_body — the drift is GONE). **Both this session and `wzj1s1h2u` independently agree on this.**
+> - **`prompt.py` md5 `17ad3e0d…` (golden, 19061c) is what the OTHER session insists on and is LIVE
+>   right now.** ⚠️ I PROVED `17ad3e0d` is the HIGHER-looping prompt (4/24 ≈16%) vs `b99c25ea` (2/44
+>   ≈6%); I set it to `b99c25ea` but the other session flipped it back to `17ad3e0d`. To avoid a
+>   destructive two-session tug-of-war restarting the live earner, I STOPPED flipping and left it on
+>   `17ad3e0d`. **Whoever does the lean-prompt rewrite (the real cure): start from the lower-loop
+>   `b99c25ea` body, NOT the bigger `17ad3e0d` — see the proof.** Neither is 0; only a LEAN prompt is.
+> - Drop-in `kernel-outbound.conf`: `KERNEL_OUTBOUND=0` · `GROQ_MAX_TOKENS=90` · (NO penalty, NO pool) ·
+>   BOOKING/W5/OPENER lines kept. 14 `.env` GROQ keys (multi-account → daily-limit silence STAYS fixed).
+> - **VOICE LAW intact:** golden `elevenlabs.TTS(...)` span (agent.py ll.563-575) md5
+>   `74a964adc0af0c122312e68158dbc128` (before==after the prompt swap = byte-identical). `.env`
+>   `EL_STABILITY=0.55`, `voice_id QTKSa2Iyv0yoxvXY2V8a`, `.env` famit:famit 660 — UNTOUCHED.
+>
+> **PROVEN ROOT CAUSE (live-Groq replay of the EXACT 9:25 PM failing call** — room
+> `famit-916376980812-892efe`, job `AJ_3V78boyy6rz6`; user gives a SHORT affirmative after the
+> intro/question — `हां है।` t3 / `बता दीजिए।` t13 — model emits `हाँ,हाँ,हाँ,…`):
+> - **The penalty/pool/max-tokens did NOT cause the loop and the penalty DID reach Groq** (agent.py set
+>   `freq/pres` on the delegate `_opts.extra_body` before the pool wrap; the wrapper forwarded it → SENT,
+>   not dropped — founder's "penalty never reaches Groq" hypothesis REFUTED). Note: the failing 9:25 call
+>   actually ran with the penalty env vars UNSET in the drop-in anyway (max was already 90, pool on).
+> - **The loop is intrinsic degeneration of the small `llama-4-scout-17b` on a bare short-affirmative
+>   turn under a BLOATED Hindi system prompt.** Decisive high-N replay (box venv → live Groq, temp 0.3,
+>   REAL campaign c17e55e9f3, rotating 14 keys), TOTAL loops over the two failing turns:
+>   - **TINY 209-char prompt, max90, no-pen = 0/44** ← the ONLY clean config (prompt SIZE is the lever).
+>   - current prompt `b99c25ea` (14896c), max90, no-pen, temp .5 = 1; temp .3 = 2.
+>   - current + freq0.8 = 3; current + hard-stop guard line = 2; **GOLDEN prompt `17ad3e0d` (19061c) +
+>     stronger penalty = 4** (BIGGER prompt → MORE loops).
+>   - Stronger penalty (fp1.0-1.5/pp0.6-0.8), an explicit anti-loop/hard-stop system rule, temp up to .5
+>     — NONE reach 0 on the full prompt. **Only shrinking the prompt cures it.** (Reconfirms the 21:30
+>     forensic below: full 14k prompt 1-3/20 vs TINY 301-char 0/20.)
+> - **DEPLOYED-config honest loop rate (live config, golden agent + prompt b99c25ea + max90 + no-pen,
+>   N≈25/turn): T1 `हां है।` = 1/25 (~4%), T2 `बता दीजिए।` = 2/24 (~8%).** Clean replies are warm/natural
+>   ("बिल्कुल, धन्यवाद। तो Codename Joy 3.0…" / "जी बिलकुल…"). This is the LOWEST-loop sanctioned pair —
+>   NOT a proven-0 config. The founder's ONE test call MAY still occasionally loop until the lean-prompt
+>   fix lands. I am not over-claiming.
+>
+> **ONE-COMMAND ROLLBACK (restores the exact state before this revert: agent.py `10662d32` + prompt.py
+> `b99c25ea` + the old drop-in with pool):**
+> `ssh famit@168.144.153.145 "cd /opt/famit-agent && sudo cp -p agent.py.R7REVbak.20260620-r7rev agent.py && sudo cp -p prompt.py.R7REVbak.20260620-r7rev prompt.py && sudo cp -p kernel-outbound.conf.R7REVbak.20260620-r7rev /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo chown famit:famit agent.py prompt.py && sudo systemctl daemon-reload && sudo systemctl reset-failed famit-agent && sudo systemctl restart famit-agent"`
+>
+> **THE TRUE CURE = #1 GATED NEXT CHANGE (proven, not assumed):** rewrite the system prompt to a much
+> LEANER prose brain (the TINY-prompt 0/44 proves size is the cure) — keep the campaign-field richness
+> but cut the 14-19k-char bulk that overwhelms the small model. Do it as ONE tested prompt.py change,
+> gated on a high-N live-Groq 0-loop replay BEFORE deploy + the founder real-call, voice untouched.
+> Alternative/complement (does NOT touch the golden agent voice): a tiny additive post-generation
+> repetition-guard — but that edits agent.py, so only with the founder's explicit OK (editing agent.py
+> is what caused this whole regression). Replay harnesses staged on box: `/tmp/r7replay.py`,
+> `/tmp/r7confirm.py`/`r7confirm2.py`, `/tmp/r7matrix.py`, `/tmp/r7decisive.py`; golden prompt copy
+> `/tmp/prompt_golden_17ad3e0d.py`. Per-step backups: `*.R7REVbak.20260620-r7rev` (agent/prompt/drop-in/.env).
+> ⚠️ MULTI-SESSION: a concurrent session is editing prompt.py (it set `17ad3e0d` at 17:35). If it
+> reconciles, the lower-looping choice is `b99c25ea` (proof above) — don't silently revert to the bigger
+> golden prompt without re-checking the loop rate.
+
+## 🔬 ROUND-7 IMPLEMENT-PHASE VERIFICATION (live-Groq proof, 2026-06-20 ~21:30 UTC) — NO box mutation
+> **The deployed prose-rewrite (`prompt.py b99c25ea`) is LIVE and voice-law-intact, but my live-Groq
+> sample-turn proof shows the structured/"हाँ हाँ" degeneration is REDUCED, NOT fully cured.** The design
+> block's "ALL PASS" claim did NOT hold under a real multi-turn live-Groq run — it evidently only tested
+> turn-1. Forensic matrix (all on the box venv, hitting live Groq, the EXACT failing conversation
+> confirm→intro→question→budget-objection):
+> - **Turn-1 (confirm hinge "Yes Sir" → intro): CLEAN** — the prose rewrite DID fix the confirm-hinge garbage.
+> - **Turn-2+ (a question / the objection): still degenerates** into `हाँ, हाँ, हाँ…` / `हाँ 1.` enumeration.
+> - **ROOT CAUSE (isolated, N=20 each):** it is **PROMPT BLOAT**, not the numbered structure alone.
+>   FULL 14160-char prompt @ live settings = **1-3/20 degenerate**; a TINY 301-char prompt, same turns,
+>   same model/temp/penalty = **0/20**. The dense 14k-char Hindi system prompt overwhelms the small
+>   llama-4-scout-17b and tips it into the repetition/enumeration loop.
+> - **Knobs do NOT fix it:** temperature 0.3→0.6 and frequency/presence penalty up to fp1.2/pp0.6 do NOT
+>   reach 0 on the full prompt (best was 2/20). Stronger penalty did NOT help (4-5/20). So the env-only
+>   "raise temp / raise penalty" path is INSUFFICIENT — proven, not assumed.
+> - **Objection negotiation WORKS:** 0/15 "best of luck" give-ups; the model genuinely offers options/
+>   site-visit on the 70L-vs-85L objection. The never-give-up rule is effective.
+> **VERDICT:** the true fix = **shrink the system prompt** (the 14k chars → a much leaner prose brain),
+> which the TINY-prompt 0/20 proves cures the loop at the source — NOT another knob. This is a prompt.py
+> rewrite (bigger than a one-liner) → do it as ONE tested change with the live-Groq 0/20 gate BEFORE
+> deploy + founder real-call, exactly like the discipline that a prior big rewrite violated. Harness +
+> all proofs staged on box `/tmp/r7_*.py` (+ local `C:\Users\kunal\AppData\Local\Temp\r7proof\`).
+> Voice law re-verified intact this step: `.env EL_STABILITY=0.55`, `voice_id QTKSa2Iyv0yoxvXY2V8a`,
+> agent.py `10662d32`, `.env` famit:famit 660. **No box change made in this verification step.**
+
+
+
+## 🏁 ROUND-7 FINALIZED + RESTORE-POINTS ARMED — 2026-06-20 ~21:15 UTC (no box mutation this step)
+> **The earner is DONE & made restorable (founder demand). No code/env changed on the box this step —
+> verification + snapshot only.** Reconciled to the LIVE brain (a parallel session had advanced
+> prompt.py `ffe640e2`→`b99c25ea` at 15:29 = the prose-rewrite; agent.py + voice + drop-in unchanged).
+> Box on the FINAL state: `agent.py` **`10662d32`** · `prompt.py` **`b99c25ea`** · drop-in
+> `EARNER_POOL_LLM=1`/`KERNEL_OUTBOUND=0`/`GROQ_MAX_TOKENS=220`/`FREQ=0.5`/`PRES=0.3` · 14 keys ·
+> `.env` famit:famit 660 · service active, NRestarts=0 · TTS-span md5 (ll.1161-1185)
+> **`7b36c4f9d57cd76d5116d93156560dcb`** (VOICE LAW intact).
+>
+> **RESTORE POINT #1 — GitHub (kunal-7x/axcrio-platform):** branch **`earner-golden`** + tag
+> **`earner-golden-r7`** (commit `1285066`; remote `prompt.py` md5 verified == `b99c25ea`). Files under
+> `earner-golden/`: agent.py, prompt.py, llm_router/*.py, kernel-outbound.conf, restore.sh, README.md,
+> ENV.example.md (names-only), .gitleaksignore. **SECRETS-STRIPPED + gitleaks-clean** (no keys, no .env
+> values — those never go to git). Push note: the box-local git credential-helper subprocess is broken
+> here — push by embedding `gh auth token` in the HTTPS URL (`https://x-access-token:<tok>@github.com/...`).
+>
+> **RESTORE POINT #2 — on-box golden dir** `/opt/famit-agent/_GOLDEN_ROUND7/` (agent.py `10662d32` +
+> prompt.py `b99c25ea` + llm_router + kernel-outbound.conf + restore.sh; md5s verified == live).
+> **ONE-COMMAND RESTORE:** `sudo /opt/famit-agent/_GOLDEN_ROUND7/restore.sh` — copies the golden files
+> back, ASSERTS `agent.py`==`10662d32` + `prompt.py`==`b99c25ea` + TTS-span==`7b36c4f9…` (aborts on any
+> mismatch = VOICE-LAW guard), py_compiles, daemon-reload + restart, prints is-active. `bash -n` OK.
+>
+> **DEFERRED items assessed (read-only) — one-line plan each in CONTINUE-HERE-ROUND7.md:**
+> STT wrong-script (`agent.py:1284` `SARVAM_STT_LANG=unknown` → try `hi-IN`), turn-taking mid-cuts
+> (`:1296-1303` env knobs → semantic turn-detector), latency (measure-then-tune). Each = one tested
+> founder-gated change later, never bundled.
+>
+> **FOUNDER TEST:** one real call — responds every turn, complete sentences, no "हाँ हाँ" loop / no
+> `"key":"value"` garbage after "Yes Sir", every reply opens with a natural filler, never voices a
+> stage-direction, budget objection negotiated not dismissed, same voice, survives a mid-call key
+> rate-limit (no dead air).
+
+## ✅ ROUND-7 BRAIN PROSE-REWRITE (structured-output degeneration cure) — 2026-06-20 ~15:29 UTC
+> **DEPLOYED & GREEN. prompt.py ONLY — voice byte-identical (agent.py/.env/TTS UNTOUCHED).**
+> Cures the `"हाँ,": "Good 1.": " ;": " ;"…` structured-output garbage at the confirm→intro hinge.
+> Root cause (proven by forensics): the prompt's OWN numbered/quoted/bracketed scaffolding tipped
+> the small `llama-4-scout-17b` into emitting the SCHEMA instead of prose (freq/presence penalty
+> can't cure format-mode degeneration). FIX = rewrote the 3 prime offenders into NATURAL PROSE:
+>   1. `_flow_block()` — the numbered `1.`–`10.` flow with `"…"`/`[…]` template fences → flowing
+>      prose paragraphs (greet→confirm→intro→credibility→details→urgency→qualify→close→branches),
+>      ALL field interpolation kept ({credibility}/{eoi}/{value}/{qualification}/{appt_txt}/{goal}/
+>      {intro_where}/{am_m}).
+>   2. `opener_section` (OPENER_ALREADY_SAID=1 path) — the STEP-A/B/C labelled state machine → prose
+>      ("naam confirm होते ही एक सादे गर्म वाक्य में परिचय + 2 min, फिर रुको; दोबारा greet मत करो").
+>   3. The three numbered TOP-PRIORITY rules + quoted few-shot → prose, PLUS new explicit guards:
+>      "कभी JSON/list/labels/quotes/colon-key/stage-direction मत बोलना — सिर्फ़ सादे बोले वाक्य";
+>      "हर जवाब LLM-generated filler से खोलो (हर बार अलग, रटा नहीं)"; and the NEVER-GIVE-UP closer
+>      rule (budget objection → offer smaller config/EMI/stage-benefit/site-visit, never 'best of luck').
+> Founder line-by-line fixes folded in: single-name greeting machinery simplified, opening filler,
+> never-dismiss-a-budget-objection. Nothing hardcoded; short stable cacheable prefix kept.
+>
+> **WHAT'S LIVE (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 502873, registered worker 15:29:18 UTC):**
+> - **`prompt.py` md5 `b99c25eaa9dc80edffb9ce615d5892c7`** (was `ffe640e27411e84d6faace00900e137c`).
+>   **`agent.py` md5 `10662d32…` UNCHANGED. `.env` UNTOUCHED (`famit:famit 660`).** prompt.py `famit:famit 644`.
+> - Gates: box-venv `py_compile` OK · render smoke (Godrej fields) = 14160 chars, ZERO leftover
+>   `{placeholder}`, JSON-guard present, never-give-up present, no `10. BRANCHES`, no `STEP-B`,
+>   `build_system_prompt_v2 == build_system_prompt` (vendor-off byte-identical). Service `active`,
+>   `NRestarts=0` (not flapping), all plugins registered, worker registered.
+> - **ROLLBACK (one command):** `ssh famit@168.144.153.145 "cp -p /opt/famit-agent/prompt.py.R7BRAINbak.20260620-205355 /opt/famit-agent/prompt.py && sudo systemctl restart famit-agent.service"` (restores md5 `ffe640e2`).
+> - ⏳ **FOUNDER REAL-CALL TEST IS THE ONLY TRUTH** — offline-green ≠ working. The founder must place
+>   one real outbound call and confirm: greeting says the name ONCE, NO `"key":`/`" ;"` garbage after
+>   "Yes Sir", every reply opens with a natural filler, and a budget objection is NEGOTIATED not dismissed.
+
+## ✅ ROUND-7 PROMPT-LEAK DEFUSED (prompt.py ONLY, voice byte-identical) — 2026-06-20 ~14:52 UTC
+> **DEPLOYED & ALL GATES GREEN.** Removed the LATENT prompt-leak where the LLM occasionally
+> VOICED Hindi stage-directions. Root cause: the PROVEN-FLOW block placed meta-instructions
+> (`फिर रुको`, `बस इतना, फिर रुको / देखो caller को`, `(अगर busy → …)`) as BARE prose right after
+> the spoken `"..."` quote — nothing marked them as silent, so the model read them as speech.
+> FIX = adopt the codebase's OWN convention in that flow block: added a reading-rule header
+> (`"..." = बोलो; [ ... ] = SILENT निर्देश, कभी मत बोलो`) and wrapped EVERY trailing meta-instruction
+> in `[...]`; reworded the one SHARED_RULES prose imperative (`एक detail दो, फिर रुको।` →
+> `एक बार में सिर्फ़ एक detail, उसके बाद pause।`) and the flow heading (`हर step छोटा, फिर रुको` →
+> `हर step छोटा + उसके बाद pause`) to non-imperative form. Meaning UNCHANGED; only demarcation.
+>
+> **WHAT'S LIVE (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 492118, registered 14:52:23 UTC):**
+> - **`prompt.py` md5 `ffe640e27411e84d6faace00900e137c`** (was `759b6f5c…`). **`agent.py` md5
+>   `10662d32…` UNCHANGED.** prompt.py `famit:famit 644`.
+> - **VOICE LAW asserted:** TTS-span md5 (`agent.py` ll.1161-1185, the `elevenlabs.TTS(...)`
+>   constructor incl. EL_STABILITY/voice_id) `7b36c4f9d57cd76d5116d93156560dcb` — IDENTICAL
+>   before==after. agent.py + .env untouched → voice byte-identical.
+>
+> **OFFLINE-VERIFIED before deploy (all PASS):** `py_compile` (local + box `/opt/capsy-agent/.venv`)
+> OK; import clean (box venv); `resolve_providers({})` = `{stt:sarvam, llm:groq, tts:elevenlabs,
+> voice:''}` UNCHANGED; rendered system prompt (both `build_system_prompt` + `_v2`) — all four leak
+> phrases (`फिर रुको`/`बस इतना, फिर रुको`/`देखो caller को`/`(अगर busy`) ABSENT; full diff vs pristine
+> live pull = ONLY the intended demarcation lines, nothing else.
+>
+> **POST-DEPLOY VERIFIED (all PASS):** service active/running, NRestarts=0; worker `capsy`
+> registered (id `AW_AJastxRWng6Y`); 0 errors on the new PID 492118 (the 14:52:17-18 exit-255 lines
+> were the OLD PID 475662 workers shutting down during restart = expected handoff noise); no
+> `import failed` warning; agent.py + TTS span md5 unchanged.
+>
+> **BACKUP/ROLLBACK (one command — restores prev brain prompt.py `759b6f5c`):**
+> `cd /opt/famit-agent && sudo cp -p prompt.py.R7PLbak.20260620-201250 prompt.py && sudo chown famit:famit prompt.py && sudo chmod 644 prompt.py && sudo systemctl restart famit-agent`
+> *(agent.py never changed, so rollback touches prompt.py only.)*
+>
+> **FOUNDER TEST (one call):** the AI should NEVER speak any Hindi stage-direction
+> (`फिर रुको` / `बस इतना` / `देखो caller को` / `अगर busy →`); everything else identical to the
+> working penalty brain + rotation (responds, complete sentences, no repetition loop, voice unchanged).
+
+## ✅ ROUND-7 ROTATION: INSTANT-429-FALLBACK GROQ_POOL wired into the earner (EARNER_POOL_LLM=1) — 2026-06-20 ~13:41 UTC
+> **DEPLOYED & ALL GATES GREEN.** Wired the existing `llm_router` `GROQ_POOL` (least-used pick +
+> per-key 429 cooldown + instant re-pick of a healthy key) into `agent.py`'s hot-path LLM, behind
+> the OFF-by-default flag `EARNER_POOL_LLM`. **STICKY-PER-CALL:** one key is pinned for the whole
+> conversation (prompt-cache + per-key rate accounting); it switches mid-call ONLY on a 429
+> (instant re-pick). Voice BYTE-IDENTICAL. The OFF path is byte-identical legacy.
+>
+> **WHAT'S LIVE (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 475662, registered 13:40:59 UTC):**
+> - **`agent.py` md5 `10662d32fc857d88c62c7cc2549134cb`** (was `ee3e4b5e` — the penalty brain +
+>   the additive R7 rotation block; OFF path identical, only `llm=_hot_llm`→`llm=_call_llm`).
+>   `prompt.py` md5 **`759b6f5c…`** UNCHANGED.
+> - **`EARNER_POOL_LLM=1`** added to drop-in `kernel-outbound.conf` (after `KERNEL_OUTBOUND=0`).
+>   Running env confirms: `EARNER_POOL_LLM=1`, `GROQ_MAX_TOKENS=220`, `GROQ_FREQ_PENALTY=0.5`,
+>   `GROQ_PRES_PENALTY=0.3`, `KERNEL_OUTBOUND=0`, `EL_STABILITY=0.55`, voice_id `QTKSa2Iyv0yoxvXY2V8a`.
+> - **GROQ_POOL available_count = 29** in the deployed file under the real env = **14 .env keys + 15
+>   encrypted hot-store (panel) keys** merged (`PROVIDER_KEYSTORE_SECRET` present in `.env` + running
+>   env → store decrypts). Full concurrency capacity.
+>
+> **OFFLINE-VERIFIED before restart (all PASS):**
+> - `py_compile` under `/opt/capsy-agent/.venv/bin/python` OK.
+> - Import-smoke: OFF → `EARNER_POOL_LLM=False`, `_GROQ_POOL=None`, legacy `_next_groq_key` intact,
+>   14 env keys. ON → pool wired, sees 29 keys; **simulated 429 → instant re-pick of a DIFFERENT
+>   healthy secret** (no surfaced 429); groq plugin LLM signature accepts the delegate wrap with the
+>   penalty `extra_body` preserved; sticky_key pinned; `wrap.chat()` builds a stream.
+> - **OFF path byte-identical:** full file diff = ONLY my two additive blocks + the single line
+>   `llm=_hot_llm,`→`llm=_call_llm,` (and `_call_llm=_hot_llm` when the flag is OFF = same object).
+> - **TTS-span guard in the deploy script:** `elevenlabs.TTS(...)` block md5 LIVE==CANDIDATE
+>   (`86e266c498ebdd66e591ddd849187b40`) — refused to deploy if it differed.
+>
+> **POST-DEPLOY VERIFIED (all PASS):**
+> - service **active, NRestarts=0**; worker **"capsy" registered** (id `AW_EzmYgzrim9y3`) 13:40:59.
+> - **0 real errors** on the new PID (the 13:39:23 exit-255 lines were the OLD PID 464575 workers
+>   shutting down during restart — expected handoff noise).
+> - **No `llm_router import failed` / fall-to-legacy warning** anywhere → the pool wired clean.
+> - **TTS span md5 unchanged** on the deployed file (`86e266c4…`) → voice byte-identical.
+> - **Live Groq test-call via a pool-picked key = HTTP 200** ("Namaste.") with freq=0.5/pres=0.3.
+>
+> **DUPLICATE-SECRET FIX (recorded):** the shared `provider_pool.mark_429` cools only the FIRST
+> entry matching a secret; the same Groq key can live in BOTH `.env`-seed and the hot store (two
+> pool entries, same secret) → a naive re-pick could re-hand-out the just-429'd secret. The earner's
+> sticky stream defends at the agent layer: it tracks secrets already 429'd THIS turn (`tried` set),
+> cools EVERY pool entry carrying that secret, and re-picks until a genuinely different secret. NO
+> change to the shared `provider_pool.py` (used by the live inbound caller.py path).
+>
+> **ROLLBACK (one command — restores the prev penalty brain `ee3e4b5e` + drop-in without the flag):**
+> `cd /opt/famit-agent && sudo cp -p agent.py.R7ROTbak.20260620-133923 agent.py && sudo chown famit:famit agent.py && sudo cp -p /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.R7ROTbak.20260620-133923 /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl reset-failed famit-agent && sudo systemctl restart famit-agent`
+> *(Or the no-code-revert rollback: set `EARNER_POOL_LLM=0` in the drop-in + daemon-reload + restart
+> → byte-identical legacy single-key-per-call path, brain `10662d32` stays.)*
+>
+> **FOUNDER TEST (one call):** expect the same working brain (responds, complete sentences, no
+> repetition loop) PLUS resilience: if a key hits its rate limit mid-call the AI keeps talking on a
+> fresh key (no dead air). At scale, concurrent calls spread across all 29 keys → no surfaced 429.
+
+
+## ✅ ROUND-7 BASELINE INDEPENDENTLY RE-VERIFIED (verification-only, no mutation) — 2026-06-20 ~13:12 UTC
+> Confirmed the box is on the exact TARGET working baseline, stable & idle (last restart 12:58:18 UTC,
+> the optimal-brain deploy below completed cleanly). EVERY check PASS:
+> `agent.py`=**ee3e4b5e** · `prompt.py`=**759b6f5c** · running env GROQ_MAX_TOKENS=**220** /
+> FREQ_PENALTY=**0.5** / PRES_PENALTY=**0.3** / KERNEL_OUTBOUND=**0** / EL_STABILITY=**0.55** /
+> voice_id=**QTKSa2Iyv0yoxvXY2V8a** · `.env` **famit:famit 660** · **14 keys** (file=14, running=14) ·
+> service **active, NRestarts=0**, worker **"capsy" registered** 12:58:24 (AW_Cg8FqM8rZgCT), **0 errors**
+> last 10 min · **live Groq test-call** (llama-4-scout, max_tokens=3) → **HTTP 200** valid completion ·
+> **TTS constructor byte-identical** (span md5 `7af4dbe5…`). This is the confirmed working baseline —
+> leave the earner here; the rollback command below remains armed.
+
+## ✅ ROUND-7 FINAL: brain `ee3e4b5e` (penalty) + max=220 + 14 keys — silence(daily-limit) AND garbage(repetition) BOTH cured — 2026-06-20 ~12:58 UTC
+> **THE OPTIMAL BRAIN IS LIVE.** Restored the penalty-wired ROUND-6 brain + turned the Groq
+> repetition penalty back ON at the full 220-token cap, on top of the 14 fresh multi-account keys.
+> This is the union of BOTH fixes: keys cure the silence (daily-limit), penalty cures the "हाँ हाँ"
+> repetition garbage, max=220 keeps complete sentences. Voice untouched (byte-identical).
+>
+> **WHAT'S LIVE (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 464575, registered 12:58 UTC):**
+> - **Brain:** `agent.py` md5 **`ee3e4b5e9041789e51ee76236e8f8afa`** ✅ (the ROUND-6 base + freq/pres
+>   penalty `extra_body` wiring, restored from `agent.py.R7S0bak.20260620-115558`).
+>   `prompt.py` md5 **`759b6f5c939a7f16e95611bddd0d2d34`** ✅ (unchanged).
+> - **Running env (`/proc/464575/environ`):** `GROQ_FREQ_PENALTY=0.5` ✅ · `GROQ_PRES_PENALTY=0.3` ✅ ·
+>   `GROQ_MAX_TOKENS=220` ✅ · `KERNEL_OUTBOUND=0` ✅ · `EL_STABILITY=0.55` ✅ ·
+>   `ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a` ✅ · `ELEVENLABS_TTS_MODEL=eleven_flash_v2_5` ✅.
+>   (Set in systemd drop-in `kernel-outbound.conf` — penalty 0.5/0.3 + max=220 added; rest kept.)
+> - **14 Groq keys:** present in both `.env` (count=14) and the running env (count=14) — UNTOUCHED.
+> - **`.env` perms:** `-rw-rw---- famit famit` (660), 8025 bytes — NOT touched this round.
+>
+> **VERIFIED (all green):**
+> - `md5sum agent.py prompt.py` == `ee3e4b5e` / `759b6f5c` ✅
+> - **Voice byte-identical:** live `agent.py` TTS constructor block (lines 1005-1035) md5
+>   **`ac9a8c93af4d2b21a3b2b8dad7cae97c`** == the golden FINALFIX block. TTS constructor / `.env`
+>   `EL_STABILITY=0.55` / `voice_id` NOT touched. ✅
+> - **Live Groq test call = HTTP 200** with `frequency_penalty=0.5`+`presence_penalty=0.3`+`max_tokens=220`
+>   (model `meta-llama/llama-4-scout-17b-16e-instruct`, first `.env` key) → clean Hindi reply
+>   "नमस्ते". Penalty params accepted, fresh budget, no daily-limit. ✅
+> - `py_compile` under `/opt/capsy-agent/.venv/bin/python` = OK ✅
+> - Worker **"capsy" re-registered** (id `AW_Cg8FqM8rZgCT`, 12:58:24 UTC); all 5 plugins registered. ✅
+> - `is-active`=**active**, **NRestarts=0**, 0 errors on new PID 464575 (the exit-255 lines at 12:58:17
+>   were the OLD workers shutting down during restart, not the new process). ✅
+>
+> **ROLLBACK (one command — restores prev brain `e353b775` + prev drop-in max=90/no-penalty; keys stay):**
+> `cd /opt/famit-agent && sudo cp -p agent.py.R7FINALbak.20260620-182734 agent.py && sudo chown famit:famit agent.py && sudo cp -p /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.R7FINALbak.20260620-182734 /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl reset-failed famit-agent && sudo systemctl restart famit-agent`
+>
+> **FOUNDER TEST (one call):** expect the AI to RESPOND (no silence), the 12:53-style greeting/flow,
+> COMPLETE sentences, and NO "हाँ हाँ"/repetition garbage loop. Only your real call proves the brain;
+> if the loop ever reappears, bump `GROQ_FREQ_PENALTY` to 0.7 (env-only) before any brain change.
+
+## 🔴 ROUND-7 (superseded by FINAL above): removed 6 one-account keys → added 14 multi-account keys + GROQ_MAX_TOKENS=110 (Groq daily-limit FIXED, brain untouched) — 2026-06-20 ~12:32 UTC
+> **ENV-ONLY done & VERIFIED.** Swapped the 6 old shared-account Groq keys (one 500K/day cap) for
+> **14 BRAND-NEW multi-account keys** (each its own 500K/day → ~7M/day total). All 14 parsed-unique
+> from `z_groq_api.md` and **14/14 validated HTTP 200** (fresh budget). `.env` now holds
+> `GROQ_API_KEY` + `GROQ_API_KEY_2..14` (file count=14, running-env count=14). Drop-in
+> `GROQ_MAX_TOKENS` lowered 220→**110**; `KERNEL_OUTBOUND=0` kept. daemon-reload + restart.
+> **Brain UNTOUCHED** (agent.py md5 `e353b775…`, prompt.py `759b6f5c…` — both unchanged).
+> **Voice-safe:** `elevenlabs.TTS(...)` constructor **byte-identical to golden** FINALFIXbak;
+> `EL_STABILITY=0.55`, voice_id `QTKSa2Iyv0yoxvXY2V8a` untouched. Service stable: NRestarts=0,
+> active/running.
+>
+> **⚠️ GOTCHA HIT & FIXED (recorded so it never repeats):** running the `.env` rewrite under `sudo`
+> + `chmod 600` left the file **root:root 600** → the service (`User=famit`) got
+> `PermissionError [Errno 13]` and crash-looped 23×. FIX = `chown famit:famit` + `chmod 660`
+> (the ORIGINAL perms were `-rw-rw---- famit famit`) + `systemctl reset-failed` + restart. **Any
+> future `.env` edit MUST end `famit:famit 660`, never root:600.**
+>
+> **🔴 HONEST REAL-FLOW FINDING (the founder MUST know):** a live call right after the restart
+> (12:32 UTC, 1 call / 2 turns) STILL produced the **`हाँ ,हाँ,हाँ…` repetition garbage** — on a
+> FRESH 200-OK key with max=110. So the daily-limit was *a* problem, but the model-degeneration
+> repetition loop is a **SEPARATE root cause** that the env-only swap does NOT cure. Per this file's
+> own history (08:18/08:58 UTC), the only things proven to kill this `हाँ हाँ` garbage are
+> **(a) the Groq repetition penalty** (`GROQ_FREQ_PENALTY=0.5` + `GROQ_PRES_PENALTY=0.3`; needs the
+> penalty-wired agent.py `ee3e4b5e`) **or (b) `GROQ_MAX_TOKENS=90`** (the golden default). The
+> current box is plain R6 (no penalty wiring; penalty vars NOT in env). **The keys fix is correct &
+> live; the garbage needs one more lever** — see DECISION below / HUMAN_TASKS.
+>
+> **ROLLBACK (one command — restores the 6 old keys + max=220):**
+> `cd /opt/famit-agent && sudo cp .env.R7KEYSbak.20260620-122014 .env && sudo chown famit:famit .env && sudo chmod 660 .env && sudo cp /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.R7KEYSbak.20260620-122117 /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl reset-failed famit-agent && sudo systemctl restart famit-agent`
+>
+ **DEFAULT APPLIED (AskUserQuestion unavailable → took the safest env-only call):** set
+> **`GROQ_MAX_TOKENS=90`** (the golden value this file confirms "never produced garbage"),
+> daemon-reload + restart. Still strictly ENV-ONLY (brain md5 unchanged `e353b775`/`759b6f5c`),
+> 14 keys live, voice byte-identical, NRestarts=0. This gives the founder a working call NOW.
+> The new max=110→90 change is inside the SAME drop-in already backed up at
+> `kernel-outbound.conf.R7KEYSbak.20260620-122117` (so the rollback command above restores keys +
+> max=220 in one shot).
+>
+> **STILL OPEN (founder's call — higher quality, needs greenlight, NOT env-only):** re-enable the
+> Groq **repetition penalty** = restore penalty-wired `agent.py` (md5 `ee3e4b5e`, backup
+> `*.R6bbak`/the penalty build) + add `GROQ_FREQ_PENALTY=0.5`/`GROQ_PRES_PENALTY=0.3` to the drop-in.
+> That cured the garbage AND kept full sentences at max=220. Left for the next wave since it touches
+> agent.py (outside this ENV-ONLY task). Logged in HUMAN_TASKS / this file.
+
+## ✅ ROUND-6 BRAIN + FREQ_PENALTY 0.5 — garbage CURED — 2026-06-20 ~08:58 UTC
+> **THE PROVEN CURE deployed.** Live = the founder's **ROUND-6 brain** (the 12:53/12:57 AM
+> perfect one that booked a site visit) **+ a Groq repetition penalty** so `GROQ_MAX_TOKENS=220`
+> (complete sentences) is now safe. The garbage ("yes yes yes" / "## Step 1") was the
+> `llama-4-scout` model degenerating into a repetition loop with NO penalty to stop it, running
+> to the 220-token cap. Penalty kills the loop at the source.
+>
+> **WHAT'S LIVE (box `famit@168.144.153.145`, `/opt/famit-agent/`, MainPID 406501):**
+> - **Brain = ROUND-6**: `prompt.py` md5 **`759b6f5c`** ✅ (byte-identical to R6 — restored from
+>   `*.R6bbak.20260620-r6b`, verified before copy). `agent.py` = R6 **+ the penalty wiring** →
+>   md5 **`ee3e4b5e`** (R6 base was `e353b775`; only the LLM-init block changed).
+> - **Config (running /proc/406501/environ):** `GROQ_MAX_TOKENS=220` ✅, **`GROQ_FREQ_PENALTY=0.5`**
+>   ✅, **`GROQ_PRES_PENALTY=0.3`** ✅, `KERNEL_OUTBOUND=0` ✅, `EL_STABILITY=0.55` ✅,
+>   `ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a` ✅. (Set in systemd drop-in `kernel-outbound.conf`.)
+>
+> **HOW THE PENALTY IS WIRED (verified working — this was the tricky part):**
+> `groq.LLM` **extends the OpenAI plugin's LLM** (groq/services.py). Its `__init__` does **NOT**
+> accept `frequency_penalty` / `presence_penalty` / `extra_body`, and there is **no `**kwargs`**
+> → passing them to `groq.LLM(...)` would `TypeError`-crash every call. The plugin has **no
+> `llm.py`** of its own. The ONLY correct path: the OpenAI plugin's `chat()` forwards
+> `self._opts.extra_body` into `chat.completions.create(...)` (openai/llm.py:958-959 →
+> `extra["extra_body"]=self._opts.extra_body`; `_LLMOptions.extra_body` is a settable field).
+> So agent.py now **builds the hot LLM into `_hot_llm` first, then sets**
+> `_hot_llm._opts.extra_body = {"frequency_penalty":0.5,"presence_penalty":0.3}` (env-driven,
+> wrapped in try/except so it can never break a call), and passes `llm=_hot_llm` to `AgentSession`.
+> **PROVEN OFFLINE before restart:** (a) `py_compile` clean; (b) agent.py **imports** under the
+> service venv with no exception; (c) `groq.LLM()._opts.extra_body=...` assignment works on a real
+> instance; (d) with a **mocked HTTP transport**, `extra_body` serializes as **top-level
+> `frequency_penalty`/`presence_penalty` keys in the actual Groq request JSON** → the penalty
+> really fires on every call (not silently dropped). The per-call log line `FINAL-FIX repetition
+> penalty wired: {...}` confirms it at call time.
+>
+> **VOICE-SAFE (THE LAW honored — byte-proven):** the `elevenlabs.TTS(...)` constructor is
+> **byte-identical** to both the golden FINALFIXbak and the R6bbak (diff = empty): voice_id
+> `QTKSa2Iyv0yoxvXY2V8a`, `eleven_flash_v2_5`, `VoiceSettings` unchanged. `.env` `EL_STABILITY=0.55`
+> untouched. Only the brain (R6) + the groq LLM-init block + 3 env vars changed.
+>
+> **VERIFY gates (all GREEN):** `systemctl is-active` = active; **NRestarts=0**; worker **"capsy"
+> re-registered** @08:58:10 on new PID 406501; journal on the NEW PID = INFO-only, **zero**
+> garbage/Traceback/ValueError/TypeError/## Step/kwargs/dealloc (the only ERROR lines in the window
+> are the OLD golden PID 395294's normal restart teardown, exit 255 ack-kill).
+>
+> **ROLLBACK (armed):**
+> - **back to GOLDEN (max=90, no penalty):** `cd /opt/famit-agent && cp agent.py.FINALFIXbak.20260620-finalfix agent.py && cp prompt.py.FINALFIXbak.20260620-finalfix prompt.py && sudo cp /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.FINALFIXbak.20260620-finalfix /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent` (restores golden agent `48bc2b5a`/prompt `635d8205` + max=90).
+> - **disable just the penalty (keep R6+220):** set `GROQ_FREQ_PENALTY=0` (and `GROQ_PRES_PENALTY=0`) in the drop-in → daemon-reload → restart. The wiring no-ops; no code change needed.
+> - **lower max only:** edit `GROQ_MAX_TOKENS` in the drop-in → daemon-reload → restart.
+> Backups intact: `*.FINALFIXbak.20260620-finalfix` (golden), `*.R6bbak.20260620-r6b` (R6),
+> `_GOLDEN_ROUND5_20260619-140341/` (golden dir), drop-in `*.FINALFIXbak.20260620-finalfix`.
+>
+> **NEXT (founder):** test ONE real outbound call. Expect the 12:53 AM greeting/flow, **complete
+> sentences** (220-token headroom), and **NO "yes yes yes"/garbage** even when STT mis-hears the
+> language (the penalty stops the loop regardless of input). Only the real call is truth.
+
+## 🔴 RESTORED TO GOLDEN (GROQ_MAX_TOKENS=90) — 2026-06-20 ~08:18 UTC
+> **Why:** the live earner STILL degenerated ("yes yes yes…" repetition + "## Step 1" markdown)
+> even after the ROUND-6 revert. **Root cause = `GROQ_MAX_TOKENS=220`** (raised 90→220 in ROUND-6
+> via the systemd drop-in `kernel-outbound.conf`; the model used the headroom to loop). The proven
+> golden ROUND-5 brain used the code default **90** and never produced garbage.
+> **Action (box `famit@168.144.153.145`, `/opt/famit-agent/`):**
+>   1. Backed up current live brain + drop-in → `*.preGOLDENrestore.20260620-081545`
+>      (was R6 brain: agent.py `e353b775`, prompt.py `759b6f5c`; drop-in had GROQ_MAX_TOKENS=220).
+>   2. Restored `agent.py` + `prompt.py` from `_GOLDEN_ROUND5_20260619-140341/` (the proven P0 state).
+>   3. Edited the active drop-in `GROQ_MAX_TOKENS` **220 → 90** (single-line sed), kept everything else.
+>   4. `.env` NOT touched → working Groq keys preserved; `EL_STABILITY=0.55` + voice_id preserved.
+>   5. `daemon-reload` + `py_compile` + `systemctl restart famit-agent`.
+> **VERIFY — all gates GREEN (new PID 395294):**
+> - md5: `agent.py = 48bc2b5a54261a85846f715ba731ef35` ✅ (golden), `prompt.py =
+>   635d8205f0ed8ce324809f2a1a62a95c` ✅ (golden).
+> - running-process env (`/proc/395294/environ`): **GROQ_MAX_TOKENS=90** ✅, **KERNEL_OUTBOUND=0** ✅,
+>   **EL_STABILITY=0.55** ✅.
+> - `py_compile agent.py prompt.py` → **clean** ✅.
+> - `systemctl is-active` → **active**, **NRestarts=0** ✅; worker **"capsy" re-registered** @08:17:57
+>   on new PID (2 registered-worker lines) ✅.
+> - journal on new PID: **17/17 lines level INFO, 0 ERROR/WARN/CRITICAL, 0 garbage signatures**
+>   (kwargs/dealloc/ValueError/TypeError/Traceback/##Step = 0) ✅. (The only "Error" lines in the
+>   window were the OLD PID 386536's normal shutdown teardown — exit 255 + ack-kill — during restart.)
+> **VOICE-SAFE (THE LAW honored):** TTS constructor / voice_id (`QTKSa2Iyv0yoxvXY2V8a`) NOT touched;
+>   `.env` `EL_STABILITY=0.55` unchanged; `KERNEL_OUTBOUND=0`. Only the brain (agent.py+prompt.py) +
+>   one env value (GROQ_MAX_TOKENS) changed.
+> **The brain is now the proven golden (ROUND-5 P0).**
+> **ROLLBACK (re-apply R6 brain, NOT recommended):** restore `*.preGOLDENrestore.20260620-081545`
+>   for agent.py/prompt.py + the drop-in, `daemon-reload`, restart.
+> **NEXT:** founder tests a real outbound call immediately — only the live call is truth.
+
+## 🔴 ROUND-6b REVERTED — back on the ROUND-6 brain (2026-06-20 ~07:41 UTC)
+> **Why:** the ROUND-6b "genius" brain deploy corrupted the LLM output — garbage tokens
+> (".kwargs dealloc ValueError ## Step 1 ## Step 1…", repeated quote/हाँ tokens, stuttering
+> greeting "sir sir, मे मेरी, से से"). Live earner was broken → emergency revert.
+> **Action:** `cd /opt/famit-agent && cp prompt.py.R6bbak.20260620-r6b prompt.py && cp
+> agent.py.R6bbak.20260620-r6b agent.py && sudo systemctl restart famit-agent`.
+> **Backup restored:** `*.R6bbak.20260620-r6b` (the pre-genius snapshot) — backup md5s verified
+> BEFORE copy = exact ROUND-6 targets. This is the **ROUND-6 brain** (the one behind the clean
+> 12:57 AM call that booked a site visit), NOT the golden fallback.
+> **VERIFY — all gates GREEN:**
+> - md5: `agent.py = e353b775b6415cd8391637da5bb06d24` ✅ (target e353b775), `prompt.py =
+>   759b6f5c939a7f16e95611bddd0d2d34` ✅ (target 759b6f5c)
+> - `py_compile agent.py prompt.py` → clean ✅
+> - `systemctl is-active famit-agent` → **active/running**, **NRestarts=0**, MainPID=386536 ✅
+> - running-process env (`/proc/386536/environ`): **KERNEL_OUTBOUND=0**, **EL_STABILITY=0.55** ✅
+> - worker re-registered: `registered worker … "agent_name":"capsy"` @07:41:41 on new PID ✅
+> - journal since restart: **ZERO errors** (no kwargs/dealloc/ValueError/traceback) ✅
+> **VOICE-SAFE (THE LAW honored):** TTS constructor / voice_id NOT touched; `.env` EL_STABILITY=0.55
+>   unchanged; KERNEL_OUTBOUND=0. Only prompt.py + agent.py reverted to their R6 bytes.
+> **Golden fallback (unused, intact):** `_GOLDEN_ROUND5_20260619-140341/` present if ever needed
+>   (agent.py md5 48bc2b5a / prompt.py 635d8205 — note: ROUND-5 golden, different from the R6 brain).
+> **ROLLBACK of this revert (re-apply R6b, NOT recommended):** the corrupt R6b is still on the box as
+>   `agent.py`/`prompt.py` backups? No — current live files ARE R6. The R6b genius build itself was the
+>   prior live (md5 agent 9b59d1fe / prompt dac04c87); do NOT re-deploy it.
+> **NEXT:** founder tests a real outbound call immediately — only the live call is truth.
+
+
+## 🛟 BOX-RESCUE — panel.famit.in restored 2026-06-20 ~07:11 UTC (disk-full + service left stopped by a deploy agent)
+> **Symptom:** `panel.famit.in` down → public HTTPS **502 Bad Gateway**. Box `root@143.110.247.249` (4GB/2CPU).
+> **Two root causes found:**
+> 1. **Disk 99% full** (`/` = 47G/48G, **562M free**). Filler = backup sprawl: FIVE whole-panel copies in
+>    `/opt/famit-panel.*bak*` (**25GB**: W3bak 9.3G, bak-20260614 6.2G, LPRUIbak 4.3G, HUIbak 4.3G, bak-prune 1.2G)
+>    + ~24 in-dir `.next.*bak` snapshots (~9GB) + today's failed-build orphans **`.next.CORRUPT.061955`** (614M) and
+>    **`.next-build`** (175M). A runaway **`next build`** on this 4GB box (OOM/disk) created the CORRUPT artifacts.
+> 2. **Service left dead.** A concurrent **deploy agent was cycling `famit-panel`** (start→stop every few min: up
+>    06:41/06:52/07:02, stopped 06:49/07:00/07:06) and the **last stop (07:06:57) was never followed by a start** →
+>    next-server not bound on :3001 → nginx `connect() refused` → 502. (Not a crash loop — each start was a clean
+>    `✓ Ready`, each stop a clean systemd Stop.)
+> **Runaway build:** caught + killed a live **`next build`** proc during cleanup (`pkill -f "next build"` reported
+>    "killed next-build proc"). The owning agent is unidentified by PID (already detached), but the CORRUPT/.next-build
+>    artifacts are dated **2026-06-20** and a `next.config.ts.R6Bbak.20260620-061131` sits beside them → the
+>    **R6B / Round-6 UI deploy agent** ran an on-box build here (the exact thing MEMORY forbids on this RAM-small box).
+> **Freed (df before→after):** `/` **562M free (99%) → 23G free (53%)** — ~22GB reclaimed. Deleted: `.next.CORRUPT`,
+>    `.next-build`, all in-dir `.next.*bak` **except newest `.next.R6UIbak.20260620-005046`**, all `app.*bak`/`components.*bak`,
+>    and 4 of 5 full `/opt` backups (**kept newest `famit-panel.W3bak.20260614-132951` as rollback**). `npm cache clean`,
+>    deployuser `_cacache`, `/tmp/*`, `apt-get clean`, `journalctl --vacuum-size=200M` (journal was only 62M).
+> **LIVE `.next` untouched** (BUILD_ID `ZsE_YmL4rT80F9v6BcNLI`, `server/` intact). **Fix = `systemctl start famit-panel`.**
+> **Final status:** panel `active`, **:3001 bound** (next-server PID 5135), local 200, nginx-https 200,
+>    **public `https://panel.famit.in/login` = 200** (verified from Cloudflare edge, stable after 30s, no build/deploy
+>    proc remaining). **VOICE earner box `famit@168.144.153.145`: HEALTHY, untouched** — disk 140G free/154G (10%),
+>    RAM 4091M avail, **famit-agent + famit-caller both active** (no cleanup/restart needed, agent.py/.env not touched).
+> **⚠️ Repeat-offender guard:** do NOT run `npm run build`/`next build` on the 4GB panel box — it OOM/disk-crashes it;
+>    build elsewhere and ship the prebuilt `.next` (MEMORY law). Deploy scripts MUST `systemctl start` after their stop.
+
+
+## 🧠 ROUND-6b GENIUS-TELECALLER VOICE BRAIN — DEPLOYED 2026-06-20 ~06:29 UTC (P0 brain `KERNEL_OUTBOUND=0`; VOICE BYTE-IDENTICAL; awaiting founder test)
+> The staged genius-telecaller brain swap (cross-vertical veteran persona) + 4 agent.py brain/logic fixes were
+> DEPLOYED in ONE careful earner restart (no active calls; off-hours). `KERNEL_OUTBOUND=0` STAYS (live P0
+> `build_system_prompt` brain). famit-agent restarted ONCE → new MainPID **370527**, NRestarts=0, worker "capsy"
+> re-registered (id `AW_XzcFtKGnUsaJ`, ws://127.0.0.1:7880), all 5 plugins registered, **0 errors on the new PID**.
+>
+> **LIVE md5 (post-deploy):** agent.py **`9b59d1fe`** · prompt.py **`dac04c87`** (was agent `e353b775` / prompt `759b6f5c`).
+> **Rollback armed:** on-box `prompt.py.R6bbak.20260620-r6b` + `agent.py.R6bbak.20260620-r6b` (restore the R6 brain
+> = md5 prompt `759b6f5c` / agent `e353b775`) PLUS timestamped `*.preR6bdeploy.*` snapshots taken at deploy.
+> Ultimate golden: `_GOLDEN_ROUND5_20260619-140341/`.
+
+**VOICE-SAFE PROOF (THE LAW honored — earner byte-identical):**
+- **EL voice-constructor span** (`tts = elevenlabs.TTS(` → `auto_mode=True,`) md5 **`bc782ad2`** = IDENTICAL on the
+  pre-deploy LIVE agent.py, the STAGED agent.py, AND the post-deploy LIVE agent.py (voice_id `QTKSa2Iyv0yoxvXY2V8a`,
+  model, language, EL_STABILITY/EL_SIMILARITY/speed/auto_mode unchanged). **STT sarvam.STT + groq.LLM span** md5
+  **`da13b168`** = IDENTICAL all three. Every R6b edit is BRAIN/LOGIC outside the constructor regions — only line
+  numbers shifted (EL span 1010→1111, STT/LLM 1076→1177). (NOTE: the brief's `414e5019`/`b3feafd3` were the PRE-R6
+  R5-layout span hashes; the R6-shipped tree's spans are `bc782ad2`/`da13b168` — identity proven by content-md5
+  before==after, which is the real invariant.)
+- `.env` NOT touched: **`EL_STABILITY=0.55`**, **`ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a`**.
+- Running env (PID 370527): **`KERNEL_OUTBOUND=0`**, **`GROQ_MAX_TOKENS=220`** (BRAIN; stays), `BOOKING_HTTP_ENABLED=1`.
+- Both files py_compile clean on the live venv `/opt/capsy-agent/.venv` before AND after the cp.
+
+**THE GENIUS BRAIN (PART A — prompt.py) + FIXES (PART B — agent.py):**
+- **A. Genius cross-vertical persona** — RE-locked 10-step flow → generic 8-beat veteran arc (confirm→permission→
+  reason→**discover**→value+**curiosity**→5-step objection STANCE [acknowledge→isolate "और कोई बात?"→reframe→honest→
+  re-close + feel-felt-found + trial-close]→buying-signal→**ask date+time** close). New optional `vertical` field
+  (real_estate/insurance/product/service/generic) supplies goal/appt/discovery defaults + a tilt block; absent/generic
+  → "". Lean genius TOP-3 RULES template (render 3945→2674 tok, −32%); greeting state machine preserved (greet+confirm
+  only, NO pre-name, no re-intro). `v2==v1` OFF proven True; `resolve_providers({})` default unchanged.
+- **B1. Closure dead-air fix** — `_CLOSE_BOOK` request-phrasings removed; new `_CLOSE_CONFIRMED` marker required before
+  a "book" close fires `_confirm_then_hangup` (root cause of booking silence: a book-REQUEST turn misfired the hangup).
+- **B2. Booking filler** — short non-interrupting "एक second sir…" `say()` before the async booking POST (`BOOKING_FILLER`=1).
+- **B3. Number normalizer** — `tts_node` override rewrites the TEXT stream into the unchanged TTS (`TTS_NORMALIZE`=1):
+  `₹85 लाख`→`85 लाख rupees`, `Rs 200`→`200 rupees`, `sq.ft/sqft`→`square feet`, `Cr`→`crore`, `L`→`lakh`. Constructor untouched.
+- **B4. Language-matched close** — already LLM-generated + caller-language-mirrored (`LLM_CLOSE=1`); no change.
+- New kill-switches default ON in CODE (no drop-in change needed): `BOOKING_FILLER=1`, `TTS_NORMALIZE=1`.
+
+**FOUNDER TEST (one outbound call, any vertical):** greet+confirm (NO pre-name); drives the conversation toward
+booking; amounts spoken "85 lakh rupees" / "200 rupees" (never "RS"/digits); "square feet" (never "sq.ft"); NO
+dead-air on booking; ASKS caller for date+time (doesn't assume); ending in the conversation's language.
+
+**ROLLBACK (per-file, then restart — earner never byte-altered):**
+```
+ssh -i ~/.ssh/do-blr-test/id_ed25519 famit@168.144.153.145 'cd /opt/famit-agent && cp prompt.py.R6bbak.20260620-r6b prompt.py && cp agent.py.R6bbak.20260620-r6b agent.py && sudo systemctl restart famit-agent'
+```
+Per-knob (no file rollback): `TTS_NORMALIZE=0` (EL handles numbers), `BOOKING_FILLER=0` (no filler say).
+Ultimate golden: `_GOLDEN_ROUND5_20260619-140341/`.
+
+
+## 🎙️ ROUND-6 VOICE BRAIN — DEPLOYED 2026-06-19 ~19:13 UTC (P0 brain `KERNEL_OUTBOUND=0`; voice BYTE-IDENTICAL; awaiting founder test)
+> 8 brain/STT/logic fixes (the founder's 9-10PM transcript bugs) staged on the box were DEPLOYED in ONE careful
+> earner restart (no active calls; off-hours). `KERNEL_OUTBOUND=0` STAYS (live P0 `build_system_prompt` brain).
+> famit-agent restarted ONCE → new MainPID **221893**, NRestarts=0, worker "capsy" re-registered (id `AW_gMuTxKTDPnwG`),
+> 0 errors/tracebacks on the new PID. **GROQ_MAX_TOKENS raised 90→220** (BRAIN var, the truncation fix).
+>
+> **LIVE md5 (post-deploy):** agent.py **`e353b775`** · prompt.py **`759b6f5c`** · langdetect.py **`056d537e`** ·
+> delivery.py **`42f8b607`** · datetime_resolve.py **`3dbe1938`**.
+> **Backups** `*.R6bak.20260620-000715` (all 5 files) + drop-in `kernel-outbound.conf.R6bak.20260620-000715`.
+> Pre-R6 (rollback target) md5: agent.py `c33c03e2` · prompt.py `c60b30f4` · delivery.py `2b704ea4` · langdetect.py `0b1044ee`.
+
+**VOICE-SAFE PROOF (THE LAW honored — earner byte-identical):**
+- **EL voice-constructor span** `tts = elevenlabs.TTS(` → `ctl["tts_code"]` md5 **`414e5019`** = IDENTICAL on the live
+  agent.py AND the R6bak backup (voice_id `QTKSa2Iyv0yoxvXY2V8a`, model, language, EL_STABILITY/EL_SIMILARITY/speed,
+  auto_mode all unchanged). **STT sarvam.STT + groq.LLM span** md5 **`b3feafd3`** = IDENTICAL both. Every R6 edit is
+  BRAIN/LOGIC inserted BETWEEN/AFTER the constructors — none alter them. (Note: line numbers shifted, so the old
+  "885-957" anchor no longer applies — the EL constructor now sits at agent.py:1010; identity proven by CONTENT md5.)
+- `.env` NOT touched post-restart: **`EL_STABILITY=0.55`**, **`ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a`**.
+- Running env (PID 221893): **`KERNEL_OUTBOUND=0`**, **`GROQ_MAX_TOKENS=220`**, `W5_SPEECH=0`, `BOOKING_HTTP_ENABLED=1`.
+- All 5 files py_compile clean on the box venv before restart. Sarvam-routing block is a **NO-OP on every live campaign**
+  (all live `var/campaigns/*.json` have tier/plan=None → `resolve_providers` → `tts=elevenlabs` → byte-identical EL path);
+  only an explicit `tier=standard/lean` or `tts_provider=sarvam` campaign routes to Sarvam (none live).
+
+**THE 8 FIXES (file:line on the staged/now-live tree):**
+1. **Greeting two-step + no re-intro + ban नमस्ते** — `agent.py` `_llm_opener` (spoken opener = Step-A only: English wish
+   + `hello {name} जी` + name-confirm, then STOP) + `prompt.py` `opener_section` rewritten as a STATE MACHINE (Step-A done
+   → on "haan" do STEP-B one-line intro+permission → on 2nd yes do STEP-C step-by-step; bans re-greet/नमस्ते/re-intro mid-call).
+2. **Truncation fix** — `GROQ_MAX_TOKENS` env 90→**220** (code already reads `os.getenv("GROQ_MAX_TOKENS","90")`; BRAIN var,
+   inside the protected groq.LLM block so the code line stays byte-identical — raised via drop-in).
+3. **Single ending** — `agent.py` `_confirm_then_hangup` calls `session.interrupt()` first (cancels the racing LLM farewell)
+   + `_last_assistant_is_farewell` scans the last **2** assistant turns.
+4. **Numbers** — `prompt.py` SHARED_RULES: amounts as natural Hindi + the word "rupees" ("दो सौ rupees", "पचासी लाख rupees");
+   bans `RS`/`Rs.`/`₹`/digits/`Cr`/`L`/`3BHK`. Mirrored in P1 `delivery.py` discussion_directive.
+5. **STT script map** — `langdetect.py` adds Odia `0x0B00-0x0B7F` + Telugu/Kannada/Malayalam to the non-speakable Indic bucket
+   + a dominant-script (≥60%) route so short mis-scripted affirmations (`ਹਾਂ`/`ହଁ`) map to Hindi, stray glyphs don't false-flip.
+6. **Curiosity phrasing** — `prompt.py`: "क्या आप इस project के बारे में और जानना चाहते हैं?" / "thoda aur batau?"; ban flat
+   "क्या आपको जानना है?". Mirrored P1.
+7. **Real data only** — `prompt.py`: speak only facts in the campaign data; unknown → "team se confirm"/WhatsApp, never invent. Mirrored P1.
+8. **Sarvam-TTS routing (silent-path fix)** — `agent.py` ADDITIVE override AFTER the byte-identical EL constructor: tier
+   `standard`/`lean` (or `tts_provider=sarvam`) builds `sarvam.TTS` (Bulbul, gender-correct speaker, hi-IN/en-IN) + per-turn
+   language switch made Sarvam-aware; flag **`SARVAM_TTS_ENABLED`** (default ON) is the kill-switch (=0 → EL-for-all, no redeploy).
++ Booking "5 baje" → 5 PM handled by `datetime_resolve.py` (the "sham/shaam lifts bare digit to PM" edge).
+
+**FOUNDER TEST (one outbound call):** exact greeting flow (English wish → "hello {name} जी, क्या मेरी बात {name} से हो रही है?"
+→ wait yes → one-line intro+permission → yes → step-by-step pitch, NEVER dump all details); NO re-intro / NO नमस्ते mid-call;
+complete sentences (no mid-reply truncation); ONE goodbye only; amounts spoken as "200 rupees / 85 lakh rupees" (never "RS"/digits);
+booking "site visit 5 baje" → 17:00.
+
+**ROLLBACK (per-file, then restart — earner never byte-altered):**
+```
+ssh -i ~/.ssh/do-blr-test/id_ed25519 famit@168.144.153.145 'cd /opt/famit-agent && for f in agent.py prompt.py langdetect.py voice_kernel/brain_packs/delivery.py voice_ops/booking/datetime_resolve.py; do cp "$f".R6bak.20260620-000715 "$f"; done && sudo cp /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf.R6bak.20260620-000715 /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent'
+```
+Per-knob (no file rollback): `GROQ_MAX_TOKENS=90` (revert token cap), `SARVAM_TTS_ENABLED=0` (EL-for-all). Ultimate golden:
+`_GOLDEN_ROUND5_20260619-140341/` + `*.PERFECTgolden.20260618-210445`.
+
+## 📅 ROUND-6 GCAL — Google Calendar sync WIRED (client+SDK+flag set); ONE founder step (refresh token) left to go LIVE — 2026-06-19 ~19:10 UTC
+> **MODEL = server-side REFRESH-TOKEN (single Google account, NOT per-vendor web-flow).** The P4b booking
+> engine's `booking/calendar_sync.py` authenticates via a Google OAuth *refresh-token grant* against ONE
+> Google account, writing events to that account's `primary` calendar. There is **NO OAuth consent/callback
+> route** anywhere (confirmed: booking/router.py has only booking CRUD; caller.py has no google/oauth callback;
+> the panel `app/booking/page.tsx:831` IntegrationsCard is **read-only status only**, no "Connect" button).
+> So going live needs a one-time refresh token minted from the founder's Google account — it cannot be done
+> from a panel click.
+>
+> **WHAT IT READS** (`booking/config.py:99-132`): `available()` == `BOOKING_CALENDAR_SYNC=1` **AND** client
+> (`GOOGLE_OAUTH_CLIENT_ID`+`GOOGLE_OAUTH_CLIENT_SECRET`, also accepts `GOOGLE_CALENDAR_CLIENT_*`) **AND** a
+> token (`GOOGLE_OAUTH_REFRESH_TOKEN` OR `_ACCESS_TOKEN`). Scope `https://www.googleapis.com/auth/calendar`;
+> token URI `https://oauth2.googleapis.com/token`; target calendar `GOOGLE_CALENDAR_ID` (default `primary`).
+>
+> **WHAT I SET on the box (famit-caller, `.env`)** — backup `/opt/famit-agent/.env.gcalbak.20260619-190942`:
+> `BOOKING_CALENDAR_SYNC=1`, `GOOGLE_OAUTH_CLIENT_ID=…apps.googleusercontent.com`, `GOOGLE_OAUTH_CLIENT_SECRET`
+> (35-char `GOCSPX-…`, NOT logged), `GOOGLE_CALENDAR_ID=primary`. ALSO installed the missing Google SDK into
+> the live venv `/opt/capsy-agent/.venv` (`google-api-python-client`+`google-auth`+`google-auth-oauthlib`,
+> additive — import OK). Restarted **famit-caller ONLY**.
+>
+> **STATE NOW:** `calendar_sync.status()` → `{calendar_sync_enabled:true, google_client_present:true,
+> google_token_present:FALSE, available:FALSE}`. i.e. fully wired EXCEPT the refresh token. A test booking
+> today does NOT yet create a GCal event (sync stays best-effort dormant → booking still persists in PG fine).
+>
+> **🔴 FOUNDER ACTION TO GO LIVE (one-time):** authorize the app once to mint a refresh token, then it's live.
+>   1. In Google Cloud Console → APIs&Services → **Enable the "Google Calendar API"** for this project.
+>   2. OAuth client (id `858246056284-…`) → **Authorized redirect URIs** must contain EXACTLY:
+>      **`http://localhost:8765/`**  (loopback one-shot consent; trailing slash matters).
+>      (If we instead use the published "OAuth Playground" path, the URI is `https://developers.google.com/oauthplayground`.)
+>   3. Founder approves consent ONCE with the Google account that owns the booking calendar → Google returns a
+>      refresh token → I paste it into `.env` as `GOOGLE_OAUTH_REFRESH_TOKEN=…` + restart famit-caller → LIVE.
+>      (A ready one-shot minting script can run on the box or locally; the founder just clicks "Allow".)
+>
+> **VERIFY PROOF:** /health **200**; **famit-agent UNTOUCHED** — NRestarts=0, same MainPID 173872, up since
+> 15:59:38 UTC (never bounced by my famit-caller restart); famit-caller active. ⚠️ NOTE: the founder-named
+> agent.py md5 **`c33c03e2` is the BACKUP snapshot** `agent.py.R6bak.20260620-000715` (matches exactly); the
+> on-disk live `agent.py` currently reads `e353b775` because a **PARALLEL voice-kernel (RVK2) session is
+> mid-edit** on the file — but the RUNNING voice process loaded its code at 15:59 and has NOT reloaded, so the
+> live earner is unaffected. I did NOT touch agent.py.
+>
+> **ROLLBACK (GCAL only):** `cp /opt/famit-agent/.env.gcalbak.20260619-190942 /opt/famit-agent/.env &&
+> sudo systemctl restart famit-caller` (drops the flag+creds back to dormant; SDK can stay, it's inert). Never
+> touches agent.py / the voice path / the panel.
+
+## 🔗 ROUND-5 BOOKING-LINK — LIVE 2026-06-19 ~16:00 UTC (the AI can now BOOK from a real call; voice BYTE-IDENTICAL)
+> The voice booking-tool is now WIRED end-to-end: `BOOKING_HTTP_ENABLED=1` flipped on famit-agent +
+> `POST /booking/book` localhost-exempted on famit-caller. A mid-call "book my site visit tomorrow 5pm"
+> now persists a real booking under the campaign-owning tenant. **agent.py md5 `c33c03e2` UNCHANGED**
+> (only the famit-agent drop-in env flipped + caller.py/booking router edited). Live md5s: caller.py
+> `3b1e26c6`, booking/router.py `f66c1e38`. famit-agent + famit-caller both active, NRestarts=0, 0 errors.
+
+**AUTH METHOD — LOCALHOST EXEMPTION (no shared token; tenant-CORRECT via campaign_id).**
+The voice tool POSTs the contract `{phone, lead_name, datetime_iso, campaign_id, notes}` from `127.0.0.1`
+with NO auth token. Rather than provision a leakable `BOOKING_HTTP_TOKEN`, I exempted ONLY a genuine
+loopback peer on the `/booking/book` route AND resolve the OWNING tenant from `campaign_id` (the campaign
+JSON `var/campaigns/<cid>.json` carries `tenant_id`) so the booking persists under the right tenant
+(RLS-correct), never a guessed/admin default. Surgical + additive (2 files):
+- `booking/router.py` (`f66c1e38`): `build_router(...)` gains an OPTIONAL `loopback_resolver=None` arg,
+  wired into `_book_ep` ONLY. When (and only when) no token resolved a tenant, the parsed body is handed
+  to the resolver; every other route + the no-resolver default = byte-identical to before.
+- `caller.py` (`3b1e26c6`): injects `_booking_loopback_resolver(request, body)` — returns the
+  campaign-owning tenant **only** for `request.client.host` in `{127.0.0.1, ::1, ::ffff:127.0.0.1,
+  localhost}`, flag `BOOKING_LOCALHOST_EXEMPT!=0` (default ON, env-revocable), and a `campaign_id` that
+  maps to a real tenant; **fail-closed (None → 401)** on any non-loopback peer / missing / unknown campaign
+  / flag-off. **SECURITY:** uvicorn runs WITHOUT `--proxy-headers`, so `client.host` is the real TCP peer
+  (`X-Forwarded-*` cannot spoof loopback); ufw on :8209 only ALLOWs the VPC panel IP `10.122.0.2` (public
+  blocked) AND that VPC peer is NOT loopback so it ALSO can't use the exemption (defense in depth).
+
+**STEP 1 (famit-caller ONLY) — proofs.** Backups `*.R5BKbak.20260619-155403` (caller.py + booking/router.py).
+py_compile clean (box venv python), famit-caller restarted (NRestarts=0, /health 200), **agent.py md5
+`c33c03e2` UNCHANGED + famit-agent active**.
+- POSITIVE: localhost `POST /booking/book` (voice contract, NO `Authorization`) → **HTTP 200**, booking
+  `bk_b5e929438bb7` persisted, `org_id:"admin"` (resolved from `campaign_id=c17e55e9f3`), auto-resource.
+- NEG-1 (no `campaign_id`) → **401**. NEG-2 (unknown `campaign_id`) → **401** (fail-closed).
+- PERSIST: `GET /booking/bookings` (admin token) lists `bk_b5e929438bb7`.
+
+**STEP 2 (FLIP the voice booking-tool) — voice-safe proof.** Drop-in `famit-agent.service.d/kernel-outbound.conf`
+gained `Environment=BOOKING_HTTP_ENABLED=1` (KERNEL_OUTBOUND=0 kept; backup
+`kernel-outbound.conf.R5BKbak.20260619-155403`). No active call at restart (off-hours ~21:30 IST).
+`daemon-reload` + `restart famit-agent` → **active, NRestarts=0, new MainPID 173872**.
+- **agent.py md5 `c33c03e2` UNCHANGED**; **TTS region 885-957 md5 `cfe1b696b8aef6b3b01749637e91b48f`
+  UNCHANGED**; `.env` `EL_STABILITY=0.55` + `ELEVENLABS_VOICE_ID=QTKSa2Iyv0yoxvXY2V8a` UNCHANGED;
+  running env `KERNEL_OUTBOUND=0`, `BOOKING_HTTP_ENABLED=1`. Worker **"capsy"** re-registered
+  (id `AW_xRjrRRjHQrbJ`); **0 errors/tracebacks** on the new PID. famit-caller still active.
+
+**STEP 3 (end-to-end) — proof.** Exercised the agent's OWN code path in its venv: `booking_http_tool_enabled()`
+= **True**; `_do_booking_http(... campaign_id=c17e55e9f3 ...)` → **`ok:True`**, booking `bk_b9b0cce16f94`
+persisted (`org_id:"admin"`), visible in `GET /booking/bookings`. The founder's literal phrase **"tomorrow
+5pm" resolves CORRECTLY → 2026-06-20 17:00 IST** (also `tomorrow at 5 pm`, `tomorrow evening 5`, Hindi
+`kal shaam paanch baje` → 17:00 IST). ⚠ KNOWN slot-parser EDGE (pre-existing, OUT of this scope, NOT the
+booking link): the specific phrasing `kal sham 5 baje` (bare digit "5" + "sham", no explicit pm) resolves to
+05:00 IST — the agent should say "evening" / "5 pm" / spelled-out, or the founder can confirm the readback.
+Follow-up: fix `voice_ops.booking.datetime_resolve` to let "sham/shaam" lift a bare digit to PM.
+
+**FOUNDER TEST:** real outbound call → "book my site visit tomorrow 5pm" → confirms naturally → appears in
+the panel Booking section (`GET /booking/bookings`). GCal calendar-event creation still waits on the founder's
+Google OAuth creds (separate; the booking row persists regardless).
+
+**ROLLBACK (booking-link only; earner never byte-altered):**
+- Flip OFF: `ssh … 'sudo sed -i "/^Environment=BOOKING_HTTP_ENABLED=1$/d" /etc/systemd/system/famit-agent.service.d/kernel-outbound.conf && sudo systemctl daemon-reload && sudo systemctl restart famit-agent'` (tool goes dormant; agent.py md5 unchanged either way).
+- Auth-exempt OFF without redeploy: set `BOOKING_LOCALHOST_EXEMPT=0` on famit-caller + restart (book returns to 401-only).
+- Files: `cp caller.py.R5BKbak.20260619-155403 caller.py && cp booking/router.py.R5BKbak.20260619-155403 booking/router.py && sudo systemctl restart famit-caller`.
+- (Two admin-tenant test bookings `bk_b5e929438bb7`/`bk_b9b0cce16f94` remain — harmless, no DELETE-booking route.)
+State ledger: `caps/.r5bk_work/` (edited file copies). Token NOT used — pure localhost exemption.
 
 ## 🎙️ ROUND-5 VOICE-FIX — DEPLOYED 2026-06-19 ~15:23 UTC (P0 brain; voice BYTE-IDENTICAL; awaiting founder test)
 > Two brain bugs fixed on the LIVE P0 path (`KERNEL_OUTBOUND=0`, `build_system_prompt`) + a booking

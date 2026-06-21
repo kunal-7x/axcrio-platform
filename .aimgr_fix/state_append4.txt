@@ -1,0 +1,13 @@
+
+## BUILD SAGA CONTINUED (2026-06-20) — panel box DO-resized to 4GB
+- Builds #5,#6 (4GB but disk 92-99% full + my experimental next.config flags): OOM exit137 (node RSS 3.67GB) / disk full.
+- ROOT CONTRIBUTORS found: (a) disk was 99% full (9.5GB of stale .next.*bak backups) -> webpack/npm scratch starved; (b) my next.config experimental flags {cpus:1, workerThreads:false, webpackBuildWorker:false} caused a HANG (build7 exit143 SIGTERM, stuck at "Creating optimized production build" for 9min).
+- FIXED: (a) deleted 23 stale .next.*bak dirs -> disk 99%->80% (9.9GB free), kept .next.R6UIbak.20260620-005046 as rollback. (b) reverted next.config to ORIGINAL (R6Bbak.20260620-061131) + ONLY added distDir for isolation (no experimental flags).
+- DO resize: famit-panel-2 (576010005) s-1vcpu-2gb -> s-2vcpu-4gb (disk:false reversible). Sequence: shutdown(3248944291) -> resize(3248948029, ~175s) -> power_on(3248951046). Panel auto-started on boot, HTTP 200. Earner box (574914961) NEVER touched.
+- build8 (IN PROGRESS): standard config + 4GB + 6G swap + 9.9G disk + isolated .next-build. Expect EXIT 0.
+
+## TO RESIZE BACK TO 2GB AFTER SHIP (cost control):
+DO API: shutdown 576010005 -> resize size=s-1vcpu-2gb disk=false -> power_on. (OR leave at 4GB to fix the recurring OOM the founder keeps hitting on UI waves - FOUNDER DECISION; default = resize back to 2GB to not change cost without asking.)
+Remove /swapfile_build after (disk).
+
+## next.config on box: backup next.config.ts.R6Bbak.20260620-061131 (original). Current = original + distDir line only.

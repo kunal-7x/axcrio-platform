@@ -1,0 +1,1396 @@
+{
+  "version": 1,
+  "features": [
+    {
+      "key": "core.auth",
+      "kind": "feature",
+      "parent_key": null,
+      "label": "Login / Session",
+      "nav_href": "/login",
+      "api_prefixes": [
+        "/login",
+        "/auth/login",
+        "/auth/refresh",
+        "/auth/logout",
+        "/me"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 0
+    },
+    {
+      "key": "core.settings",
+      "kind": "page",
+      "parent_key": null,
+      "label": "Settings",
+      "nav_href": "/settings",
+      "api_prefixes": [
+        "/settings"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 1
+    },
+    {
+      "key": "core.me_entitlements",
+      "kind": "api",
+      "parent_key": null,
+      "label": "Entitlement self-read",
+      "nav_href": null,
+      "api_prefixes": [
+        "/me/entitlements"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 2
+    },
+    {
+      "key": "core.health",
+      "kind": "api",
+      "parent_key": null,
+      "label": "Health / Metrics",
+      "nav_href": null,
+      "api_prefixes": [
+        "/health",
+        "/metrics"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 3
+    },
+    {
+      "key": "core.wallet_pay",
+      "kind": "feature",
+      "parent_key": null,
+      "label": "Wallet pay/balance read",
+      "nav_href": null,
+      "api_prefixes": [
+        "/wallet",
+        "/firewall/verify-pin"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 4
+    },
+    {
+      "key": "mod.command",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Command",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 5
+    },
+    {
+      "key": "command.dashboard",
+      "kind": "page",
+      "parent_key": "mod.command",
+      "label": "Dashboard",
+      "nav_href": "/",
+      "api_prefixes": [
+        "/stats",
+        "/status",
+        "/leads/hot"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 6
+    },
+    {
+      "key": "mod.ai_manager",
+      "kind": "module",
+      "parent_key": null,
+      "label": "AI Manager",
+      "nav_href": null,
+      "api_prefixes": [
+        "/ai-manager"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 7
+    },
+    {
+      "key": "ai_manager.overview",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Overview",
+      "nav_href": "/ai-manager/overview",
+      "api_prefixes": [
+        "/ai-manager/status"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 8
+    },
+    {
+      "key": "ai_manager.test",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Test Console",
+      "nav_href": "/ai-manager/test",
+      "api_prefixes": [
+        "/ai-manager/sessions"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 9
+    },
+    {
+      "key": "ai_manager.commands",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Command History",
+      "nav_href": "/ai-manager/commands",
+      "api_prefixes": [
+        "/ai-manager/sessions"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 10
+    },
+    {
+      "key": "ai_manager.approvals",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Pending Approvals",
+      "nav_href": "/ai-manager/approvals",
+      "api_prefixes": [
+        "/ai-manager/sessions"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 11
+    },
+    {
+      "key": "ai_manager.capabilities",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Capabilities",
+      "nav_href": "/ai-manager/capabilities",
+      "api_prefixes": [
+        "/ai-manager/status"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 12
+    },
+    {
+      "key": "ai_manager.setup",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Setup",
+      "nav_href": "/ai-manager/setup",
+      "api_prefixes": [
+        "/ai-manager/numbers"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 13
+    },
+    {
+      "key": "ai_manager.users",
+      "kind": "page",
+      "parent_key": "mod.ai_manager",
+      "label": "Authorized Users",
+      "nav_href": "/ai-manager/users",
+      "api_prefixes": [
+        "/ai-manager/numbers/grants",
+        "/ai-manager/numbers/revoke"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 14
+    },
+    {
+      "key": "ai_manager.copilot",
+      "kind": "ai_agent",
+      "parent_key": "mod.ai_manager",
+      "label": "AI Copilot",
+      "nav_href": null,
+      "api_prefixes": [
+        "/ai-manager/sessions"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 15
+    },
+    {
+      "key": "ai_manager.register_number",
+      "kind": "action",
+      "parent_key": "ai_manager.setup",
+      "label": "Register/verify number",
+      "nav_href": null,
+      "api_prefixes": [
+        "/ai-manager/numbers"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 16
+    },
+    {
+      "key": "mod.grow",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Grow",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 17
+    },
+    {
+      "key": "grow.campaigns",
+      "kind": "page",
+      "parent_key": "mod.grow",
+      "label": "Campaigns",
+      "nav_href": "/campaigns",
+      "api_prefixes": [
+        "/campaigns"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 18
+    },
+    {
+      "key": "grow.campaigns.create",
+      "kind": "action",
+      "parent_key": "grow.campaigns",
+      "label": "Create campaign",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 19
+    },
+    {
+      "key": "grow.campaigns.delete",
+      "kind": "action",
+      "parent_key": "grow.campaigns",
+      "label": "Delete campaign",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 20
+    },
+    {
+      "key": "grow.campaigns.abtest",
+      "kind": "feature",
+      "parent_key": "grow.campaigns",
+      "label": "A/B testing",
+      "nav_href": null,
+      "api_prefixes": [
+        "/campaigns/ab"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 21
+    },
+    {
+      "key": "grow.campaigns.script",
+      "kind": "feature",
+      "parent_key": "grow.campaigns",
+      "label": "Campaign Script",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 21.5
+    },
+    {
+      "key": "grow.campaigns.render_brain",
+      "kind": "feature",
+      "parent_key": "grow.campaigns",
+      "label": "Campaign Render-Brain",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 21.6
+    },
+    {
+      "key": "grow.ads",
+      "kind": "page",
+      "parent_key": "mod.grow",
+      "label": "Ad Automation",
+      "nav_href": "/ads",
+      "api_prefixes": [
+        "/ads"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 22
+    },
+    {
+      "key": "grow.ads.propose",
+      "kind": "action",
+      "parent_key": "grow.ads",
+      "label": "Propose ad campaign",
+      "nav_href": null,
+      "api_prefixes": [
+        "/ads/campaigns/propose"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 23
+    },
+    {
+      "key": "grow.ads.approve",
+      "kind": "action",
+      "parent_key": "grow.ads",
+      "label": "Approve/launch ad",
+      "nav_href": null,
+      "api_prefixes": [
+        "/ads/campaigns/approve"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 24
+    },
+    {
+      "key": "grow.funnels",
+      "kind": "page",
+      "parent_key": "mod.grow",
+      "label": "Funnels",
+      "nav_href": "/funnels",
+      "api_prefixes": [
+        "/funnels"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 25
+    },
+    {
+      "key": "grow.funnels.publish",
+      "kind": "action",
+      "parent_key": "grow.funnels",
+      "label": "Publish funnel",
+      "nav_href": null,
+      "api_prefixes": [
+        "/funnels/publish"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 26
+    },
+    {
+      "key": "grow.forms",
+      "kind": "page",
+      "parent_key": "mod.grow",
+      "label": "Form Builder",
+      "nav_href": "/forms",
+      "api_prefixes": [
+        "/forms"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 27
+    },
+    {
+      "key": "grow.forms.public",
+      "kind": "feature",
+      "parent_key": "grow.forms",
+      "label": "Public form intake",
+      "nav_href": null,
+      "api_prefixes": [
+        "/f/"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 28
+    },
+    {
+      "key": "mod.sell",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Sell",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 29
+    },
+    {
+      "key": "sell.leads",
+      "kind": "page",
+      "parent_key": "mod.sell",
+      "label": "Leads",
+      "nav_href": "/leads",
+      "api_prefixes": [
+        "/leads",
+        "/leads/batches"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 30
+    },
+    {
+      "key": "sell.leads.import",
+      "kind": "action",
+      "parent_key": "sell.leads",
+      "label": "Import/create leads",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 31
+    },
+    {
+      "key": "sell.leads.delete",
+      "kind": "action",
+      "parent_key": "sell.leads",
+      "label": "Delete lead",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 32
+    },
+    {
+      "key": "sell.crm",
+      "kind": "page",
+      "parent_key": "mod.sell",
+      "label": "CRM",
+      "nav_href": "/crm",
+      "api_prefixes": [
+        "/contacts"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 33
+    },
+    {
+      "key": "sell.crm.timeline",
+      "kind": "feature",
+      "parent_key": "sell.crm",
+      "label": "Contact timeline/NBA",
+      "nav_href": null,
+      "api_prefixes": [
+        "/contacts/timeline",
+        "/contacts/nba"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 34
+    },
+    {
+      "key": "sell.crm.edit",
+      "kind": "action",
+      "parent_key": "sell.crm",
+      "label": "Edit contact",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 35
+    },
+    {
+      "key": "mod.engage",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Engage",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 36
+    },
+    {
+      "key": "engage.run",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "Run a Campaign",
+      "nav_href": "/run",
+      "api_prefixes": [
+        "/run",
+        "/run/preview"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 37
+    },
+    {
+      "key": "engage.run.dial",
+      "kind": "action",
+      "parent_key": "engage.run",
+      "label": "Launch dial run",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 38
+    },
+    {
+      "key": "engage.calls",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "Call Logs",
+      "nav_href": "/calls",
+      "api_prefixes": [
+        "/calls"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 39
+    },
+    {
+      "key": "engage.callbacks",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "Callbacks",
+      "nav_href": "/callbacks",
+      "api_prefixes": [
+        "/callbacks"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 40
+    },
+    {
+      "key": "engage.whatsapp",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "WhatsApp",
+      "nav_href": "/whatsapp",
+      "api_prefixes": [
+        "/whatsapp/send",
+        "/whatsapp/log",
+        "/whatsapp/threads"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 41
+    },
+    {
+      "key": "engage.whatsapp.send",
+      "kind": "action",
+      "parent_key": "engage.whatsapp",
+      "label": "Send WhatsApp msg",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 42
+    },
+    {
+      "key": "engage.whatsapp.inbound",
+      "kind": "integration",
+      "parent_key": "engage.whatsapp",
+      "label": "Inbound webhook",
+      "nav_href": null,
+      "api_prefixes": [
+        "/whatsapp/inbound"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 43
+    },
+    {
+      "key": "engage.support",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "Customer Support",
+      "nav_href": "/support",
+      "api_prefixes": [
+        "/support/tickets",
+        "/support/inbound"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 44
+    },
+    {
+      "key": "engage.support.reply",
+      "kind": "action",
+      "parent_key": "engage.support",
+      "label": "Reply/resolve ticket",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 45
+    },
+    {
+      "key": "engage.booking",
+      "kind": "page",
+      "parent_key": "mod.engage",
+      "label": "Booking",
+      "nav_href": "/booking",
+      "api_prefixes": [
+        "/booking"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 46
+    },
+    {
+      "key": "engage.booking.book",
+      "kind": "action",
+      "parent_key": "engage.booking",
+      "label": "Create booking",
+      "nav_href": null,
+      "api_prefixes": [
+        "/booking/book"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 47
+    },
+    {
+      "key": "mod.automate",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Automate",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 48
+    },
+    {
+      "key": "automate.workflows",
+      "kind": "page",
+      "parent_key": "mod.automate",
+      "label": "Workflows",
+      "nav_href": "/workflows",
+      "api_prefixes": [
+        "/workflows"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 49
+    },
+    {
+      "key": "automate.workflows.publish",
+      "kind": "action",
+      "parent_key": "automate.workflows",
+      "label": "Publish workflow",
+      "nav_href": null,
+      "api_prefixes": [
+        "/workflows/publish"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 50
+    },
+    {
+      "key": "automate.workflows.run",
+      "kind": "action",
+      "parent_key": "automate.workflows",
+      "label": "Run/trigger workflow",
+      "nav_href": null,
+      "api_prefixes": [
+        "/workflows/run",
+        "/workflows/hook"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 51
+    },
+    {
+      "key": "automate.workflows.approve",
+      "kind": "action",
+      "parent_key": "automate.workflows",
+      "label": "Approve run",
+      "nav_href": null,
+      "api_prefixes": [
+        "/workflows/runs/approve"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 52
+    },
+    {
+      "key": "automate.workflows.killswitch",
+      "kind": "action",
+      "parent_key": "automate.workflows",
+      "label": "Killswitch",
+      "nav_href": null,
+      "api_prefixes": [
+        "/workflows/killswitch"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 53
+    },
+    {
+      "key": "automate.webhooks",
+      "kind": "page",
+      "parent_key": "mod.automate",
+      "label": "Webhooks",
+      "nav_href": "/webhooks",
+      "api_prefixes": [
+        "/webhooks"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 54
+    },
+    {
+      "key": "automate.webhooks.create",
+      "kind": "action",
+      "parent_key": "automate.webhooks",
+      "label": "Create webhook",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 55
+    },
+    {
+      "key": "mod.money",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Money",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 56
+    },
+    {
+      "key": "money.payments",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Payments",
+      "nav_href": "/payments",
+      "api_prefixes": [
+        "/payments/links",
+        "/payments/followups"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 57
+    },
+    {
+      "key": "money.payments.create_link",
+      "kind": "action",
+      "parent_key": "money.payments",
+      "label": "Create payment link",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 58
+    },
+    {
+      "key": "money.payments.refund",
+      "kind": "action",
+      "parent_key": "money.payments",
+      "label": "Refund",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 59
+    },
+    {
+      "key": "money.billing_overview",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Billing Overview",
+      "nav_href": "/billing/overview",
+      "api_prefixes": [
+        "/billing/overview",
+        "/billing"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": true,
+      "sort_order": 60
+    },
+    {
+      "key": "money.billing_vendors",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Billing Vendors",
+      "nav_href": "/billing/vendors",
+      "api_prefixes": [
+        "/billing/vendors",
+        "/billing/vendor"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 61
+    },
+    {
+      "key": "money.billing_explorer",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Cost Explorer",
+      "nav_href": "/billing/explorer",
+      "api_prefixes": [
+        "/billing/explorer"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 62
+    },
+    {
+      "key": "money.billing_audit",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Billing Audit",
+      "nav_href": "/billing/audit",
+      "api_prefixes": [
+        "/billing/audit"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 63
+    },
+    {
+      "key": "money.billing_plan",
+      "kind": "page",
+      "parent_key": "mod.money",
+      "label": "Plan & Ledger",
+      "nav_href": "/billing/plan",
+      "api_prefixes": [
+        "/billing/ledger"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 64
+    },
+    {
+      "key": "mod.intelligence",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Intelligence",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 65
+    },
+    {
+      "key": "intelligence.analytics",
+      "kind": "page",
+      "parent_key": "mod.intelligence",
+      "label": "Analytics",
+      "nav_href": "/analytics",
+      "api_prefixes": [
+        "/analytics"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 66
+    },
+    {
+      "key": "mod.foundation",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Foundation",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 67
+    },
+    {
+      "key": "foundation.suppression",
+      "kind": "page",
+      "parent_key": "mod.foundation",
+      "label": "Do-Not-Call",
+      "nav_href": "/suppression",
+      "api_prefixes": [
+        "/suppression",
+        "/optout"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 68
+    },
+    {
+      "key": "foundation.vendors",
+      "kind": "page",
+      "parent_key": "mod.foundation",
+      "label": "Vendors (legacy admin)",
+      "nav_href": "/vendors",
+      "api_prefixes": [
+        "/tenants"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 69
+    },
+    {
+      "key": "integ.voice",
+      "kind": "integration",
+      "parent_key": null,
+      "label": "Voice / telephony (Vobiz)",
+      "nav_href": null,
+      "api_prefixes": [
+        "/voices",
+        "/extract"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 70
+    },
+    {
+      "key": "integ.whatsapp",
+      "kind": "integration",
+      "parent_key": null,
+      "label": "WhatsApp (Meta)",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 71
+    },
+    {
+      "key": "integ.webhooks",
+      "kind": "integration",
+      "parent_key": null,
+      "label": "Outbound webhooks",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 72
+    },
+    {
+      "key": "integ.ads",
+      "kind": "integration",
+      "parent_key": null,
+      "label": "Ads platforms",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 73
+    },
+    {
+      "key": "integ.payments",
+      "kind": "integration",
+      "parent_key": null,
+      "label": "Payment providers",
+      "nav_href": null,
+      "api_prefixes": [
+        "/payments/webhooks"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 74
+    },
+    {
+      "key": "feature.brain",
+      "kind": "feature",
+      "parent_key": null,
+      "label": "Brain / knowledge base",
+      "nav_href": null,
+      "api_prefixes": [
+        "/brain"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 75
+    },
+    {
+      "key": "limit.max_concurrency",
+      "kind": "limit",
+      "parent_key": null,
+      "label": "Max concurrent calls",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 76
+    },
+    {
+      "key": "limit.daily_call_cap",
+      "kind": "limit",
+      "parent_key": null,
+      "label": "Daily call cap",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 77
+    },
+    {
+      "key": "limit.monthly_minutes_cap",
+      "kind": "limit",
+      "parent_key": null,
+      "label": "Monthly minutes cap",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 78
+    },
+    {
+      "key": "limit.monthly_credits",
+      "kind": "limit",
+      "parent_key": null,
+      "label": "Monthly credit allowance",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 79
+    },
+    {
+      "key": "limit.seats",
+      "kind": "limit",
+      "parent_key": null,
+      "label": "User seats",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 80
+    },
+    {
+      "key": "admin.overview",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Control Overview",
+      "nav_href": "/admin",
+      "api_prefixes": [
+        "/admin/features"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 81
+    },
+    {
+      "key": "admin.vendors",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Vendors",
+      "nav_href": "/admin/vendors",
+      "api_prefixes": [
+        "/admin/vendors"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 82
+    },
+    {
+      "key": "admin.vendor_workspace",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Vendor Workspace",
+      "nav_href": "/admin/vendors/[id]",
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 83
+    },
+    {
+      "key": "admin.flags",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Feature Flags (global)",
+      "nav_href": "/admin/flags",
+      "api_prefixes": [
+        "/admin/flags"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 84
+    },
+    {
+      "key": "admin.plans",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Plans",
+      "nav_href": "/admin/plans",
+      "api_prefixes": [
+        "/admin/plans"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 85
+    },
+    {
+      "key": "admin.usage",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Usage Analytics",
+      "nav_href": "/admin/usage",
+      "api_prefixes": [
+        "/usage/all"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 86
+    },
+    {
+      "key": "admin.audit",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Audit Logs",
+      "nav_href": "/admin/audit",
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 87
+    },
+    {
+      "key": "admin.health",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "System Health",
+      "nav_href": "/admin/health",
+      "api_prefixes": [
+        "/admin/store-status"
+      ],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 88
+    },
+    {
+      "key": "admin.support",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Support",
+      "nav_href": "/admin/support",
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 89
+    },
+    {
+      "key": "admin.settings",
+      "kind": "admin_page",
+      "parent_key": null,
+      "label": "Global Settings",
+      "nav_href": "/admin/settings",
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": "admin",
+      "is_core": false,
+      "sort_order": 90
+    },
+    {
+      "key": "mod.creative",
+      "kind": "module",
+      "parent_key": null,
+      "label": "Creative Studio",
+      "nav_href": null,
+      "api_prefixes": [],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 91
+    },
+    {
+      "key": "creative.studio",
+      "kind": "page",
+      "parent_key": "mod.creative",
+      "label": "Creative Studio",
+      "nav_href": "/creative",
+      "api_prefixes": [
+        "/creative",
+        "/assets/generate",
+        "/creative/image"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 92
+    },
+    {
+      "key": "creative.library",
+      "kind": "page",
+      "parent_key": "mod.creative",
+      "label": "Asset Library",
+      "nav_href": "/assets",
+      "api_prefixes": [
+        "/assets",
+        "/assets/library"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 93
+    },
+    {
+      "key": "creative.video",
+      "kind": "page",
+      "parent_key": "mod.creative",
+      "label": "Video Studio",
+      "nav_href": "/creative/video",
+      "api_prefixes": [
+        "/creative/video"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 94
+    },
+    {
+      "key": "creative.brand_kit",
+      "kind": "page",
+      "parent_key": "mod.creative",
+      "label": "Brand Kits",
+      "nav_href": "/assets/brand-kits",
+      "api_prefixes": [
+        "/brand-kits",
+        "/assets/brand-kits",
+        "/extract"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 95
+    },
+    {
+      "key": "creative.studio.generate",
+      "kind": "action",
+      "parent_key": "creative.studio",
+      "label": "Generate image",
+      "nav_href": null,
+      "api_prefixes": [
+        "/assets/generate",
+        "/creative/image/generate"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 96
+    },
+    {
+      "key": "creative.script",
+      "kind": "action",
+      "parent_key": "creative.studio",
+      "label": "AI script generation",
+      "nav_href": null,
+      "api_prefixes": [
+        "/creative/script",
+        "/creative/video/script",
+        "/assets/script"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 97
+    },
+    {
+      "key": "creative.render_brain",
+      "kind": "action",
+      "parent_key": "creative.video",
+      "label": "Render brain (compose/render)",
+      "nav_href": null,
+      "api_prefixes": [
+        "/creative/video/render",
+        "/creative/render",
+        "/creative/video/batch"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 98
+    },
+    {
+      "key": "creative.brand_kit.save",
+      "kind": "action",
+      "parent_key": "creative.brand_kit",
+      "label": "Save brand kit",
+      "nav_href": null,
+      "api_prefixes": [
+        "/brand-kits"
+      ],
+      "default_mode": "on",
+      "min_role": null,
+      "is_core": false,
+      "sort_order": 99
+    }
+  ]
+}
