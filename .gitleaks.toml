@@ -22,6 +22,18 @@ paths = [
   '''design/p0-foundation\.md$''',
 ]
 
+# RESTORE-SYSTEM.md + earner-golden/README.md DOCUMENT the working voice brain:
+# md5 hashes, the public ElevenLabs voice_id, and the non-secret tuning value
+# `EL_STABILITY=0.55`. The generic-api-key rule mis-flags the `EL_STABILITY=0.55`
+# tuning number as a credential — it is NOT a secret (it's a documented voice
+# setting). Exempt these restore-doc paths.
+[[allowlists]]
+description = "restore docs hold md5s + public voice_id + non-secret tuning values, not credentials"
+paths = [
+  '''RESTORE-SYSTEM\.md$''',
+  '''.*earner-golden/README\.md$''',
+]
+
 # The PVS tier config (llm_router/tiers.py) uses literal MODEL-NAME identifiers as
 # rate-card keys (e.g. "groq-llama-3.3-70b", "groq-gpt-oss-20b"). gitleaks' generic
 # high-entropy rule flags these hyphenated model labels as if they were secrets —
