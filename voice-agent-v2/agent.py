@@ -1063,7 +1063,12 @@ async def entrypoint(ctx: agents.JobContext) -> None:
                 # background; the model confirms it warmly in words (prompt-driven). Never blocks.
                 if role == "user" and loop is not None and not ctl.get("booked"):
                     try:
-                        if _explicit_book_consent(text):
+                        # Require a real booking NOUN (visit/book/appointment) + a time-or-commit.
+                        # A bare time word alone false-fired ("हाँ आज्ञा" contains "आज"=today).
+                        _tl = (text or "").lower()
+                        _bk_ok = (any(n in _tl for n in _BOOK_NOUN)
+                                  and (_has_time_token(_tl) or any(v in _tl for v in _BOOK_VERB)))
+                        if _bk_ok:
                             ctl["booked"] = True
                             def _do_bk(_when=text):
                                 try:

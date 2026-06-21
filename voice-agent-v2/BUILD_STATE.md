@@ -72,9 +72,16 @@ live dispatch / unit at the v2 code; rollback = point back to `capsy` (instant).
   verbally confirmed "kal teen baje" visit; clean close on explicit "bye bye" (closure end-signal-only ✓).
   REMAINING: booking SAVE = `bad_slot` — `resolve_slot_start` can't parse Devanagari time "तीन बजे"
   (needs Hindi/Devanagari numeral+time normalization before resolve). Minor: slight double-goodbye.
-- [ ] FIX booking-save: normalize Devanagari time ("कल/तीन बजे") → parseable before resolve_slot_start
-- [ ] (polish) double-goodbye: suppress model reply when closure fires on the bye turn
-- [ ] FOUNDER VERDICT on how it SOUNDED + next step (flip live / re-test / tweak)
+- [x] FIX booking-save (3 issues): (a) Devanagari time → taught resolve_slot_start digits/number-words/
+      day+period + PM-default for bare visit hours; (b) 70b leaked the @tool → dropped tool, book in code;
+      (c) false-positive ("आज्ञा"⊃"आज") → require a booking NOUN + time/verb; (d) 401 → loopback needs a
+      real campaign_id → created `godrejv2` (tenant=admin, Godrej fields, clean prompt).
+- [x] CALL #5 (15:43, campaign godrejv2): BOOKING PERSISTED on a real call — "कल दोपहर चार बजे" →
+      `bk_17d7f9a929b2 status=booked slot=2026-06-22 16:00 IST` (4 PM). Clean voice, confirmed once,
+      clean close on "बाय बाय". Full flow works end-to-end.
+- [ ] (polish, non-blocking) slight double-goodbye; opener says "नमस्ते" (founder prefers "good morning/
+      hello sir"); summarizer mislabels bye as opt_out; Latin-transliterated Hindi numerals not parsed.
+- [ ] FOUNDER VERDICT on the overall feel + next step (flip live / polish / more tests)
 
 ## RUNBOOK
 - v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`
