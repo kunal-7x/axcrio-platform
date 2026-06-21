@@ -92,7 +92,29 @@ live dispatch / unit at the v2 code; rollback = point back to `capsy` (instant).
       recordings fire on finalize. Agent uses NO redis (campaign JSON + memory files = the context).
       ROLLBACK: `sudo rm /etc/systemd/system/famit-caller.service.d/agentflip.conf && sudo systemctl
       daemon-reload && sudo systemctl restart famit-caller` → back to old capsy instantly.
-- [ ] FOUNDER tests FROM THE WEBSITE (Run Campaign / place a call) → new brain + stats update.
+- [x] WIRING FIX: the dispatch-flip drop-in lost to env precedence (caller kept LIVEKIT_AGENT_NAME=capsy).
+      ROBUST FIX: v2 worker now registers as the canonical **capsy** (its .env LIVEKIT_AGENT_NAME=capsy);
+      OLD famit-agent stopped + disabled; agentflip.conf removed. So caller → capsy → v2 brain. Sole capsy
+      worker = famit-agent-v2 (the clean brain). ROLLBACK to old: `sudo systemctl enable --now famit-agent`
+      + `sudo systemctl stop famit-agent-v2` (old capsy resumes).
+
+## ✅ WORKING-STATE RESTORE POINT (tag `voice-telecaller-v2-working`, 2026-06-21)
+The clean rebuild IS live as capsy: clean human brain (objection-handling, language-mirror, ~0.25s),
+booking persists, no degeneration loop. The 2-day loop is solved. Old buggy capsy retired (stopped).
+
+## ▶ FOUNDER ROUND-11 DIRECTIVE (production-grade, 2026-06-21 PM) — "good, not satisfactory yet"
+Goal: a PRODUCTION-grade voice telecaller like Vapi / Retell / Ringg — full end-to-end, any situation,
+no human, scalable, low-latency, cost-efficient, a real human-feeling salesperson, sellable to vendors.
+Brain asks (ALL prompt-level, NEVER hardcode — tell Groq to do it): (1) two-step greeting ("Good morning
+sir, kya meri baat Mr. Kunal se? " → yes → "main Riya…, 2 min baat?"); (2) adaptive FILLERS (Groq picks
+them, none hardcoded); (3) curiosity-chain — reveal a little, ask "aur jaanna chahenge?", build interest,
+THEN propose a visit only when intent shows; (4) language mirror (Groq follows STT language). Architecture
+Q (founder): are we building it like real production cos, or a "school project"? Use Redis hot-cache + RAG
+ONLY when needed (big campaign detail / history not already in context) — pieces already exist. HARD: do
+NOT break it, do NOT hardcode, do NOT touch sensitive files, secure + precise, research-first.
+NEXT (carefully, reversible, tested): research how production voice-AI is built → confirm/correct the
+architecture → incremental brain polish (the 4 asks) → production hardening (latency/turn-taking, evals,
+RAG-when-needed, robustness/STT). NO rebuild; additive only.
 
 ## RUNBOOK
 - v2 logs: `journalctl -u famit-agent-v2 -f`  ·  restart: `sudo systemctl restart famit-agent-v2`
