@@ -41,6 +41,10 @@ export interface AgentInstance {
   everyMs: number;
   ticks: number;
   tasksDone: number;
+  /** Workforce hires only: the salary overlay + the count of metered outcomes (completed inbox tasks). */
+  salaryInrMonth?: number;
+  outcomeKind?: string;
+  outcomesDone?: number;
   status: 'idle' | 'working' | 'error';
   /** False once a model call fails (bad key / model down) — surfaced honestly instead of silently
    *  serving the deterministic fallback as if it were reasoning. */
@@ -117,7 +121,7 @@ export class AgentRuntime {
 
   // ── lifecycle ────────────────────────────────────────────────────────────────────────────────
 
-  async register(spec: { id?: string; tenantId: string; agentId: string; name: string; role: string; industry: string; domain: RlDomain; everyMs?: number }): Promise<AgentInstance> {
+  async register(spec: { id?: string; tenantId: string; agentId: string; name: string; role: string; industry: string; domain: RlDomain; everyMs?: number; salaryInrMonth?: number; outcomeKind?: string }): Promise<AgentInstance> {
     if (!spec.tenantId) throw new CloudError('tenantId is required');
     const now = this.iso();
     const inst: AgentInstance = {
@@ -131,6 +135,9 @@ export class AgentRuntime {
       everyMs: clampEvery(spec.everyMs ?? 5 * 60_000),
       ticks: 0,
       tasksDone: 0,
+      salaryInrMonth: spec.salaryInrMonth,
+      outcomeKind: spec.outcomeKind,
+      outcomesDone: 0,
       status: 'idle',
       createdAt: now,
       updatedAt: now,
@@ -229,6 +236,12 @@ export class AgentRuntime {
       if (task.fromInbox) await this.deps.fs.remove?.(a.tenantId, task.path!).catch(() => null);
 
       a.tasksDone += task.fromInbox ? 1 : 0;
+      // Meter the OUTCOME (workforce): a completed inbox task is the unit of value the business
+      // buys — counted per-kind (lead_touched, invoice_chased, …), priced later, ungated.
+      if (task.fromInbox) {
+        a.outcomesDone = (a.outcomesDone ?? 0) + 1;
+        this.deps.billing?.meter(a.tenantId, 'outcome', 1, 0, { agent: a.agentId, role: a.role, kind: a.outcomeKind ?? 'task_completed' });
+      }
       a.status = 'idle';
       a.lastOutput = reasoned.text.slice(0, 280);
       a.lastError = undefined;
