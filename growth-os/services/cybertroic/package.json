@@ -1,0 +1,26 @@
+{
+  "name": "@growth-os/cybertroic",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GROWTH OS Cybertroic — the platform guardian/security service. A deterministic, tiered-model sentry (Sentry → Investigator → Specialist) that consumes the money/control event backbone (wallet.*, treasury.float.*, credit.consumed, action.plan.created/signed, action.executed), classifies each fact cheaply, and ESCALATES security-shaped events (spend-velocity anomaly, step-up reuse, float exhaustion, config drift) into a SecurityIncident — emitting security.incident / guardian.briefing and briefing the owner. It DETECTS + TRIAGES + RECOMMENDS + BRIEFS; destructive/irreversible containment always routes through the AI Manager firewall step-up rail, never here.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run",
+    "serve": "node --import tsx src/index.ts"
+  },
+  "dependencies": {
+    "@growth-os/events": "workspace:*",
+    "@growth-os/otel": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
