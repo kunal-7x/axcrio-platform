@@ -16,9 +16,11 @@
  * control plane up; the operator's browser is irrelevant.
  */
 import { randomUUID } from 'node:crypto';
+import { dispatch, type AgentAction } from './agent-actions.js';
 import { CloudError } from './cloud.js';
 import type { FeedbackHub, RlDomain, SentrySnapshot } from './feedback.js';
 import type { Billing } from './metering.js';
+import { parseAction, programFor } from './work-programs.js';
 
 /** Slice of the Cloud Drive the runtime reads/writes (FileSystem satisfies it). */
 export interface AgentFs {
@@ -45,6 +47,8 @@ export interface AgentInstance {
   salaryInrMonth?: number;
   outcomeKind?: string;
   outcomesDone?: number;
+  /** The most recent dispatched work action (the concrete deliverable, with its delivery status). */
+  lastAction?: AgentAction;
   status: 'idle' | 'working' | 'error';
   /** False once a model call fails (bad key / model down) — surfaced honestly instead of silently
    *  serving the deterministic fallback as if it were reasoning. */
@@ -219,8 +223,8 @@ export class AgentRuntime {
 
     try {
       const task = await this.nextTask(a);
-      const reasoned = await this.reason(a, task.body);
-      result = { id, ok: true, taskTitle: task.title, output: reasoned.text, usedLlm: reasoned.usedLlm };
+      const program = programFor(a.agentId);
+      const reasoned = await this.reason(a, task.body, program?.system(a.role, a.industry));
 
       // Meter the agent's LLM spend (P4) — tokens × rate, attributed to the tenant.
       if (this.deps.billing && reasoned.usedLlm && reasoned.tokens > 0) {
@@ -230,9 +234,34 @@ export class AgentRuntime {
         });
       }
 
+      // WORK PROGRAM (workforce): the reply must be a concrete ACTION for this role's job — parse
+      // it (deterministic role fallback if the model strayed or is offline) and DISPATCH it:
+      // money parks for approval, sends deliver (or stand honestly 'prepared'), records are written.
+      let display = reasoned.text;
+      if (program) {
+        const wa = (reasoned.usedLlm ? parseAction(reasoned.text) : null) ?? program.fallback(task.body);
+        const disp = await dispatch(wa, { money: program.money, fetchImpl: this.fetchImpl });
+        const act: AgentAction = {
+          ...wa,
+          at: stamp,
+          instId: a.id,
+          agentId: a.agentId,
+          role: a.role,
+          status: disp.status,
+          statusNote: disp.statusNote,
+          name: `${stamp.replace(/[:.]/g, '-')}-${wa.kind}.json`,
+        };
+        a.lastAction = act;
+        await this.deps.fs
+          .write(a.tenantId, `/agents/${a.id}/actions/${act.name}`, JSON.stringify(act, null, 2), 'utf8')
+          .catch(() => null);
+        display = `${wa.customerMessage ? wa.customerMessage + '\n\n' : ''}[${wa.kind} → ${disp.status}] ${disp.statusNote}`;
+      }
+      result = { id, ok: true, taskTitle: task.title, output: display, usedLlm: reasoned.usedLlm };
+
       const outPath = `/agents/${a.id}/outbox/${stamp.replace(/[:.]/g, '-')}.md`;
-      await this.deps.fs.write(a.tenantId, outPath, `# ${task.title}\n_${stamp}_\n\n${reasoned.text}\n`, 'utf8').catch(() => null);
-      await this.appendJournal(a, `- ${stamp} · ${task.title} → ${reasoned.text.slice(0, 80).replace(/\n/g, ' ')}…`);
+      await this.deps.fs.write(a.tenantId, outPath, `# ${task.title}\n_${stamp}_\n\n${display}\n`, 'utf8').catch(() => null);
+      await this.appendJournal(a, `- ${stamp} · ${task.title} → ${display.slice(0, 80).replace(/\n/g, ' ')}…`);
       if (task.fromInbox) await this.deps.fs.remove?.(a.tenantId, task.path!).catch(() => null);
 
       a.tasksDone += task.fromInbox ? 1 : 0;
@@ -243,7 +272,7 @@ export class AgentRuntime {
         this.deps.billing?.meter(a.tenantId, 'outcome', 1, 0, { agent: a.agentId, role: a.role, kind: a.outcomeKind ?? 'task_completed' });
       }
       a.status = 'idle';
-      a.lastOutput = reasoned.text.slice(0, 280);
+      a.lastOutput = display.slice(0, 280);
       a.lastError = undefined;
       a.lastTickAt = stamp;
       a.updatedAt = stamp;
@@ -267,6 +296,60 @@ export class AgentRuntime {
       await this.deps.feedback.reportSecurity(this.securitySnapshot(a, msg)).catch(() => null);
     }
     return result;
+  }
+
+  /** Drop a task into the agent's inbox — "give your employee work" from the panel. */
+  async assign(id: string, title: string, body: string, tenantId?: string): Promise<{ path: string }> {
+    const a = this.store.get(id);
+    if (!a || (tenantId && a.tenantId !== tenantId)) throw new CloudError(`agent '${id}' not found`, 'not_found');
+    const path = `/agents/${a.id}/inbox/${this.iso().replace(/[:.]/g, '-')}-task.md`;
+    await this.deps.fs.write(a.tenantId, path, `# ${title || 'Task'}\n${body}\n`, 'utf8');
+    return { path };
+  }
+
+  /** The agent's action log (newest first) — what it actually DID, with delivery status. */
+  async actions(id: string, tenantId?: string, limit = 20): Promise<AgentAction[]> {
+    const a = this.store.get(id);
+    if (!a || (tenantId && a.tenantId !== tenantId)) throw new CloudError(`agent '${id}' not found`, 'not_found');
+    let files: Array<{ name: string; path: string; kind: string }> = [];
+    try {
+      const { items } = await this.deps.fs.list(a.tenantId, `/agents/${a.id}/actions`);
+      files = items.filter((i) => i.kind === 'file').sort((x, y) => y.name.localeCompare(x.name)).slice(0, limit);
+    } catch {
+      return []; // no actions dir yet — the hire simply hasn't worked an action
+    }
+    const out: AgentAction[] = [];
+    for (const f of files) {
+      try {
+        const c = await this.deps.fs.read(a.tenantId, f.path);
+        const raw = c.encoding === 'base64' ? Buffer.from(c.content, 'base64').toString('utf8') : c.content;
+        out.push({ ...(JSON.parse(raw) as AgentAction), name: f.name });
+      } catch {
+        /* skip an unparseable record rather than failing the whole log */
+      }
+    }
+    return out;
+  }
+
+  /** Approve a parked (money) action — the human signal. Re-dispatches WITH approval; the result
+   *  (sent/prepared/recorded) replaces the parked record. Approval is a gate, never a bypass. */
+  async approveAction(id: string, name: string, tenantId?: string): Promise<AgentAction> {
+    const a = this.store.get(id);
+    if (!a || (tenantId && a.tenantId !== tenantId)) throw new CloudError(`agent '${id}' not found`, 'not_found');
+    if (!/^[\w][\w.-]*$/.test(name)) throw new CloudError('invalid action name', 'validation_failed');
+    const path = `/agents/${a.id}/actions/${name}`;
+    const c = await this.deps.fs.read(a.tenantId, path);
+    const raw = c.encoding === 'base64' ? Buffer.from(c.content, 'base64').toString('utf8') : c.content;
+    const act = JSON.parse(raw) as AgentAction;
+    if (act.status !== 'awaiting_approval') throw new CloudError('action is not awaiting approval', 'validation_failed');
+    const disp = await dispatch(act, { approved: true, fetchImpl: this.fetchImpl });
+    act.status = disp.status;
+    act.statusNote = `approved → ${disp.statusNote}`;
+    act.name = name;
+    await this.deps.fs.write(a.tenantId, path, JSON.stringify(act, null, 2), 'utf8');
+    if (a.lastAction?.at === act.at) a.lastAction = act;
+    a.updatedAt = this.iso();
+    return act;
   }
 
   // ── task source ────────────────────────────────────────────────────────────────────────────
@@ -295,7 +378,7 @@ export class AgentRuntime {
 
   // ── reasoning ────────────────────────────────────────────────────────────────────────────────
 
-  private async reason(a: AgentInstance, task: string): Promise<{ text: string; usedLlm: boolean; tokens: number }> {
+  private async reason(a: AgentInstance, task: string, systemOverride?: string): Promise<{ text: string; usedLlm: boolean; tokens: number }> {
     if (!this.apiKey) return { text: deterministicWork(a, task), usedLlm: false, tokens: 0 };
     try {
       const ctrl = new AbortController();
@@ -307,7 +390,7 @@ export class AgentRuntime {
           model: this.model,
           max_tokens: 700,
           messages: [
-            { role: 'system', content: `You are a ${a.role} agent for the ${a.industry} sector working inside Famit's 24/7 AI revenue workforce. Be concise, action-oriented, and produce concrete next steps. Never invent customer PII.` },
+            { role: 'system', content: systemOverride ?? `You are a ${a.role} agent for the ${a.industry} sector working inside Famit's 24/7 AI revenue workforce. Be concise, action-oriented, and produce concrete next steps. Never invent customer PII.` },
             { role: 'user', content: task },
           ],
         }),

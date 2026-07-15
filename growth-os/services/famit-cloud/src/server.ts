@@ -532,7 +532,7 @@ async function routeAgents(
   method: string,
   path: string,
   _u: URL,
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   deps: CloudServerDeps,
   tenant: string,
@@ -545,6 +545,29 @@ async function routeAgents(
   if (method === 'GET' && path === '/v1/agents') {
     json(res, 200, { items: agents.list(tenant), reasoning: agents.enabled() });
     return;
+  }
+  // Workforce supervision: assign work, read the action log, approve a parked (money) action.
+  const mt = path.match(/^\/v1\/agents\/([^/]+)\/task$/);
+  if (mt && method === 'POST') {
+    const body = (await readJson(req, deps.maxBodyBytes)) as { title?: string; body?: string };
+    if (!body.body || !String(body.body).trim()) {
+      json(res, 400, { error: { code: 'validation_failed', message: 'body is required' } });
+      return;
+    }
+    json(res, 200, await agents.assign(decodeURIComponent(mt[1]!), String(body.title ?? 'Task'), String(body.body), tenant));
+    return;
+  }
+  const ma = path.match(/^\/v1\/agents\/([^/]+)\/actions(?:\/([^/]+)\/approve)?$/);
+  if (ma) {
+    const id = decodeURIComponent(ma[1]!);
+    if (method === 'GET' && !ma[2]) {
+      json(res, 200, { items: await agents.actions(id, tenant) });
+      return;
+    }
+    if (method === 'POST' && ma[2]) {
+      json(res, 200, await agents.approveAction(id, decodeURIComponent(ma[2]!), tenant));
+      return;
+    }
   }
   const m = path.match(/^\/v1\/agents\/([^/]+)(?:\/(tick))?$/);
   if (m) {
