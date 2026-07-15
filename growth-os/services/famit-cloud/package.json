@@ -1,0 +1,34 @@
+{
+  "name": "@growth-os/famit-cloud",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Famit Cloud — the self-hostable compute + orchestration control plane that runs business operations 24/7. Workloads (job|service|cron) as first-class resources; a reconcile supervisor that keeps services alive (restart + backoff + crashloop), schedules cron, runs jobs; per-tenant quotas + isolation; pluggable runtimes (local process, self-hosted containers).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0 || true",
+    "test": "vitest run",
+    "serve": "node --import tsx src/index.ts",
+    "live:docker": "node --import tsx src/live-docker.ts",
+    "live:executor": "node --import tsx src/live-executor.ts",
+    "live:fleet": "node --import tsx src/live-fleet.ts",
+    "live:kafka": "node --import tsx src/live-kafka.ts",
+    "live:core": "node --import tsx src/live-core.ts"
+  },
+  "dependencies": {
+    "@growth-os/otel": "workspace:*",
+    "nats": "^2.29.3"
+  },
+  "devDependencies": {
+    "@growth-os/auth": "workspace:*",
+    "@growth-os/events": "workspace:*",
+    "@types/node": "^22.10.2",
+    "kafkajs": "^2.2.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
