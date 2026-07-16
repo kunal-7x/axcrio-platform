@@ -11,7 +11,6 @@ import Badge from "@/components/Badge";
 import Spinner from "@/components/Spinner";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import {
     getWebhooks,
     createWebhook,
@@ -40,7 +39,6 @@ export default function WebhooksPage() {
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState("");
     const [toast, setToast] = useState<Toast | null>(null);
-    const [delTarget, setDelTarget] = useState<string | null>(null);
 
     // Create form
     const [url, setUrl] = useState("");
@@ -92,10 +90,8 @@ export default function WebhooksPage() {
         }
     }
 
-    async function confirmDelete() {
-        const id = delTarget;
-        if (!id) return;
-        setDelTarget(null);
+    async function handleDelete(id: string) {
+        if (!confirm("Delete this webhook?")) return;
         try {
             await deleteWebhook(id);
             showToast("Webhook deleted", "success");
@@ -183,7 +179,7 @@ export default function WebhooksPage() {
                                                     <Button
                                                         isStroke
                                                         className="!h-9 !px-4 !text-body-2 !font-normal hover:!border-primary-03/40 hover:!text-primary-03"
-                                                        onClick={() => setDelTarget(w.id)}
+                                                        onClick={() => handleDelete(w.id)}
                                                     >
                                                         Delete
                                                     </Button>
@@ -237,14 +233,6 @@ export default function WebhooksPage() {
                     </div>
                 )}
             </div>
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={confirmDelete}
-                title="Delete this webhook?"
-                message="This webhook will stop receiving events. This action cannot be undone."
-            />
         </Layout>
     );
 }

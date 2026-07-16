@@ -1,0 +1,28 @@
+# Backend (caller.py) runtime deps — pinned to the versions the working box runs.
+# This is a CURATED list for the API server (not the voice agent, which needs the
+# heavy livekit-agents + torch stack and runs as a separate worker).
+#
+# AUTHORITATIVE SOURCE: if the backend container errors on a missing import, the
+# ground truth is a freeze from the live voice box's venv:
+#     <box>/.venv/bin/python -m pip freeze > deploy/requirements.backend.txt
+# then rebuild. Add whatever a backend module imports (e.g. boto3, redis, numpy).
+
+fastapi==0.138.0
+uvicorn[standard]>=0.30,<0.40
+httpx==0.28.1
+python-dotenv==1.2.2
+python-multipart>=0.0.9
+pydantic==2.13.4
+livekit-api==1.1.0
+protobuf==6.33.6
+openai==2.43.0
+boto3>=1.34,<2          # REC-B: HEAD-verify + presign the egress recording in DO Spaces
+azure-storage-blob>=12.19,<13   # REC-B-AZURE: SAS-presign + HEAD-verify the egress recording in Azure Blob (flag-gated: RECORDING_BACKEND=azure). Imported lazily in caller.py so its absence never breaks the default DO Spaces path.
+
+# Phase 3 observability — OpenTelemetry traces -> SigNoz (DORMANT unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set). All imports are try/except-guarded in caller.py, so the
+# backend still runs fine even if these are ever absent. (Prometheus /metrics is already served
+# by the existing `obs` module — no extra dep needed for it.)
+opentelemetry-sdk>=1.27,<2
+opentelemetry-exporter-otlp-proto-grpc>=1.27,<2
+opentelemetry-instrumentation-fastapi>=0.48b0

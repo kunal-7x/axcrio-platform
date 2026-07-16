@@ -6,12 +6,17 @@ import Button from "@/components/Button";
 import {
     getCampaign,
     updateCampaign,
+    generateCampaignScript,
     getPromptPreview,
+    getScriptStudioMeta,
     dryRunCampaign,
     type ScriptMeta,
     type DryRunResult,
     type CampaignFields,
+    type ScriptStudioMeta,
 } from "@/lib/api";
+import BlockBuilder, { type ScriptBlock } from "./_block-builder";
+import ScriptVersions, { type ScriptVersion, versionText } from "./_script-versions";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SCRIPT STUDIO — author a vendor's free-form SCRIPT for a campaign, see the
@@ -58,6 +63,26 @@ export default function ScriptStudio({
     const [saving, setSaving] = useState(false);
     const [banner, setBanner] = useState<Banner>(null);
 
+    // AI script drafting (Claude Sonnet 3.5)
+    const [gen, setGen] = useState(false);
+    const [brief, setBrief] = useState("");
+    const [draftedBy, setDraftedBy] = useState<string | null>(null);
+
+    // Script Builder 2.0 — proven-framework options fed to the generator.
+    const [studioMeta, setStudioMeta] = useState<ScriptStudioMeta | null>(null);
+    const [category, setCategory] = useState("");
+    const [goal, setGoal] = useState("");
+    const [warmth, setWarmth] = useState("");
+    const [tone, setTone] = useState("");
+    const [length, setLength] = useState("");
+    const [push, setPush] = useState("");
+    const [persona, setPersona] = useState("");
+    const [proofText, setProofText] = useState("");
+    const [mustText, setMustText] = useState("");
+    const [neverText, setNeverText] = useState("");
+    const [openerPurpose, setOpenerPurpose] = useState("");
+    const [optsOpen, setOptsOpen] = useState(false);
+
     // preview (rendered system prompt)
     const [preview, setPreview] = useState("");
     const [previewChars, setPreviewChars] = useState(0);
@@ -72,8 +97,24 @@ export default function ScriptStudio({
     const [dryRunning, setDryRunning] = useState(false);
     const [dryResult, setDryResult] = useState<DryRunResult | null>(null);
     const [dryErr, setDryErr] = useState("");
+    // P7.5 conversation simulator — the running transcript of caller ↔ agent turns
+    const [simTurns, setSimTurns] = useState<{ role: "user" | "agent"; text: string }[]>([]);
 
-    const dirty = script !== savedScript;
+    // P7.2 Script Studio 2.0 — block-builder mode (compiles to the same fields the agent reads)
+    const [mode, setMode] = useState<"script" | "blocks" | "versions">("script");
+    const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
+    const [versions, setVersions] = useState<ScriptVersion[]>([]); // P7.4 version history
+    const [savedBlocks, setSavedBlocks] = useState("[]");
+    const [v2, setV2] = useState(false);
+    const [savedV2, setSavedV2] = useState(false);
+    const [variables, setVariables] = useState<Record<string, string>>({});
+    const [savedVariables, setSavedVariables] = useState("{}");
+
+    const dirty =
+        script !== savedScript ||
+        JSON.stringify(blocks) !== savedBlocks ||
+        v2 !== savedV2 ||
+        JSON.stringify(variables) !== savedVariables;
 
     const flash = useCallback((b: Banner) => {
         setBanner(b);
@@ -112,6 +153,24 @@ export default function ScriptStudio({
                 setScript(raw);
                 setSavedScript(raw);
                 setScriptMeta((f.script_meta as ScriptMeta) ?? {});
+                // P7.2: hydrate the block model (cast — these are v2-only keys not on CampaignFields)
+                const fr = f as Record<string, unknown>;
+                const bl = Array.isArray(fr.script_blocks) ? (fr.script_blocks as ScriptBlock[]) : [];
+                setBlocks(bl);
+                setSavedBlocks(JSON.stringify(bl));
+                const on = String(fr.script_studio_v2 ?? "").toLowerCase() === "true" || fr.script_studio_v2 === true;
+                setV2(on);
+                setSavedV2(on);
+                const rawVars = (fr.script_variables && typeof fr.script_variables === "object"
+                    && !Array.isArray(fr.script_variables))
+                    ? (fr.script_variables as Record<string, unknown>) : {};
+                const vars: Record<string, string> = {};
+                for (const [vk, vv] of Object.entries(rawVars)) vars[vk] = String(vv ?? "");
+                setVariables(vars);
+                setSavedVariables(JSON.stringify(vars));
+                const vs = Array.isArray(fr.script_versions) ? (fr.script_versions as ScriptVersion[]) : [];
+                setVersions(vs);
+                if (bl.length > 0) setMode("blocks");
             } catch (e: unknown) {
                 if (alive)
                     setLoadErr(e instanceof Error ? e.message : "Could not load campaign");
@@ -124,6 +183,13 @@ export default function ScriptStudio({
             alive = false;
         };
     }, [campaignId, loadPreview]);
+
+    // load the Script Builder option catalogue (categories/goals/warmth/dials) once
+    useEffect(() => {
+        let alive = true;
+        getScriptStudioMeta().then((m) => { if (alive) setStudioMeta(m); }).catch(() => {});
+        return () => { alive = false; };
+    }, []);
 
     // mark preview stale once the script diverges from the loaded value
     useEffect(() => {
@@ -141,14 +207,69 @@ export default function ScriptStudio({
     }, [onClose]);
 
     // ── save: PATCH raw_script onto the FULL fields (backend replaces wholesale) ──
+    async function handleGenerate() {
+        if (!writable || gen) return;
+        setGen(true);
+        setBanner(null);
+        try {
+            const splitLines = (s: string) =>
+                s.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
+            const opts: Record<string, unknown> = {};
+            if (category) opts.category = category;
+            if (goal) opts.goal = goal;
+            if (warmth) opts.lead_warmth = warmth;
+            if (tone) opts.tone = tone;
+            if (length) opts.length = length;
+            if (push) opts.push = push;
+            if (persona.trim()) opts.persona = persona.trim();
+            if (openerPurpose.trim()) opts.opener_purpose = openerPurpose.trim();
+            if (proofText.trim()) opts.proof_points = splitLines(proofText);
+            if (mustText.trim()) opts.must_say = splitLines(mustText);
+            if (neverText.trim()) opts.never_say = splitLines(neverText);
+            const r = await generateCampaignScript(campaignId, brief, opts);
+            if (r.ok && r.script) {
+                setScript(r.script);
+                setDraftedBy(r.model_label || "Claude Sonnet 3.5");
+                flash({ kind: "success", msg: `Draft generated by ${r.model_label || "Claude Sonnet 3.5"} — review, tweak, then Save.` });
+            } else {
+                const msg = r.error === "no_openrouter_key"
+                    ? "AI drafting needs OPENROUTER_API_KEY configured on the server."
+                    : r.message || r.error || "Generation failed";
+                flash({ kind: "error", msg });
+            }
+        } catch (e: unknown) {
+            flash({ kind: "error", msg: e instanceof Error ? e.message : "Generation failed" });
+        } finally {
+            setGen(false);
+        }
+    }
+
     async function handleSave() {
         if (!writable || !fields) return;
         setSaving(true);
         setBanner(null);
         try {
-            const next: Record<string, unknown> = { ...fields, raw_script: script };
+            // P7.4: snapshot this save into the version history (bounded, de-duped by content).
+            const snap: ScriptVersion = {
+                v: versions.reduce((mx, s) => Math.max(mx, s.v || 0), 0) + 1,
+                at: new Date().toISOString(),
+                raw_script: script, script_blocks: blocks, script_studio_v2: v2, script_variables: variables,
+            };
+            const last = versions[versions.length - 1];
+            const nextVersions = last && versionText(last) === versionText(snap)
+                ? versions
+                : [...versions, snap].slice(-20);
+            const next: Record<string, unknown> = {
+                ...fields, raw_script: script,
+                script_blocks: blocks, script_studio_v2: v2, script_variables: variables,
+                script_versions: nextVersions,
+            };
             await updateCampaign(campaignId, next);
             setSavedScript(script);
+            setSavedBlocks(JSON.stringify(blocks));
+            setSavedV2(v2);
+            setSavedVariables(JSON.stringify(variables));
+            setVersions(nextVersions);
             setFields(next as CampaignFields);
             flash({ kind: "success", msg: "Script saved — the inbound agent now adopts it." });
             onSaved?.();
@@ -167,13 +288,32 @@ export default function ScriptStudio({
         }
     }
 
+    const restoreVersion = useCallback((s: ScriptVersion) => {
+        setScript(s.raw_script || "");
+        setBlocks(Array.isArray(s.script_blocks) ? s.script_blocks : []);
+        setV2(!!s.script_studio_v2);
+        setVariables((s.script_variables && typeof s.script_variables === "object")
+            ? (s.script_variables as Record<string, string>) : {});
+        setMode(s.script_studio_v2 && (s.script_blocks || []).length > 0 ? "blocks" : "script");
+        flash({ kind: "info", msg: `Restored v${s.v} into the editor — review, then Save to publish it.` });
+    }, [flash]);
+
     async function handleDryRun() {
-        if (!sample.trim()) return;
+        const msg = sample.trim();
+        if (!msg || dryRunning) return;
         setDryRunning(true);
         setDryErr("");
+        // P7.5: pass the prior transcript so the agent's reply is context-aware (true multi-turn).
+        const history = simTurns.map((t) => ({
+            role: (t.role === "agent" ? "assistant" : "user") as "assistant" | "user",
+            content: t.text,
+        }));
+        setSimTurns((prev) => [...prev, { role: "user", text: msg }]);
+        setSample("");
         try {
-            const r = await dryRunCampaign(campaignId, sample.trim(), asReturning);
+            const r = await dryRunCampaign(campaignId, msg, asReturning, history);
             setDryResult(r);
+            setSimTurns((prev) => [...prev, { role: "agent", text: r.agent_reply }]);
         } catch (e: unknown) {
             setDryErr(e instanceof Error ? e.message : "Dry-run failed");
         } finally {
@@ -189,6 +329,20 @@ export default function ScriptStudio({
     const doList = (scriptMeta.do ?? scriptMeta.do_list ?? []) as string[];
     const dontList = (scriptMeta.dont ?? scriptMeta.dont_list ?? []) as string[];
     const scriptHasContent = script.trim().length > 0;
+
+    // P7.5 optimization scoring — client-side heuristics over the RENDERED brain (preview). The
+    // lean-prompt rule (prompt.py): a long, dense brain makes the small model stutter/loop, so a
+    // shorter brain is faster + more reliable. ~tokens ≈ chars/4; readability ≈ words/sentence.
+    const score = useMemo(() => {
+        const text = preview || "";
+        const chars = text.length;
+        const words = (text.trim().match(/\S+/g) || []).length;
+        const sentences = (text.match(/[.!?。?]+/g) || []).length || 1;
+        const tokensEst = Math.round(chars / 4);
+        const wps = Math.round(words / sentences);
+        const bloat: "lean" | "ok" | "heavy" = chars <= 2000 ? "lean" : chars <= 3500 ? "ok" : "heavy";
+        return { chars, words, tokensEst, wps, bloat };
+    }, [preview]);
 
     return (
         <div
@@ -218,6 +372,23 @@ export default function ScriptStudio({
                         <p className="truncate text-caption text-t-secondary">
                             {campaignName} · paste a brief, preview the brain, dry-run a turn
                         </p>
+                    </div>
+                    {/* P7.2 — Free script ↔ Blocks (v2) mode toggle */}
+                    <div className="flex shrink-0 items-center gap-1 rounded-full bg-b-surface1 p-1 dark:bg-shade-04/40">
+                        {(["script", "blocks", "versions"] as const).map((m) => (
+                            <button
+                                key={m}
+                                type="button"
+                                onClick={() => setMode(m)}
+                                className={`h-8 rounded-full px-3.5 text-caption font-medium transition-colors max-sm:px-2.5 ${
+                                    mode === m
+                                        ? "bg-b-surface2 shadow-depth text-t-primary"
+                                        : "text-t-secondary hover:text-t-primary"
+                                }`}
+                            >
+                                {m === "script" ? "Free script" : m === "blocks" ? "Blocks" : "Versions"}
+                            </button>
+                        ))}
                     </div>
                     <button
                         onClick={onClose}
@@ -259,6 +430,25 @@ export default function ScriptStudio({
                                 <span className="size-1.5 rounded-full bg-current" />
                                 {loadErr}
                             </div>
+                        ) : mode === "blocks" ? (
+                            <BlockBuilder
+                                campaignId={campaignId}
+                                blocks={blocks}
+                                variables={variables}
+                                v2={v2}
+                                writable={writable}
+                                onBlocksChange={setBlocks}
+                                onVariablesChange={setVariables}
+                                onV2Change={setV2}
+                                onNotice={(kind, msg) => flash({ kind, msg })}
+                            />
+                        ) : mode === "versions" ? (
+                            <ScriptVersions
+                                versions={versions}
+                                current={{ raw_script: script, script_blocks: blocks, script_studio_v2: v2, script_variables: variables }}
+                                writable={writable}
+                                onRestore={restoreVersion}
+                            />
                         ) : (
                             <>
                                 <div className="flex items-center justify-between">
@@ -272,10 +462,116 @@ export default function ScriptStudio({
                                         />
                                         Vendor script
                                     </label>
-                                    <span className="text-caption text-t-tertiary tabular-nums">
-                                        {script.length.toLocaleString()} chars
-                                    </span>
+                                    <div className="flex items-center gap-2">
+                                        {draftedBy && (
+                                            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary-01/10 px-2.5 py-1 text-caption text-primary-01">
+                                                <Icon name="feather" className="size-3 fill-current" />
+                                                Drafted by {draftedBy}
+                                            </span>
+                                        )}
+                                        <span className="text-caption text-t-tertiary tabular-nums">
+                                            {script.length.toLocaleString()} chars
+                                        </span>
+                                    </div>
                                 </div>
+
+                                {/* Script Builder 2.0 — pick a proven framework + options, fed to the generator */}
+                                {writable && studioMeta && studioMeta.categories.length > 0 && (
+                                    <div className="rounded-2xl border border-s-stroke2 p-3 space-y-3">
+                                        <div className="flex items-center justify-between gap-2">
+                                            <span className="text-caption font-semibold text-t-primary">
+                                                Script Builder — choose the approach
+                                            </span>
+                                            {category && (
+                                                <span className="text-caption text-t-tertiary truncate">
+                                                    {studioMeta.categories.find((c) => c.id === category)?.framework}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                            {([
+                                                ["Category", category, setCategory, studioMeta.categories.map((c) => ({ id: c.id, label: c.label })), "Auto (general)"],
+                                                ["Goal", goal, setGoal, studioMeta.goals, "Auto"],
+                                                ["Lead", warmth, setWarmth, studioMeta.lead_warmth, "Auto"],
+                                                ["Tone", tone, setTone, studioMeta.tones.map((t) => ({ id: t, label: t })), "Default"],
+                                                ["Length", length, setLength, studioMeta.lengths.map((t) => ({ id: t, label: t })), "Default"],
+                                                ["Persistence", push, setPush, studioMeta.push.map((t) => ({ id: t, label: t })), "Default"],
+                                            ] as [string, string, (v: string) => void, { id: string; label: string }[], string][]).map(
+                                                ([lbl, val, setter, options, dflt]) => (
+                                                    <label key={lbl} className="flex flex-col gap-1 min-w-0">
+                                                        <span className="text-caption text-t-secondary">{lbl}</span>
+                                                        <select
+                                                            value={val}
+                                                            onChange={(e) => setter(e.target.value)}
+                                                            disabled={gen}
+                                                            className="h-9 rounded-lg border border-s-stroke2 bg-transparent px-2 text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight disabled:opacity-60"
+                                                        >
+                                                            <option value="">{dflt}</option>
+                                                            {options.map((o) => (
+                                                                <option key={o.id} value={o.id}>{o.label}</option>
+                                                            ))}
+                                                        </select>
+                                                    </label>
+                                                )
+                                            )}
+                                        </div>
+                                        {category && (
+                                            <p className="text-caption text-t-tertiary">
+                                                {studioMeta.categories.find((c) => c.id === category)?.when}
+                                            </p>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => setOptsOpen((o) => !o)}
+                                            className="text-caption text-primary-01 hover:underline"
+                                        >
+                                            {optsOpen ? "Hide advanced" : "Advanced — persona, proof, do/don't, opener purpose"}
+                                        </button>
+                                        {optsOpen && (
+                                            <div className="space-y-2">
+                                                {([
+                                                    [persona, setPersona, "Agent persona — e.g. warm senior advisor, 10 yrs in Pune real-estate"],
+                                                    [openerPurpose, setOpenerPurpose, "Opener purpose — the [purpose] line of the intro"],
+                                                    [proofText, setProofText, "Proof / credibility points (comma or newline separated)"],
+                                                    [mustText, setMustText, "Must mention at least once (comma or newline)"],
+                                                    [neverText, setNeverText, "Never say / avoid (comma or newline)"],
+                                                ] as [string, (v: string) => void, string][]).map(([val, setter, ph], i) => (
+                                                    <input
+                                                        key={i}
+                                                        value={val}
+                                                        onChange={(e) => setter(e.target.value)}
+                                                        disabled={gen}
+                                                        placeholder={ph}
+                                                        className="h-9 w-full rounded-lg border border-s-stroke2 bg-transparent px-3 text-body-2 text-t-primary outline-none transition-colors placeholder:text-t-secondary/45 hover:border-s-highlight focus:border-s-highlight disabled:opacity-60"
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* AI script drafting — Claude Sonnet 3.5 */}
+                                {writable && (
+                                    <div className="flex items-center gap-2 max-sm:flex-col max-sm:items-stretch">
+                                        <input
+                                            value={brief}
+                                            onChange={(e) => setBrief(e.target.value)}
+                                            disabled={gen}
+                                            placeholder="Optional: extra guidance for the AI (e.g. emphasize the festive discount, keep it under 90s)…"
+                                            className="h-10 min-w-0 flex-1 rounded-full border border-s-stroke2 bg-transparent px-4 text-body-2 text-t-primary outline-none transition-colors placeholder:text-t-secondary/45 hover:border-s-highlight focus:border-s-highlight disabled:opacity-60"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={handleGenerate}
+                                            disabled={gen}
+                                            title="Draft the call script with Claude Sonnet 3.5 from this campaign's details"
+                                            className="inline-flex shrink-0 items-center justify-center gap-2 h-10 px-4 rounded-full bg-primary-01 text-white text-button transition-all hover:brightness-110 active:scale-95 disabled:opacity-60"
+                                        >
+                                            <Icon name="feather" className={`size-4 fill-current ${gen ? "animate-spin" : ""}`} />
+                                            {gen ? "Drafting…" : script.trim() ? "Regenerate with AI" : "Generate with AI"}
+                                        </button>
+                                    </div>
+                                )}
 
                                 <textarea
                                     id="script-editor"
@@ -465,6 +761,26 @@ export default function ScriptStudio({
                                     </p>
                                 )}
                             </div>
+                            {preview && (
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-s-subtle px-4 py-2.5 text-caption">
+                                    <span className="text-t-tertiary">Optimization</span>
+                                    <span className="tabular-nums text-t-secondary">~{score.tokensEst.toLocaleString()} tokens</span>
+                                    <span className="tabular-nums text-t-secondary">{score.words.toLocaleString()} words</span>
+                                    <span className="tabular-nums text-t-secondary">~{score.wps}/sentence</span>
+                                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 ${
+                                        score.bloat === "lean" ? "bg-primary-02/10 text-primary-02"
+                                            : score.bloat === "ok" ? "bg-primary-01/10 text-primary-01"
+                                                : "bg-primary-03/10 text-primary-03"}`}>
+                                        {score.bloat === "lean" ? "lean — fast" : score.bloat === "ok" ? "okay" : "heavy — may slow / loop"}
+                                    </span>
+                                    {score.bloat === "heavy" && (
+                                        <span className="text-t-tertiary">Trim long sections — a shorter brain is faster &amp; less likely to stutter.</span>
+                                    )}
+                                    {score.bloat !== "heavy" && score.wps > 24 && (
+                                        <span className="text-t-tertiary">Long sentences — break them up for natural speech.</span>
+                                    )}
+                                </div>
+                            )}
                         </div>
 
                         {/* dry-run */}
@@ -472,7 +788,7 @@ export default function ScriptStudio({
                             <div className="flex items-center gap-2 border-b border-s-subtle px-4 py-3">
                                 <Icon name="chat-think" className="size-4 fill-t-secondary" />
                                 <span className="text-button text-t-primary">
-                                    Dry-run a turn
+                                    Conversation simulator
                                 </span>
                                 <span className="pill pill-neutral ml-auto">
                                     free · no call
@@ -553,44 +869,48 @@ export default function ScriptStudio({
                                     </div>
                                 )}
 
-                                {dryResult && (
+                                {simTurns.length > 0 && (
                                     <div className="space-y-2 step-reveal">
-                                        {/* caller bubble — right */}
-                                        <div className="flex justify-end">
-                                            <div className="max-w-[80%] rounded-2xl rounded-br-md bg-primary-01/12 px-3.5 py-2.5 text-body-2 text-t-primary">
-                                                {dryResult.sample_user}
+                                        {simTurns.map((turn, i) => (
+                                            <div key={i} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
+                                                <div className={turn.role === "user"
+                                                    ? "max-w-[80%] rounded-2xl rounded-br-md bg-primary-01/12 px-3.5 py-2.5 text-body-2 text-t-primary"
+                                                    : "max-w-[85%] rounded-2xl rounded-bl-md bg-b-surface1 px-3.5 py-2.5 text-body-2 text-t-primary ring-1 ring-s-subtle dark:bg-shade-04/50"}>
+                                                    {turn.text}
+                                                </div>
                                             </div>
-                                        </div>
-                                        {/* agent bubble — left */}
-                                        <div className="flex justify-start">
-                                            <div className="max-w-[85%] rounded-2xl rounded-bl-md bg-b-surface1 px-3.5 py-2.5 text-body-2 text-t-primary ring-1 ring-s-subtle dark:bg-shade-04/50">
-                                                {dryResult.agent_reply}
-                                            </div>
-                                        </div>
+                                        ))}
+                                        {dryRunning && (
+                                            <div className="flex justify-start"><div className="rounded-2xl rounded-bl-md bg-b-surface1 px-3.5 py-2.5 text-caption text-t-tertiary ring-1 ring-s-subtle dark:bg-shade-04/50">…thinking</div></div>
+                                        )}
                                         <div className="flex flex-wrap items-center gap-2 pt-1">
-                                            {dryResult.vendor_script_active_in_preview && (
+                                            {dryResult?.vendor_script_active_in_preview && (
                                                 <span className="pill pill-success">
                                                     <span className="pill-dot" />
                                                     persona adopted
                                                 </span>
                                             )}
-                                            <span className="pill pill-neutral">
-                                                {dryResult.used_llm
-                                                    ? `${dryResult.provider} · ${dryResult.model}`
-                                                    : "fallback (LLM down)"}
-                                            </span>
-                                            <span className="text-caption text-t-tertiary">
-                                                {dryResult.note}
-                                            </span>
+                                            {dryResult && (
+                                                <span className="pill pill-neutral">
+                                                    {dryResult.used_llm ? `${dryResult.provider} · ${dryResult.model}` : "fallback (LLM down)"}
+                                                </span>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => { setSimTurns([]); setDryResult(null); }}
+                                                className="ml-auto text-caption text-t-secondary transition-colors hover:text-t-primary"
+                                            >
+                                                Reset conversation
+                                            </button>
                                         </div>
                                     </div>
                                 )}
 
-                                {!dryResult && !dryErr && (
+                                {simTurns.length === 0 && !dryErr && (
                                     <p className="text-caption text-t-tertiary">
                                         {scriptHasContent
-                                            ? "Run a sample line to see the adopted greeting and response."
-                                            : "Tip: this campaign has no script yet — it will dry-run the default inbound brain. Paste a script on the left to shape it."}
+                                            ? "Send a few caller lines to simulate the whole conversation — the agent remembers the turns."
+                                            : "Tip: this campaign has no script yet — it will simulate the default inbound brain. Build a script on the left to shape it."}
                                     </p>
                                 )}
                             </div>

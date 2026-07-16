@@ -1,0 +1,9 @@
+# syntax=docker/dockerfile:1
+# Caddy with the Cloudflare DNS plugin, so it can solve the ACME DNS-01
+# challenge (required because haptica.famit.in is proxied/orange — HTTP &
+# TLS-ALPN challenges can't reach the origin through Cloudflare).
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2-alpine
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

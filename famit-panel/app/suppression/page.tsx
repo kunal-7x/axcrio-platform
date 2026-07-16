@@ -11,7 +11,6 @@ import Badge from "@/components/Badge";
 import Spinner from "@/components/Spinner";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 
 import { getSuppression, addSuppression, deleteSuppression, type SuppressionEntry } from "@/lib/api";
 
@@ -39,7 +38,6 @@ export default function SuppressionPage() {
     const [file, setFile] = useState<File | null>(null);
     const [adding, setAdding] = useState(false);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
-    const [delTarget, setDelTarget] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const showToast = (msg: string, ok = true) => {
@@ -74,10 +72,8 @@ export default function SuppressionPage() {
         }
     }
 
-    async function confirmDelete() {
-        const phone = delTarget;
-        if (!phone) return;
-        setDelTarget(null);
+    async function handleDelete(phone: string) {
+        if (!confirm(`Remove ${phone} from the Do-Not-Call list?`)) return;
         try {
             await deleteSuppression(phone);
             showToast(`Removed ${phone}`);
@@ -159,7 +155,7 @@ export default function SuppressionPage() {
                                                 <Button
                                                     isStroke
                                                     className="!h-9 !px-4 !text-body-2 !font-normal hover:!border-primary-03/40 hover:!text-primary-03"
-                                                    onClick={() => setDelTarget(e.phone)}
+                                                    onClick={() => handleDelete(e.phone)}
                                                 >
                                                     Remove
                                                 </Button>
@@ -218,24 +214,6 @@ export default function SuppressionPage() {
                     </Card>
                 </div>
             </div>
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={confirmDelete}
-                title="Remove from Do-Not-Call?"
-                message={
-                    <>
-                        Remove{" "}
-                        <span className="text-t-primary tabular-nums">
-                            {delTarget}
-                        </span>{" "}
-                        from the Do-Not-Call list? This number can be dialed
-                        again.
-                    </>
-                }
-                confirmLabel="Remove"
-            />
         </Layout>
     );
 }

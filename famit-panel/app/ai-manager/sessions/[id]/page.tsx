@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Layout from "@/components/Layout";
+import AudioPlayer from "@/components/AudioPlayer";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
@@ -275,27 +276,10 @@ export default function AimSessionDetailPage() {
                     {s && hasRecording && (
                         <div className="mt-4 pt-4 border-t border-s-subtle">
                             {recordingUrl ? (
-                                <div className="flex items-center gap-3 max-sm:flex-col max-sm:items-stretch">
-                                    <span className="grid place-items-center size-9 shrink-0 rounded-xl bg-primary-01/10 fill-primary-01 max-sm:hidden">
-                                        <Icon name="camera-video" className="size-4 fill-inherit" />
-                                    </span>
-                                    <audio
-                                        controls
-                                        preload="none"
-                                        src={recordingUrl}
-                                        className="h-10 w-full max-w-xl"
-                                    >
-                                        Your browser does not support the audio element.
-                                    </audio>
-                                    <a
-                                        href={recordingUrl}
-                                        download
-                                        className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3.5 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
-                                    >
-                                        <Icon name="download" className="size-3.5 fill-current" />
-                                        Download
-                                    </a>
-                                </div>
+                                <AudioPlayer
+                                    src={recordingUrl}
+                                    durationFallback={s?.recording_duration_s}
+                                />
                             ) : (
                                 <div className="flex items-center gap-2.5 text-caption text-t-tertiary">
                                     <Icon name="camera-video" className="size-4 fill-t-tertiary shrink-0" />

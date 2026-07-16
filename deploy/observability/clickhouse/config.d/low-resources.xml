@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!--
+  Keep ClickHouse modest on the shared haptica-prod box (it co-tenants with the voice worker,
+  backend, LiveKit + frontend). Single node, no replication/keeper. Caps RAM to ~30% of host so
+  it can never starve the live voice path. Mounted at /etc/clickhouse-server/config.d/.
+-->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.3</max_server_memory_usage_to_ram_ratio>
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <background_pool_size>4</background_pool_size>
+    <background_schedule_pool_size>4</background_schedule_pool_size>
+    <max_concurrent_queries>16</max_concurrent_queries>
+    <listen_host>0.0.0.0</listen_host>
+    <logger>
+        <level>warning</level>
+    </logger>
+</clickhouse>

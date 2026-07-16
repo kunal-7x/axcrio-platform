@@ -1,0 +1,8 @@
+# Drop-in override for /opt/signoz/deploy/docker/ — publishes ClickHouse's HTTP port so the
+# Haptica backend (haptica-prod) can run read-only analytical queries for the native, white-
+# labeled observability dashboards. The port is restricted to haptica-prod by the DOCKER-USER
+# firewall (haptica-obs-fw.sh) — it is NOT open to the public internet.
+services:
+  clickhouse:
+    ports:
+      - "8123:8123"

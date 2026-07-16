@@ -217,9 +217,11 @@ export function createAurora(canvas: HTMLCanvasElement): AuroraHandle | null {
     const uColorB = gl.getUniformLocation(prog, "uColorB");
     const uColorC = gl.getUniformLocation(prog, "uColorC");
 
-    let colA: RGB01 = [0.04, 0.05, 0.09];
-    let colB: RGB01 = [0.165, 0.522, 1.0]; // #2a85ff
-    let colC: RGB01 = [0.82, 0.9, 1.0];
+    // Warm Geist aurora: near-black base -> Book Cloth clay energy -> Manilla
+    // highlight. CSS-var overrides in .gl-card take precedence.
+    let colA: RGB01 = [0.063, 0.043, 0.035];
+    let colB: RGB01 = [0.8, 0.471, 0.361]; // #cc785c Book Cloth
+    let colC: RGB01 = [0.922, 0.859, 0.737]; // #ebdbbc Manilla
 
     // smoothed uniforms so phase changes ease instead of snapping
     let curIntensity = 0.3;

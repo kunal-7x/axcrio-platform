@@ -137,14 +137,11 @@ class BrainPacks:
             objective = f"{pack.objective_template} For THIS campaign, the stated goal is: {goal}."
         # append the opening-style + objection stance directives (behavioral, mode-
         # tilted; support/complaint stance is de-escalation, never counter-sell).
-        # R5-P1.4: the pack `closing_style` is DROPPED here — the close discipline
-        # (WHEN to close + ONE warm self-authored line + confirm next step + no
-        # canned phrase) is now carried, without duplication, by the L0 ENGAGEMENT
-        # block (outbound.py SHARED_RULES_ENGAGEMENT) + delivery.closing_directive().
-        # The mode-specific `opening_style` skeleton is kept (cheap, mode-tilted).
         directives = [objective]
         if pack.opening_style:
             directives.append(f"OPENING: {pack.opening_style}")
+        if pack.closing_style:
+            directives.append(f"CLOSING: {pack.closing_style}")
         directives.append(render_objection_directive(use_case))
         directives.append(language_directive())
         # W-VOICE-HEART: human-delivery rules — exactly ONE greeting (no re-greet/

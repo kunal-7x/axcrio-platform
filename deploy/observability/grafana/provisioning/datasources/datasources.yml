@@ -1,0 +1,21 @@
+# Grafana datasources (auto-provisioned). Prometheus is the metrics source. SigNoz's ClickHouse
+# can be added as a second datasource once SigNoz is up (see README.md) for trace/log dashboards.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "30s"
+
+  # Uncomment after SigNoz is deployed (Phase 3b) to dashboard traces/logs metrics from its
+  # ClickHouse. The host is the SigNoz clickhouse container reachable on the obs droplet.
+  # - name: SigNoz-ClickHouse
+  #   type: grafana-clickhouse-datasource
+  #   access: proxy
+  #   url: http://<clickhouse-host>:8123
+  #   editable: false

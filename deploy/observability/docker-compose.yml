@@ -1,0 +1,67 @@
+# Haptica observability — METRICS half (Prometheus + Grafana + host/container exporters).
+# Runs on the dedicated haptica-observability droplet (NOT the prod box). SigNoz (traces + logs
+# + app metrics via OTLP) is deployed separately from its official repo — see README.md.
+#
+# WHITE-LABEL + SECURITY: nothing here is published to the public internet beyond what the
+# droplet firewall allows (UFW lets ONLY haptica-prod reach these ports). Grafana/Prometheus
+# are NEVER shown to clients — Haptica's backend queries them server-side and renders native,
+# core-design-system charts. The vendor UIs exist only for the operator over the private path.
+name: haptica-obs
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"   # firewalled to haptica-prod only (Haptica backend queries this API)
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      # Grafana is operator-only over the private path; set a strong password via .env.obs.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-in-.env.obs}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"   # firewalled to haptica-prod only
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - "/:/host:ro,rslave"
+    pid: host
+    # scraped by Prometheus on the internal network (no host port needed)
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - "/:/rootfs:ro"
+      - "/var/run:/var/run:ro"
+      - "/sys:/sys:ro"
+      - "/var/lib/docker/:/var/lib/docker:ro"
+      - "/dev/disk/:/dev/disk:ro"
+    # scraped by Prometheus on the internal network (no host port needed)
+
+volumes:
+  prometheus-data:
+  grafana-data:

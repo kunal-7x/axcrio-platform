@@ -1,15 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { login } from "@/lib/api";
 import { seedMeFromLogin } from "@/lib/auth";
+import { HapticMark } from "@/components/Logo";
 
+// Premium split login (reference-aligned): a big white rounded card on the right
+// (Welcome Back + form), a tall image hero card on the left ("Spark the Voice of
+// AI"). The hero uses /images/login-hero.png if present, with a rich gradient
+// fallback so it always looks premium. NOTE: this colourful hero is the ONE
+// intentional exception to the app-wide monochrome system (it's the brand front
+// door); everything inside the app stays monochrome.
 export default function LoginPage() {
     const router = useRouter();
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
+    const [show, setShow] = useState(false);
+    const [remember, setRemember] = useState(true);
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
@@ -22,193 +31,172 @@ export default function LoginPage() {
             localStorage.setItem("famit_token", res.token);
             seedMeFromLogin({ ...res, email });
             router.push("/");
-        } catch {
-            setError("Invalid email or password. Please try again.");
+        } catch (err) {
+            setError(
+                err instanceof Error && err.message
+                    ? err.message
+                    : "Invalid email or password. Please try again."
+            );
         } finally {
             setLoading(false);
         }
     }
 
     return (
-        <div className="min-h-screen flex bg-b-surface1">
-            {/* ── Brand panel (left) — the signature, hidden on small screens ── */}
-            <aside className="relative hidden lg:flex w-[44%] max-2xl:w-[40%] flex-col justify-between overflow-hidden bg-shade-01 p-12 text-shade-10">
-                {/* atmosphere: brand glow + a faint signal grid */}
-                <div className="absolute inset-0 brand-glow opacity-80" aria-hidden />
-                <div
-                    className="absolute inset-0 opacity-[0.06]"
-                    aria-hidden
-                    style={{
-                        backgroundImage:
-                            "linear-gradient(var(--primary-01) 1px, transparent 1px), linear-gradient(90deg, var(--primary-01) 1px, transparent 1px)",
-                        backgroundSize: "44px 44px",
-                    }}
-                />
-                <div
-                    className="absolute -right-24 -top-24 size-72 rounded-full blur-3xl opacity-30"
-                    aria-hidden
-                    style={{ background: "var(--primary-01)" }}
-                />
+        <div className="min-h-screen w-full bg-white p-3 sm:p-4 lg:p-5">
+            <div className="flex min-h-[calc(100vh-1.5rem)] sm:min-h-[calc(100vh-2rem)] gap-4 max-lg:gap-0">
+                {/* ── Hero card (left) — the prism brand card, floating on white ── */}
+                <aside className="relative hidden lg:flex w-[46%] max-2xl:w-[42%] rounded-[1.75rem] overflow-hidden">
+                    {/* prism hero: real image if dropped at /images/login-hero.png, else a
+                        premium iridescent gradient fallback. */}
+                    <div
+                        className="absolute inset-0"
+                        aria-hidden
+                        style={{
+                            background:
+                                "url('/images/login-hero.png') center/cover no-repeat, " +
+                                "linear-gradient(150deg,#15102e 0%,#3a1d72 26%,#7b34c9 46%,#c8487f 64%,#3b2475 84%,#120b22 100%)",
+                        }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-black/25" aria-hidden />
 
-                {/* wordmark */}
-                <div className="relative flex items-center gap-3">
-                    <span className="relative flex items-center justify-center size-11 rounded-2xl bg-white/5 ring-1 ring-white/10 overflow-hidden">
-                        <Image
-                            src="/images/famit-mark-white-trim.png"
-                            alt=""
-                            width={26}
-                            height={26}
-                            className="relative object-contain"
-                            priority
-                        />
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 text-h5 font-semibold tracking-[-0.02em] text-white">
-                        Famit
-                        <span className="size-1.5 rounded-full bg-primary-01 mb-3 shadow-[0_0_8px_0_var(--primary-01)]" />
-                    </span>
-                </div>
-
-                {/* headline */}
-                <div className="relative max-w-md">
-                    <h2 className="text-h3 font-semibold tracking-[-0.02em] text-white">
-                        AI voice agents that
-                        <br />
-                        actually sell.
-                    </h2>
-                    <p className="mt-4 text-body-1 text-white/55">
-                        Launch campaigns, dial leads at scale, and watch every
-                        conversation, outcome and rupee in one console.
-                    </p>
-
-                    <div className="mt-8 flex flex-wrap gap-2.5">
-                        {["Live call analytics", "Per-campaign voices", "A/B testing", "Real cost metering"].map(
-                            (f) => (
-                                <span
-                                    key={f}
-                                    className="inline-flex items-center gap-2 h-8 px-3 rounded-full bg-white/5 ring-1 ring-white/10 text-caption text-white/70"
-                                >
-                                    <span className="size-1.5 rounded-full bg-primary-01" />
-                                    {f}
-                                </span>
-                            )
-                        )}
-                    </div>
-                </div>
-
-                <div className="relative text-caption text-white/40">
-                    © {new Date().getFullYear()} Famit · AI Tele-Calling Platform
-                </div>
-            </aside>
-
-            {/* ── Sign-in panel (right) ── */}
-            <main className="relative flex flex-1 items-center justify-center p-6">
-                <div className="w-full max-w-sm rise-in">
-                    {/* compact wordmark for small screens */}
-                    <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-                        <span className="relative flex items-center justify-center size-10 rounded-2xl bg-shade-01 overflow-hidden ring-1 ring-s-subtle">
-                            <span className="absolute inset-0 brand-glow opacity-60" aria-hidden />
-                            <Image
-                                src="/images/famit-mark-white-trim.png"
-                                alt=""
-                                width={24}
-                                height={24}
-                                className="relative object-contain"
-                                priority
-                            />
-                        </span>
-                        <span className="wordmark text-h6">
-                            Famit
-                            <span className="size-1.5 rounded-full bg-primary-01 -ml-0.5 mb-3" />
-                        </span>
-                    </div>
-
-                    <div className="page-head-eyebrow mb-2">
-                        <span
-                            className="size-1.5 rounded-full bg-primary-01 shadow-[0_0_8px_0_var(--primary-01)]"
-                            aria-hidden
-                        />
-                        Welcome back
-                    </div>
-                    <h1 className="text-h4 text-t-primary">Sign in to Famit</h1>
-                    <p className="mt-2 mb-8 text-body-2 text-t-secondary">
-                        Enter your credentials to access the panel.
-                    </p>
-
-                    <form onSubmit={handleSubmit} className="space-y-5">
-                        <div>
-                            <label className="block text-button mb-2.5 text-t-primary">
-                                Email
-                            </label>
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                className="input-base w-full h-12 px-4.5 rounded-2xl text-body-2"
-                                placeholder="you@company.com"
-                                required
-                                autoComplete="email"
-                            />
+                    <div className="relative flex flex-col justify-between p-10 text-white">
+                        <div className="flex items-center gap-3 text-caption font-medium uppercase tracking-[0.22em] text-white/70">
+                            Haptica AI
+                            <span className="h-px w-12 bg-white/40" />
                         </div>
 
-                        <div>
-                            <label className="block text-button mb-2.5 text-t-primary">
-                                Password
-                            </label>
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="input-base w-full h-12 px-4.5 rounded-2xl text-body-2"
-                                placeholder="Enter password"
-                                required
-                                autoComplete="current-password"
-                            />
+                        <div className="max-w-md">
+                            <h2 className="font-serif text-[2.75rem] leading-[1.05] tracking-tight text-white">
+                                Spark the voice of your business with Famit AI
+                            </h2>
+                            <p className="mt-4 text-body-2 text-white/65">
+                                Launch campaigns, dial leads at scale, and watch every
+                                conversation, outcome and rupee — in one console.
+                            </p>
                         </div>
+                    </div>
+                </aside>
 
-                        {error && (
-                            <div className="toast toast-error !mb-0">
-                                <span className="flex items-center gap-2">
-                                    <span className="size-1.5 rounded-full bg-current" />
-                                    {error}
+                {/* ── Sign-in panel (right) ── */}
+                <main className="relative flex flex-1 flex-col bg-white text-[#0b0b0f]">
+                    {/* brand top */}
+                    <div className="flex justify-center pt-10">
+                        <div className="flex items-center gap-2.5">
+                            <span className="flex items-center justify-center size-8 rounded-xl bg-[#0b0b0f]">
+                                <HapticMark className="size-5 text-white" />
+                            </span>
+                            <span className="flex flex-col leading-none">
+                                <span className="text-button font-semibold tracking-[-0.02em] text-[#0b0b0f]">
+                                    Haptica AI
                                 </span>
-                            </div>
-                        )}
+                                <span className="mt-0.5 text-[0.5625rem] font-medium uppercase tracking-[0.14em] text-black/40">
+                                    by Famit
+                                </span>
+                            </span>
+                        </div>
+                    </div>
 
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="group relative w-full inline-flex items-center justify-center gap-2 h-12 px-7 rounded-2xl text-button cursor-pointer transition-all active:scale-[0.99] disabled:pointer-events-none disabled:opacity-60 bg-linear-to-b from-[#2C2C2C] to-[#282828] shadow-[inset_2px_0px_8px_2px_rgba(248,248,248,0.20)] text-t-light fill-t-light after:absolute after:inset-0 after:border-[1.5px] after:border-white/20 after:rounded-2xl after:[mask-image:linear-gradient(to_top,transparent_0,black_100%)] hover:shadow-none dark:from-shade-10 dark:to-[#DEDEDE]"
-                        >
-                            {loading && (
-                                <svg
-                                    className="animate-spin h-4 w-4"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
+                    <div className="flex flex-1 items-center justify-center px-6 py-10">
+                        <div className="w-full max-w-[26rem]">
+                            <h1 className="text-center font-serif text-[2.5rem] leading-tight tracking-tight text-[#0b0b0f]">
+                                Welcome Back
+                            </h1>
+                            <p className="mt-2 mb-9 text-center text-body-2 text-black/50">
+                                Enter your email and password to access your account
+                            </p>
+
+                            <form onSubmit={handleSubmit} className="space-y-5">
+                                <div>
+                                    <label className="block text-button mb-2 text-[#0b0b0f]">Email</label>
+                                    <input
+                                        type="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        className="w-full h-12 px-4 rounded-xl bg-[#f4f5f7] border border-transparent text-body-2 text-[#0b0b0f] placeholder:text-black/35 outline-none transition-colors focus:border-[#0b0b0f]/30 focus:bg-white"
+                                        placeholder="Enter your email"
+                                        required
+                                        autoComplete="email"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-button mb-2 text-[#0b0b0f]">Password</label>
+                                    <div className="relative">
+                                        <input
+                                            type={show ? "text" : "password"}
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            className="w-full h-12 pl-4 pr-12 rounded-xl bg-[#f4f5f7] border border-transparent text-body-2 text-[#0b0b0f] placeholder:text-black/35 outline-none transition-colors focus:border-[#0b0b0f]/30 focus:bg-white"
+                                            placeholder="Enter your password"
+                                            required
+                                            autoComplete="current-password"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShow((s) => !s)}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center size-7 rounded-md text-black/40 hover:text-black/70"
+                                            aria-label={show ? "Hide password" : "Show password"}
+                                        >
+                                            {show ? "🙈" : "👁"}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center justify-between text-body-2">
+                                    <label className="flex items-center gap-2 cursor-pointer text-black/60 select-none">
+                                        <input
+                                            type="checkbox"
+                                            checked={remember}
+                                            onChange={(e) => setRemember(e.target.checked)}
+                                            className="size-4 rounded border-black/20 accent-[#0b0b0f]"
+                                        />
+                                        Remember me
+                                    </label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setError("Password reset isn't available yet — contact your admin.")}
+                                        className="font-medium text-[#0b0b0f] hover:opacity-70"
+                                    >
+                                        Forgot Password
+                                    </button>
+                                </div>
+
+                                {error && (
+                                    <div className="rounded-xl bg-[#fdecec] border border-[#f3c9c9] px-4 py-3 text-body-2 text-[#b42323]">
+                                        {error}
+                                    </div>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    disabled={loading}
+                                    className="w-full h-12 rounded-xl bg-[#0b0b0f] text-white text-button transition-all hover:opacity-90 active:scale-[0.99] disabled:opacity-60"
                                 >
-                                    <circle
-                                        className="opacity-25"
-                                        cx="12"
-                                        cy="12"
-                                        r="10"
-                                        stroke="currentColor"
-                                        strokeWidth="4"
-                                    />
-                                    <path
-                                        className="opacity-75"
-                                        fill="currentColor"
-                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                                    />
-                                </svg>
-                            )}
-                            {loading ? "Signing in..." : "Sign in"}
-                        </button>
-                    </form>
+                                    {loading ? "Signing in…" : "Sign In"}
+                                </button>
 
-                    <p className="mt-8 text-caption text-t-tertiary">
-                        Secured access · contact your administrator for an account.
-                    </p>
-                </div>
-            </main>
+                                <button
+                                    type="button"
+                                    onClick={() => setError("Google sign-in is coming soon — use email for now.")}
+                                    className="w-full h-12 rounded-xl bg-white border border-black/15 text-button text-[#0b0b0f] inline-flex items-center justify-center gap-2.5 transition-colors hover:bg-black/[0.03]"
+                                >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img src="/images/google.svg" alt="" width={18} height={18} className="size-[18px]" />
+                                    Sign In with Google
+                                </button>
+                            </form>
+
+                            <p className="mt-10 text-center text-body-2 text-black/50">
+                                Don&apos;t have an account?{" "}
+                                <Link href="/signup" className="font-semibold text-[#0b0b0f] hover:opacity-70">
+                                    Create one
+                                </Link>
+                            </p>
+                        </div>
+                    </div>
+                </main>
+            </div>
         </div>
     );
 }

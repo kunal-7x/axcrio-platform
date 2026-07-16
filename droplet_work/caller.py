@@ -19,6 +19,7 @@ import re
 import secrets
 import time
 import unicodedata
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -94,6 +95,42 @@ try:
 except Exception:  # noqa: BLE001
     _audit_mod = None
 
+# System error & event log (white-labeled "System Logs" in the panel). Best-effort + dormant-
+# safe; never breaks a request. init() after VAR. See logging_service.py for the design laws.
+try:
+    import logging_service as _log_mod
+except Exception:  # noqa: BLE001
+    _log_mod = None
+
+# Observability analytics (read-only ClickHouse queries for the native traces/APM dashboards).
+# Import-guarded; every query degrades to a clean error shape. See obs_query.py.
+try:
+    import obs_query as _obs_q
+except Exception:  # noqa: BLE001
+    _obs_q = None
+
+# AI campaign-script drafting (Claude Sonnet 3.5). Import-guarded; dormant-safe (no key -> clean
+# error). Powers the Script Studio "Generate with AI" button. See script_gen.py.
+try:
+    import script_gen as _script_gen
+except Exception:  # noqa: BLE001
+    _script_gen = None
+
+# Post-call transcript CONTENT-quality analysis (LLM via OpenRouter). Import-guarded; dormant-safe.
+# Powers the "Transcript quality" card in Voice Analytics. See transcript_quality.py.
+try:
+    import transcript_quality as _tq
+except Exception:  # noqa: BLE001
+    _tq = None
+
+# P7 Script Studio 2.0 block compiler. Import-guarded; only engaged when a campaign opts into
+# script_studio_v2 (else a pure no-op). Compiles typed blocks DOWN to the consumed fields so the
+# live agent path is unchanged. See script_compiler.py.
+try:
+    import script_compiler as _script_compiler
+except Exception:  # noqa: BLE001
+    _script_compiler = None
+
 # F2 Business Brain + Knowledge Base (RAG) substrate (import-safe; dormant-degrade).
 # brain = structured per-org identity store (JSON mode); kb = pgvector+FTS corpus.
 # Both no-op cleanly when their deps are absent. The live voice path imports NEITHER.
@@ -168,35 +205,6 @@ def _w9_transcript_provider(tenant_id, call_id):   # noqa: ANN001
         return None
     return {"turns": tr.get("turns", []), "text": tr.get("summary", "")}
 
-
-def _conv_prob_frac(v):  # noqa: ANN001
-    """R6-B7: coerce any interest/probability value to a 0-1 fraction, clamped to [0,1].
-
-    Accepts a raw 0-100 score (e.g. `interest`), a 0-1 fraction, or None. Anything > 1 is treated
-    as a percent and divided by 100; the result is clamped so conversion_prob can NEVER exceed 1.0
-    (the FE multiplies by 100 -> never > 100%). None/garbage -> None (caller omits / leaves blank).
-    """
-    if v is None:
-        return None
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    if f > 1:
-        f = f / 100.0
-    if f < 0:
-        f = 0.0
-    if f > 1:
-        f = 1.0
-    return round(f, 3)
-
-
-def _conv_prob_pct(v):  # noqa: ANN001
-    """R6-B7: same coercion but returns a 0-100 integer percent, clamped to [0,100] (or None)."""
-    f = _conv_prob_frac(v)
-    return None if f is None else int(round(f * 100))
-
-
 def _w9_summary_provider(tenant_id, call_id, transcript):  # noqa: ANN001
     try:
         tr = _read(TRANSCRIPT_DIR / f"{call_id}.json", {})
@@ -207,9 +215,7 @@ def _w9_summary_provider(tenant_id, call_id, transcript):  # noqa: ANN001
     return {
         "summary": tr.get("summary", ""),
         "lifecycle": tr.get("outcome", ""),
-        # R6-B7: `interest` is a raw 0-100 score; conversion_prob is a 0-1 fraction everywhere else
-        # (1896/3189/3214). Emitting the raw 0-100 here made the FE (×100) render 8000%. Normalize.
-        "conversion_prob": _conv_prob_frac(tr.get("interest")),
+        "conversion_prob": tr.get("interest"),
     }
 
 # ── W14 Reporting service (REPORTING_ENABLED default OFF) ────────────────────────────────────────
@@ -435,29 +441,75 @@ def _outbound_recording_enabled() -> bool:
     return all((cfg_get(k, "") or "").strip() for k in need)
 
 
+# REC-B-AZURE (flag-gated, ADDITIVE): an alternative recording backend that uploads the same
+# room-composite MP3 egress to Azure Blob Storage instead of DO Spaces. FLAG-OFF == byte-identical
+# to today: RECORDING_BACKEND defaults to "spaces" so every existing deploy keeps using DO Spaces,
+# which stays BOTH the default AND the fallback (if Azure creds are incomplete, Azure is simply not
+# armed and the Spaces branch runs unchanged). NEVER changes the dial path when disabled.
+_AZURE_RECORDINGS_CONTAINER_DEFAULT = "recordings"
+
+
+def _azure_recording_enabled() -> bool:
+    """True ONLY when RECORDING_BACKEND=='azure' AND the Azure account+key+container are all set.
+    Anything missing -> False -> the caller falls back to the DO Spaces path. NEVER raises."""
+    if (cfg_get("RECORDING_BACKEND", "spaces") or "spaces").strip().lower() != "azure":
+        return False
+    account = (cfg_get("AZURE_STORAGE_ACCOUNT", "") or "").strip()
+    akey = (cfg_get("AZURE_STORAGE_KEY", "") or "").strip()
+    container = (cfg_get("AZURE_RECORDINGS_CONTAINER", _AZURE_RECORDINGS_CONTAINER_DEFAULT) or "").strip()
+    return bool(account and akey and container)
+
+
 def _outbound_recording_key(call_id: str) -> str:
-    """Deterministic Spaces object key: outbound-recordings/YYYY/MM/DD/<call_id>.ogg.
-    Chosen BEFORE egress confirms so the call row can store it immediately; the object lands here."""
+    """Deterministic Spaces object key: outbound-recordings/YYYY/MM/DD/<call_id>.mp3.
+    Chosen BEFORE egress confirms so the call row can store it immediately; the object lands here.
+    MP3 (was OGG/Opus): plays natively in EVERY browser incl. Safari AND has a real duration header,
+    so the panel player gets sound + a moving bar + correct sync (OGG/Opus played silent in Safari)."""
     day = time.strftime("%Y/%m/%d")
     cid = (call_id or uuid.uuid4().hex)[:48]
-    return f"outbound-recordings/{day}/{cid}.ogg"
+    return f"outbound-recordings/{day}/{cid}.mp3"
 
 
 def _build_outbound_egress(call_id: str):
-    """Build a RoomEgress(room=RoomCompositeEgressRequest(audio-only OGG -> Spaces)) for embedding
-    in CreateRoomRequest.egress. Returns (egress_obj_or_None, recording_key, bucket). Never raises;
-    returns (None, "", "") when disabled/dormant or on any build error (call dials unrecorded)."""
+    """Build a RoomEgress(room=RoomCompositeEgressRequest(audio-only MP3 -> Spaces OR Azure)) for
+    embedding in CreateRoomRequest.egress. Returns (egress_obj_or_None, recording_key, bucket).
+    Never raises; returns (None, "", "") when disabled/dormant or on any build error (call dials
+    unrecorded). REC-B-AZURE: when RECORDING_BACKEND=='azure' (and Azure creds are complete), the
+    EncodedFileOutput uploads to an Azure Blob container instead of DO Spaces — the returned
+    "bucket" is then the Azure container name. Flag-off keeps the S3/Spaces branch BYTE-IDENTICAL."""
     try:
         if not _outbound_recording_enabled():
             return None, "", ""
+        key = _outbound_recording_key(call_id)
+        # REC-B-AZURE branch: same MP3 audio-only egress, uploaded to Azure Blob Storage. The DO
+        # Spaces path below stays the default + the fallback (this only runs when Azure is fully
+        # configured AND selected). No s3= field is set on the EncodedFileOutput in this branch.
+        if _azure_recording_enabled():
+            az_account = (cfg_get("AZURE_STORAGE_ACCOUNT", "") or "").strip()
+            az_key = (cfg_get("AZURE_STORAGE_KEY", "") or "").strip()
+            az_container = (cfg_get("AZURE_RECORDINGS_CONTAINER",
+                                    _AZURE_RECORDINGS_CONTAINER_DEFAULT) or "").strip()
+            file_out_az = api.EncodedFileOutput(
+                file_type=api.EncodedFileType.MP3,
+                filepath=key,
+                azure=api.AzureBlobUpload(
+                    account_name=az_account, account_key=az_key, container_name=az_container,
+                ),
+            )
+            egress_az = api.RoomEgress(
+                room=api.RoomCompositeEgressRequest(
+                    audio_only=True,
+                    file_outputs=[file_out_az],
+                )
+            )
+            return egress_az, key, az_container
         bucket = (cfg_get("AIM_SPACES_BUCKET", "") or "").strip()
         region = (cfg_get("AIM_SPACES_REGION", "") or "us-east-1").strip()
         endpoint = (cfg_get("AIM_SPACES_ENDPOINT", "") or "").strip()
         s3key = (cfg_get("AIM_SPACES_KEY", "") or "").strip()
         s3secret = (cfg_get("AIM_SPACES_SECRET", "") or "").strip()
-        key = _outbound_recording_key(call_id)
         file_out = api.EncodedFileOutput(
-            file_type=api.EncodedFileType.OGG,   # audio-only (no video on a SIP call)
+            file_type=api.EncodedFileType.MP3,   # audio-only; MP3 plays in EVERY browser (OGG/Opus was silent in Safari)
             filepath=key,
             s3=api.S3Upload(
                 access_key=s3key, secret=s3secret, bucket=bucket,
@@ -493,6 +545,9 @@ CALLS_FILE = VAR / "calls.json"
 TENANTS_FILE = VAR / "tenants.json"
 SECRET_FILE = VAR / "secret"
 SUPPRESSION_FILE = VAR / "suppression.json"   # P0.2 DND/suppression store
+TIER_OVERRIDES_FILE = VAR / "tier_overrides.json"  # super-admin Voice-Defaults: per-tier stack + telephony rate
+GROQ_BUDGET_FILE = VAR / "groq_budget.json"        # super-admin Groq token-budget CONFIG (keys + per-day limits)
+GROQ_BUDGET_STATUS_FILE = VAR / "groq_budget_status.json"  # WORKER-written daily token-usage snapshot (per key)
 RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
 # 🚨 KILL-SWITCH (callback/retry SPAM hotfix 2026-06-16): the auto-retry+callback scheduler
 # was redialing leads ~every 2h NON-STOP (no-answer reconciliation reset attempts→1 /
@@ -504,19 +559,6 @@ RETRY_FILE = VAR / "retry_queue.json"         # P0.5 retry + callback queue
 # rebuild lands. First-calls (run_job) are UNAFFECTED — only auto-retry/callback dialing is gated.
 RETRY_SCHEDULER_ENABLED = (cfg_get("RETRY_SCHEDULER_ENABLED", "0") or "0").strip().lower() \
     in ("1", "true", "yes", "on")
-# ── R5-P4b auto-callback SAFETY CAPS (the "rebuild policy" the kill-switch above waited for) ──
-# Hard ceiling on auto-retry attempts per lead (clamps any per-campaign retry_max_attempts DOWN).
-# Default 2 = max two redials of a no-answer lead, then the lead EXPIRES (removed from queue).
-RETRY_MAX_ATTEMPTS_CAP = max(0, int(cfg_get("RETRY_MAX_ATTEMPTS_CAP", "2") or "2"))
-# Per-TENANT global daily ceiling on AUTO-fired retries+callbacks (independent of the per-lead cap
-# and the 500/day campaign dial cap). A runaway can NEVER exceed this many auto-dials/tenant/day.
-CALLBACK_TENANT_DAILY_CAP = max(0, int(cfg_get("CALLBACK_TENANT_DAILY_CAP", "50") or "50"))
-# Warm-lead (score 40-69) AUTO next-day follow-up: schedule ONE callback the next day at this IST
-# hour (clamped into the 09-21 window). Default ON; set WARM_LEAD_AUTOSCHEDULE=0 to disable.
-WARM_LEAD_AUTOSCHEDULE = (cfg_get("WARM_LEAD_AUTOSCHEDULE", "1") or "1").strip().lower() \
-    in ("1", "true", "yes", "on")
-WARM_LEAD_FOLLOWUP_HOUR = min(20, max(9, int(cfg_get("WARM_LEAD_FOLLOWUP_HOUR", "11") or "11")))
-AUTOFIRE_COUNT_FILE = VAR / "autofire_counts.json"  # durable per-tenant-per-day auto-fire counter
 WA_LOG_FILE = VAR / "wa_log.json"             # P1.A whatsapp send log
 WA_THREADS_DIR = VAR / "wa_threads"           # WAVE A2 per-contact WhatsApp conversation state
 WA_UNROUTED_TENANT = "_unrouted"              # P0-LEAK: quarantine bucket for unknown inbound numbers (never ADMIN_ID)
@@ -548,6 +590,142 @@ def _utc_iso() -> str:
 
 app = FastAPI()
 JOBS: dict = {}
+
+
+# LOGGING (best-effort, defined FIRST so it is the INNERMOST user middleware — it wraps the
+# route + Starlette's ExceptionMiddleware most closely). It records into "System Logs" BOTH:
+#   (1) any UNHANDLED route exception (caught here, logged, then RE-RAISED so Starlette's normal
+#       500 handling stays byte-identical), AND
+#   (2) any response that comes back with status >= 500 — this is the BIG one: the codebase is
+#       built on a "best-effort, never raise" law, so most errors are caught inside the route and
+#       returned as JSONResponse(status_code=500) (or `raise HTTPException(5xx)`, which Starlette's
+#       INNER ExceptionMiddleware converts to a 5xx response before it reaches us). Those never
+#       raise, so the old exception-only capture missed them — which is exactly why operators saw
+#       errors that never reached System Logs. We now log the 5xx response too.
+# It NEVER alters a response (read-only on .status_code), never swallows an error, and is a no-op
+# when logging_service is unconfigured — so it cannot break a request. A per-request flag
+# (request.state._sys_logged) de-dupes so an unhandled exception isn't logged twice, and a handler
+# that already logged its own event can set the flag to opt out of the generic 5xx line.
+_5XX_LOG_EXEMPT = {"/health", "/metrics", "/favicon.ico"}  # high-freq infra pings -> would flood
+
+# Self-hosted HTTP request telemetry for the Performance page (replaces the SigNoz APM source).
+# Import-guarded + flag-gated (HTTP_METRICS_ENABLED) + best-effort: a missing/broken module or
+# ClickHouse can NEVER affect a request. Recording is a cheap in-memory append; the write batches on
+# a background task. /health, /metrics etc. are skipped (infra pings would dominate the dashboard).
+try:
+    import http_metrics as _http_metrics  # noqa: E402
+except Exception:  # noqa: BLE001
+    _http_metrics = None
+
+_HTTP_METRICS_EXEMPT = {"/health", "/metrics", "/favicon.ico"}
+
+
+def _record_http_metric(request: "Request", status_code: int, t0: float) -> None:
+    """Record one request to the HTTP-metrics buffer. Never raises into the request path."""
+    if _http_metrics is None:
+        return
+    try:
+        path = request.url.path
+        if path in _HTTP_METRICS_EXEMPT:
+            return
+        import uuid as _uuid
+        try:                                   # the matched route template (low cardinality), else the raw path
+            _rt = request.scope.get("route")
+            route = getattr(_rt, "path", "") or path
+        except Exception:  # noqa: BLE001
+            route = path
+        _http_metrics.record(method=request.method, route=route, status_code=int(status_code),
+                             duration_ms=(time.perf_counter() - t0) * 1000.0,
+                             trace_id=_uuid.uuid4().hex[:16])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.middleware("http")
+async def _capture_errors_mw(request: Request, call_next):
+    _http_t0 = time.perf_counter()
+    if _http_metrics is not None:
+        try:
+            _http_metrics.ensure_started()   # idempotent; starts the flush loop on the running loop
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        resp = await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            request.state._sys_logged = True
+            if _log_mod is not None:
+                try:
+                    _t = resolve_tenant(request)
+                except Exception:  # noqa: BLE001
+                    _t = None
+                _log_mod.record(
+                    "error", "backend",
+                    f"{request.method} {request.url.path}: {exc!r}",
+                    tenant_id=(_t or {}).get("tenant_id", "") if isinstance(_t, dict) else "",
+                    error_type=type(exc).__name__,
+                    context={"path": request.url.path, "method": request.method},
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        _record_http_metric(request, 500, _http_t0)
+        raise
+    # (2) capture swallowed/converted SERVER-FAULT responses that did NOT raise. We log 500/502/504
+    # (real faults) but DELIBERATELY SKIP 503 — "Service Unavailable" is the conventional degrade for a
+    # dependency/feature that isn't configured yet (a dormant managed-provider, reporting, brain/kb/crm
+    # subsystem). Those endpoints already return a clean shape AND are polled by the panel, so
+    # auto-logging every 503 floods the store with non-actionable noise. A genuine crash still surfaces
+    # via the unhandled-exception branch above (any status) — only the swallowed-503 polling noise is cut.
+    try:
+        _sc = getattr(resp, "status_code", 200)
+        if (_log_mod is not None
+                and _sc >= 500 and _sc != 503
+                and not getattr(request.state, "_sys_logged", False)
+                and request.url.path not in _5XX_LOG_EXEMPT):
+            try:
+                _t = resolve_tenant(request)
+            except Exception:  # noqa: BLE001
+                _t = None
+            _log_mod.record(
+                "error", "backend",
+                f"{request.method} {request.url.path} -> {resp.status_code}",
+                tenant_id=(_t or {}).get("tenant_id", "") if isinstance(_t, dict) else "",
+                error_type=f"http_{resp.status_code}",
+                context={"path": request.url.path, "method": request.method,
+                         "status": resp.status_code},
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    _record_http_metric(request, getattr(resp, "status_code", 200), _http_t0)
+    return resp
+
+
+# ── Phase 3 observability — OpenTelemetry traces -> SigNoz (DORMANT-by-default) ────────────
+# NOTE: a Prometheus /metrics endpoint ALREADY exists (the `obs` module, see `@app.get("/metrics")`
+# below) — the obs droplet's Prometheus scrapes THAT. Here we only ADD distributed tracing.
+# Guarded + gated: OTel is set up ONLY when OTEL_EXPORTER_OTLP_ENDPOINT is set, so until the
+# observability droplet is wired this is a NO-OP and prod is byte-identical.
+if (os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or "").strip():
+    import logging as _otel_log  # caller.py has no module-level `logging` import (it imports locally)
+    try:
+        from opentelemetry import trace as _otel_trace  # noqa: E402
+        from opentelemetry.sdk.resources import Resource as _OtelResource  # noqa: E402
+        from opentelemetry.sdk.trace import TracerProvider as _OtelTP  # noqa: E402
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor as _OtelBSP  # noqa: E402
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # noqa: E402
+            OTLPSpanExporter as _OtelExporter)
+        from opentelemetry.instrumentation.fastapi import (  # noqa: E402
+            FastAPIInstrumentor as _OtelFastAPI)
+        _otel_res = _OtelResource.create(
+            {"service.name": os.getenv("OTEL_SERVICE_NAME", "haptica-backend")})
+        _otel_tp = _OtelTP(resource=_otel_res)
+        _otel_tp.add_span_processor(_OtelBSP(_OtelExporter()))  # reads endpoint from env
+        _otel_trace.set_tracer_provider(_otel_tp)
+        _OtelFastAPI.instrument_app(app)
+        _otel_log.getLogger("famit-caller").info("OTel tracing -> %s",
+                                                 os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    except Exception:  # noqa: BLE001
+        _otel_log.getLogger("famit-caller").warning("OTel setup skipped", exc_info=True)
 
 
 # ---------- P0: per-tenant rate-limit middleware (additive, FAIL-OPEN) ----------
@@ -793,30 +971,6 @@ async def _enforce_entitlement_mw(request: Request, call_next):
     return await call_next(request)
 
 
-# ── R5-P4b: per-FEATURE entitlement gate for DYNAMIC-PATH routes the prefix middleware can't target ──
-# The choke-point above maps a path to a feature via LITERAL api_prefixes, so it cannot single out a
-# route with a dynamic id segment in the MIDDLE (e.g. /campaigns/{cid}/prompt-preview — the campaign
-# SCRIPT, and /campaigns/{cid}/dry-run — the RENDER-BRAIN). For those, the route calls this helper
-# explicitly. SAME semantics as the middleware: master-flag off / engine absent / admin tenant -> pass
-# (degrade-to-on, resting byte-identical); locked -> 402 (+upsell); hidden -> 404 (no existence leak).
-def _feature_block(tenant: Optional[dict], feature_key: str):
-    """Return a JSONResponse to BLOCK (402 locked / 404 hidden), or None to ALLOW. Never raises."""
-    if not CONTROL_ENABLED or _ent_mod is None or not tenant:
-        return None
-    if tenant.get("is_admin"):
-        return None  # admins manage entitlements; never gated by their own feature flags
-    try:
-        mode = _ent_mod.evaluate(tenant.get("tenant_id") or "", feature_key)
-    except Exception:  # noqa: BLE001 — engine error => do NOT mask the route; degrade to allow
-        return None
-    if mode == "hidden":
-        return JSONResponse({"error": "not_found"}, status_code=404)
-    if mode == "locked":
-        return JSONResponse({"error": "locked", "feature": feature_key, "upgrade": True},
-                            status_code=402)
-    return None
-
-
 # In-memory live concurrency per tenant (P0.7). Source of truth for active SIP calls.
 ACTIVE_CALLS: dict = {}
 
@@ -935,6 +1089,38 @@ def _extract_cred(request: Request) -> str:
     return request.headers.get("x-auth", "")
 
 
+# ---------- Client lifecycle: status (active/suspended) + demo TTL (file-based) ----------
+# Self-contained on tenants.json so it works on deployments WITHOUT the Postgres
+# control layer. Admins are NEVER blocked (anti-lockout).
+def _demo_remaining_s(tenant: dict | None) -> int | None:
+    """Seconds left on a demo account's clock; None when not a demo. The clock starts
+    at demo_started_at (falls back to created_at); demo_minutes is the budget."""
+    if not tenant or not tenant.get("demo"):
+        return None
+    try:
+        mins = int(tenant.get("demo_minutes") or 0)
+    except (TypeError, ValueError):
+        mins = 0
+    started = tenant.get("demo_started_at") or tenant.get("created_at") or ""
+    if mins <= 0 or not started:
+        return 0
+    try:
+        start_dt = datetime.fromisoformat(started)
+    except ValueError:
+        return 0
+    return max(0, int(mins * 60 - (datetime.now() - start_dt).total_seconds()))
+
+
+def _client_blocked(tenant: dict | None) -> bool:
+    """A non-admin client is locked out when explicitly suspended OR its demo TTL ran out."""
+    if not tenant or tenant.get("is_admin"):
+        return False
+    if (tenant.get("status") or "active").strip().lower() == "suspended":
+        return True
+    rem = _demo_remaining_s(tenant)
+    return rem is not None and rem <= 0
+
+
 def resolve_tenant(request: Request) -> dict | None:
     """Resolve the calling tenant. Accepts (in order, all ADDITIVE):
        - a P0 JWT access token (Bearer/X-Auth) -> that tenant   [new, optional]
@@ -952,7 +1138,7 @@ def resolve_tenant(request: Request) -> dict | None:
         try:
             t = _auth_mod.resolve_token(cred)
             if t:
-                return t
+                return None if _client_blocked(t) else t
         except Exception:  # noqa: BLE001 — never let auth module break the request
             pass
     # 2) legacy paths (unchanged), gated by the flag.
@@ -960,7 +1146,8 @@ def resolve_tenant(request: Request) -> dict | None:
         return None
     if cred == PW:
         return _tenant_by_id(ADMIN_ID) or ADMIN_TENANT
-    return _verify_token(cred)
+    t = _verify_token(cred)
+    return None if _client_blocked(t) else t
 
 
 def authed(request: Request) -> bool:
@@ -1275,14 +1462,33 @@ def _forbidden(msg: str = "insufficient permissions") -> JSONResponse:
     return JSONResponse({"error": msg}, status_code=403)
 
 
+# ---------- Full tenant isolation policy (LOCKED product decision) ----------
+# When TENANT_HARD_ISOLATION is ON (default), NOBODY — not admin, not super-admin —
+# may see ANOTHER tenant's OPERATIONAL data (campaigns / numbers[leads] / recordings /
+# calls / transcripts / contacts). Each account, admin included, sees ONLY its own
+# tenant_id's data (legacy objects with no tenant_id default to ADMIN_ID and stay
+# visible to the admin tenant only). Platform administration (tenant CRUD, auth,
+# billing/wallet, provider config, KB RLS, limits/entitlements) does NOT flow through
+# this helper and is unaffected. Set TENANT_HARD_ISOLATION=0 to restore the legacy
+# "admin sees all" behavior (instant, no code change).
+TENANT_HARD_ISOLATION = str(cfg_get("TENANT_HARD_ISOLATION", "1") or "1").strip().lower() \
+    in ("1", "true", "yes", "on")
+
+
+def _data_admin(tenant: dict | None) -> bool:
+    """May this VIEWER see OTHER tenants' OPERATIONAL data? False under hard isolation."""
+    return bool(tenant and tenant.get("is_admin")) and not TENANT_HARD_ISOLATION
+
+
 # ---------- P0: BOLA ownership guard (defensive depth) ----------
 def _owns(tenant: dict | None, obj: dict | None) -> bool:
-    """True if `tenant` may access `obj`. Admin sees all; otherwise obj.tenant_id
-    must equal the tenant's id. Legacy objects without tenant_id default to the
-    admin tenant (ADMIN_ID), matching how the rest of the code scopes data."""
+    """True if `tenant` may access `obj`. Admin sees all (unless hard isolation);
+    otherwise obj.tenant_id must equal the tenant's id. Legacy objects without
+    tenant_id default to the admin tenant (ADMIN_ID), matching how the rest of the
+    code scopes data."""
     if not tenant or obj is None:
         return False
-    if tenant.get("is_admin"):
+    if _data_admin(tenant):
         return True
     return obj.get("tenant_id", ADMIN_ID) == tenant.get("tenant_id")
 
@@ -1352,6 +1558,23 @@ if _audit_mod is not None:
     except Exception:  # noqa: BLE001
         pass
 
+# Initialise the system error/event log (shared /data volume; the voice agent records to the
+# SAME file so the panel surfaces backend + call failures together). Best-effort, but we now
+# CAPTURE the readiness result: a False here means the volume was unwritable, so every record()
+# would be a silent no-op (the dormant-logging trap). We surface it on stderr + /admin/logs/health
+# so the operator isn't left wondering why nothing shows up.
+LOG_READY = False
+if _log_mod is not None:
+    try:
+        LOG_READY = bool(_log_mod.init(VAR / "system_events.jsonl"))
+        if not LOG_READY:
+            import sys as _sys
+            print(f"[logging_service] init FAILED for {VAR / 'system_events.jsonl'} — "
+                  f"System Logs will be a silent no-op (check FAMIT_VAR volume is writable)",
+                  file=_sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001
+        LOG_READY = False
+
 # F4 Action Firewall: reuse the SAME var/secret (SECRET) the JWT/hmac path uses, + a pins store.
 # Degrades to pass-through (no gating) if pyjwt absent or no secret. wallet needs NO init (it rides
 # db.engine, which store.init() already wires at startup).
@@ -1371,112 +1594,6 @@ if _ent_mod is not None:
         CONTROL_READY = _ent_mod.init()
     except Exception:  # noqa: BLE001
         CONTROL_READY = False
-
-
-# ════════════════════════════════════════════════════════════════════════════════════════════════
-# R6-B9 — DYNAMIC permissions: derive the lockable feature/module tree from the canonical SIDEBAR NAV
-# ────────────────────────────────────────────────────────────────────────────────────────────────
-# The lockable feature list was a 102-row HARDCODE in control/_gen_registry.py; the FE hardcodes the
-# SAME tree in famit-panel/lib/api.ts (FEATURE_REGISTRY). When the founder added a new sidebar page it
-# did NOT auto-appear as an On/Lock/Hide row in super-admin (e.g. mod.revenue_tools was missing from the
-# box registry.json -> a module HIDE never dropped that group). We fix this by making caller.py own the
-# canonical nav manifest (mirroring lib/api.ts) and ADDITIVELY seeding any missing nav key into the live
-# registry.json at startup (and on /admin/features read). EARNER-SAFE: only ADDS keys (default_mode
-# "on" = unlocked), never modifies/removes an existing row, never touches a vendor override. Flag-off:
-# NAV_REGISTRY_SYNC=0. New keys become first-class lockable rows (set/clear entitlement already keys on
-# the feature_key string, so enforcement works the moment the row exists).
-# Each row: (key, kind, parent_key, label, nav_href, sort_order, is_core)
-_NAV_REGISTRY: list[tuple] = [
-    ("mod.command", "module", None, "Command", None, 0, True),
-    ("command.dashboard", "page", "mod.command", "Dashboard", "/", 1, True),
-    ("mod.ai_manager", "module", None, "AI Manager", None, 10, False),
-    ("ai_manager.overview", "page", "mod.ai_manager", "Overview", "/ai-manager/overview", 11, False),
-    ("ai_manager.test", "page", "mod.ai_manager", "Test Console", "/ai-manager/test", 12, False),
-    ("ai_manager.commands", "page", "mod.ai_manager", "Command History", "/ai-manager/commands", 13, False),
-    ("ai_manager.approvals", "page", "mod.ai_manager", "Pending Approvals", "/ai-manager/approvals", 14, False),
-    ("ai_manager.capabilities", "page", "mod.ai_manager", "Capabilities", "/ai-manager/capabilities", 15, False),
-    ("ai_manager.setup", "page", "mod.ai_manager", "Setup", "/ai-manager/setup", 16, False),
-    ("ai_manager.users", "page", "mod.ai_manager", "Authorized Users", "/ai-manager/users", 17, False),
-    ("mod.grow", "module", None, "Grow", None, 20, False),
-    ("grow.campaigns", "page", "mod.grow", "Campaigns", "/campaigns", 21, False),
-    ("grow.campaigns.create", "action", "grow.campaigns", "Create campaign", None, 22, False),
-    ("mod.revenue_tools", "module", None, "Revenue Tools", None, 26, False),
-    ("grow.ads", "page", "mod.revenue_tools", "Ad Automation", "/ads", 23, False),
-    ("grow.funnels", "page", "mod.revenue_tools", "Funnels", "/funnels", 24, False),
-    ("grow.forms", "page", "mod.revenue_tools", "Form Builder", "/forms", 25, False),
-    ("mod.sell", "module", None, "Sell", None, 30, False),
-    ("sell.leads", "page", "mod.sell", "Leads", "/leads", 31, False),
-    ("sell.leads.export", "action", "sell.leads", "Export leads", None, 32, False),
-    ("sell.crm", "page", "mod.sell", "CRM", "/crm", 33, False),
-    ("mod.engage", "module", None, "Engage", None, 40, False),
-    ("engage.run", "page", "mod.engage", "Run a Campaign", "/run", 41, False),
-    ("engage.calls", "page", "mod.engage", "Call Logs", "/calls", 42, False),
-    ("engage.callbacks", "page", "mod.engage", "Callbacks", "/callbacks", 43, False),
-    ("engage.whatsapp", "page", "mod.engage", "WhatsApp", "/whatsapp", 44, False),
-    ("engage.support", "page", "mod.engage", "Customer Support", "/support", 45, False),
-    ("engage.booking", "page", "mod.engage", "Booking", "/booking", 46, False),
-    ("mod.automate", "module", None, "Automate", None, 50, False),
-    ("automate.workflows", "page", "mod.automate", "Workflows", "/workflows", 51, False),
-    ("automate.webhooks", "page", "mod.automate", "Webhooks", "/webhooks", 52, False),
-    ("mod.money", "module", None, "Money", None, 60, False),
-    ("money.payments", "page", "mod.money", "Payments", "/payments", 61, False),
-    ("money.billing_overview", "page", "mod.money", "Billing", "/billing/overview", 62, True),
-    ("mod.intelligence", "module", None, "Intelligence", None, 70, False),
-    ("intelligence.analytics", "page", "mod.intelligence", "Analytics", "/analytics", 71, False),
-    ("mod.foundation", "module", None, "Foundation", None, 80, True),
-    ("foundation.suppression", "page", "mod.foundation", "Do-Not-Call", "/suppression", 81, False),
-    ("core.settings", "page", "mod.foundation", "Settings", "/settings", 82, True),
-]
-
-
-def _nav_registry_sync() -> dict:
-    """R6-B9: additively seed any nav key missing from registry.json. Returns {added:[...], total:N}.
-    EARNER-SAFE: ADD-ONLY (never edits/removes an existing row), best-effort, never raises."""
-    if _ent_mod is None:
-        return {"added": [], "total": 0, "note": "entitlements module unavailable"}
-    if (cfg_get("NAV_REGISTRY_SYNC", "1") or "1").strip().lower() not in ("1", "true", "yes", "on"):
-        return {"added": [], "total": 0, "note": "disabled"}
-    try:
-        reg_path = getattr(_ent_mod, "_REGISTRY_JSON", "")
-        if not reg_path or not os.path.exists(reg_path):
-            return {"added": [], "total": 0, "note": "registry.json not found"}
-        with open(reg_path, "r", encoding="utf-8") as fh:
-            doc = json.load(fh)
-        feats = doc.get("features", [])
-        existing = {r.get("key") for r in feats if isinstance(r, dict)}
-        added = []
-        for (key, kind, parent, label, href, sort_order, is_core) in _NAV_REGISTRY:
-            if key in existing:
-                continue
-            feats.append({
-                "key": key, "kind": kind, "parent_key": parent, "label": label,
-                "nav_href": href, "api_prefixes": [], "default_mode": "on",
-                "min_role": None, "is_core": bool(is_core), "sort_order": sort_order,
-                "source": "nav_sync",
-            })
-            existing.add(key)
-            added.append(key)
-        if added:
-            doc["features"] = feats
-            tmp = reg_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(doc, fh, ensure_ascii=False, indent=2)
-            os.replace(tmp, reg_path)
-            # bust the entitlements cache so the new rows are visible immediately.
-            try:
-                _ent_mod._registry_cache = None  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001
-                pass
-        return {"added": added, "total": len(feats)}
-    except Exception as exc:  # noqa: BLE001
-        return {"added": [], "total": 0, "error": repr(exc)}
-
-
-# Seed the nav-derived keys at startup (additive; idempotent; never raises).
-try:
-    _NAV_SYNC_RESULT = _nav_registry_sync()
-except Exception:  # noqa: BLE001
-    _NAV_SYNC_RESULT = {"added": [], "total": 0}
 
 
 def _client_ip(request: Request) -> str:
@@ -1503,6 +1620,27 @@ def _audit(request: Request, tenant: dict | None, action: str,
                           channel=channel, tenant_id=tid,
                           actor_role=_role_of(tenant) if tenant else "",
                           meta=meta)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_event(level: str, source: str, message: str, *, request: "Request | None" = None,
+               tenant: dict | None = None, call_id: str = "", error_type: str = "",
+               context: dict | None = None) -> None:
+    """One-line structured event recorder for the System Logs panel (best-effort, like
+    _audit). No-op when the logging module is unavailable; never raises."""
+    if _log_mod is None:
+        return
+    try:
+        tid = (tenant or {}).get("tenant_id", "") if isinstance(tenant, dict) else ""
+        ctx = dict(context or {})
+        if request is not None:
+            try:
+                ctx.setdefault("ip", _client_ip(request))
+            except Exception:  # noqa: BLE001
+                pass
+        _log_mod.record(level, source, message, tenant_id=tid, call_id=call_id,
+                        error_type=error_type, context=ctx)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1789,32 +1927,54 @@ def _sanitize_extracted(out: dict) -> dict:
 
 
 def extract_fields(brief: str) -> dict:
+    # Script generation uses the BEST-VALUE model via OpenRouter (cheap, strong) when
+    # OPENROUTER_API_KEY is set, falling back to Groq. The system prompt is kept SHORT
+    # (low input tokens / cost) but quality-directed: talking_points + objection answers
+    # must read like a warm, natural HUMAN telecaller — light emotion + proper punctuation.
     sysmsg = (
-        "You convert a tele-calling campaign brief into JSON. Return ONLY a JSON object with keys: "
+        "You are a senior tele-sales script writer. Convert the brief into ONE JSON object with EXACTLY these keys: "
         "company_name, agent_name, product_name, product_summary, location, price_offer, "
-        "usps (array of short strings), talking_points (array), objections (array of {q,a}), "
-        "qualifying_questions (array), language. Hinglish-friendly, concise. agent_name default 'Riya', "
-        "language default 'Hinglish'. If unknown, use a short sensible default."
+        "usps (array of short strings), talking_points (array of short strings), "
+        "objections (array of {q,a}), qualifying_questions (array of short strings), language. "
+        "Write talking_points and objection answers as warm, natural SPOKEN Hinglish that a real human "
+        "telecaller would say — short sentences, a little emotion, proper punctuation (commas, a dash '—' "
+        "for a pause, '?' for questions). No exclamation marks. No heavy/bookish words. Keep every string short. "
+        "agent_name default 'Riya', language default 'Hinglish'. Use sensible short defaults if unknown."
     )
-    try:
-        r = httpx.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": "Bearer " + GROQ_KEY},
-            json={"model": GROQ_MODEL, "temperature": 0.2, "max_tokens": 900,
-                  "response_format": {"type": "json_object"},
-                  "messages": [{"role": "system", "content": sysmsg},
-                               {"role": "user", "content": brief[:12000]}]},
-            timeout=30,
-        )
-        content = r.json()["choices"][0]["message"]["content"]
-        m = re.search(r"\{.*\}", content, re.DOTALL)
-        # SANDBOX the LLM output: schema-validate + value-clamp the open injection
-        # sink before it can render into the live prompt (red-team, in-wave).
-        return _sanitize_extracted(json.loads(m.group(0) if m else content))
-    except Exception as exc:  # noqa: BLE001
-        return _sanitize_extracted(
-            {"_error": repr(exc)[:200], "agent_name": "Riya", "company_name": "",
-             "product_name": "", "product_summary": brief[:400], "language": "Hinglish"})
+    or_key = (cfg_get("OPENROUTER_API_KEY", "") or "").strip()
+    or_model = cfg_get("OPENROUTER_EXTRACT_MODEL", "google/gemini-2.0-flash-001")
+    # (endpoint, bearer, model) — try OpenRouter first when configured, else Groq.
+    routes = []
+    if or_key:
+        routes.append(("https://openrouter.ai/api/v1/chat/completions", or_key, or_model))
+    routes.append(("https://api.groq.com/openai/v1/chat/completions", GROQ_KEY, GROQ_MODEL))
+    last_exc: Exception | None = None
+    for url, key, model in routes:
+        try:
+            r = httpx.post(
+                url,
+                headers={"Authorization": "Bearer " + key,
+                         "HTTP-Referer": "https://haptica.famit.in", "X-Title": "Haptica AI"},
+                json={"model": model, "temperature": 0.4, "max_tokens": 1100,
+                      "response_format": {"type": "json_object"},
+                      "messages": [{"role": "system", "content": sysmsg},
+                                   {"role": "user", "content": brief[:8000]}]},
+                timeout=45,
+            )
+            content = r.json()["choices"][0]["message"]["content"]
+            m = re.search(r"\{.*\}", content, re.DOTALL)
+            # SANDBOX the LLM output: schema-validate + value-clamp the open injection
+            # sink before it can render into the live prompt (red-team, in-wave).
+            return _sanitize_extracted(json.loads(m.group(0) if m else content))
+        except Exception as exc:  # noqa: BLE001 — try the next route
+            last_exc = exc
+            continue
+    if last_exc is not None:  # every LLM route failed -> surface it (was silently swallowed)
+        _log_event("warning", "llm", f"extract_call_meta: all LLM routes failed: {last_exc!r}"[:300],
+                   error_type=type(last_exc).__name__, context={"stage": "extract_fields"})
+    return _sanitize_extracted(
+        {"_error": repr(last_exc)[:200], "agent_name": "Riya", "company_name": "",
+         "product_name": "", "product_summary": brief[:400], "language": "Hinglish"})
 
 
 def _groq_chat(messages: list, max_tokens: int = 300, temperature: float = 0.5,
@@ -1869,7 +2029,7 @@ def get_campaign_for(cid: str, tenant: dict) -> dict | None:
     d = get_campaign(cid)
     if not d:
         return None
-    if tenant.get("is_admin") or d.get("tenant_id", ADMIN_ID) == tenant["tenant_id"]:
+    if _data_admin(tenant) or d.get("tenant_id", ADMIN_ID) == tenant["tenant_id"]:
         return d
     return None
 
@@ -1880,12 +2040,15 @@ def list_campaigns(tenant: dict | None = None) -> list[dict]:
         for p in sorted(CAMPAIGN_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
             d = json.loads(p.read_text(encoding="utf-8"))
             tid = d.get("tenant_id", ADMIN_ID)
-            if tenant is not None and not tenant.get("is_admin") and tid != tenant["tenant_id"]:
+            if tenant is not None and not _data_admin(tenant) and tid != tenant["tenant_id"]:
                 continue
+            _cat = str((d.get("fields") or {}).get("category", "") or "").strip().lower()
             out.append({"id": d["id"], "name": d.get("name", d["id"]),
                         "company": d.get("company", ""), "product": d.get("product", ""),
                         "status": d.get("status", "ready"), "created_at": d.get("created_at", ""),
                         "voice_id": (d.get("fields") or {}).get("voice_id", ""),
+                        # #22 / image-#12: surface the campaign's script category on the list/run page.
+                        "category": _cat, "category_label": _category_label(_cat),
                         "tenant_id": tid})
     except Exception:  # noqa: BLE001
         pass
@@ -1899,7 +2062,7 @@ def record_call(rec: dict):
 
 
 def calls_for(tenant: dict) -> list[dict]:
-    if tenant.get("is_admin"):
+    if _data_admin(tenant):
         return CALLS
     return [c for c in CALLS if c.get("tenant_id", ADMIN_ID) == tenant["tenant_id"]]
 
@@ -1953,6 +2116,34 @@ def _classify_outcome(rec: dict, tr: dict) -> str:
     if len(user_turns) == 0:
         return "no_human"             # connected, no human turns (likely VM/IVR)
     return tr.get("outcome") or "answered"
+
+
+# DND-GUARD: the LLM `opt_out` flag (from agent._summarize) can MIS-FIRE on short/near-empty calls
+# (a 24s/1-turn "answered" call wrongly DND-ing a fresh lead — exactly the bug seen live). We only
+# auto-suppress when the CALLER literally said an explicit removal phrase, so a hallucinated flag can
+# never blacklist a good number. Compliance-safe: a real "remove me / number hata do" still suppresses.
+# Used as an AND-gate WITH the LLM flag — the LLM handles nuance ("baad mein call karna" = callback,
+# not opt-out), the keywords guard against hallucination. Phrases cover EN + Hinglish(latin) + Devanagari.
+_OPTOUT_PHRASES = (
+    "remove my number", "remove me", "do not call", "don't call", "dont call", "stop calling",
+    "take me off", "unsubscribe", "never call", "do not contact", "don't contact",
+    "number hata", "hata do", "hata dijiye", "hata den", "dobara call mat", "dubara call mat",
+    "dobara phone mat", "mat karo call", "call mat kar", "phone mat kar", "mat bulao",
+    "list se hata", "block kar", "pareshan mat",
+    "नंबर हटा", "हटा दो", "हटा दीजिए", "हटा दें", "दोबारा call मत", "दोबारा कॉल मत", "दुबारा कॉल मत",
+    "call मत कर", "कॉल मत कर", "फोन मत कर", "मत बुलाओ", "list से हटा", "परेशान मत", "block कर",
+)
+
+
+def _caller_opted_out(tr: dict) -> bool:
+    """True ONLY if a caller (role='user') turn literally contains an explicit opt-out/removal phrase.
+    Deterministic gate over the LLM opt_out flag so a mis-classification can't DND a fresh lead."""
+    try:
+        turns = tr.get("turns") or []
+        text = " ".join((x.get("content") or "") for x in turns if x.get("role") == "user").lower()
+        return bool(text.strip()) and any(p in text for p in _OPTOUT_PHRASES)
+    except Exception:  # noqa: BLE001 — a guard error must never crash finalize; treat as "no opt-out"
+        return False
 
 
 _REAL_CONVO = ("answered", "interested", "not_interested", "callback", "opt_out")
@@ -2084,29 +2275,6 @@ async def _remove_retry(retry_id: str):
         _write(RETRY_FILE, store)
 
 
-# ── R5-P4b per-tenant AUTO-FIRE daily counter (durable, anti-runaway) ──────────────────────────
-def _autofire_count(tenant_id: str, day: str = "") -> int:
-    """How many auto-retries/callbacks this tenant has fired today (IST). Durable across restarts."""
-    day = day or _today_iso()
-    rec = _read(AUTOFIRE_COUNT_FILE, {}) or {}
-    return int((rec.get(tenant_id) or {}).get(day, 0) or 0)
-
-
-async def _autofire_bump(tenant_id: str, day: str = "") -> int:
-    """Increment + persist the tenant's auto-fire counter for today. Returns the NEW count.
-    Self-prunes days older than ~3d so the file stays tiny. Lock-guarded shared-store write."""
-    day = day or _today_iso()
-    async with _STORE_LOCK:
-        rec = _read(AUTOFIRE_COUNT_FILE, {}) or {}
-        tmap = dict(rec.get(tenant_id) or {})
-        tmap[day] = int(tmap.get(day, 0) or 0) + 1
-        # prune: keep only the last few day-keys (today + yesterday + day-before).
-        keep = sorted(tmap.keys())[-3:]
-        rec[tenant_id] = {k: tmap[k] for k in keep}
-        _write(AUTOFIRE_COUNT_FILE, rec)
-        return tmap[day]
-
-
 # ---------- P1.A WhatsApp follow-up (fire-and-forget stub) ----------
 async def _send_whatsapp(tenant_id, rec, outcome, camp_fields):
     """Optional per-campaign WhatsApp follow-up via a BSP. Never blocks/raises into the loop."""
@@ -2133,6 +2301,10 @@ async def _send_whatsapp(tenant_id, rec, outcome, camp_fields):
                     status = f"sent:{resp.status_code}"
             except Exception as exc:  # noqa: BLE001
                 status = f"error:{repr(exc)[:60]}"
+                _log_event("warning", "whatsapp",
+                           f"WhatsApp template send failed: {exc!r}"[:300],
+                           tenant={"tenant_id": tenant_id}, error_type=type(exc).__name__,
+                           context={"phone": rec.get("phone"), "template": template})
         async with _STORE_LOCK:
             log = _read(WA_LOG_FILE, [])
             log.insert(0, {"tenant_id": tenant_id, "phone": rec.get("phone"), "template": template,
@@ -2278,6 +2450,8 @@ def _handoff_get(tenant_id: str) -> list[dict]:
         return out
     except Exception as exc:  # noqa: BLE001
         _lg_handoff.warning("handoff_get failed tenant=%s: %r", tenant_id, exc)
+        _log_event("warning", "handoff", f"handoff team lookup failed: {exc!r}"[:300],
+                   tenant={"tenant_id": tenant_id}, error_type=type(exc).__name__)
         return []
 
 
@@ -2537,6 +2711,10 @@ def _wa_thread_find_any(phone: str) -> dict:
     """ADMIN-ONLY: locate a contact's thread regardless of which tenant subdir it
     lives in (or the legacy flat path). Returns the most-recently-updated match, or
     {}. Callers MUST gate this on is_admin — it deliberately ignores tenant scope."""
+    # Belt-and-braces: under full tenant isolation this cross-tenant glob is disabled
+    # at the source, so it can never serve another tenant's thread even if a caller forgets to gate.
+    if TENANT_HARD_ISOLATION:
+        return {}
     safe = re.sub(r"[^0-9]", "", phone or "")
     if not safe:
         return {}
@@ -2973,6 +3151,11 @@ async def _emit_webhook(tenant_id, event, payload):
                 except Exception as exc:  # noqa: BLE001
                     status = f"error:{repr(exc)[:60]}"
                 await asyncio.sleep(2 ** attempt)
+            if status.startswith("error") or status.startswith("sent:5"):
+                _log_event("warning", "webhook",
+                           f"webhook delivery failed ({status}) for '{event}'"[:300],
+                           tenant={"tenant_id": tenant_id}, error_type="webhook_delivery",
+                           context={"url": w.get("url", ""), "event": event, "status": status})
             async with _STORE_LOCK:
                 log = _read(WEBHOOK_LOG_FILE, [])
                 log.insert(0, {"tenant_id": tenant_id, "url": w["url"], "event": event,
@@ -3217,6 +3400,46 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
     # P0.6 lead scoring
     await _update_lead_after_call(tenant_id, rec.get("phone", ""), tr.get("interest", 0), outcome,
                                   call_at=rec.get("started_at", ""))
+    # ── Haptica Grow (FEATURE_GROW): feed this call outcome into the Revenue-Truth Signal
+    #    Loop — score the lead (L5: hot/warm/investor/end-user/junk + why) AND dispatch the
+    #    CAPI Lead/QualifiedLead conversion signal (L7, value=lead_score, SHADOW-safe until
+    #    Meta creds + GROW_SIGNALS_LIVE=1). ADDITIVE + FLAG-GATED + best-effort, off the
+    #    event loop: grow.on_call_outcome never raises, and a live POST must not block the
+    #    loop. _grow_mod/FEATURE_GROW are module globals defined in the mount block below.
+    if globals().get("_grow_mod") is not None and globals().get("FEATURE_GROW"):
+        try:
+            _g_phone = rec.get("phone", "") or ""
+            _g_lead = norm(_g_phone) or (rec.get("id", "") or "")
+            _g_tr = tr or {}
+            await asyncio.to_thread(
+                _grow_mod.on_call_outcome, tenant_id, _g_lead,
+                phone=_g_phone, name=(rec.get("name", "") or ""),
+                source_platform=(rec.get("source", "") or ""),
+                call_answered=bool(rec.get("answered")),
+                call_duration_s=int(rec.get("duration_s", 0) or 0),
+                interest_score=int(_g_tr.get("interest", 0) or 0),
+                booking_made=bool(_g_tr.get("booked") or _g_tr.get("appointment")
+                                  or outcome in ("booked", "converted")),
+                site_visit_ready=bool(_g_tr.get("site_visit") or _g_tr.get("site_visit_ready")),
+                budget_mentioned=bool(_g_tr.get("budget_mentioned") or _g_tr.get("budget")),
+                timeline_mentioned=bool(_g_tr.get("timeline") or _g_tr.get("timeline_mentioned")),
+                decision_authority=bool(_g_tr.get("decision_authority")),
+                investor_intent=bool(_g_tr.get("investor") or _g_tr.get("investor_intent")),
+                end_user_intent=bool(_g_tr.get("end_user") or _g_tr.get("end_user_intent")),
+                last_outcome=outcome or "")
+        except Exception:  # noqa: BLE001 — Grow can NEVER break the call-finalize path
+            pass
+    # ── Haptica Flywheel (FLYWHEEL_ENABLED): feed this finalized call into the RLHF/RLAIF self-
+    #    improvement engine — capture the (state, move, reward) trajectory + the live policy arm +
+    #    outcome so the proprietary dataset compounds (every call is fuel). ADDITIVE + FLAG-GATED +
+    #    best-effort, OFF the event loop (asyncio.to_thread). The flywheel can NEVER break the call-
+    #    finalize path (mirrors the Grow hook above). _flywheel_mod/FLYWHEEL_ENABLED are module
+    #    globals defined in the mount block below.
+    if globals().get("_flywheel_mod") is not None and globals().get("FLYWHEEL_ENABLED"):
+        try:
+            await asyncio.to_thread(_flywheel_mod.on_call_finalized_hook, tenant_id, rec, tr)
+        except Exception:  # noqa: BLE001 — the flywheel can NEVER break call finalize
+            pass
     # R5P4-2 (ADDITIVE): UPSERT this caller into the CRM contacts store so a freshly-called number is
     # NEVER "(unknown)" in the CRM (the finalize path only wrote leads.json before; crm.upsert_contact
     # had ZERO callers). Idempotent on (org, phone); name only overwrites a blank, so a manual rename is
@@ -3230,8 +3453,9 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                 lambda: _crm_mod.upsert_contact(tenant_id, _crm_phone, name=_crm_name))
     except Exception:  # noqa: BLE001 — a CRM write can NEVER break call finalize
         pass
-    # P0.3 opt-out -> auto-suppress + flip lead
-    if tr.get("opt_out") or tr.get("outcome") == "opt_out":
+    # P0.3 opt-out -> auto-suppress + flip lead. DND-GUARD: require BOTH the LLM flag AND an explicit
+    # caller opt-out phrase, so a mis-classified short call can't blacklist a fresh lead (live bug).
+    if (tr.get("opt_out") or tr.get("outcome") == "opt_out") and _caller_opted_out(tr):
         rec["outcome"] = "opt_out"; rec["answered"] = True
         await _add_suppression(tenant_id, rec.get("phone", ""), "opt_out_call", source=room)
         await _flip_lead_status(tenant_id, rec.get("phone", ""), "opted_out")
@@ -3262,29 +3486,12 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
             except Exception:  # noqa: BLE001 — an enqueue can NEVER break the call-finalize path
                 _cb_owned = False
         if not _cb_owned:
-            # P0.5 retry / callback enqueue (only when not opted out) — LEGACY path.
-            # R5-P4b: clamp the per-campaign retry_max DOWN to the global hard cap (default 2).
-            maxa = min(RETRY_MAX_ATTEMPTS_CAP, int((camp_fields or {}).get("retry_max_attempts", 3)))
+            # P0.5 retry / callback enqueue (only when not opted out) — LEGACY path (flag OFF)
+            maxa = int((camp_fields or {}).get("retry_max_attempts", 3))
             backoff = (camp_fields or {}).get("retry_backoff_mins") or [120, 360, 1440]
             attempts = int(it.get("attempt", 0))
             cb = tr.get("callback_at")
-            # R6-B4 — FALSE-CALLBACK-ON-COMPLETED-CALL FIX (the founder's top complaint). The agent's
-            # Groq summary sometimes extracts a `callback_at` even on a call that CONNECTED and was
-            # fully resolved (booked / converted / not-interested) — scheduling a phantom callback for
-            # a "done" call. We now honor `callback_at` ONLY when it reflects a GENUINE caller request:
-            #   * the caller actually SPOKE a callback ask (tr.callback_raw present), OR
-            #   * the classified outcome IS "callback" (explicit reschedule outcome).
-            # AND we NEVER schedule when the call reached a terminal-good resolution (booked/converted/
-            # opt_out) — a completed sale must never trigger a callback. A no-answer/voicemail/busy keeps
-            # the bounded retry path below (that already has the ≤2 cap). Flag-revocable via
-            # CALLBACK_REQUIRE_EXPLICIT=0 (default 1) to restore the old honor-any-cb behavior.
-            _cb_explicit = bool((tr.get("callback_raw") or "").strip()) or outcome == "callback"
-            _terminal_good = outcome in ("booked", "converted", "opt_out") or bool(
-                tr.get("booked") or tr.get("appointment"))
-            _require_explicit = (cfg_get("CALLBACK_REQUIRE_EXPLICIT", "1") or "1").strip().lower() \
-                in ("1", "true", "yes", "on")
-            _cb_honor = bool(cb) and (not _require_explicit or _cb_explicit) and not _terminal_good
-            if _cb_honor:
+            if cb:
                 await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
                                      attempts, maxa, cb, "callback")
                 await _emit_webhook(tenant_id, "callback.scheduled",
@@ -3381,28 +3588,6 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
         except Exception as exc:  # noqa: BLE001
             _lg_handoff.warning("hot-lead notify_handoff_team failed: %r", exc)
 
-    # ── R5-P4b WARM-LEAD (40-69) AUTO next-day follow-up ──────────────────────────────────────────
-    # A warm lead from a REAL conversation (not a no-answer — those already get a retry) gets ONE
-    # auto-scheduled callback the NEXT day at WARM_LEAD_FOLLOWUP_HOUR (clamped into the 09-21 window),
-    # UNLESS the caller already asked for a specific time (callback_at owns that). Dedup is handled by
-    # _enqueue_retry (one row per phone+campaign+tenant). Bounded by the per-tenant daily cap at fire.
-    # Fire-and-forget; flag-gated; NEVER blocks/raises into the dial loop.
-    if (WARM_LEAD_AUTOSCHEDULE and rec.get("outcome") in _REAL_CONVO
-            and rec.get("outcome") != "opt_out" and 40 <= _score < 70
-            and not tr.get("callback_at")):
-        try:
-            _nd = (now_ist() + timedelta(days=1)).replace(
-                hour=WARM_LEAD_FOLLOWUP_HOUR, minute=0, second=0, microsecond=0)
-            _nd = _clamp_to_window(_nd, camp_fields)
-            await _enqueue_retry(tenant_id, cid, rec.get("name", ""), rec.get("phone", ""),
-                                 0, RETRY_MAX_ATTEMPTS_CAP, _nd.isoformat(), "warm_followup")
-            await _emit_webhook(tenant_id, "callback.scheduled",
-                                {"phone": rec.get("phone"), "campaign_id": cid,
-                                 "name": rec.get("name", ""), "when": _nd.isoformat(),
-                                 "reason": "warm_followup", "score": _score})
-        except Exception:  # noqa: BLE001 — a warm-schedule fault must NEVER disrupt finalize
-            pass
-
     # ── COMMUNICATION (W1-P3): post-call founder hot-lead alert + contact auto-summary ──
     # COMMUNICATION-MASTER-PLAN §2.3 / §1.1 / §8 WAVE 1. EARNER LAW (the red-team mandate):
     #   * _finalize_call is AWAITED inside the live dial loop (run_job, ~:2845). So this MUST
@@ -3428,6 +3613,10 @@ async def _finalize_call(it: dict, now_t: float, tenant_id: str, cid: str, camp_
                 import logging as _lg_comm_pc
                 _lg_comm_pc.getLogger("comm.post_call").warning(
                     "comm post-call hook skipped: %r", type(exc).__name__)
+                _log_event("warning", "comm",
+                           f"post-call comm hook skipped: {type(exc).__name__}",
+                           tenant={"tenant_id": tenant_id}, call_id=rec.get("id", ""),
+                           error_type=type(exc).__name__)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3447,6 +3636,16 @@ def _variant_by_id(camp_fields: dict, vid: str) -> dict | None:
         if isinstance(v, dict) and v.get("id") == vid:
             return v
     return None
+
+
+async def _job_sleep(job: dict, seconds: float) -> None:
+    """Sleep up to `seconds`, but wake within ~0.4s if the operator pressed Stop — so a Stop takes
+    effect almost immediately even while the dialer is idling (e.g. queued out-of-window for 60s)."""
+    end = time.time() + seconds
+    while time.time() < end:
+        if job.get("stopped"):
+            return
+        await asyncio.sleep(min(0.4, max(0.05, end - time.time())))
 
 
 async def run_job(job_id: str) -> None:
@@ -3472,6 +3671,15 @@ async def run_job(job_id: str) -> None:
     job["state"] = "running"
     try:
         while idx < len(pending) or active:
+            # STOP: operator pressed Stop — halt NEW dialing at once, mark the rest "stopped", and let
+            # the few in-flight calls drain naturally below (their finalize/recording still runs).
+            if job.get("stopped") and not job.get("_stop_applied"):
+                job["_stop_applied"] = True
+                for _it in pending[idx:]:
+                    if _it.get("status") == "queued":
+                        _it["status"] = "stopped"
+                idx = len(pending)
+                job["state"] = "stopping" if active else "stopped"
             now = time.time()
             still = []
             for it in active:
@@ -3493,7 +3701,7 @@ async def run_job(job_id: str) -> None:
             elif not in_win:
                 job["paused_reason"] = "out_of_window"
                 if not active and idx < len(pending):
-                    await asyncio.sleep(60)
+                    await _job_sleep(job, 60)   # wakes instantly on Stop
                     continue
             else:
                 job.pop("paused_reason", None)
@@ -3538,6 +3746,24 @@ async def run_job(job_id: str) -> None:
                     md_obj["variant_id"] = v_id
                     md_obj["variant_label"] = v_label
                     md_obj["fields_override"] = vdef.get("fields_override") or {}
+                # Haptica Flywheel (FLYWHEEL_ENABLED + bandit): let the contextual bandit pick the
+                # variant arm via Thompson sampling over the worker's precomputed policy SNAPSHOT (a
+                # local dict read — NEVER an inference/ClickHouse call on the live dial path). Dormant
+                # or any error ⇒ keep the round-robin choice (byte-identical resting behaviour).
+                _fw_arm: dict = {}
+                _fw_mod = globals().get("_flywheel_mod")
+                if _fw_mod is not None and globals().get("FLYWHEEL_ENABLED"):
+                    try:
+                        _fw_arm = _fw_mod.select_arm_for_dispatch(tenant_id, cid) or {}
+                        if _fw_arm.get("variant_id"):
+                            v_id = _fw_arm["variant_id"]
+                            vdef = _variant_by_id(camp_fields, v_id) or {}
+                            v_label = vdef.get("label", v_id)
+                            md_obj["variant_id"] = v_id
+                            md_obj["variant_label"] = v_label
+                            md_obj["fields_override"] = vdef.get("fields_override") or {}
+                    except Exception:  # noqa: BLE001 — the bandit can NEVER break dispatch
+                        _fw_arm = {}
                 md = json.dumps(md_obj)
                 # REC-B: call_id chosen BEFORE create_room so the recording object key embeds it
                 # (the call row id == the <call_id> in outbound-recordings/.../<call_id>.ogg).
@@ -3573,19 +3799,37 @@ async def run_job(job_id: str) -> None:
                            "recording_key": _rec_key,
                            "recording_bucket": _rec_bucket,
                            "recording_status": ("recording" if _egress is not None else "disabled")}
+                    # REC-B-AZURE marker (additive): when the Azure backend armed this egress, stamp
+                    # recording_backend="azure" so the read/serve path presigns via Azure SAS instead
+                    # of DO Spaces (recording_bucket above is then the Azure container). Flag-off ->
+                    # this key is simply absent and every reader stays on the default DO Spaces path.
+                    if _egress is not None and _azure_recording_enabled():
+                        rec["recording_backend"] = "azure"
                     it["_rec"] = rec
+                    # Haptica Flywheel: record the FINAL policy arm (model/voice/variant/propensity)
+                    # on the call record so the engine can correlate outcome↔arm later. Pure metadata,
+                    # flag-gated, never raises. (_fw_mod/_fw_arm set in the dispatch block above.)
+                    if _fw_mod is not None and globals().get("FLYWHEEL_ENABLED"):
+                        try:
+                            _fw_mod.stamp_arm(rec, camp_fields, md_obj, _fw_arm)
+                        except Exception:  # noqa: BLE001
+                            pass
                     record_call(rec)
                     ACTIVE_CALLS[tenant_id] = ACTIVE_CALLS.get(tenant_id, 0) + 1
                     active.append(it); started_ts.append(time.time()); hourly += 1; daily += 1
                 except Exception as exc:  # noqa: BLE001
                     it["status"] = "failed"; it["error"] = repr(exc)[:140]
+                    _log_event("error", "dialer",
+                               f"call dial failed for {num}: {exc!r}",
+                               tenant=({"tenant_id": tenant_id}), error_type=type(exc).__name__,
+                               context={"phone": num, "campaign": cname, "campaign_id": cid})
                     record_call({"id": uuid.uuid4().hex[:10], "tenant_id": tenant_id,
                                  "name": it.get("name", ""), "phone": num,
                                  "campaign_id": cid, "campaign_name": cname, "status": "failed",
                                  "started_at": _utc_iso(),  # W14-WIRE: tz-labelled UTC
                                  "ended_at": "", "duration_s": 0})
-            await asyncio.sleep(4)
-        job["state"] = "done"
+            await _job_sleep(job, 4)
+        job["state"] = "stopped" if job.get("stopped") else "done"
     finally:
         await lk.aclose()
 
@@ -3676,15 +3920,28 @@ def _login_blocked_by_status(tenant: dict | None) -> bool:
     """CONTROL LAYER (CL-B3 / control-security §5.1): a suspended/disabled vendor cannot mint a token.
     Admins are NEVER blocked (anti-lockout). Gated behind CONTROL_ENABLED so resting login is unchanged.
     Suspension's INSTANT kill is auth.revoke_all (next call 401); this closes the fresh-login door too."""
-    if not CONTROL_ENABLED or _ent_mod is None or not tenant:
+    if not tenant or tenant.get("is_admin"):
         return False
-    if tenant.get("is_admin"):
+    if _client_blocked(tenant):          # file-based status/demo gate (works without PG)
+        return True
+    if not CONTROL_ENABLED or _ent_mod is None:
         return False
     try:
         st = _ent_mod.load_status(tenant.get("tenant_id", "")).get("status", "active")
     except Exception:  # noqa: BLE001
         return False
     return st in ("suspended", "disabled")
+
+
+def _blocked_login_response(t: dict | None) -> JSONResponse:
+    """Distinct 403 for an EXPIRED DEMO vs a normally suspended/deactivated account."""
+    if t and t.get("demo") and (_demo_remaining_s(t) or 0) <= 0:
+        return JSONResponse(
+            {"error": "Your demo account has expired. Please contact your admin to continue.",
+             "code": "demo_expired"}, status_code=403)
+    return JSONResponse(
+        {"error": "This account has been deactivated. Please contact your admin.",
+         "code": "suspended"}, status_code=403)
 
 
 @app.post("/login")
@@ -3704,7 +3961,7 @@ async def login(request: Request, password: str = Form(""), email: str = Form(""
         t = next((x for x in _read_tenants() if (x.get("email") or "").lower() == email), None)
         if t and t.get("pass_hash") == _hash_pw(password, t.get("salt", "")):
             if _login_blocked_by_status(t):
-                return JSONResponse({"error": "account suspended"}, status_code=403)
+                return _blocked_login_response(t)
             return JSONResponse({"token": _make_token(t["tenant_id"]), "tenant_id": t["tenant_id"],
                                  "name": t.get("name", ""), "is_admin": bool(t.get("is_admin")),
                                  "role": _role_of(t)})
@@ -3726,8 +3983,9 @@ async def auth_login(request: Request, email: str = Form(""), password: str = Fo
     pair = _auth_mod.login((email or "").strip().lower(), password or "")
     if not pair:
         return JSONResponse({"error": "invalid credentials"}, status_code=401)
-    if _login_blocked_by_status(_tenant_by_id(pair.get("tenant_id", ""))):
-        return JSONResponse({"error": "account suspended"}, status_code=403)
+    _bt = _tenant_by_id(pair.get("tenant_id", ""))
+    if _login_blocked_by_status(_bt):
+        return _blocked_login_response(_bt)
     return JSONResponse(pair)
 
 
@@ -3757,79 +4015,22 @@ async def auth_logout(request: Request, refresh_token: str = Form("")):
     return JSONResponse({"ok": True, "revoked": bool(revoked)})
 
 
-# R6-B10 — the editable profile fields persisted on the tenant row (Settings page CRUD). These are the
-# ONLY keys PUT /me will write; everything else (auth/role/billing/secrets) is immutable from this route.
-_PROFILE_FIELDS = ("name", "display_name", "photo_url", "avatar_url", "phone", "title",
-                   "company", "timezone", "locale", "bio")
-
-
-def _profile_view(t: dict) -> dict:
-    """Shape the persisted profile fields for GET/PUT /me (best-effort; missing -> "")."""
-    prof = t.get("profile") if isinstance(t.get("profile"), dict) else {}
-    out = {}
-    for k in _PROFILE_FIELDS:
-        out[k] = prof.get(k, t.get(k, "")) if k != "name" else (prof.get("name") or t.get("name", ""))
-    return out
-
-
 @app.get("/me")
 async def me(request: Request):
-    """Current identity + role + persisted profile. Frontend uses role to show/hide actions."""
+    """Current identity + role. Frontend uses role to show/hide actions."""
     t = resolve_tenant(request)
     if not t:
         return need_auth()
-    body = {"tenant_id": t["tenant_id"], "email": t.get("email", ""),
-            "name": t.get("name", ""), "role": _role_of(t),
-            "is_admin": bool(t.get("is_admin"))}
-    # R6-B10: include the editable profile block so the Settings page can hydrate its form.
-    body["profile"] = _profile_view(t)
-    return JSONResponse(body)
-
-
-@app.put("/me")
-async def me_update(request: Request):
-    """R6-B10 — persist the current user's profile (name / photo / avatar / phone / title / ...).
-
-    The Settings page had NO profile persistence — name/photo/avatar edits were lost on reload. This
-    writes ONLY the whitelisted `_PROFILE_FIELDS` onto the caller's OWN tenant row (resolve_tenant ->
-    tenant_id from the TOKEN, never a body field), under the shared store lock. Auth/role/billing/
-    secrets are never touched. `name` is mirrored onto both the top-level and the `profile` block so
-    existing readers (login response, /me) and the new Settings form stay consistent. Any role may edit
-    their own profile. A photo is accepted as a URL or a data: URI string (the FE uploads/encodes it)."""
-    t = resolve_tenant(request)
-    if not t:
-        return need_auth()
-    try:
-        patch = await request.json()
-        if not isinstance(patch, dict):
-            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
-    except Exception:  # noqa: BLE001
-        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
-    clean = {}
-    for k in _PROFILE_FIELDS:
-        if k in patch and patch[k] is not None:
-            v = patch[k]
-            v = v if isinstance(v, str) else str(v)
-            # cap a data:-URI / long bio so the JSON store can't be bloated by a runaway upload.
-            clean[k] = v[:1_500_000] if k in ("photo_url", "avatar_url") else v[:2000]
-    if not clean:
-        return JSONResponse({"profile": _profile_view(t), "updated": []})
-    tid = t["tenant_id"]
-    async with _STORE_LOCK:
-        tenants = _read_tenants()
-        row = next((x for x in tenants if x.get("tenant_id") == tid), None)
-        if row is None:
-            # admin tenant may live only in memory before first persist -> materialize it.
-            row = dict(t); tenants.append(row)
-        prof = row.get("profile") if isinstance(row.get("profile"), dict) else {}
-        prof.update(clean)
-        row["profile"] = prof
-        if "name" in clean:              # mirror name to the top-level so /login + /me stay consistent
-            row["name"] = clean["name"]
-        row["profile_updated_at"] = datetime.now().isoformat(timespec="seconds")
-        _write_tenants(tenants)
-        merged = row
-    return JSONResponse({"profile": _profile_view(merged), "updated": sorted(clean.keys())})
+    out = {"tenant_id": t["tenant_id"], "email": t.get("email", ""),
+           "name": t.get("name", ""), "role": _role_of(t),
+           "is_admin": bool(t.get("is_admin")),
+           "status": (t.get("status") or "active"),
+           "restricted": list(t.get("restricted") or [])}
+    if t.get("demo"):
+        out["demo"] = True
+        out["demo_minutes"] = int(t.get("demo_minutes") or 0)
+        out["demo_remaining_s"] = int(_demo_remaining_s(t) or 0)
+    return JSONResponse(out)
 
 
 # ---------- F2: Business Brain + Knowledge Base (additive; tenant-scoped; org_id from token only) ----------
@@ -4360,8 +4561,11 @@ async def kb_gaps(request: Request, days: int = 30, limit: int = 50):
 @app.get("/contacts")
 async def contacts_list(request: Request, stage: str = "", hot: str = "", q: str = "",
                         segment: str = "", sort: str = "last_activity_at", limit: int = 100,
-                        sort_by: str = "", order: str = ""):
-    """List/filter/segment contacts for the caller's org. {contacts:[...], total}."""
+                        sort_by: str = "", order: str = "", offset: int = 0):
+    """List/filter/segment contacts for the caller's org. {contacts:[...], total, offset,
+    limit, next}. `offset` cursor-pages the list (the panel CRM workspace loads ONE page
+    then fetches the next) — without it the infinite-scroll re-requested page 0 and showed
+    duplicate rows for books larger than one page."""
     t = resolve_tenant(request)
     if not t:
         return need_auth()
@@ -4383,7 +4587,8 @@ async def contacts_list(request: Request, stage: str = "", hot: str = "", q: str
     res = await asyncio.to_thread(
         lambda: _crm_mod.list_contacts(t["tenant_id"], stage=stage, hot=hot_f, q=q, sort=sort,
                                        limit=max(1, min(int(limit or 100), 1000)),
-                                       is_admin=bool(t.get("is_admin"))))
+                                       offset=max(0, int(offset or 0)),
+                                       is_admin=_data_admin(t)))
     if _sb and isinstance(res, dict) and isinstance(res.get("contacts"), list):
         _desc = (order or "").strip().lower() != "asc"
 
@@ -4416,7 +4621,7 @@ async def contacts_get(request: Request, phone: str):
     if _crm_mod is None:
         return JSONResponse({"contact": None, "note": "crm module unavailable"}, status_code=503)
     org = t["tenant_id"]
-    adm = bool(t.get("is_admin"))
+    adm = _data_admin(t)
     # PERF UNIT-2: project on read (FRESHNESS-GATED rebuild — at most once per contact / TTL, so a
     # repeat open is a fast cached read, no full timeline rebuild + N+1 transcript disk reads). The
     # projection ALSO hands back the timeline it just read (`_timeline`) so we DON'T issue a second
@@ -4473,7 +4678,7 @@ async def contacts_timeline(request: Request, phone: str, kinds: str = "", limit
     if _crm_mod is None:
         return JSONResponse({"timeline": [], "note": "crm module unavailable"})
     org = t["tenant_id"]
-    adm = bool(t.get("is_admin"))
+    adm = _data_admin(t)
     kinds_l = [k.strip() for k in kinds.split(",") if k.strip()] or None
     cid = phone if str(phone).startswith("ct_") else _crm_mod.contact_id(org, phone)
     tl = await asyncio.to_thread(
@@ -4491,7 +4696,7 @@ async def contacts_nba(request: Request, phone: str):
     if _crm_mod is None:
         return JSONResponse({"action": "none", "reason": "crm module unavailable"})
     org = t["tenant_id"]
-    adm = bool(t.get("is_admin"))
+    adm = _data_admin(t)
     c = await asyncio.to_thread(lambda: _crm_mod.get_contact(org, phone, is_admin=adm))
     if c is None:
         return JSONResponse({"error": "contact not found"}, status_code=404)
@@ -4521,7 +4726,7 @@ async def contacts_update(request: Request, phone: str):
     for k in ("org_id", "id", "phone_key"):
         body.pop(k, None)
     org = t["tenant_id"]
-    adm = bool(t.get("is_admin"))
+    adm = _data_admin(t)
     c = await asyncio.to_thread(
         lambda: _crm_mod.update_contact(
             org, phone, name=body.get("name"), email=body.get("email"),
@@ -4544,9 +4749,663 @@ async def get_audit(request: Request, limit: int = 100, offset: int = 0,
     if _audit_mod is None:
         return JSONResponse({"events": [], "total": 0, "limit": limit, "offset": offset,
                              "note": "audit module unavailable"})
-    scope = None if t.get("is_admin") else t["tenant_id"]
+    scope = None if _data_admin(t) else t["tenant_id"]
     return JSONResponse(_audit_mod.tail(limit=limit, offset=offset,
                                         tenant_id=scope, action_prefix=action, channel=channel))
+
+
+# ============================================================================
+# SYSTEM LOGS & ERRORS — super-admin observability surface (white-labeled "System Logs").
+# Backed by logging_service (shared /data JSONL the voice agent ALSO writes to). All routes
+# are super-admin-gated, read-only, and degrade to a clean empty shape (never 500) when the
+# module is unavailable. `/admin/logs/summary` is declared BEFORE `/admin/logs/{event_id}` so
+# "summary" is not captured as an id.
+# ============================================================================
+@app.get("/admin/logs")
+async def admin_logs(request: Request, limit: int = 100, offset: int = 0, level: str = "",
+                     source: str = "", tenant_id: str = "", q: str = "", since: str = ""):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"events": [], "total": 0, "limit": limit, "offset": offset,
+                             "note": "logging module unavailable"})
+    return JSONResponse(_log_mod.tail(limit=limit, offset=offset, level=level, source=source,
+                                      tenant_id=tenant_id, q=q, since=since))
+
+
+@app.get("/admin/logs/summary")
+async def admin_logs_summary(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"by_level": {}, "total": 0, "last_24h": 0, "errors_24h": 0,
+                             "top_errors": [], "note": "logging module unavailable"})
+    return JSONResponse(_log_mod.summary())
+
+
+@app.get("/admin/notifications")
+async def admin_notifications(request: Request, after: int = 0, limit: int = 30):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"events": [], "latest_seq": 0, "unread": 0, "unread_errors": 0})
+    try:
+        _after = int(after or 0)
+    except Exception:  # noqa: BLE001
+        _after = 0
+    return JSONResponse(_log_mod.notifications(after_seq=_after, limit=limit))
+
+
+# NOTE: /admin/logs/health and /admin/logs/test are declared BEFORE /admin/logs/{event_id}
+# so "health"/"test" are matched as routes, not captured as an event id.
+@app.get("/admin/logs/health")
+async def admin_logs_health(request: Request):
+    """Operator self-test for System Logs: is the store live, where does it write, can it write,
+    how many events are buffered, the current seq, and whether Telegram/AI-fix are configured.
+    Answers the #1 question 'is logging even on?' in one call. 503 when not ready/writable."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"ready": False, "note": "logging module unavailable",
+                             "init_ok": bool(globals().get("LOG_READY", False))}, status_code=503)
+    h = _log_mod.health()
+    h["init_ok"] = bool(globals().get("LOG_READY", False))
+    code = 200 if (h.get("ready") and h.get("writable")) else 503
+    return JSONResponse(h, status_code=code)
+
+
+@app.post("/admin/logs/test")
+async def admin_logs_test(request: Request):
+    """Emit a synthetic event so an operator can SEE capture working end-to-end (it should appear
+    in the Logs tab immediately). Returns the stored event. Super-admin only."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"ok": False, "note": "logging module unavailable"}, status_code=503)
+    tid = t.get("tenant_id", "") if isinstance(t, dict) else ""
+    ev = _log_mod.record("info", "selftest",
+                         "System Logs self-test — if you can see this, capture is working.",
+                         tenant_id=tid, error_type="selftest",
+                         context={"by": tid or "super-admin", "ip": _client_ip(request)})
+    return JSONResponse({"ok": bool(ev), "event": ev or {}})
+
+
+@app.post("/admin/logs/client")
+async def admin_logs_client(request: Request):
+    """Ingest a CLIENT-SIDE (panel) error so UI/runtime/fetch failures surface in System Logs
+    alongside backend events. Any authenticated user may report (scoped to their tenant; super-
+    admin sees all). Source is FORCED to 'frontend'; level is clamped; message/stack are bounded.
+    Best-effort: always returns 200 ({ok}) so a failed report can never cascade into the UI."""
+    try:
+        t = resolve_tenant(request)
+    except Exception:  # noqa: BLE001
+        t = None
+    if not isinstance(t, dict):
+        return JSONResponse({"ok": False}, status_code=401)
+    if _log_mod is None:
+        return JSONResponse({"ok": False})
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:  # noqa: BLE001
+        body = {}
+    lvl = str(body.get("level", "error") or "error").strip().lower()
+    if lvl not in ("info", "warning", "error", "critical"):
+        lvl = "error"
+    msg = str(body.get("message", "") or "")[:1000] or "client error"
+    etype = str(body.get("error_type", "") or "ClientError")[:120]
+    ctx = {
+        "where": "frontend",
+        "url": str(body.get("url", "") or "")[:500],
+        "stack": str(body.get("stack", "") or "")[:1500],
+        "kind": str(body.get("kind", "") or "")[:60],   # error | unhandledrejection | render | fetch
+        "ua": (request.headers.get("user-agent", "") or "")[:300],
+        "ip": _client_ip(request),
+    }
+    extra = body.get("context")
+    if isinstance(extra, dict):
+        for k, v in list(extra.items())[:10]:
+            ctx[str(k)[:40]] = str(v)[:300]
+    _log_mod.record(lvl, "frontend", msg, tenant_id=t.get("tenant_id", ""),
+                    error_type=etype, context=ctx)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/admin/logs/{event_id}")
+async def admin_log_detail(request: Request, event_id: str):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"error": "logging module unavailable"}, status_code=404)
+    ev = _log_mod.get(event_id)
+    if not ev:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(ev)
+
+
+@app.post("/admin/logs/{event_id}/suggest")
+async def admin_log_suggest(request: Request, event_id: str, force: str = ""):
+    """Generate (and cache) an AI 'why + how to fix' suggestion for the event's fingerprint.
+    `?force=1` (the panel's Regenerate button) bypasses the per-fingerprint cache and re-asks the LLM."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _log_mod is None:
+        return JSONResponse({"suggestion": ""})
+    _force = str(force).strip().lower() in ("1", "true", "yes", "on")
+    # suggest_fix does a blocking Groq call -> offload so the event loop is never stalled.
+    suggestion = await asyncio.to_thread(_log_mod.suggest_fix, event_id, force=_force)
+    return JSONResponse({"suggestion": suggestion})
+
+
+@app.get("/bookings")
+async def list_bookings(request: Request, limit: int = 200):
+    """Site-visit bookings captured by the voice agent (BC1 fast-capture -> /data/bookings.jsonl).
+    A tenant sees ONLY its own; admin sees all. Read-only, newest-first. Degrades to an empty
+    list (never 500) when nothing has been captured yet. (The full availability/calendar engine
+    + a richer panel surface land later; this exposes the captured slots in the meantime.)"""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    scope = None if _data_admin(t) else t.get("tenant_id", "")
+
+    def _load():
+        out = []
+        try:
+            p = VAR / "bookings.jsonl"
+            if p.exists():
+                for ln in p.read_text(encoding="utf-8").splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        b = json.loads(ln)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if not isinstance(b, dict):
+                        continue
+                    if scope is not None and (b.get("tenant_id") or "") != scope:
+                        continue
+                    out.append(b)
+        except Exception:  # noqa: BLE001
+            return []
+        out.reverse()  # newest first
+        return out[:max(1, min(limit, 1000))]
+
+    rows = await asyncio.to_thread(_load)
+    return JSONResponse({"bookings": rows, "total": len(rows)})
+
+
+# ============================================================================
+# PERFORMANCE — white-labeled metrics for the super-admin "Performance" page. A thin proxy to
+# the observability droplet's Prometheus HTTP API (PROM_URL). Super-admin-gated, read-only.
+# The panel renders native charts from the returned series — the vendor (Prometheus/Grafana/
+# SigNoz) is never named or exposed. Degrades to 503 (never 500) when PROM_URL is unset.
+# ============================================================================
+async def _prom_proxy(path: str, params: dict):
+    base = (os.getenv("PROM_URL") or "").strip().rstrip("/")
+    if not base:
+        return JSONResponse({"status": "error", "error": "metrics backend not configured"},
+                            status_code=503)
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=10.0) as _c:
+            r = await _c.get(base + path, params=params)
+        try:
+            body = r.json()
+        except Exception:  # noqa: BLE001
+            body = {"status": "error", "error": "bad upstream response"}
+        return JSONResponse(body, status_code=r.status_code)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"status": "error", "error": "metrics backend unreachable"},
+                            status_code=502)
+
+
+@app.get("/admin/metrics/instant")
+async def admin_metrics_instant(request: Request, query: str):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    return await _prom_proxy("/api/v1/query", {"query": query})
+
+
+@app.get("/admin/metrics/range")
+async def admin_metrics_range(request: Request, query: str, minutes: int = 60, step: int = 60):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    import time as _t
+    mins = max(1, min(minutes, 10080))   # honor up to 7d (matches the ClickHouse panels)
+    end = int(_t.time())
+    start = end - mins * 60
+    # derive a step that keeps ~60-360 points (step=0 from the client => auto) so a 7d window
+    # doesn't ask Prometheus for tens of thousands of points.
+    if step and step > 0:
+        st = max(15, min(step, 21600))
+    else:
+        st = 60 if mins <= 60 else 300 if mins <= 360 else 900 if mins <= 1440 else 3600 if mins <= 10080 else 21600
+    return await _prom_proxy("/api/v1/query_range",
+                             {"query": query, "start": start, "end": end, "step": st})
+
+
+# ============================================================================
+# OBSERVABILITY ANALYTICS — read-only ClickHouse (trace/APM) queries for the native, white-
+# labeled System Logs (Traces/Requests) + Performance (APM) dashboards. Super-admin-gated.
+# All degrade to {"error":...,"rows":[]} (never 500) when obs is unconfigured. See obs_query.py.
+# ============================================================================
+def _obs_guard(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _obs_q is None:
+        return JSONResponse({"error": "observability not configured", "rows": []}, status_code=503)
+    return None
+
+
+def _obs_tenant(request: Request):
+    """Like _obs_guard, but on SUCCESS returns the resolved super-admin tenant dict so
+    the voice routes can FORCE caller-tenant scoping under hard isolation. On failure
+    returns a JSONResponse. Use: `g = _obs_tenant(request); if isinstance(g, JSONResponse): return g`."""
+    g = _obs_guard(request)
+    if g is not None:
+        return g
+    return resolve_tenant(request)
+
+
+@app.get("/admin/obs/services")
+async def admin_obs_services(request: Request, minutes: int = 1440):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.services(minutes))
+
+
+@app.get("/admin/obs/summary")
+async def admin_obs_summary(request: Request, minutes: int = 60, service: str = ""):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.summary(minutes, service))
+
+
+@app.get("/admin/obs/red")
+async def admin_obs_red(request: Request, minutes: int = 60, service: str = ""):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.red_timeseries(minutes, service))
+
+
+@app.get("/admin/obs/routes")
+async def admin_obs_routes(request: Request, minutes: int = 60, service: str = "", limit: int = 50):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.top_routes(minutes, service, limit))
+
+
+@app.get("/admin/obs/status")
+async def admin_obs_status(request: Request, minutes: int = 60, service: str = ""):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.status_dist(minutes, service))
+
+
+@app.get("/admin/obs/service-dist")
+async def admin_obs_service_dist(request: Request, minutes: int = 60):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.service_dist(minutes))
+
+
+@app.get("/admin/obs/errors")
+async def admin_obs_errors(request: Request, minutes: int = 60, service: str = "", limit: int = 20):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.error_ops(minutes, service, limit))
+
+
+@app.get("/admin/obs/traces")
+async def admin_obs_traces(request: Request, minutes: int = 60, service: str = "",
+                           errors_only: int = 0, q: str = "", limit: int = 60):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(
+        await _obs_q.traces(minutes, service, errors_only, q, limit))
+
+
+@app.get("/admin/obs/trace/{trace_id}")
+async def admin_obs_trace(request: Request, trace_id: str):
+    g = _obs_guard(request)
+    return g if g is not None else JSONResponse(await _obs_q.trace_detail(trace_id))
+
+
+# ── P1 Voice Performance Analytics (reads over the agent-written haptica_voice_* CH tables) ──
+def _voice_filters(tenant_id: str = "", campaign_id: str = "", agent_name: str = "",
+                   phone: str = "", provider: str = "", model: str = "",
+                   status: str = "", stage: str = "") -> dict:
+    return {"tenant_id": tenant_id, "campaign_id": campaign_id, "agent_name": agent_name,
+            "phone": phone, "provider": provider, "model": model, "status": status, "stage": stage}
+
+
+@app.get("/admin/obs/voice/summary")
+async def admin_obs_voice_summary(request: Request, minutes: int = 60, tenant_id: str = "",
+                                  campaign_id: str = "", agent_name: str = "", phone: str = "",
+                                  provider: str = "", model: str = "", status: str = "", stage: str = ""):
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    f = _voice_filters(tenant_id, campaign_id, agent_name, phone, provider, model, status, stage)
+    if not _data_admin(g):
+        f["tenant_id"] = g["tenant_id"]  # force caller scope; ignore any client tenant_id param
+    return JSONResponse(await _obs_q.voice_summary(minutes, f))
+
+
+@app.get("/admin/obs/voice/red")
+async def admin_obs_voice_red(request: Request, minutes: int = 60, tenant_id: str = "",
+                              campaign_id: str = "", agent_name: str = "", phone: str = "",
+                              provider: str = "", model: str = "", status: str = "", stage: str = ""):
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    f = _voice_filters(tenant_id, campaign_id, agent_name, phone, provider, model, status, stage)
+    if not _data_admin(g):
+        f["tenant_id"] = g["tenant_id"]
+    return JSONResponse(await _obs_q.voice_red_timeseries(minutes, f))
+
+
+@app.get("/admin/obs/voice/calls")
+async def admin_obs_voice_calls(request: Request, minutes: int = 60, limit: int = 100,
+                                tenant_id: str = "", campaign_id: str = "", agent_name: str = "",
+                                phone: str = "", provider: str = "", model: str = "",
+                                status: str = "", stage: str = ""):
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    f = _voice_filters(tenant_id, campaign_id, agent_name, phone, provider, model, status, stage)
+    if not _data_admin(g):
+        f["tenant_id"] = g["tenant_id"]
+    return JSONResponse(await _obs_q.voice_calls(minutes, f, limit))
+
+
+@app.get("/admin/obs/voice/filters")
+async def admin_obs_voice_filters(request: Request, minutes: int = 1440):
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    scope = "" if _data_admin(g) else g["tenant_id"]
+    return JSONResponse(await _obs_q.voice_filter_options(minutes, tenant_id=scope))
+
+
+@app.get("/admin/obs/voice/stack")
+async def admin_obs_voice_stack(request: Request, minutes: int = 1440, tenant_id: str = "",
+                                campaign_id: str = "", agent_name: str = ""):
+    """The AI stack + versions actually in use over the window + each stage's metrics."""
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    f = _voice_filters(tenant_id, campaign_id, agent_name)
+    if not _data_admin(g):
+        f["tenant_id"] = g["tenant_id"]
+    return JSONResponse(await _obs_q.voice_stack(minutes, f))
+
+
+# NOTE: /call/{call_id} is declared as a sub-path so it never collides with the static routes above.
+def _category_label(cat: str) -> str:
+    """Human label for a script-category id (sales/consultative/…). Falls back to Title Case."""
+    cat = (cat or "").strip().lower()
+    if not cat:
+        return ""
+    try:
+        if _script_gen is not None and hasattr(_script_gen, "STYLES"):
+            lbl = (_script_gen.STYLES.get(cat) or {}).get("label")
+            if lbl:
+                return str(lbl)
+    except Exception:  # noqa: BLE001
+        pass
+    return cat.replace("_", " ").replace("-", " ").title()
+
+
+@app.get("/admin/obs/voice/call/{call_id}")
+async def admin_obs_voice_call(request: Request, call_id: str):
+    g = _obs_tenant(request)
+    if isinstance(g, JSONResponse):
+        return g
+    scope = "" if _data_admin(g) else g["tenant_id"]
+    detail = await _obs_q.voice_call_detail(call_id, tenant_id=scope)
+    timeline = await _obs_q.voice_turn_timeline(call_id, tenant_id=scope)
+    latency = await _obs_q.voice_call_latency(call_id, tenant_id=scope)
+    _row = (detail.get("rows") or [{}])[0] if not detail.get("error") else {}
+    # #22 campaign block (joined off the row's campaign_id) so the call detail can show the
+    # campaign + its script category. Best-effort; never breaks the call response.
+    _camp = {}
+    try:
+        _cid = str(_row.get("campaign_id") or "").strip()
+        if _cid:
+            _c = get_campaign_for(_cid, g) or {}
+            if _c:
+                _cat = str((_c.get("fields") or {}).get("category") or "").strip().lower()
+                _camp = {"id": _cid, "name": _c.get("name") or "",
+                         "category": _cat, "category_label": _category_label(_cat)}
+    except Exception:  # noqa: BLE001
+        _camp = {}
+    # Per-call cost breakdown from REAL usage (4-component, superadmin-rate-card aware). Never breaks the call.
+    _cost = {}
+    try:
+        from llm_router import tiers as _tiers_cost  # noqa: PLC0415
+        _cost = _tiers_cost.call_cost({
+            "duration_s": float(_row.get("duration_ms") or 0) / 1000.0,
+            "stt_speech_s": float(_row.get("speech_ms") or 0) / 1000.0,
+            "llm_in_tokens": _row.get("in_tokens") or 0,
+            "llm_out_tokens": _row.get("out_tokens") or 0,
+            "tts_chars": _row.get("characters") or 0,
+            "stt_provider": _row.get("stt_provider"), "stt_model": _row.get("stt_model"),
+            "llm_provider": _row.get("llm_provider"), "llm_model": _row.get("llm_model"),
+            "tts_provider": _row.get("tts_provider"), "tts_model": _row.get("tts_model"),
+        }, overrides=_read_raw(TIER_OVERRIDES_FILE, {}) or None)
+    except Exception:  # noqa: BLE001
+        _cost = {}
+    return JSONResponse({"detail": _row,
+                         "timeline": timeline.get("rows", []),
+                         "latency": latency.get("row", {}),
+                         "cost": _cost,
+                         "campaign": _camp,
+                         **({"error": detail.get("error")} if detail.get("error") else {})})
+
+
+# Major Indian cities -> (lat, lng) for the Control-Overview globe (#26). Substring-matched against a
+# campaign's `fields.location` so recent CALL activity is plotted where the campaigns actually target.
+_CITY_GEO: dict[str, tuple[float, float]] = {
+    "mumbai": (19.0760, 72.8777), "navi mumbai": (19.0330, 73.0297), "thane": (19.2183, 72.9781),
+    "pune": (18.5204, 73.8567), "hinjawadi": (18.5912, 73.7380), "kharadi": (18.5510, 73.9407),
+    "wakad": (18.5985, 73.7607), "hadapsar": (18.5089, 73.9260), "baner": (18.5590, 73.7868),
+    "delhi": (28.6139, 77.2090), "new delhi": (28.6139, 77.2090), "noida": (28.5355, 77.3910),
+    "gurgaon": (28.4595, 77.0266), "gurugram": (28.4595, 77.0266), "ghaziabad": (28.6692, 77.4538),
+    "faridabad": (28.4089, 77.3178), "bangalore": (12.9716, 77.5946), "bengaluru": (12.9716, 77.5946),
+    "whitefield": (12.9698, 77.7500), "hyderabad": (17.3850, 78.4867), "gachibowli": (17.4401, 78.3489),
+    "chennai": (13.0827, 80.2707), "kolkata": (22.5726, 88.3639), "ahmedabad": (23.0225, 72.5714),
+    "gandhinagar": (23.2156, 72.6369), "surat": (21.1702, 72.8311), "jaipur": (26.9124, 75.7873),
+    "lucknow": (26.8467, 80.9462), "kanpur": (26.4499, 80.3319), "nagpur": (21.1458, 79.0882),
+    "indore": (22.7196, 75.8577), "bhopal": (23.2599, 77.4126), "chandigarh": (30.7333, 76.7794),
+    "mohali": (30.7046, 76.7179), "kochi": (9.9312, 76.2673), "coimbatore": (11.0168, 76.9558),
+    "visakhapatnam": (17.6868, 83.2185), "patna": (25.5941, 85.1376), "bhubaneswar": (20.2961, 85.8245),
+    "vadodara": (22.3072, 73.1812), "nashik": (19.9975, 73.7898), "rajkot": (22.3039, 70.8022),
+    "ludhiana": (30.9010, 75.8573), "agra": (27.1767, 78.0081), "varanasi": (25.3176, 82.9739),
+    "dehradun": (30.3165, 78.0322), "guwahati": (26.1445, 91.7362), "raipur": (21.2514, 81.6296),
+    "mysore": (12.2958, 76.6394), "mysuru": (12.2958, 76.6394), "mangalore": (12.9141, 74.8560),
+}
+_INDIA_CENTROID = (22.5937, 78.9629)  # geographic centre — fallback hub / "elsewhere in India" bucket
+
+
+def _geo_for_location(loc: str) -> tuple[str, tuple[float, float]] | None:
+    """Best (longest, most-specific) city match inside a free-text campaign location string."""
+    s = (loc or "").lower()
+    if not s:
+        return None
+    best: tuple[str, tuple[float, float]] | None = None
+    for city, ll in _CITY_GEO.items():
+        if city in s and (best is None or len(city) > len(best[0])):
+            best = (city, ll)
+    return best
+
+
+@app.get("/admin/overview/geo")
+async def admin_overview_geo(request: Request, limit: int = 1500):
+    """#26 Control-Overview globe data: recent CALL activity aggregated by Indian city (joined off the
+    call's campaign → fields.location). Real signals only; degrades to an empty point set (the globe
+    still renders) when no recent call maps to a known city. Super-admin gated."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    # campaign_id -> location, memoised across the scan (campaign files are small but many calls share one)
+    _loc_cache: dict[str, str] = {}
+
+    def _camp_loc(cid: str) -> str:
+        if cid in _loc_cache:
+            return _loc_cache[cid]
+        loc = ""
+        try:
+            c = get_campaign_for(cid, t) or {}
+            loc = str((c.get("fields") or {}).get("location", "") or "")
+        except Exception:  # noqa: BLE001
+            loc = ""
+        _loc_cache[cid] = loc
+        return loc
+
+    agg: dict[str, dict] = {}
+    total = 0
+    unmapped = 0
+    # Under hard isolation the globe aggregates ONLY the caller's own calls (no cross-tenant pooling).
+    _src = CALLS if _data_admin(t) else calls_for(t)
+    try:
+        recent = _src[: max(1, min(int(limit or 1500), 5000))]
+    except Exception:  # noqa: BLE001
+        recent = _src[:1500]
+    for rec in recent:
+        if not isinstance(rec, dict):
+            continue
+        cid = str(rec.get("campaign_id") or "")
+        loc = _camp_loc(cid)
+        hit = _geo_for_location(loc)
+        total += 1
+        if not hit:
+            unmapped += 1
+            continue
+        city, (lat, lng) = hit
+        key = city
+        e = agg.setdefault(key, {"city": city.title(), "lat": lat, "lng": lng, "calls": 0})
+        e["calls"] += 1
+    pts = sorted(agg.values(), key=lambda x: x["calls"], reverse=True)
+    top = pts[0]["calls"] if pts else 0
+    for p in pts:
+        p["weight"] = round(p["calls"] / top, 4) if top else 0.0
+    hub = {"lat": pts[0]["lat"], "lng": pts[0]["lng"], "label": pts[0]["city"]} if pts else \
+          {"lat": _INDIA_CENTROID[0], "lng": _INDIA_CENTROID[1], "label": "India"}
+    live = 0
+    try:
+        live = int(sum(ACTIVE_CALLS.values()))
+    except Exception:  # noqa: BLE001
+        live = 0
+    return JSONResponse({
+        "points": pts, "hub": hub,
+        "total_calls": total, "mapped_calls": total - unmapped, "cities": len(pts), "live": live,
+        "generated_at": _utc_iso(),
+    })
+
+
+@app.get("/admin/obs/voice/call/{call_id}/quality")
+async def admin_obs_voice_call_quality(request: Request, call_id: str, force: int = 0, cached: int = 0):
+    """LLM CONTENT-quality analysis of ONE call's transcript (repetition/hanging/off-script/goal).
+    call_id == the LiveKit room, so the transcript lives at transcripts/{call_id}.json. The result is
+    CACHED per call (one paid LLM analysis); ?force=1 re-runs; ?cached=1 PEEKS (returns the cached
+    result or not_analyzed, never spends). Dormant-safe; never 500s."""
+    g = _obs_guard(request)
+    if g is not None:
+        return g
+    if _tq is None:
+        return JSONResponse({"ok": False, "error": "unavailable",
+                             "message": "Transcript analysis is not available."}, status_code=503)
+    cid = (call_id or "").strip()
+    # Ownership gate: only the tenant that owns this call may run/read its transcript analysis
+    # (under hard isolation this applies to the admin too). Deny if the call can't be attributed.
+    _rec = next((c for c in CALLS if c.get("id") == cid or c.get("room") == cid), None)
+    if not _data_admin(g):
+        _guard = require_object(g, _rec, not_found=True)
+        if _guard is not None:
+            return _guard
+    # Cache is namespaced by the caller's tenant_id so a cached analysis of one tenant's
+    # transcript can never be served to another viewer.
+    _tns = re.sub(r"[^A-Za-z0-9_.-]", "_", (g.get("tenant_id") or ""))[:60]
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", cid)[:120]
+    cache_path = VAR / "transcript_qa" / f"{_tns}__{safe}.json"
+    if not force:
+        prev = _read(cache_path, None)
+        if isinstance(prev, dict) and prev.get("ok"):
+            prev["cached"] = True
+            return JSONResponse(prev)
+    if cached:   # peek-only: do NOT run a paid analysis
+        return JSONResponse({"ok": False, "error": "not_analyzed"})
+    turns = _outbound_transcript_turns(_rec or {"room": cid})
+    if not turns:
+        return JSONResponse({"ok": False, "error": "no_transcript",
+                             "message": "No transcript saved for this call yet."})
+    res = await _tq.analyze(turns, {"campaign": cid})
+    if res.get("ok"):
+        try:
+            (VAR / "transcript_qa").mkdir(parents=True, exist_ok=True)
+            _write(cache_path, res)
+        except Exception:  # noqa: BLE001
+            pass
+    return JSONResponse(res)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FAMIT RESEARCH (W-RES) — "instrumented conversation science" READ routes. Purely additive;
+# touch no existing route. Tenant is TOKEN-derived (resolve_tenant), NEVER from the body — and
+# research_query binds WHERE tenant_id = {tid:String} on every ClickHouse read (ClickHouse has no
+# RLS, so the Python scope IS the boundary). The HEAVY pipeline (acoustic extraction + the affect
+# filter) runs POST-CALL off the recording egress in a separate process, so these routes never
+# touch the live turn loop. FAMIT_RESEARCH_ENABLED gates WRITING (the recorder); READS always work
+# and FALL BACK to a clearly-labelled `demo:true` dataset (the real filter over scripted archetype
+# calls) so the premium dashboard is alive day-one instead of an all-zeros dead page.
+# ════════════════════════════════════════════════════════════════════════════
+try:
+    import research_query as _research_q  # type: ignore
+except Exception:  # noqa: BLE001
+    _research_q = None
+
+_RESEARCH_ON = (os.getenv("FAMIT_RESEARCH_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.get("/research/dashboard")
+async def research_dashboard(request: Request, minutes: int = 1440):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _research_q is None:
+        return JSONResponse({"error": "research module unavailable"}, status_code=503)
+    try:
+        data = await _research_q.dashboard(t["tenant_id"], minutes)
+    except Exception as exc:  # noqa: BLE001 — never 500 the panel on a metrics hiccup
+        return JSONResponse({"error": str(exc)[:200], "summary": {}, "calls": []})
+    data["enabled"] = _RESEARCH_ON
+    return JSONResponse(data)
+
+
+@app.get("/research/call/{call_id}")
+async def research_call(request: Request, call_id: str):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _research_q is None:
+        return JSONResponse({"error": "research module unavailable"}, status_code=503)
+    try:
+        return JSONResponse(await _research_q.call_detail(t["tenant_id"], call_id))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)[:200], "call": {}, "turns": []})
+
+
+@app.get("/research/health")
+async def research_health(request: Request):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    return JSONResponse({"enabled": _RESEARCH_ON, "module_loaded": _research_q is not None})
 
 
 # ============================================================================
@@ -5004,7 +5863,7 @@ async def providers_list(request: Request):
          "available": _builtin_available("sarvam")},
         {"id": "groq",       "name": "Groq",        "builtin": True, "kinds": ["llm"],
          "available": _builtin_available("groq")},
-        {"id": "elevenlabs", "name": "ElevenLabs",  "builtin": True, "kinds": ["tts"],
+        {"id": "elevenlabs", "name": "ElevenLabs",  "builtin": True, "kinds": ["stt", "tts"],
          "available": _builtin_available("elevenlabs")},
         {"id": "sambanova",  "name": "SambaNova",   "builtin": True, "kinds": ["llm"],
          "available": _builtin_available("sambanova")},
@@ -5032,6 +5891,242 @@ async def providers_list(request: Request):
     return JSONResponse({"providers": builtin + custom, "by_role": by_role})
 
 
+# ── Realtime provider network-health (signal bars + latency) ──────────────────────────────────
+# Powers the "Live status" row in the Run-page Providers card. Measures a lightweight TCP-connect
+# RTT to each provider's API host — NO auth, NO request body, NO quota burn — and grades it into
+# 5 signal bars + a green/yellow/red status. Key-less providers report red/no-key. Cached briefly
+# so the panel can poll every few seconds without hammering. Best-effort; never breaks a request.
+_PROVIDER_HOSTS = {
+    "groq": ("api.groq.com", 443),
+    "elevenlabs": ("api.elevenlabs.io", 443),
+    "sarvam": ("api.sarvam.ai", 443),
+    "sambanova": ("api.sambanova.ai", 443),
+    "openrouter": ("openrouter.ai", 443),
+}
+_PROVIDER_ROLE = {"groq": "llm", "sambanova": "llm", "openrouter": "llm",
+                  "elevenlabs": "tts", "sarvam": "stt"}
+_PROVIDER_LABEL = {"groq": "Groq", "elevenlabs": "ElevenLabs", "sarvam": "Sarvam",
+                   "sambanova": "SambaNova", "openrouter": "OpenRouter"}
+# Latency grading (ms). Tunable per deployment region (US APIs from India sit higher). green=4-5
+# bars, yellow=2-3, red<=1. _LAT_GREEN_MS is the "healthy realtime" ceiling.
+_LAT_GREEN_MS = float(os.getenv("PROVIDER_LAT_GREEN_MS", "220"))
+_LAT_YELLOW_MS = float(os.getenv("PROVIDER_LAT_YELLOW_MS", "800"))
+_PROVIDER_HEALTH_TTL = float(os.getenv("PROVIDER_HEALTH_TTL_S", "4"))
+_PROVIDER_HEALTH_CACHE: dict = {"at": 0.0, "rtt": {}}
+
+
+def _provider_has_key(name: str) -> bool:
+    """True iff this built-in provider has at least one usable key (mirrors /providers)."""
+    try:
+        if name == "elevenlabs":
+            return bool((os.environ.get("ELEVENLABS_API_KEY") or "").strip())
+        if _pk_get_pool is not None:
+            pool = _pk_get_pool(name)
+            if pool is not None:
+                return pool.available_count() > 0
+        return bool((os.environ.get((name or "").upper() + "_API_KEY") or "").strip())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _provider_probe_rtt(host: str, port: int, timeout: float = 2.5):
+    """Min TCP-connect RTT (ms) over 2 samples — a real network-reachability signal with zero
+    auth/quota. Returns None when the host is unreachable/timed out. Never raises."""
+    import socket  # local import (module imports socket lazily elsewhere too)
+    best = None
+    for _ in range(2):
+        t0 = time.perf_counter()
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                pass
+        except Exception:  # noqa: BLE001
+            return None
+        dt = (time.perf_counter() - t0) * 1000.0
+        best = dt if best is None else min(best, dt)
+    return round(best, 1) if best is not None else None
+
+
+def _latency_grade(ms):
+    """(bars 0-5, status green|yellow|red) from a latency in ms. None -> unreachable (red, 1 bar)."""
+    if ms is None:
+        return 1, "red"
+    if ms <= _LAT_GREEN_MS * 0.5:
+        return 5, "green"
+    if ms <= _LAT_GREEN_MS:
+        return 4, "green"
+    if ms <= (_LAT_GREEN_MS + _LAT_YELLOW_MS) / 2:
+        return 3, "yellow"
+    if ms <= _LAT_YELLOW_MS:
+        return 2, "yellow"
+    return 1, "red"
+
+
+@app.get("/providers/health")
+async def providers_health(request: Request, ids: str = ""):
+    """Realtime network latency + signal-strength for the AI providers, for the Providers card's
+    "Live status" row. `ids` is an optional comma list (defaults to the 3 headline providers).
+    Cached ~4s. Degrades to an empty list (never 500)."""
+    if not authed(request):
+        return need_auth()
+    try:
+        want = [s.strip().lower() for s in (ids or "").split(",") if s.strip()]
+        if not want:
+            want = ["groq", "elevenlabs", "sarvam"]
+        # de-dupe, keep only known hosts, bound the fan-out
+        seen: set = set()
+        want = [p for p in want if p in _PROVIDER_HOSTS and not (p in seen or seen.add(p))][:8]
+        now = time.time()
+        cache = _PROVIDER_HEALTH_CACHE
+        fresh = (now - cache["at"]) < _PROVIDER_HEALTH_TTL
+        need_probe = (not fresh) or any(p not in cache["rtt"] for p in want)
+        if need_probe:
+            rtts = await asyncio.gather(*[
+                asyncio.to_thread(_provider_probe_rtt, *_PROVIDER_HOSTS[p]) for p in want
+            ])
+            merged = dict(cache["rtt"]) if fresh else {}
+            merged.update(dict(zip(want, rtts)))
+            cache["rtt"] = merged
+            cache["at"] = now
+        rtt = cache["rtt"]
+        out = []
+        for pid in want:
+            has_key = _provider_has_key(pid)
+            ms = rtt.get(pid)
+            if not has_key:
+                bars, status, ms, note = 0, "red", None, "no key"
+            elif ms is None:
+                bars, status, note = 1, "red", "unreachable"
+            else:
+                bars, status = _latency_grade(ms)
+                note = ""
+            out.append({"id": pid, "role": _PROVIDER_ROLE.get(pid, ""),
+                        "label": _PROVIDER_LABEL.get(pid, pid.title()),
+                        "available": has_key, "reachable": ms is not None,
+                        "latency_ms": ms, "bars": bars, "status": status, "note": note})
+        return JSONResponse({"providers": out, "at": _utc_iso(), "ttl_s": _PROVIDER_HEALTH_TTL})
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"providers": [], "at": _utc_iso(), "ttl_s": _PROVIDER_HEALTH_TTL})
+
+
+@app.get("/campaigns/{cid}/preflight")
+async def campaign_preflight(request: Request, cid: str):
+    """Pre-launch readiness for a campaign, with REAL signals: TCP-RTT to the AI providers it rides
+    (LLM/STT/TTS, no auth/quota), db/redis/livekit voice infra, and this campaign's recent call
+    latency (ClickHouse p95). Returns graded checks + an overall verdict so the panel can warn before
+    a slow launch (the browser layers its own network-RTT check on top). Best-effort; never 500s."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    f = (d.get("fields") or {}) if isinstance(d, dict) else {}
+    checks: list = []
+    worst = 0.0
+
+    def _pid(v, default):
+        s = str(v or "").strip().lower()
+        return s if s in _PROVIDER_HOSTS else default
+
+    # 1) AI providers (LLM · STT · TTS) — real TCP-connect RTT
+    prov_ids: list = []
+    for pid in (_pid(f.get("llm_provider"), "groq"), _pid(f.get("stt_provider"), "sarvam"),
+                _pid(f.get("tts_provider"), "elevenlabs")):
+        if pid not in prov_ids:
+            prov_ids.append(pid)
+    try:
+        rtts = await asyncio.gather(*[asyncio.to_thread(_provider_probe_rtt, *_PROVIDER_HOSTS[p])
+                                      for p in prov_ids])
+    except Exception:  # noqa: BLE001
+        rtts = [None] * len(prov_ids)
+    prov_parts: list = []
+    prov_worst = 0.0
+    prov_down = False
+    for pid, ms in zip(prov_ids, rtts):
+        label = _PROVIDER_LABEL.get(pid, pid.title())
+        if ms is None:
+            prov_down = True
+            prov_parts.append(f"{label} unreachable")
+        else:
+            prov_parts.append(f"{label} {ms:.0f}ms")
+            prov_worst = max(prov_worst, ms)
+    prov_status = "red" if (prov_down or prov_worst > _LAT_YELLOW_MS) else (
+        "yellow" if prov_worst > _LAT_GREEN_MS else "green")
+    checks.append({"id": "providers", "label": "AI providers (LLM · STT · TTS)",
+                   "status": prov_status, "latency_ms": round(prov_worst) if prov_worst else None,
+                   "detail": " · ".join(prov_parts)})
+    worst = max(worst, 9999.0 if prov_down else prov_worst)
+
+    # 2) Voice infrastructure — LiveKit is the call-signalling plane that actually gates a launch.
+    # (db/redis are NOT on the live call path in this file-storage deployment, so they don't block.)
+    lk_ok, _ = await asyncio.to_thread(_hc_livekit)
+    infra_status = "green" if lk_ok else "red"
+    checks.append({"id": "voice_infra", "label": "Voice infrastructure", "status": infra_status,
+                   "latency_ms": None,
+                   "detail": "LiveKit reachable — call routing up" if lk_ok
+                             else "LiveKit unreachable — calls can't connect"})
+
+    # 3) Recent call latency for THIS campaign (ClickHouse). Best-effort; neutral if no data.
+    recent_status, recent_detail, recent_ms = "green", "no recent calls to measure", None
+    try:
+        if _obs_q is not None:
+            summ = await _obs_q.voice_summary(60, {"campaign_id": cid})
+            if isinstance(summ, dict):
+                stages = {s.get("stage"): s for s in (summ.get("latency_by_stage") or [])}
+                ncalls = int((summ.get("row") or {}).get("calls") or 0)
+                p95s = [float(stages.get(s, {}).get("p95") or 0) for s in ("llm", "tts", "eou")]
+                recent_ms = max(p95s) if any(p95s) else None
+                if ncalls and recent_ms:
+                    recent_status = "red" if recent_ms >= 2500 else ("yellow" if recent_ms >= 1500 else "green")
+                    recent_detail = f"p95 {recent_ms / 1000:.1f}s over last hour ({ncalls} calls)"
+                    worst = max(worst, recent_ms)
+    except Exception:  # noqa: BLE001
+        pass
+    checks.append({"id": "recent", "label": "Recent call latency", "status": recent_status,
+                   "latency_ms": round(recent_ms) if recent_ms else None, "detail": recent_detail})
+
+    # 4) Brain capacity — Groq daily token budget across all keys. The dead-air-on-quota glitch was a
+    # single key hitting its 100k-tokens/day wall mid-campaign; here we check BEFORE launch that at
+    # least one key has healthy headroom (the worker proactively rotates off low keys at call time).
+    try:
+        bv = _groq_budget_view()
+        summ = bv.get("summary", {}) or {}
+        kc = int(summ.get("key_count", 0) or 0)
+        healthy = int(summ.get("healthy_keys", 0) or 0)
+        total_rem = int(summ.get("total_remaining", 0) or 0)
+        if kc == 0:
+            budget_status, budget_detail = "yellow", "No Groq key configured for budget tracking"
+        elif summ.get("all_low"):
+            budget_status = "red"
+            budget_detail = f"All {kc} key(s) low/exhausted — add a key or upgrade tier (≈{total_rem:,} tok left)"
+        elif healthy < kc:
+            budget_status = "yellow"
+            budget_detail = f"{healthy}/{kc} key(s) healthy · ≈{total_rem:,} tokens left today"
+        else:
+            budget_status = "green"
+            budget_detail = f"{healthy} key(s) healthy · ≈{total_rem:,} tokens left today"
+        checks.append({"id": "brain_budget", "label": "Brain capacity (LLM token budget)",
+                       "status": budget_status, "latency_ms": None, "detail": budget_detail})
+    except Exception:  # noqa: BLE001
+        budget_status = "green"
+
+    # verdict: DOWN only when something is genuinely unreachable (can't run calls); SLOW when the
+    # worst reachable latency crosses ~1.5s OR every Groq key is out of daily budget (the dead-air
+    # risk the operator asked us to catch before launch); else OK.
+    hard_down = prov_down or (not lk_ok)
+    if hard_down:
+        verdict = "down"
+    elif worst >= 1500 or budget_status == "red":
+        verdict = "slow"
+    else:
+        verdict = "ok"
+    headline = {"ok": "All systems go", "slow": "Networks look slow — not recommended",
+                "down": "Some systems are down"}[verdict]
+    return JSONResponse({"ok": True, "verdict": verdict, "headline": headline,
+                         "worst_latency_ms": (round(worst) if (worst and worst < 9999) else None),
+                         "checks": checks, "at": _utc_iso()})
+
+
 @app.get("/tiers")
 async def tiers_route(request: Request):
     """SINGLE SOURCE OF TRUTH for the Lean/Standard/Premium tier system: the 3 preset triples +
@@ -5039,11 +6134,19 @@ async def tiers_route(request: Request):
     burn). Mirrors llm_router/tiers.py."""
     if not authed(request):
         return need_auth()
+    # NEVER 500 — a 500 here makes getTiers() return null and the Run-page cost meter hangs on
+    # "Loading sourced rates…". Degrade: bad overrides → static defaults; total failure → 200 empty.
     try:
         from llm_router import tiers as _tiers
-        return JSONResponse(_tiers.tiers_payload())
+        overrides = _read_raw(TIER_OVERRIDES_FILE, {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        try:
+            return JSONResponse(_tiers.tiers_payload(overrides or None))
+        except Exception:  # noqa: BLE001 — garbage overrides → retry with static defaults
+            return JSONResponse(_tiers.tiers_payload(None))
     except Exception as exc:  # noqa: BLE001
-        return JSONResponse({"error": repr(exc)[:140], "tiers": []}, status_code=500)
+        return JSONResponse({"error": repr(exc)[:140], "tiers": [], "rate_card": {}}, status_code=200)
 # === /PVS PHASE-1 voices/preview/providers/tiers ===
 
 
@@ -5053,6 +6156,27 @@ async def campaigns(request: Request):
     if not t:
         return need_auth()
     return JSONResponse({"campaigns": list_campaigns(t)})
+
+
+def _coerce_script_blocks(out: dict) -> None:
+    """P7: when Script Studio 2.0 is on for this campaign, compile its typed `script_blocks` down to
+    the fields build_system_prompt consumes (so the live agent path is unchanged). The blocks remain
+    on `out` as the source of truth; the compiled keys are what the agent reads. Best-effort + a
+    pure no-op when off / unavailable / no blocks. Never raises."""
+    try:
+        if _script_compiler is None:
+            return
+        if str(out.get("script_studio_v2") or "").strip().lower() not in ("1", "true", "yes", "on"):
+            return
+        blocks = out.get("script_blocks")
+        if not isinstance(blocks, list) or not blocks:
+            return
+        overrides = _script_compiler.compile_blocks(blocks, out.get("script_variables") or {})
+        if isinstance(overrides, dict):
+            for k, v in overrides.items():
+                out[k] = v
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _coerce_fields(fields: dict) -> dict:
@@ -5188,6 +6312,12 @@ def _coerce_fields(fields: dict) -> dict:
     # No-op for legacy campaigns (no raw_script) -> golden render byte-identical.
     _coerce_vendor_script(out)
     # === /W1 VENDOR SCRIPT ===
+    # === P7 SCRIPT STUDIO 2.0 — compile typed blocks DOWN to the consumed fields ===
+    # Runs LAST. ONLY when fields.script_studio_v2 is on AND script_blocks present: the typed block
+    # model compiles to the SAME fields build_system_prompt already reads, so the LIVE agent path is
+    # unchanged. Legacy / flag-off campaigns are byte-identical (pure no-op). Never raises.
+    _coerce_script_blocks(out)
+    # === /P7 ===
     return out
 
 
@@ -5229,6 +6359,128 @@ async def get_campaign_detail(request: Request, cid: str):
     if not d:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"campaign": d})
+
+
+def _log_script_gen(t, cid: str, kind: str, res: dict, elapsed: float) -> None:
+    """Surface Script Studio AI-drafting health in System Logs: an ERROR if the draft failed, a
+    WARNING if it ran slow (the ~40s Sonnet calls that used to silently time out at the Next proxy —
+    invisible to System Logs because the backend handler itself succeeded). Best-effort; never raises."""
+    if _log_mod is None:
+        return
+    try:
+        tid = (t or {}).get("tenant_id", "") if isinstance(t, dict) else ""
+        res = res if isinstance(res, dict) else {}
+        if not res.get("ok"):
+            err = res.get("error") or "gen_failed"
+            _log_mod.record(
+                "error", "script_studio",
+                f"AI script {kind} FAILED for campaign {cid}: {err} ({elapsed:.0f}s)",
+                tenant_id=tid, error_type=f"script_{err}"[:120],
+                context={"cid": cid, "kind": kind, "elapsed_s": round(elapsed, 1),
+                         "message": str(res.get("message", ""))[:300]},
+            )
+        elif elapsed >= 15.0:
+            _log_mod.record(
+                "warning", "script_studio",
+                f"AI script {kind} slow: {elapsed:.0f}s for campaign {cid} (near the proxy timeout)",
+                tenant_id=tid, error_type="script_slow",
+                context={"cid": cid, "kind": kind, "elapsed_s": round(elapsed, 1)},
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.post("/campaigns/{cid}/script/generate")
+async def generate_campaign_script(request: Request, cid: str):
+    """AI-draft a call script for this campaign with Claude Sonnet 3.5 (Script Studio
+    "Generate with AI"). Tenant-scoped (the campaign must belong to the caller). Read-only on
+    the campaign — returns the drafted text; the operator edits + saves it themselves. Degrades
+    to a clean error (never 500) when the drafter or ANTHROPIC_API_KEY is unavailable."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if _script_gen is None:
+        return JSONResponse({"ok": False, "error": "unavailable",
+                             "message": "AI script drafting is not available."}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    brief = str((body or {}).get("brief", "") or "")[:2000]
+    tone = str((body or {}).get("tone", "") or "")[:24]
+    length = str((body or {}).get("length", "") or "")[:24]
+    push = str((body or {}).get("push", "") or "")[:24]
+    # Script Studio 2.0: rich options (category/persona/goal/lead_warmth/proof/must_say/never_say/
+    # opener_purpose) → the generator builds the call on the chosen proven framework. Optional + safe.
+    opts = (body or {}).get("opts") if isinstance((body or {}).get("opts"), dict) else None
+    fields = (d.get("fields") or {}) if isinstance(d, dict) else {}
+    _t0 = time.perf_counter()
+    res = await _script_gen.generate(fields, brief, tone=tone, length=length, push=push, opts=opts)
+    _elapsed = time.perf_counter() - _t0
+    _log_script_gen(t, cid, "generate", res, _elapsed)
+    # #22 persist the chosen category onto the campaign so the call detail can show it (best-effort,
+    # additive: category stored in fields, survives _coerce_fields). Never breaks the draft response.
+    try:
+        _cat = str((opts or {}).get("category") or "").strip().lower()
+        if _cat and res.get("ok") and isinstance(d, dict):
+            d.setdefault("fields", {})
+            if isinstance(d["fields"], dict) and d["fields"].get("category") != _cat:
+                d["fields"]["category"] = _cat
+                _safe = "".join(ch for ch in cid if ch.isalnum() or ch in "-_")
+                _atomic_write_json(CAMPAIGN_DIR / f"{_safe}.json", d)
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse(res, status_code=200 if res.get("ok") else 502)
+
+
+@app.get("/script/studio-meta")
+async def script_studio_meta(request: Request):
+    """Option catalogue for Script Studio 2.0 — categories (styles), goals, lead-warmth, persona dials.
+    Tenant-gated; degrades to empty lists so the UI never breaks."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    _empty = {"categories": [], "goals": [], "lead_warmth": [], "tones": [], "lengths": [], "push": []}
+    if _script_gen is None or not hasattr(_script_gen, "studio_meta"):
+        return JSONResponse(_empty)
+    try:
+        return JSONResponse(_script_gen.studio_meta())
+    except Exception:  # noqa: BLE001
+        return JSONResponse(_empty)
+
+
+@app.post("/campaigns/{cid}/script/generate-block")
+async def generate_campaign_script_block(request: Request, cid: str):
+    """P7.3: AI-draft ONE Script Studio 2.0 block (Claude Sonnet 4.6 via OpenRouter). Returns
+    {ok, block:{type,...}} shaped for the builder to merge. Tenant-scoped + read-only on the
+    campaign; degrades cleanly (never 500) when the drafter / OPENROUTER_API_KEY is unavailable."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    d = get_campaign_for(cid, t)
+    if not d:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if _script_gen is None or not hasattr(_script_gen, "generate_block"):
+        return JSONResponse({"ok": False, "error": "unavailable",
+                             "message": "AI script drafting is not available."}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    block_type = str((body or {}).get("block_type", "") or "")[:40]
+    brief = str((body or {}).get("brief", "") or "")[:2000]
+    tone = str((body or {}).get("tone", "") or "")[:24]
+    length = str((body or {}).get("length", "") or "")[:24]
+    push = str((body or {}).get("push", "") or "")[:24]
+    fields = (d.get("fields") or {}) if isinstance(d, dict) else {}
+    _t0 = time.perf_counter()
+    res = await _script_gen.generate_block(fields, block_type, brief, tone=tone, length=length, push=push)
+    _elapsed = time.perf_counter() - _t0
+    _log_script_gen(t, cid, f"block:{block_type}", res, _elapsed)
+    return JSONResponse(res, status_code=200 if res.get("ok") else 502)
 
 
 @app.get("/campaigns/{cid}/ab")
@@ -5468,10 +6720,6 @@ async def campaign_prompt_preview(request: Request, cid: str):
     t = resolve_tenant(request)
     if not t:
         return need_auth()
-    # R5-P4b SUPER-ADMIN SCRIPT-LOCK: a locked vendor cannot see/serve its campaign SCRIPT brain.
-    _blk = _feature_block(t, "grow.campaigns.script")
-    if _blk is not None:
-        return _blk
     d = get_campaign_for(cid, t)
     if not d:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -5494,7 +6742,8 @@ async def campaign_prompt_preview(request: Request, cid: str):
 
 @app.post("/campaigns/{cid}/dry-run")
 async def campaign_dry_run(request: Request, cid: str,
-                           message: str = Form(""), as_returning: str = Form("")):
+                           message: str = Form(""), as_returning: str = Form(""),
+                           history: str = Form("")):
     """Dry-run ONE sample caller line through the inbound brain so the founder can
     SEE how the agent would greet/respond with the vendor's adopted persona —
     WITHOUT placing a real call. Renders the persona via build_system_prompt_v2
@@ -5505,10 +6754,6 @@ async def campaign_dry_run(request: Request, cid: str,
     t = resolve_tenant(request)
     if not t:
         return need_auth()
-    # R5-P4b SUPER-ADMIN RENDER-BRAIN-LOCK: a locked vendor cannot render/serve the campaign brain.
-    _blk = _feature_block(t, "grow.campaigns.render_brain")
-    if _blk is not None:
-        return _blk
     d = get_campaign_for(cid, t)
     if not d:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -5543,10 +6788,23 @@ async def campaign_dry_run(request: Request, cid: str,
     if (as_returning or "").strip().lower() in ("1", "true", "yes", "on"):
         system += ("\n\n(NOTE: this caller has spoken to us before — continue warmly, don't "
                    "restart introductions.)\n")
-    reply = _groq_chat(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": sample}],
-        max_tokens=220, temperature=0.6)
+    # P7.5 multi-turn simulator: prior turns passed as JSON [{role:'user'|'assistant', content}],
+    # inserted between the system brain and the latest caller line so replies are context-aware.
+    # Absent => byte-identical single-turn dry-run. Bounded + clipped.
+    msgs = [{"role": "system", "content": system}]
+    try:
+        hist = json.loads(history) if (history or "").strip() else []
+        if isinstance(hist, list):
+            for h in hist[-12:]:
+                if isinstance(h, dict):
+                    role = "assistant" if str(h.get("role")) == "assistant" else "user"
+                    content = str(h.get("content", "") or "")[:1000]
+                    if content:
+                        msgs.append({"role": role, "content": content})
+    except Exception:  # noqa: BLE001
+        pass
+    msgs.append({"role": "user", "content": sample})
+    reply = _groq_chat(msgs, max_tokens=220, temperature=0.6)
     used_llm = bool(reply)
     if not reply:
         # Never 500 / never silent — make the dry-run still useful if Groq is down.
@@ -5570,13 +6828,26 @@ async def campaign_dry_run(request: Request, cid: str,
 
 def _leads_for(tenant: dict) -> list[dict]:
     store = _read(LEADS_FILE, [])
-    if tenant.get("is_admin"):
+    if _data_admin(tenant):
         return store
     return [x for x in store if x.get("tenant_id", ADMIN_ID) == tenant["tenant_id"]]
 
 
-# RC2 temperature bands — MUST match app/leads/page.tsx: hot>=70, warm 40-69, cold<40/unscored.
+# Temperature — ONE source of truth shared with the panel (app/crm/_ui.tsx `tempOf`)
+# and the profile spine (crm.temperature_of). Hot/Warm/Cold/Dead, where `dead` is an
+# EXPLICIT opt-out / not-interested (an unscored brand-new lead is COLD, never dead).
+# Delegating to crm keeps GET /leads ?status=, the /run audience targeting, and the
+# panel badge from EVER drifting again. Falls back to a band-only read if crm is absent.
 def _lead_temp(lead: dict) -> str:
+    if _crm_mod is not None:
+        try:
+            return _crm_mod.temperature_of(lead)
+        except Exception:  # noqa: BLE001
+            pass
+    bag = " ".join(str(lead.get(k, "") or "").lower()
+                   for k in ("status", "last_outcome", "outcome", "lifecycle"))
+    if any(k in bag for k in ("opt_out", "opted_out", "not_interested", "dead", "lost")):
+        return "dead"
     s = int(lead.get("score", 0) or 0)
     if s >= 70:
         return "hot"
@@ -5673,9 +6944,10 @@ async def get_leads(request: Request, hot: str = "", sort: str = "",
     if _lbatch:
         rows = [x for x in rows if str(x.get("batch_id", "")) == _lbatch]
     if _lstatus:
-        if _lstatus in ("hot", "warm", "cold", "dead"):   # temperature band (matches /crm?status=hot)
-            _lo, _hi = {"hot": (70, 1000), "warm": (40, 69), "cold": (1, 39), "dead": (0, 0)}[_lstatus]
-            rows = [x for x in rows if _lo <= (x.get("score", 0) or 0) <= _hi]
+        if _lstatus in ("hot", "warm", "cold", "dead"):   # temperature band (matches the panel badge)
+            # Use the SHARED classifier so server-side paging of Warm/Cold/Dead matches the
+            # Hot/Warm/Cold/Dead badge the panel renders (no more client-only partial filter).
+            rows = [x for x in rows if _lead_temp(x) == _lstatus]
         else:                                              # literal lead status (new/contacted/...)
             rows = [x for x in rows if (x.get("status", "") or "").lower() == _lstatus]
     # Sort selector (additive; default = newest-first by added_at, latest->oldest).
@@ -5871,6 +7143,46 @@ async def delete_all_leads(request: Request, confirm: str = ""):
     return JSONResponse({"deleted": deleted, "total": 0})
 
 
+@app.get("/leads/{phone}/memory")
+async def lead_memory_get(request: Request, phone: str):
+    """Durable, cross-channel relationship memory for one lead (the profile Memory tab).
+    Built by the crm spine from the lead's durable fields + call insights. Dormant-safe:
+    with the crm module absent we return {memory: null} (200) so the panel shows a calm
+    'no memory yet' state, never an error. `phone` is any phone form OR a ct_ contact id."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    phone_n = norm(phone) or (phone or "")
+    if _crm_mod is None or not hasattr(_crm_mod, "lead_memory"):
+        return JSONResponse({"phone": phone_n, "memory": None})
+    org = t["tenant_id"]
+    adm = _data_admin(t)
+    mem = await asyncio.to_thread(lambda: _crm_mod.lead_memory(org, phone, is_admin=adm))
+    return JSONResponse({"phone": phone_n, "memory": mem})
+
+
+@app.get("/leads/{phone}/episodes")
+async def lead_episodes_get(request: Request, phone: str, limit: int = 50, offset: int = 0):
+    """Conversation history (one summarised episode per call) for one lead. Dormant-safe:
+    crm absent -> {episodes: []} (200). Tenant-scoped from the token."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    phone_n = norm(phone) or (phone or "")
+    if _crm_mod is None or not hasattr(_crm_mod, "lead_episodes"):
+        return JSONResponse({"phone": phone_n, "episodes": [], "total": 0,
+                             "offset": max(0, int(offset)), "limit": int(limit or 50), "next": None})
+    org = t["tenant_id"]
+    adm = _data_admin(t)
+    res = await asyncio.to_thread(
+        lambda: _crm_mod.lead_episodes(org, phone, limit=int(limit or 50),
+                                       offset=max(0, int(offset)), is_admin=adm))
+    res = dict(res or {})
+    res.setdefault("phone", phone_n)
+    res["phone"] = phone_n
+    return JSONResponse(res)
+
+
 @app.post("/run/preview")
 async def run_preview(request: Request, leads: str = Form(""),
                       use_stored: str = Form(""), source_mode: str = Form(""),
@@ -6023,10 +7335,31 @@ async def status(request: Request, job: str = ""):
     if not j:
         return JSONResponse({"state": "unknown", "leads": []})
     # don't leak another tenant's job
-    if not t.get("is_admin") and j.get("tenant_id", ADMIN_ID) != t["tenant_id"]:
+    if not _data_admin(t) and j.get("tenant_id", ADMIN_ID) != t["tenant_id"]:
         return JSONResponse({"state": "unknown", "leads": []})
     return JSONResponse({"state": j["state"],
                          "leads": [{"name": x["name"], "num": x["num"], "status": x["status"]} for x in j["leads"]]})
+
+
+@app.post("/jobs/{job_id}/stop")
+async def stop_job(request: Request, job_id: str):
+    """Stop a running campaign: halt NEW dialing immediately; the few in-flight calls drain on their
+    own. Tenant-scoped (can't touch another tenant's job), idempotent, never 500s."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    j = JOBS.get(job_id)
+    if not j or (not _data_admin(t) and j.get("tenant_id", ADMIN_ID) != t["tenant_id"]):
+        return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+    j["stopped"] = True
+    if j.get("state") in ("queued", "running"):
+        j["state"] = "stopping"
+    try:
+        _log_event("info", "dialer", f"campaign job {job_id} stopped by operator",
+                   tenant={"tenant_id": t.get("tenant_id", "")}, context={"job_id": job_id})
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({"ok": True, "job_id": job_id, "state": j.get("state", "stopping")})
 
 
 # === PERF UNIT-1 ===
@@ -6084,6 +7417,16 @@ async def calls(request: Request, limit: int = 200, offset: int = 0,
         rows = [c for c in rows if c.get("campaign_id") == campaign_id]
     if outcome:
         rows = [c for c in rows if _call_outcome_cached(c) == outcome]
+    # ADDITIVE date-range filter (the shared dashboard/report range). Read from the query params so
+    # `from` (a Python keyword) needs no signature alias. Inclusive, compared on the YYYY-MM-DD prefix
+    # of started_at (ISO sorts lexicographically) so it works for either a date or a datetime input.
+    # Absent => byte-identical to before.
+    _frm = (request.query_params.get("from") or "").strip()[:10]
+    _to = (request.query_params.get("to") or "").strip()[:10]
+    if _frm:
+        rows = [c for c in rows if (c.get("started_at") or "")[:10] >= _frm]
+    if _to:
+        rows = [c for c in rows if (c.get("started_at") or "")[:10] <= _to]
 
     paginated = bool(str(offset).strip()) and int(offset) > 0
     paginated = paginated or order.lower() in ("desc", "asc") or bool(str(sort_by).strip()) \
@@ -6177,15 +7520,37 @@ async def call_detail(request: Request, call_id: str):
 _REC_TERMINAL = ("uploaded", "failed", "disabled")
 
 
+# REC-FIX: HEAD/presign the recording DIRECTLY against DO Spaces (where the egress
+# actually uploads, via AIM_SPACES_*). The old path used ai_manager.recorder, which
+# reads R2/B2 creds that aren't configured here -> it never found the object, so the
+# panel was stuck on "Preparing recording…" even though the OGG was in Spaces.
+_AIM_S3_CLIENT = None
+
+
+def _aim_s3():
+    global _AIM_S3_CLIENT
+    if _AIM_S3_CLIENT is None:
+        import boto3
+        from botocore.config import Config as _BotoCfg
+        _AIM_S3_CLIENT = boto3.client(
+            "s3",
+            endpoint_url=(cfg_get("AIM_SPACES_ENDPOINT", "") or "").strip(),
+            aws_access_key_id=(cfg_get("AIM_SPACES_KEY", "") or "").strip(),
+            aws_secret_access_key=(cfg_get("AIM_SPACES_SECRET", "") or "").strip(),
+            region_name=(cfg_get("AIM_SPACES_REGION", "") or "us-east-1").strip(),
+            config=_BotoCfg(signature_version="s3v4", s3={"addressing_style": "path"}),
+        )
+    return _AIM_S3_CLIENT
+
+
 def _rec_presign(bucket: str, key: str, expires_s: int = 3600) -> str:
-    """Mint a short-lived presigned GET for a Spaces recording object. Reuses the PROVEN AIM
-    recorder.presign (sigv4 + path-style, plays + serves 206 ranges). '' when no object / boto3
-    absent / any error -> the panel shows 'recorded, link unavailable' instead of a broken player."""
+    """Mint a short-lived presigned GET for a DO Spaces recording object (sigv4 + path-style,
+    range-streamable). '' when no object / any error -> panel shows 'recorded, link unavailable'."""
     if not bucket or not key:
         return ""
     try:
-        from ai_manager import recorder as _recorder
-        return _recorder.presign(bucket, key, expires_s=int(expires_s)) or ""
+        return _aim_s3().generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=int(expires_s)) or ""
     except Exception:  # noqa: BLE001
         return ""
 
@@ -6205,18 +7570,103 @@ def _rec_playable(bucket: str, key: str) -> dict:
     if not bucket or not key:
         return {"playable": False, "size_bytes": 0}
     try:
-        from ai_manager import recorder as _recorder
-        h = _recorder.head_object(bucket, key)
-    except Exception:  # noqa: BLE001
+        h = _aim_s3().head_object(Bucket=bucket, Key=key)
+    except Exception:  # noqa: BLE001 — 404 / creds / network -> not yet playable
         return {"playable": False, "size_bytes": 0}
-    if not h.get("exists"):
-        return {"playable": False, "size_bytes": 0}
-    size = int(h.get("size", 0) or 0)
-    ctype = str(h.get("content_type", "") or "").lower()
+    size = int(h.get("ContentLength", 0) or 0)
+    ctype = str(h.get("ContentType", "") or "").lower()
     key_l = key.lower()
     looks_audio = ctype.startswith("audio/") or key_l.endswith((".ogg", ".mp3", ".m4a", ".wav", ".webm"))
     playable = bool(size >= _MIN_PLAYABLE_REC_BYTES and looks_audio)
     return {"playable": playable, "size_bytes": size}
+
+
+# ── REC-B-AZURE serving helpers ──────────────────────────────────────────────────────────────────
+# Mirror of _aim_s3 / _rec_presign / _rec_playable, but for Azure Blob Storage. Used ONLY when a
+# recording row carries recording_backend=="azure" (or RECORDING_BACKEND=="azure"). The azure SDK is
+# imported LAZILY inside the helpers so the module still imports if `azure-storage-blob` is absent
+# (then these just return ""/{"playable":False} and the panel shows "preparing"). NEVER raise.
+_AZURE_BLOB_SERVICE_CLIENT = None
+
+
+def _azure_blob_client():
+    """Cached BlobServiceClient built from AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY. Lazy-imports
+    azure-storage-blob so a missing lib degrades gracefully (returns None). NEVER raises."""
+    global _AZURE_BLOB_SERVICE_CLIENT
+    if _AZURE_BLOB_SERVICE_CLIENT is None:
+        try:
+            from azure.storage.blob import BlobServiceClient  # type: ignore  # noqa: PLC0415
+            account = (cfg_get("AZURE_STORAGE_ACCOUNT", "") or "").strip()
+            akey = (cfg_get("AZURE_STORAGE_KEY", "") or "").strip()
+            if not account or not akey:
+                return None
+            _AZURE_BLOB_SERVICE_CLIENT = BlobServiceClient(
+                account_url=f"https://{account}.blob.core.windows.net",
+                credential=akey,
+            )
+        except Exception:  # noqa: BLE001 — missing lib / bad creds -> caller falls back to "preparing"
+            return None
+    return _AZURE_BLOB_SERVICE_CLIENT
+
+
+def _azure_sas_url(container: str, key: str, expires_s: int = 3600) -> str:
+    """Mint a short-lived read-only SAS GET URL for an Azure blob:
+    https://<acct>.blob.core.windows.net/<container>/<key>?<sas>. '' on any error (incl. missing lib)."""
+    if not container or not key:
+        return ""
+    try:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz  # noqa: PLC0415
+        from azure.storage.blob import generate_blob_sas, BlobSasPermissions  # type: ignore  # noqa: PLC0415
+        account = (cfg_get("AZURE_STORAGE_ACCOUNT", "") or "").strip()
+        akey = (cfg_get("AZURE_STORAGE_KEY", "") or "").strip()
+        if not account or not akey:
+            return ""
+        sas = generate_blob_sas(
+            account_name=account,
+            container_name=container,
+            blob_name=key,
+            account_key=akey,
+            permission=BlobSasPermissions(read=True),
+            expiry=_dt.now(_tz.utc) + _td(seconds=int(expires_s)),
+        )
+        return (f"https://{account}.blob.core.windows.net/"
+                f"{urllib.parse.quote(container)}/{urllib.parse.quote(key)}?{sas}")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _azure_blob_playable(container: str, key: str) -> dict:
+    """HEAD an Azure blob via get_blob_properties. Returns {playable:bool, size_bytes:int}. Playable
+    when the blob exists, is >= _MIN_PLAYABLE_REC_BYTES, and looks like audio (content-type audio/* OR
+    an .ogg/.mp3/.m4a/.wav key). NEVER raises -> {playable:False} on any error (missing lib / 404)."""
+    if not container or not key:
+        return {"playable": False, "size_bytes": 0}
+    try:
+        svc = _azure_blob_client()
+        if svc is None:
+            return {"playable": False, "size_bytes": 0}
+        bc = svc.get_blob_client(container=container, blob=key)
+        props = bc.get_blob_properties()
+        size = int(getattr(props, "size", 0) or 0)
+        cs = getattr(props, "content_settings", None)
+        ctype = str(getattr(cs, "content_type", "") or "").lower()
+    except Exception:  # noqa: BLE001 — 404 / creds / network / missing lib -> not yet playable
+        return {"playable": False, "size_bytes": 0}
+    key_l = key.lower()
+    looks_audio = ctype.startswith("audio/") or key_l.endswith((".ogg", ".mp3", ".m4a", ".wav", ".webm"))
+    playable = bool(size >= _MIN_PLAYABLE_REC_BYTES and looks_audio)
+    return {"playable": playable, "size_bytes": size}
+
+
+def _rec_backend_is_azure(rec: dict) -> bool:
+    """True when this recording row should be served from Azure: explicit row marker, or the global
+    RECORDING_BACKEND=='azure' selection. Row marker wins so historic Spaces rows stay on Spaces."""
+    rb = str((rec or {}).get("recording_backend", "") or "").strip().lower()
+    if rb == "azure":
+        return True
+    if rb == "spaces":
+        return False
+    return (cfg_get("RECORDING_BACKEND", "spaces") or "spaces").strip().lower() == "azure"
 
 
 def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
@@ -6237,10 +7687,17 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
     key = (rec.get("recording_key", "") or "")
     rstatus = (rec.get("recording_status", "") or "")
     has_rec = bool(bucket and key and rstatus not in ("", "disabled"))
+    # REC-B-AZURE: route the HEAD-verify + presign through Azure when this row is Azure-backed
+    # (recording_backend=="azure" on the row, or RECORDING_BACKEND=="azure"); otherwise the default
+    # DO Spaces path runs UNCHANGED. recording_bucket holds the Azure container in the Azure case.
+    is_azure = _rec_backend_is_azure(rec)
     # PERF UNIT-2: HEAD-verify the object BEFORE presigning. An auto-egress 486-busy/near-empty OGG has
     # has_recording=True (status uploaded) but won't decode -> only mark playable + presign when the
     # object is a real non-trivial audio file. The HEAD is a single cheap call, only when has_rec.
-    pv = _rec_playable(bucket, key) if (presign and has_rec) else {"playable": False, "size_bytes": 0}
+    if presign and has_rec:
+        pv = _azure_blob_playable(bucket, key) if is_azure else _rec_playable(bucket, key)
+    else:
+        pv = {"playable": False, "size_bytes": 0}
     playable = bool(pv.get("playable"))
     # REC-FIX: the row's recording_status is stamped "recording" at room-create and nothing ever flips
     # it (the W9 finalize-poller is mis-keyed / a no-op). So on READ, once the object is HEAD-verified
@@ -6264,7 +7721,10 @@ def _outbound_rec_item(rec: dict, *, presign: bool = True) -> dict:
         "playable": playable,
         "size_bytes": int(pv.get("size_bytes", 0) or 0),
         # only hand the FE a URL for a VERIFIED playable object -> the FE renders <audio> iff this is set.
-        "recording_presigned_url": (_rec_presign(bucket, key) if playable else ""),
+        # REC-B-AZURE: Azure rows get a read-only SAS URL; Spaces rows get an S3 sigv4 presign (default).
+        "recording_presigned_url": (
+            ((_azure_sas_url(bucket, key) if is_azure else _rec_presign(bucket, key)))
+            if playable else ""),
     }
     # REC-FIX: best-effort mutate the IN-MEMORY call row's status to the verified terminal state. This
     # makes GET /calls/{id} (which returns this same `rec` object) and the list report "completed"
@@ -6444,25 +7904,6 @@ def _enrich_report_temperature(rep, tenant_id, preset, frm, to, filters):  # noq
             return 0
     bands = {k: _band(k) for k in ("hot", "warm", "cold", "dead")}
     tot = sum(bands.values())
-    # R6-B6: the W14 reporting read-model is hydrated only from the live W8 stream and is frequently
-    # EMPTY (esp. for today / after a restart) even though real calls exist — so the donut showed all
-    # zeros. The flat-file leads store (`_leads_for`, the SAME source the Leads page reads) is durable
-    # and always populated. When the reporting bands are all 0, derive the bands from the leads store so
-    # the dashboard temperature is never falsely empty. Same RC2 thresholds as /leads (hot>=70 etc).
-    _lead_rows_fallback = []
-    if tot == 0:
-        try:
-            _t = _tenant_by_id(tenant_id) or {"tenant_id": tenant_id,
-                                              "is_admin": (tenant_id == ADMIN_ID)}
-            _lead_rows_fallback = _leads_for(_t) or []
-            fb = {"hot": 0, "warm": 0, "cold": 0, "dead": 0}
-            for _lr in _lead_rows_fallback:
-                fb[_lead_temp(_lr)] += 1
-            if sum(fb.values()) > 0:
-                bands = fb
-                tot = sum(bands.values())
-        except Exception:  # noqa: BLE001 — fallback is best-effort; base report still returns
-            _lead_rows_fallback = []
     # FE TemperatureBucket shape: {tier, count, pct, delta?}. pct = share of the 4 temperature bands.
     rep["temperature_distribution"] = [
         {"tier": tier, "count": bands[tier],
@@ -6487,47 +7928,14 @@ def _enrich_report_temperature(rep, tenant_id, preset, frm, to, filters):  # noq
         except Exception:  # noqa: BLE001
             rows = []
         # surface a flat `score` (0-100) alongside conversion_prob so the panel can render either.
-        # R6-B7: clamp via _conv_prob_pct so score can NEVER exceed 100, AND rewrite conversion_prob
-        # itself to a clean 0-1 fraction so every consumer (FE ×100) caps at 100%.
+        # conversion_prob may already be a 0-100 percentage OR a 0-1 fraction — normalize to 0-100.
         for r in rows:
-            if not isinstance(r, dict):
-                continue
-            if r.get("conversion_prob") is not None:
-                if "score" not in r:
-                    pct = _conv_prob_pct(r["conversion_prob"])
-                    if pct is not None:
-                        r["score"] = pct
-                frac = _conv_prob_frac(r["conversion_prob"])
-                if frac is not None:
-                    r["conversion_prob"] = frac
-    # R6-B6: if the reporting service gave us NO hot_leads (empty read-model), fall back to the durable
-    # flat-file leads store (score>=70) — the SAME rows the Leads page shows — so the dashboard hot-lead
-    # widget is never falsely empty. Shaped to the FE row contract; conversion_prob normalized (B7).
-    if not rows:
-        try:
-            src = _lead_rows_fallback if _lead_rows_fallback else (
-                _leads_for(_tenant_by_id(tenant_id) or {"tenant_id": tenant_id,
-                                                         "is_admin": (tenant_id == ADMIN_ID)}) or [])
-            hot = [x for x in src if (x.get("score", 0) or 0) >= 70]
-            hot.sort(key=lambda x: x.get("score", 0) or 0, reverse=True)
-            for x in hot[:25]:
-                _sc = int(x.get("score", 0) or 0)
-                _ph = str(x.get("phone", "") or "")
-                _masked = (_ph[:-4].translate(str.maketrans("0123456789", "**********")) + _ph[-4:]) if len(_ph) >= 4 else _ph
-                rows.append({
-                    "call_id": x.get("call_id", "") or x.get("last_call_id", ""),
-                    "name": x.get("name", "") or "",
-                    "phone": _ph,
-                    "phone_masked": _masked,
-                    "score": _sc,
-                    "conversion_prob": _conv_prob_frac(_sc),
-                    "summary": x.get("ai_summary", "") or x.get("summary", "") or "",
-                    "next_action": x.get("next_action", "") or "",
-                    "campaign_name": x.get("campaign_name", "") or "",
-                    "lifecycle": x.get("lifecycle", "") or x.get("status", "") or "",
-                })
-        except Exception:  # noqa: BLE001 — fallback best-effort
-            pass
+            if isinstance(r, dict) and "score" not in r and r.get("conversion_prob") is not None:
+                try:
+                    cp = float(r["conversion_prob"])
+                    r["score"] = int(round(cp if cp > 1 else cp * 100))
+                except Exception:  # noqa: BLE001
+                    pass
     rep.setdefault("hot_leads", rows)
 
 
@@ -6799,6 +8207,81 @@ async def call_transcript(request: Request, call_id: str):
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
+# ── WORD-ACCURATE timed transcript (synced "Spotify" playback highlight) ──────────
+# Re-transcribes the call RECORDING once (cached forever per call) with ElevenLabs
+# Scribe — batch STT that returns per-WORD start/end + speaker diarization — so the
+# panel can highlight word-by-word in sync with the audio. Lazy (only on request),
+# single-flight + cached so it's cheap, and it uses a SEPARATE STT key
+# (TRANSCRIPT_STT_API_KEY) when set so the live voice agent's quota is never touched.
+# Import-guarded + dormant-safe: any failure returns {timed:false} and the panel
+# falls back to its estimate.
+try:
+    import transcript_timed as _tt_mod  # noqa: E402
+except Exception:  # noqa: BLE001
+    _tt_mod = None
+FEATURE_TRANSCRIPT_TIMED = (cfg_get("FEATURE_TRANSCRIPT_TIMED", "1") or "1").strip().lower() in ("1", "true", "yes", "on")
+_TT_DIR = VAR / "transcripts_timed"
+_TT_STT_KEY = (cfg_get("TRANSCRIPT_STT_API_KEY", "") or cfg_get("ELEVEN_API_KEY", "") or "").strip()
+
+
+@app.get("/calls/{call_id}/transcript/timed")
+async def call_transcript_timed(request: Request, call_id: str):
+    """Word-accurate, audio-aligned transcript for the synced highlight. OUTBOUND calls
+    only (inbound falls back to the estimate). Returns
+    {timed:true, turns:[{role,text,t0,t1,words:[{w,s,e}]}], duration} or {timed:false}."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    rec = next((c for c in CALLS if c.get("id") == call_id or c.get("room") == call_id), None)
+    if rec is None:
+        return JSONResponse({"timed": False})
+    guard = require_object(t, rec, not_found=True)   # cross-tenant -> 404 (also guards the cache)
+    if guard is not None:
+        return guard
+    # Resolve the Deepgram key (the LIVE STT key) at REQUEST time so a key rotation needs no
+    # restart, and prefer it over ElevenLabs Scribe (which breaks when the EL key is rotated /
+    # lacks speech_to_text scope — the recurring cause of "word highlight stopped syncing").
+    try:
+        _dg_key = (cfg_get("DEEPGRAM_API_KEY", "") or
+                   (_read_raw(VOICE_KEYS_FILE, {}) or {}).get("deepgram_api_key", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        _dg_key = ""
+    if not (FEATURE_TRANSCRIPT_TIMED and _tt_mod is not None and (_dg_key or _TT_STT_KEY)):
+        return JSONResponse({"timed": False})
+    # Plausibility guard: a real 2-party call > 30s CANNOT be a single turn — that's a
+    # diarization collapse (the Deepgram fallback merged both speakers into one garbled block).
+    # Reject such alignments so the panel shows the GOOD stored turns instead of garbage.
+    _dur = rec.get("duration_s") or 0
+
+    def _aln_ok(res):
+        ts = (res or {}).get("turns") or []
+        return bool(ts) and not (len(ts) <= 1 and _dur > 30)
+
+    cid = rec.get("id", "") or call_id
+    cache_path = _TT_DIR / f"{cid}.json"
+    cached = _read_raw(cache_path, None)
+    if isinstance(cached, dict) and _aln_ok(cached):
+        return JSONResponse({"timed": True, **cached})  # else fall through and RE-ALIGN (auto-heals bad cache)
+    url = (_outbound_rec_item(rec).get("recording_presigned_url", "") or "")
+    if not url:
+        return JSONResponse({"timed": False})
+    try:
+        result = await _tt_mod.align_any(
+            url, deepgram_key=_dg_key, eleven_key=_TT_STT_KEY,
+            dg_model=(cfg_get("DEEPGRAM_STT_MODEL", "nova-3") or "nova-3"),
+            dg_lang=(cfg_get("DEEPGRAM_STT_LANG", "multi") or "multi"),
+            duration=_dur)
+    except Exception:  # noqa: BLE001
+        result = None
+    if not _aln_ok(result):
+        return JSONResponse({"timed": False})
+    try:
+        _atomic_write_json(cache_path, result)
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({"timed": True, **result})
+
+
 @app.get("/stats")
 async def stats(request: Request):
     t = resolve_tenant(request)
@@ -6922,6 +8405,718 @@ async def create_tenant(request: Request, email: str = Form(""), password: str =
                          "name": rec["name"], "role": rec["role"]})
 
 
+# ---------- Client management (Super Admin) — file-based, no Postgres needed ----------
+def _client_mgmt_info(t: dict) -> dict:
+    """Full management view of a client (tenant) for the Super Admin Clients page."""
+    info = {"tenant_id": t["tenant_id"], "email": t.get("email", ""),
+            "name": t.get("name", ""), "role": _role_of(t),
+            "is_admin": bool(t.get("is_admin")), "status": (t.get("status") or "active"),
+            "created_at": t.get("created_at", ""),
+            "restricted": list(t.get("restricted") or []), "demo": bool(t.get("demo"))}
+    if t.get("demo"):
+        info["demo_minutes"] = int(t.get("demo_minutes") or 0)
+        info["demo_started_at"] = t.get("demo_started_at") or t.get("created_at") or ""
+        rem = int(_demo_remaining_s(t) or 0)
+        info["demo_remaining_s"] = rem
+        info["demo_expired"] = rem <= 0
+    return info
+
+
+def _parse_restricted(raw) -> list[str]:
+    """Accept a JSON array OR a comma-separated string of restricted feature keys."""
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        if isinstance(v, list):
+            return [str(x) for x in v if str(x).strip()]
+    except (ValueError, TypeError):
+        pass
+    return [s.strip() for s in str(raw).split(",") if s.strip()]
+
+
+def _require_admin(request: Request):
+    """Returns (tenant, None) for an admin, else (None, error_response)."""
+    t = resolve_tenant(request)
+    if not t:
+        return None, need_auth()
+    if not t.get("is_admin"):
+        return None, JSONResponse({"error": "admin only"}, status_code=403)
+    return t, None
+
+
+@app.get("/admin/clients")
+async def admin_list_clients(request: Request):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    clients = [_client_mgmt_info(x) for x in _read_tenants() if not x.get("is_admin")]
+    return JSONResponse({"clients": clients, "total": len(clients)})
+
+
+@app.post("/admin/clients")
+async def admin_create_client(request: Request, email: str = Form(""), password: str = Form(""),
+                              name: str = Form(""), role: str = Form("manager"),
+                              demo: str = Form(""), demo_minutes: str = Form("0"),
+                              restricted: str = Form("")):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    email = (email or "").strip().lower()
+    if not email or not password:
+        return JSONResponse({"error": "email and password are required"}, status_code=400)
+    role = (role or "manager").strip().lower()
+    if role not in ROLES or role == "admin":
+        role = "manager"          # the admin account is seeded; clients are never admins
+    tenants = _read_tenants()
+    if any((x.get("email") or "").lower() == email for x in tenants):
+        return JSONResponse({"error": "email already exists"}, status_code=409)
+    is_demo = str(demo).strip().lower() in ("1", "true", "yes", "on")
+    try:
+        dmins = max(0, int(demo_minutes or 0))
+    except (TypeError, ValueError):
+        dmins = 0
+    salt = secrets.token_hex(8)
+    now = datetime.now().isoformat(timespec="seconds")
+    rec = {"tenant_id": uuid.uuid4().hex[:12], "email": email, "salt": salt,
+           "pass_hash": _hash_pw(password, salt),
+           "name": (name or email.split("@")[0]).strip(),
+           "is_admin": False, "role": role, "created_at": now,
+           "status": "active", "restricted": _parse_restricted(restricted), "demo": is_demo}
+    if is_demo:
+        rec["demo_minutes"] = dmins
+        rec["demo_started_at"] = now
+    tenants.append(rec)
+    _write_tenants(tenants)
+    _audit(request, t, "client.create", "tenant", rec["tenant_id"],
+           meta={"email": email, "role": role, "demo": is_demo, "demo_minutes": dmins})
+    return JSONResponse({"client": _client_mgmt_info(rec)})
+
+
+@app.put("/admin/clients/{tid}")
+async def admin_edit_client(request: Request, tid: str, name: str = Form(None),
+                            email: str = Form(None), role: str = Form(None),
+                            status: str = Form(None), demo: str = Form(None),
+                            demo_minutes: str = Form(None), demo_reset: str = Form(None),
+                            restricted: str = Form(None)):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    tenants = _read_tenants()
+    rec = next((x for x in tenants if x.get("tenant_id") == tid), None)
+    if rec is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if rec.get("is_admin"):
+        return JSONResponse({"error": "cannot edit the admin account here"}, status_code=400)
+    if name is not None and name.strip():
+        rec["name"] = name.strip()
+    if email is not None and email.strip():
+        new_email = email.strip().lower()
+        if any((x.get("email") or "").lower() == new_email for x in tenants if x.get("tenant_id") != tid):
+            return JSONResponse({"error": "email already exists"}, status_code=409)
+        rec["email"] = new_email
+    if role is not None:
+        r = role.strip().lower()
+        if r in ROLES and r != "admin":
+            rec["role"] = r
+            rec["is_admin"] = False
+    if status is not None and status.strip().lower() in ("active", "suspended"):
+        rec["status"] = status.strip().lower()
+    if restricted is not None:
+        rec["restricted"] = _parse_restricted(restricted)
+    if demo is not None:
+        is_demo = str(demo).strip().lower() in ("1", "true", "yes", "on")
+        rec["demo"] = is_demo
+        if is_demo and not rec.get("demo_started_at"):
+            rec["demo_started_at"] = datetime.now().isoformat(timespec="seconds")
+    if demo_minutes is not None:
+        try:
+            rec["demo_minutes"] = max(0, int(demo_minutes or 0))
+        except (TypeError, ValueError):
+            pass
+    if str(demo_reset or "").strip().lower() in ("1", "true", "yes", "on"):
+        rec["demo_started_at"] = datetime.now().isoformat(timespec="seconds")
+    _write_tenants(tenants)
+    _audit(request, t, "client.edit", "tenant", tid, meta={"status": rec.get("status")})
+    return JSONResponse({"client": _client_mgmt_info(rec)})
+
+
+@app.post("/admin/clients/{tid}/password")
+async def admin_reset_client_password(request: Request, tid: str, password: str = Form("")):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    if not password or len(password) < 4:
+        return JSONResponse({"error": "password must be at least 4 characters"}, status_code=400)
+    tenants = _read_tenants()
+    rec = next((x for x in tenants if x.get("tenant_id") == tid), None)
+    if rec is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    salt = secrets.token_hex(8)
+    rec["salt"] = salt
+    rec["pass_hash"] = _hash_pw(password, salt)
+    _write_tenants(tenants)
+    _audit(request, t, "client.reset_password", "tenant", tid)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/admin/clients/{tid}/status")
+async def admin_set_client_status(request: Request, tid: str, status: str = Form("")):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    s = (status or "").strip().lower()
+    if s not in ("active", "suspended"):
+        return JSONResponse({"error": "status must be active or suspended"}, status_code=400)
+    tenants = _read_tenants()
+    rec = next((x for x in tenants if x.get("tenant_id") == tid), None)
+    if rec is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if rec.get("is_admin"):
+        return JSONResponse({"error": "cannot suspend the admin account"}, status_code=400)
+    rec["status"] = s
+    _write_tenants(tenants)
+    try:
+        if s == "suspended" and _auth_mod is not None:
+            _auth_mod.revoke_all(tid)     # instant kill for any JWT sessions
+    except Exception:  # noqa: BLE001
+        pass
+    _audit(request, t, "client.status", "tenant", tid, meta={"status": s})
+    return JSONResponse({"ok": True, "status": s})
+
+
+@app.delete("/admin/clients/{tid}")
+async def admin_delete_client(request: Request, tid: str):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    tenants = _read_tenants()
+    rec = next((x for x in tenants if x.get("tenant_id") == tid), None)
+    if rec is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if rec.get("is_admin"):
+        return JSONResponse({"error": "cannot delete the admin account"}, status_code=400)
+    _write_tenants([x for x in tenants if x.get("tenant_id") != tid])
+    purged: dict = {"tenant": 1}
+    # purge every tenant-scoped file store (rows carry tenant_id)
+    async with _STORE_LOCK:
+        for label, fp in (("leads", LEADS_FILE), ("calls", CALLS_FILE),
+                          ("suppression", SUPPRESSION_FILE), ("billing", BILLING_FILE)):
+            try:
+                rows = _read(fp, [])
+                if isinstance(rows, list):
+                    kept = [x for x in rows if not (isinstance(x, dict) and x.get("tenant_id") == tid)]
+                    purged[label] = len(rows) - len(kept)
+                    _write(fp, kept)
+            except Exception:  # noqa: BLE001
+                pass
+    try:
+        CALLS[:] = [c for c in CALLS if c.get("tenant_id") != tid]   # in-memory mirror
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cn = 0
+        for p in CAMPAIGN_DIR.glob("*.json"):
+            d = _read(p, None)
+            if isinstance(d, dict) and d.get("tenant_id") == tid:
+                p.unlink()
+                cn += 1
+        purged["campaigns"] = cn
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        navp = VAR / "nav_configs" / f"{tid}.json"
+        if navp.exists():
+            navp.unlink()
+            purged["nav_config"] = 1
+    except Exception:  # noqa: BLE001
+        pass
+    _audit(request, t, "client.delete", "tenant", tid, meta=purged)
+    return JSONResponse({"ok": True, "purged": purged})
+
+
+# ---------- Public signup: email + 4-digit OTP (via the Axcrio business SMTP) ----------
+_SIGNUP_OTP: dict = {}        # email -> {otp, exp, name, salt, pass_hash, tries}
+_SIGNUP_OTP_TTL = 600         # 10 minutes
+
+
+def _signup_default_role() -> str:
+    """Admin-configurable default role for self-signups. Default 'agent' (limited credits)."""
+    try:
+        d = _read(VAR / "signup_settings.json", {})
+        r = str((d or {}).get("default_role", "agent")).strip().lower()
+        return r if r in ("agent", "manager") else "agent"
+    except Exception:  # noqa: BLE001
+        return "agent"
+
+
+def _send_otp_email(to_email: str, otp: str) -> bool:
+    """Deliver the 4-digit code. Tries an HTTPS email API (Resend) FIRST — DigitalOcean
+    blocks outbound SMTP on droplets, so direct SMTP from this box times out. Falls back to
+    Hostinger SMTP (works only if DO has unblocked SMTP for the account). Never raises."""
+    _subj = "Your Haptica AI verification code"
+    _text = (f"Your Haptica AI verification code is: {otp}\n\nIt expires in 10 minutes. "
+             "If you didn't request this, ignore this email.\n\n— Haptica AI (by Famit)")
+    _html = (
+        '<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:440px;margin:auto;padding:28px;color:#0b0b0f">'
+        '<div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">Haptica AI · by Famit</div>'
+        '<h2 style="margin:14px 0 6px;font-weight:600">Verify your email</h2>'
+        '<p style="color:#555;margin:0 0 20px">Enter this code to finish creating your account:</p>'
+        f'<div style="font-size:34px;font-weight:700;letter-spacing:14px;background:#f4f5f7;border-radius:14px;padding:18px 0;text-align:center">{otp}</div>'
+        '<p style="color:#999;font-size:13px;margin-top:18px">This code expires in 10 minutes. If you didn\'t request it, ignore this email.</p></div>')
+    # 1) HTTPS email API (Resend) — runs over 443, which DO allows.
+    _rk = (cfg_get("RESEND_API_KEY", "") or "").strip()
+    if _rk:
+        try:
+            _frm = (cfg_get("EMAIL_FROM", "") or cfg_get("SMTP_FROM", "") or "onboarding@resend.dev").strip()
+            _r = httpx.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": "Bearer " + _rk, "Content-Type": "application/json"},
+                json={"from": (f"Haptica AI <{_frm}>" if "<" not in _frm else _frm),
+                      "to": [to_email], "subject": _subj, "html": _html, "text": _text},
+                timeout=20)
+            if _r.status_code in (200, 201):
+                return True
+            import logging as _lg0
+            _lg0.getLogger("famit-caller").warning("Resend OTP %s: %s", _r.status_code, _r.text[:200])
+        except Exception as _re:  # noqa: BLE001
+            try:
+                import logging as _lg0
+                _lg0.getLogger("famit-caller").warning("Resend OTP error: %r", _re)
+            except Exception:  # noqa: BLE001
+                pass
+    # 2) SMTP fallback (only works if DO unblocked outbound SMTP for the account).
+    import smtplib
+    import ssl as _ssl
+    from email.message import EmailMessage as _EmailMessage
+    host = (cfg_get("SMTP_HOST", "smtp.hostinger.com") or "").strip()
+    port = int(cfg_get("SMTP_PORT", "465") or 465)
+    user = (cfg_get("SMTP_USER", "") or "").strip()
+    pw = (cfg_get("SMTP_PASS", "") or "").strip()
+    frm = (cfg_get("SMTP_FROM", "") or user).strip()
+    if not (host and user and pw):
+        return False
+    msg = _EmailMessage()
+    msg["Subject"] = "Your Haptica AI verification code"
+    msg["From"] = f"Haptica AI <{frm}>" if "<" not in frm else frm
+    msg["To"] = to_email
+    msg.set_content(
+        f"Your Haptica AI verification code is: {otp}\n\n"
+        "It expires in 10 minutes. If you didn't request this, you can ignore this email.\n\n— Haptica AI (by Famit)")
+    msg.add_alternative(
+        f"""<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;max-width:440px;margin:auto;padding:28px;color:#0b0b0f">
+  <div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#8a8a8a">Haptica AI · by Famit</div>
+  <h2 style="margin:14px 0 6px;font-weight:600">Verify your email</h2>
+  <p style="color:#555;margin:0 0 20px">Enter this code to finish creating your account:</p>
+  <div style="font-size:34px;font-weight:700;letter-spacing:14px;background:#f4f5f7;border-radius:14px;padding:18px 0;text-align:center">{otp}</div>
+  <p style="color:#999;font-size:13px;margin-top:18px">This code expires in 10 minutes. If you didn't request it, ignore this email.</p>
+</div>""", subtype="html")
+    try:
+        ctx = _ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=ctx, timeout=20) as s:
+            s.login(user, pw)
+            s.send_message(msg)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        try:
+            import logging as _lg
+            _lg.getLogger("famit-caller").warning("OTP email send failed: %r", exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
+@app.post("/signup/start")
+async def signup_start(request: Request, email: str = Form(""), password: str = Form(""),
+                       name: str = Form("")):
+    email = (email or "").strip().lower()
+    if not email or "@" not in email or "." not in email.split("@")[-1]:
+        return JSONResponse({"error": "Please enter a valid email address."}, status_code=400)
+    if len(password or "") < 6:
+        return JSONResponse({"error": "Password must be at least 6 characters."}, status_code=400)
+    if any((x.get("email") or "").lower() == email for x in _read_tenants()):
+        return JSONResponse({"error": "An account with this email already exists. Try logging in."}, status_code=409)
+    otp = f"{secrets.randbelow(10000):04d}"
+    salt = secrets.token_hex(8)
+    _SIGNUP_OTP[email] = {"otp": otp, "exp": time.time() + _SIGNUP_OTP_TTL,
+                          "name": (name or email.split("@")[0]).strip(),
+                          "salt": salt, "pass_hash": _hash_pw(password, salt), "tries": 0}
+    sent = await asyncio.get_event_loop().run_in_executor(None, _send_otp_email, email, otp)
+    if not sent:
+        return JSONResponse({"error": "Couldn't send the verification email right now. Please try again."}, status_code=502)
+    at = email.index("@")
+    masked = (email[0] + "•••" + email[max(1, at - 1):]) if at > 1 else email
+    return JSONResponse({"ok": True, "sent_to": masked})
+
+
+@app.post("/signup/verify")
+async def signup_verify(request: Request, email: str = Form(""), otp: str = Form("")):
+    email = (email or "").strip().lower()
+    otp = (otp or "").strip()
+    rec = _SIGNUP_OTP.get(email)
+    if not rec:
+        return JSONResponse({"error": "No pending signup found. Please start again."}, status_code=400)
+    if time.time() > rec["exp"]:
+        _SIGNUP_OTP.pop(email, None)
+        return JSONResponse({"error": "That code has expired. Please request a new one."}, status_code=400)
+    rec["tries"] = int(rec.get("tries", 0)) + 1
+    if rec["tries"] > 6:
+        _SIGNUP_OTP.pop(email, None)
+        return JSONResponse({"error": "Too many attempts. Please start again."}, status_code=429)
+    if otp != rec["otp"]:
+        return JSONResponse({"error": "Incorrect code. Please check and try again."}, status_code=400)
+    tenants = _read_tenants()
+    if any((x.get("email") or "").lower() == email for x in tenants):
+        _SIGNUP_OTP.pop(email, None)
+        return JSONResponse({"error": "An account with this email already exists."}, status_code=409)
+    role = _signup_default_role()
+    now = datetime.now().isoformat(timespec="seconds")
+    new = {"tenant_id": uuid.uuid4().hex[:12], "email": email, "salt": rec["salt"],
+           "pass_hash": rec["pass_hash"], "name": rec["name"], "is_admin": False,
+           "role": role, "status": "active", "created_at": now, "restricted": [],
+           "demo": False, "self_signup": True}
+    tenants.append(new)
+    _write_tenants(tenants)
+    _SIGNUP_OTP.pop(email, None)
+    _audit(request, new, "signup.complete", "tenant", new["tenant_id"], meta={"role": role})
+    return JSONResponse({"ok": True, "token": _make_token(new["tenant_id"]),
+                         "tenant_id": new["tenant_id"], "name": new["name"],
+                         "is_admin": False, "role": role})
+
+
+@app.get("/admin/signup-settings")
+async def admin_get_signup_settings(request: Request):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    return JSONResponse({"default_role": _signup_default_role()})
+
+
+@app.put("/admin/signup-settings")
+async def admin_set_signup_settings(request: Request, default_role: str = Form("")):
+    t, err = _require_admin(request)
+    if err:
+        return err
+    r = (default_role or "").strip().lower()
+    if r not in ("agent", "manager"):
+        return JSONResponse({"error": "default_role must be agent or manager"}, status_code=400)
+    _write(VAR / "signup_settings.json", {"default_role": r})
+    _audit(request, t, "signup.default_role", "settings", "", meta={"default_role": r})
+    return JSONResponse({"ok": True, "default_role": r})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ADVANCED MONITORING — per-tenant session/location/device capture (file-based)
+# ════════════════════════════════════════════════════════════════════════════
+# Self-contained on two JSON files (no Postgres). Captures, per authenticated
+# tenant: client IP (via the reverse proxy's forwarded headers), IP-geolocation
+# (country/region/city/isp/timezone), parsed device (browser/os/type), and any
+# browser-provided signals (precise GPS w/ consent, timezone, locale, screen).
+# Powers the user Profile page and the Super-Admin client-monitoring panel.
+SESSIONS_FILE = VAR / "sessions.json"        # {tenant_id: {last_session, sessions[], ...}}
+GEO_CACHE_FILE = VAR / "geo_cache.json"      # {ip: {..geo.., _ts}}  (24h TTL)
+SESSION_HISTORY_CAP = 25                      # rows kept per tenant
+_GEO_TTL = 86400                              # 24h IP-geo cache
+
+
+def _client_ip(request: Request) -> str:
+    """Real client IP behind Caddy/Cloudflare. Trusts forwarded headers (the box
+    is only reachable through the proxy), falling back to the socket peer."""
+    for h in ("cf-connecting-ip", "x-real-ip"):
+        v = (request.headers.get(h) or "").strip()
+        if v:
+            return v
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    try:
+        return request.client.host if request.client else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _is_private_ip(ip: str) -> bool:
+    """True for loopback/private/link-local addresses that can't be geolocated."""
+    if not ip:
+        return True
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+    except ValueError:
+        return True
+
+
+def _parse_ua(ua: str) -> dict:
+    """Lightweight User-Agent parse (no external deps): browser, os, device type."""
+    ua = ua or ""
+    low = ua.lower()
+    # OS
+    if "windows nt 10" in low or "windows nt 11" in low:
+        os_name = "Windows 10/11"
+    elif "windows" in low:
+        os_name = "Windows"
+    elif "iphone" in low:
+        os_name = "iOS"
+    elif "ipad" in low:
+        os_name = "iPadOS"
+    elif "mac os x" in low or "macintosh" in low:
+        os_name = "macOS"
+    elif "android" in low:
+        os_name = "Android"
+    elif "cros" in low:
+        os_name = "ChromeOS"
+    elif "linux" in low:
+        os_name = "Linux"
+    else:
+        os_name = "Unknown"
+    # Browser (order matters — Edge/Opera spoof Chrome; iOS browsers spoof Safari)
+    if "edg/" in low or "edga/" in low or "edgios/" in low:
+        browser = "Edge"
+    elif "opr/" in low or "opera" in low:
+        browser = "Opera"
+    elif "samsungbrowser" in low:
+        browser = "Samsung Internet"
+    elif "crios/" in low:
+        browser = "Chrome"
+    elif "fxios/" in low or "firefox" in low:
+        browser = "Firefox"
+    elif "chrome" in low and "chromium" not in low:
+        browser = "Chrome"
+    elif "safari" in low:
+        browser = "Safari"
+    else:
+        browser = "Unknown"
+    # Device type
+    if "ipad" in low or "tablet" in low or ("android" in low and "mobile" not in low):
+        device = "Tablet"
+    elif "mobi" in low or "iphone" in low or "android" in low:
+        device = "Mobile"
+    else:
+        device = "Desktop"
+    return {"browser": browser, "os": os_name, "device": device, "ua": ua[:400]}
+
+
+def _geolocate_ip(ip: str) -> dict:
+    """Resolve an IP to {country, country_code, region, city, lat, lon, isp,
+    timezone} via free HTTPS geo providers, cached on disk for 24h. Returns {}
+    for private IPs or on total failure. BLOCKING — call via run_in_executor."""
+    if not ip or _is_private_ip(ip):
+        return {}
+    cache = _read(GEO_CACHE_FILE, {})
+    hit = cache.get(ip)
+    if hit and (time.time() - float(hit.get("_ts", 0)) < _GEO_TTL):
+        return {k: v for k, v in hit.items() if k != "_ts"}
+    geo: dict = {}
+    # Provider 1: ipwho.is (HTTPS, no key)
+    try:
+        r = httpx.get(f"https://ipwho.is/{ip}", timeout=8)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("success", True):
+                tz = d.get("timezone")
+                geo = {
+                    "country": d.get("country") or "",
+                    "country_code": d.get("country_code") or "",
+                    "region": d.get("region") or "",
+                    "city": d.get("city") or "",
+                    "lat": d.get("latitude"),
+                    "lon": d.get("longitude"),
+                    "isp": ((d.get("connection") or {}) or {}).get("isp") or d.get("isp") or "",
+                    "timezone": (tz.get("id") if isinstance(tz, dict) else tz) or "",
+                }
+    except Exception:  # noqa: BLE001
+        geo = {}
+    # Provider 2: ip-api.com (HTTP fallback; DO allows outbound HTTP/HTTPS, only SMTP is blocked)
+    if not geo.get("country"):
+        try:
+            r = httpx.get(
+                f"http://ip-api.com/json/{ip}"
+                "?fields=status,country,countryCode,regionName,city,lat,lon,isp,timezone",
+                timeout=8)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("status") == "success":
+                    geo = {
+                        "country": d.get("country") or "", "country_code": d.get("countryCode") or "",
+                        "region": d.get("regionName") or "", "city": d.get("city") or "",
+                        "lat": d.get("lat"), "lon": d.get("lon"),
+                        "isp": d.get("isp") or "", "timezone": d.get("timezone") or "",
+                    }
+        except Exception:  # noqa: BLE001
+            pass
+    if geo.get("country"):
+        cache[ip] = {**geo, "_ts": time.time()}
+        if len(cache) > 800:                      # keep the cache bounded (drop oldest)
+            items = sorted(cache.items(), key=lambda kv: float(kv[1].get("_ts", 0)))
+            cache = dict(items[-800:])
+        try:
+            _write(GEO_CACHE_FILE, cache)
+        except Exception:  # noqa: BLE001
+            pass
+    return geo
+
+
+def _build_session(ip: str, ua: str, cp: dict | None) -> dict:
+    """Assemble one session row from IP + UA + browser-provided client payload."""
+    dev = _parse_ua(ua)
+    geo = _geolocate_ip(ip)
+    cp = cp or {}
+
+    def _num(v):
+        try:
+            return float(v) if v is not None and v != "" else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "ts": _utc_iso(),
+        "ip": ip,
+        "browser": dev["browser"], "os": dev["os"], "device": dev["device"], "ua": dev["ua"],
+        "country": geo.get("country", ""), "country_code": geo.get("country_code", ""),
+        "region": geo.get("region", ""), "city": geo.get("city", ""),
+        "lat": geo.get("lat"), "lon": geo.get("lon"),
+        "isp": geo.get("isp", ""), "ip_timezone": geo.get("timezone", ""),
+        # browser-provided (advanced capture; precise GPS only with user consent)
+        "tz": str(cp.get("tz") or "")[:64], "locale": str(cp.get("locale") or "")[:32],
+        "screen": str(cp.get("screen") or "")[:24], "platform": str(cp.get("platform") or "")[:48],
+        "geo_lat": _num(cp.get("geo_lat")), "geo_lon": _num(cp.get("geo_lon")),
+        "geo_acc": _num(cp.get("geo_acc")),
+    }
+
+
+def _record_session(tenant_id: str, ip: str, ua: str, cp: dict | None) -> dict:
+    """Persist a session for a tenant. De-dupes rapid reloads: if the newest row
+    has the same IP+device within 5 minutes, it's refreshed in place (and any new
+    precise GPS merged) instead of appending a near-duplicate. BLOCKING."""
+    sess = _build_session(ip, ua, cp)
+    store = _read(SESSIONS_FILE, {})
+    if not isinstance(store, dict):
+        store = {}
+    rec = store.get(tenant_id) or {}
+    hist = list(rec.get("sessions") or [])
+    last = hist[0] if hist else None
+    dedupe = False
+    if last and last.get("ip") == sess["ip"] and last.get("ua") == sess["ua"]:
+        try:
+            prev = datetime.fromisoformat(last.get("ts"))
+            cur = datetime.fromisoformat(sess["ts"])
+            dedupe = abs((cur - prev).total_seconds()) < 300
+        except (ValueError, TypeError):
+            dedupe = False
+    if dedupe:
+        # refresh timestamp + carry forward precise GPS if newly provided
+        last["ts"] = sess["ts"]
+        for k in ("geo_lat", "geo_lon", "geo_acc", "tz", "locale", "screen", "platform"):
+            if sess.get(k) not in (None, ""):
+                last[k] = sess[k]
+        hist[0] = last
+        sess = last
+    else:
+        hist.insert(0, sess)
+    rec["sessions"] = hist[:SESSION_HISTORY_CAP]
+    rec["last_session"] = sess
+    rec["first_seen"] = rec.get("first_seen") or sess["ts"]
+    if not dedupe:
+        rec["sessions_count"] = int(rec.get("sessions_count") or 0) + 1
+    store[tenant_id] = rec
+    try:
+        _write(SESSIONS_FILE, store)
+    except Exception:  # noqa: BLE001
+        pass
+    return sess
+
+
+def _flag_emoji(cc: str) -> str:
+    """ISO-2 country code -> 🇮🇳 flag emoji (empty for unknown)."""
+    cc = (cc or "").strip().upper()
+    if len(cc) != 2 or not cc.isalpha():
+        return ""
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in cc)
+
+
+def _public_session(s: dict | None) -> dict:
+    """Session row enriched with a derived 'location' label + flag for the UI."""
+    if not s:
+        return {}
+    loc_bits = [b for b in (s.get("city"), s.get("region"), s.get("country")) if b]
+    # de-dup consecutive (city == region happens for city-states)
+    seen, loc = set(), []
+    for b in loc_bits:
+        if b not in seen:
+            seen.add(b)
+            loc.append(b)
+    out = dict(s)
+    out["location"] = ", ".join(loc)
+    out["flag"] = _flag_emoji(s.get("country_code", ""))
+    return out
+
+
+@app.post("/session/beacon")
+async def session_beacon(request: Request):
+    """Record the caller's current session (IP geo + device + optional browser
+    signals). Called by the panel on each authenticated app load."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    cp = body if isinstance(body, dict) else {}
+    ip = _client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    sess = await asyncio.get_event_loop().run_in_executor(
+        None, _record_session, t["tenant_id"], ip, ua, cp)
+    return JSONResponse({"ok": True, "session": _public_session(sess)})
+
+
+@app.get("/profile")
+async def profile_get(request: Request):
+    """The caller's own profile + their location/device monitoring summary."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    store = _read(SESSIONS_FILE, {})
+    rec = (store.get(t["tenant_id"]) if isinstance(store, dict) else {}) or {}
+    out = {
+        "tenant_id": t["tenant_id"], "email": t.get("email", ""), "name": t.get("name", ""),
+        "role": _role_of(t), "is_admin": bool(t.get("is_admin")),
+        "status": (t.get("status") or "active"), "created_at": t.get("created_at", ""),
+        "self_signup": bool(t.get("self_signup")), "demo": bool(t.get("demo")),
+        "first_seen": rec.get("first_seen", ""),
+        "sessions_count": int(rec.get("sessions_count") or 0),
+        "last_session": _public_session(rec.get("last_session") or {}),
+        "recent_sessions": [_public_session(s) for s in (rec.get("sessions") or [])[:10]],
+    }
+    if t.get("demo"):
+        out["demo_minutes"] = int(t.get("demo_minutes") or 0)
+        out["demo_remaining_s"] = int(_demo_remaining_s(t) or 0)
+    return JSONResponse(out)
+
+
+@app.get("/admin/clients/{tid}/profile")
+async def admin_client_profile(request: Request, tid: str):
+    """Super-Admin: full profile + session/location/device monitoring for a client."""
+    t, err = _require_admin(request)
+    if err:
+        return err
+    rec_t = _tenant_by_id(tid)
+    if rec_t is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    store = _read(SESSIONS_FILE, {})
+    rec = (store.get(tid) if isinstance(store, dict) else {}) or {}
+    info = _client_mgmt_info(rec_t)
+    info.update({
+        "self_signup": bool(rec_t.get("self_signup")),
+        "first_seen": rec.get("first_seen", ""),
+        "sessions_count": int(rec.get("sessions_count") or 0),
+        "last_session": _public_session(rec.get("last_session") or {}),
+        "sessions": [_public_session(s) for s in (rec.get("sessions") or [])[:SESSION_HISTORY_CAP]],
+    })
+    return JSONResponse({"profile": info})
+
+
 # ---------- P0.2 suppression endpoints ----------
 @app.get("/suppression")
 async def get_suppression(request: Request):
@@ -6997,7 +9192,7 @@ async def get_callbacks(request: Request, all: str = ""):
     if not t:
         return need_auth()
     rows = [r for r in _read(RETRY_FILE, [])
-            if t.get("is_admin") or r.get("tenant_id") == t["tenant_id"]]
+            if _data_admin(t) or r.get("tenant_id", ADMIN_ID) == t["tenant_id"]]
     if not all:
         rows = [r for r in rows if r.get("reason") == "callback"]
     rows.sort(key=lambda r: r.get("next_attempt_at", ""))
@@ -7158,30 +9353,13 @@ def _vendor_health(tid: str) -> dict:
 # ---------- registry / global flags ----------
 @app.get("/admin/features")
 async def admin_features(request: Request):
-    """The full feature_registry catalog tree (for the Feature-Flags + per-vendor UI).
-    R6-B9: additively (re)sync the nav-derived keys first so every sidebar item is a lockable row."""
+    """The full feature_registry catalog tree (for the Feature-Flags + per-vendor UI)."""
     t = require_super_admin(request)
     if isinstance(t, JSONResponse):
         return t
     if _ent_mod is None:
         return _control_unavailable()
-    try:
-        _nav_registry_sync()
-    except Exception:  # noqa: BLE001 — never block the catalog read on a sync hiccup
-        pass
     return JSONResponse({"features": _ent_mod.registry_tree()})
-
-
-@app.post("/admin/features/sync-nav")
-async def admin_features_sync_nav(request: Request):
-    """R6-B9: force a re-sync of the nav-derived lockable feature keys into the registry. Returns the
-    keys ADDED (add-only; idempotent). Super-admin only. Use after shipping a new sidebar page."""
-    t = require_super_admin(request)
-    if isinstance(t, JSONResponse):
-        return t
-    if _ent_mod is None:
-        return _control_unavailable()
-    return JSONResponse(_nav_registry_sync())
 
 
 @app.get("/admin/flags")
@@ -7210,6 +9388,119 @@ async def admin_flags_set(request: Request, feature_key: str, mode: str = Form(.
     _control_audit(request, t, "control.flag.set", feature_key=feature_key,
                    old_value=res.get("before"), new_value=res.get("after"))
     return JSONResponse({"ok": True, "feature_key": feature_key, **res})
+
+
+# ---------- per-tenant SIDEBAR / NAV config (Super-Admin Sidebar Builder) ----------
+# Lets a super-admin control, for ANY tenant, what sidebar items show, in what order,
+# and under what label. Stored per-tenant as {order:[], hidden:[], labels:{}, childOrder:{}}
+# keyed by a stable nav key (href, or "group:<title>"). PURELY COSMETIC + additive: the
+# client applies it on TOP of the static nav + entitlements; the backend 404/402 choke-
+# point is still the real boundary. Empty config = the default nav (no behaviour change).
+NAV_CONFIG_DIR = VAR / "nav_configs"
+
+
+def _nav_config_path(tenant_id: str) -> Path:
+    safe = "".join(ch for ch in (tenant_id or "") if ch.isalnum() or ch in "-_")
+    return NAV_CONFIG_DIR / f"{safe}.json"
+
+
+def _read_nav_config(tenant_id: str) -> dict:
+    if not (tenant_id or "").strip():
+        return {}
+    return _read(_nav_config_path(tenant_id), {}) or {}
+
+
+def _sanitize_nav_config(cfg: dict) -> dict:
+    """Keep only the known keys with bounded sizes (never trust the client blob).
+    Supports: order/hidden/labels/childOrder + parentOf (move a child to another
+    category) + custom (admin-created links/sections)."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    order = [str(x) for x in (cfg.get("order") or []) if isinstance(x, (str, int))][:300]
+    hidden = [str(x) for x in (cfg.get("hidden") or []) if isinstance(x, (str, int))][:300]
+    labels_raw = cfg.get("labels") if isinstance(cfg.get("labels"), dict) else {}
+    labels = {str(k): str(v)[:60] for k, v in labels_raw.items() if str(v).strip()}
+    co_raw = cfg.get("childOrder") if isinstance(cfg.get("childOrder"), dict) else {}
+    child_order = {str(k): [str(x) for x in (v or []) if isinstance(x, (str, int))][:100]
+                   for k, v in co_raw.items()}
+    # parentOf: childKey -> new parent (section) key. Moves a sub-page to another category.
+    po_raw = cfg.get("parentOf") if isinstance(cfg.get("parentOf"), dict) else {}
+    parent_of = {str(k): str(v)[:120] for k, v in po_raw.items() if str(v).strip()}
+    # stage: navKey -> maturity pill. Only "beta"/"premium" persist ("default" is omitted).
+    st_raw = cfg.get("stage") if isinstance(cfg.get("stage"), dict) else {}
+    stage = {str(k): str(v) for k, v in st_raw.items() if str(v) in ("beta", "premium")}
+    # unavailable: navKeys not exposed to the end user (the sidebar folds these into hidden).
+    unavailable = [str(x) for x in (cfg.get("unavailable") or []) if isinstance(x, (str, int))][:300]
+    # custom: admin-created items. A section: {key,label,isSection:true}. A link:
+    # {key,label,href,parent,icon?}. href is a path/URL the client renders as a link.
+    cu_raw = cfg.get("custom") if isinstance(cfg.get("custom"), list) else []
+    custom = []
+    for it in cu_raw[:100]:
+        if not isinstance(it, dict):
+            continue
+        key = str(it.get("key") or "").strip()[:120]
+        if not key:
+            continue
+        entry = {"key": key, "label": str(it.get("label") or "")[:60]}
+        if it.get("isSection"):
+            entry["isSection"] = True
+        else:
+            entry["href"] = str(it.get("href") or "")[:300]
+            entry["parent"] = str(it.get("parent") or "")[:120]
+        if it.get("icon"):
+            entry["icon"] = str(it.get("icon"))[:40]
+        custom.append(entry)
+    return {"order": order, "hidden": hidden, "labels": labels, "childOrder": child_order,
+            "parentOf": parent_of, "custom": custom, "stage": stage, "unavailable": unavailable}
+
+
+@app.get("/me/nav-config")
+async def me_nav_config(request: Request):
+    """The logged-in tenant's sidebar config — the sidebar applies it client-side.
+    Any authed user reads their OWN config (never 403). Empty {} -> default nav."""
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    return JSONResponse({"config": _read_nav_config(t["tenant_id"])})
+
+
+@app.get("/admin/nav-config")
+async def admin_nav_config_get(request: Request, tenant_id: str = ""):
+    """Super-admin: read a tenant's saved sidebar config (for the Sidebar Builder)."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return JSONResponse({"error": "tenant_id required"}, status_code=400)
+    return JSONResponse({"tenant_id": tid, "config": _read_nav_config(tid)})
+
+
+@app.post("/admin/nav-config")
+async def admin_nav_config_set(request: Request, tenant_id: str = Form(...),
+                               config: str = Form(...)):
+    """Super-admin: save a tenant's sidebar config. `config` = JSON string
+    {order:[], hidden:[], labels:{}, childOrder:{}}. Audited."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    tid = (tenant_id or "").strip()
+    if not tid:
+        return JSONResponse({"error": "tenant_id required"}, status_code=400)
+    try:
+        raw = json.loads(config or "{}")
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"invalid config json: {exc}"}, status_code=400)
+    clean = _sanitize_nav_config(raw)
+    try:
+        NAV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(_nav_config_path(tid), clean)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": f"save failed: {exc}"}, status_code=500)
+    try:
+        _control_audit(request, t, "control.nav.set", feature_key=tid)
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse({"ok": True, "tenant_id": tid, "config": clean})
 
 
 # ---------- plans ----------
@@ -7971,7 +10262,7 @@ async def whatsapp_log(request: Request):
     if not t:
         return need_auth()
     rows = [x for x in _read(WA_LOG_FILE, [])
-            if t.get("is_admin") or x.get("tenant_id") == t["tenant_id"]]
+            if _data_admin(t) or x.get("tenant_id") == t["tenant_id"]]
     return JSONResponse({"log": rows[:500]})
 
 
@@ -8072,7 +10363,7 @@ async def whatsapp_threads(request: Request):
                     continue
                 th = _read(p, {}) or {}
                 tid = th.get("tenant_id", ADMIN_ID)
-                if not t.get("is_admin") and tid != t["tenant_id"]:
+                if not _data_admin(t) and tid != t["tenant_id"]:
                     continue
                 out.append({"phone": th.get("phone", ""), "name": th.get("name", ""),
                             "tenant_id": tid, "campaign_id": th.get("campaign_id", ""),
@@ -8092,7 +10383,7 @@ async def whatsapp_thread_detail(phone: str, request: Request):
     if not t:
         return need_auth()
     phone_q = norm(phone) or phone
-    if t.get("is_admin"):
+    if _data_admin(t):
         # Admin may view any tenant's thread: locate the file across tenant subdirs
         # (+ the legacy flat path) without tenant-scoping the read.
         th = _wa_thread_find_any(phone_q)
@@ -8145,7 +10436,7 @@ async def delete_webhook(request: Request, wid: str):
     async with _STORE_LOCK:
         store = _read(WEBHOOK_FILE, [])
         target = next((w for w in store if w.get("id") == wid), None)
-        if not target or (not t.get("is_admin") and target.get("tenant_id") != t["tenant_id"]):
+        if not target or (not _data_admin(t) and target.get("tenant_id") != t["tenant_id"]):
             return JSONResponse({"error": "not found"}, status_code=404)
         store = [w for w in store if w.get("id") != wid]
         _write(WEBHOOK_FILE, store)
@@ -8155,21 +10446,12 @@ async def delete_webhook(request: Request, wid: str):
 
 # ---------- WAVE A Unit3: cost ledger + rollups + vendor sync ----------
 def _telephony_rate_per_min(tenant_id: str) -> float:
-    """Admin-set rate_per_min from the existing billing config — used as the telephony cost
-    fallback when Vobiz is dormant (so the meter is never 0). R6-B8: when the admin has NOT set an
-    explicit rate, fall back to a realistic default (~₹0.60/min for Vobiz outbound) instead of 0 —
-    otherwise the per-vendor telephony cost rendered ₹0 for every call. Env-tunable via
-    TELEPHONY_RATE_PER_MIN_DEFAULT."""
+    """Admin-set rate_per_min from the existing billing config — used as the telephony
+    cost fallback when Vobiz is dormant (so the meter is never 0)."""
     try:
-        r = float(_billing_for(tenant_id).get("rate_per_min", 0) or 0)
+        return float(_billing_for(tenant_id).get("rate_per_min", 0) or 0)
     except Exception:  # noqa: BLE001
-        r = 0.0
-    if r > 0:
-        return r
-    try:
-        return float(cfg_get("TELEPHONY_RATE_PER_MIN_DEFAULT", "0.60") or "0.60")
-    except Exception:  # noqa: BLE001
-        return 0.60
+        return 0.0
 
 
 def _read_cost_ledger() -> list[dict]:
@@ -8348,35 +10630,10 @@ def _rebuild_daily_rollups(rows: list[dict]) -> None:
     _write(DAILY_ROLLUPS_FILE, roll)
 
 
-# R6-B8: lazy cost-ledger refresh throttle. The ledger is normally rebuilt only by the ~30-min vendor
-# sync pass; if that hasn't run (or no recent sync), a /billing/* read showed a stale/empty ledger ->
-# per-vendor ₹0. We rebuild on read at most once per _COST_REBUILD_TTL_S so the billing tab always
-# reflects current calls without rebuilding on every request. Disable with COST_LAZY_REBUILD=0.
-_COST_LAST_REBUILD_TS = 0.0
-_COST_REBUILD_TTL_S = 120.0
-
-
-def _maybe_rebuild_cost_ledger() -> None:
-    global _COST_LAST_REBUILD_TS
-    if (cfg_get("COST_LAZY_REBUILD", "1") or "1").strip().lower() not in ("1", "true", "yes", "on"):
-        return
-    import time as _t
-    nowm = _t.monotonic()
-    if (nowm - _COST_LAST_REBUILD_TS) < _COST_REBUILD_TTL_S:
-        return
-    try:
-        rebuild_cost_ledger()
-        _COST_LAST_REBUILD_TS = nowm
-    except Exception:  # noqa: BLE001 — a rebuild fault must never break a billing read
-        _COST_LAST_REBUILD_TS = nowm  # back off even on failure so we don't hot-loop
-
-
 def _cost_rows_for(tenant: dict) -> list[dict]:
-    """Tenant-scoped cost_ledger rows (admin sees all). R6-B8: lazily refresh the ledger (throttled)
-    so per-vendor spend (incl Vobiz/telephony) reflects recent calls even if the periodic sync lagged."""
-    _maybe_rebuild_cost_ledger()
+    """Tenant-scoped cost_ledger rows (admin sees all)."""
     rows = _read_cost_ledger()
-    if tenant.get("is_admin"):
+    if _data_admin(tenant):
         return rows
     tid = tenant.get("tenant_id")
     return [r for r in rows if r.get("tenant_id") == tid]
@@ -8540,42 +10797,16 @@ async def scheduler_loop():
                     except Exception:  # noqa: BLE001
                         pass
             elif RETRY_SCHEDULER_ENABLED:
-                # LEGACY flat-file dial (the R5-P4b rebuilt policy: ≤RETRY_MAX_ATTEMPTS_CAP retries,
-                # 09-21 IST window, NCPR/DND fail-closed, opt-out skip, dedup, per-tenant daily cap).
+                # LEGACY flat-file dial (cadence OFF). Unchanged behavior.
                 due = [r for r in _read(RETRY_FILE, []) if r.get("next_attempt_at", "") <= now_iso]
-                _autofire_today: dict = {}   # tenant -> remaining auto-fire budget this tick
                 for r in due:
-                    _tid_r = r["tenant_id"]
                     camp_fields = (get_campaign(r["campaign_id"]) or {}).get("fields", {}) or {}
                     if not _in_window(camp_fields)[0]:
-                        continue                                   # respect calling window (TRAI 09-21)
-                    if norm(r["phone"]) in _suppressed_set(_tid_r):
+                        continue                                   # respect calling window
+                    if norm(r["phone"]) in _suppressed_set(r["tenant_id"]):
                         await _remove_retry(r["id"]); continue     # opted out since enqueue
-                    # R5-P4b: NCPR / DND national-register scrub-before-dial (fail-closed): a hit OR
-                    # an unscrubbed (cache-miss) number is NOT dialed — kept for re-scrub next tick.
-                    if _NCPR_SCRUBBER is not None:
-                        try:
-                            _scr = _NCPR_SCRUBBER.scrub(_tid_r, r["phone"])
-                        except Exception:  # noqa: BLE001 — fail-closed on a Tier-A check error
-                            _scr = None
-                        if _scr is None or _scr.block:
-                            continue                               # NCPR-listed/unscrubbed -> skip (retry later)
-                    # R5-P4b: per-tenant GLOBAL daily auto-fire ceiling (anti-runaway, durable).
-                    if _tid_r not in _autofire_today:
-                        _autofire_today[_tid_r] = max(0, CALLBACK_TENANT_DAILY_CAP - _autofire_count(_tid_r))
-                    if _autofire_today[_tid_r] <= 0:
-                        continue                                   # tenant hit daily cap -> leave queued
-                    _autofire_today[_tid_r] -= 1
-                    await _autofire_bump(_tid_r)
                     _spawn_retry_job(r)
                     await _remove_retry(r["id"])
-                    try:  # log EVERY auto-fire (founder requirement) — tail only, never the full number.
-                        import logging as _lg_af
-                        _lg_af.getLogger("famit-caller").info(
-                            "autofire.dial tenant=%s phone_tail=%s reason=%s attempts=%s",
-                            _tid_r, str(r["phone"])[-4:], r.get("reason", ""), int(r.get("attempts", 0)))
-                    except Exception:  # noqa: BLE001
-                        pass
             # Reconciliation sweep: the agent writes the transcript on shutdown, which can
             # LAG run_job's finalize (which then read an empty transcript -> misclassified as
             # no_human/0). Re-reconcile any done call whose transcript now has real data but
@@ -8601,7 +10832,7 @@ async def scheduler_loop():
                 calls_dirty = True
                 await _update_lead_after_call(tid, phone, tr.get("interest", 0), outcome,
                                               call_at=c.get("started_at", ""))
-                if tr.get("opt_out") or tr.get("outcome") == "opt_out":
+                if (tr.get("opt_out") or tr.get("outcome") == "opt_out") and _caller_opted_out(tr):
                     c["outcome"] = "opt_out"; c["answered"] = True
                     if norm(phone) not in _suppressed_set(tid):
                         await _add_suppression(tid, phone, "opt_out_call", source=room)
@@ -8622,20 +10853,12 @@ async def scheduler_loop():
                         except Exception:  # noqa: BLE001
                             _cb_recon_owned = False
                     if not _cb_recon_owned:
-                        maxa = min(RETRY_MAX_ATTEMPTS_CAP, int(camp_fields.get("retry_max_attempts", 3)))
+                        maxa = int(camp_fields.get("retry_max_attempts", 3))
                         backoff = camp_fields.get("retry_backoff_mins") or [120, 360, 1440]
                         cb = tr.get("callback_at")
                         already = any(r.get("phone") == norm(phone) and r.get("campaign_id") == cid
                                       for r in _read(RETRY_FILE, []))
-                        # R6-B4 (recon path, same guard as finalize): honor a recon callback_at ONLY
-                        # when it's a genuine caller request and the call wasn't terminally resolved.
-                        _cb_explicit = bool((tr.get("callback_raw") or "").strip()) or outcome == "callback"
-                        _terminal_good = outcome in ("booked", "converted", "opt_out") or bool(
-                            tr.get("booked") or tr.get("appointment"))
-                        _require_explicit = (cfg_get("CALLBACK_REQUIRE_EXPLICIT", "1") or "1").strip().lower() \
-                            in ("1", "true", "yes", "on")
-                        _cb_honor = bool(cb) and (not _require_explicit or _cb_explicit) and not _terminal_good
-                        if _cb_honor and not already:
+                        if cb and not already:
                             await _enqueue_retry(tid, cid, c.get("name", ""), phone, 0, maxa, cb, "callback")
                             await _emit_webhook(tid, "callback.scheduled",
                                                 {"phone": phone, "campaign_id": cid,
@@ -8731,6 +10954,39 @@ if FEATURE_ADS and _ads_router is not None:
 
 
 # ==============================================================================================
+# MODULE MOUNT — Haptica Grow (Revenue-Truth Signal Loop: L5 scoring + L7 CAPI, prefix /grow).
+# ----------------------------------------------------------------------------------------------
+# Grow ships ONLY a token-deriving AUTHENTICATED surface (grow.endpoints.build_router): tenant_id
+# is ALWAYS resolve_tenant(request)["tenant_id"] — NEVER from the request body (no cross-tenant
+# hole). The package is ALSO imported as `_grow_mod` so the _finalize_call hook (above) can feed
+# each completed call's outcome into the Signal Loop (scored lead + CAPI Lead/QualifiedLead).
+#
+# IMPORT-GUARD (house pattern): a missing/broken grow package can NEVER break startup.
+# FEATURE FLAG default OFF: FEATURE_GROW!=1/true => router NOT mounted + the finalize hook is
+# inert => byte-identical behavior. Even when ON, the L7 signals stay in SHADOW (log the
+# would-send CAPI payload, POST nothing) until Meta CAPI creds + GROW_SIGNALS_LIVE=1 are set
+# (founder-gated) — so mounting carries zero live-spend / bad-upload risk.
+try:
+    import grow as _grow_mod  # noqa: E402  (also referenced by the _finalize_call hook)
+    from grow.endpoints import build_router as _build_grow_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _grow_mod = None
+    _build_grow_router = None
+
+FEATURE_GROW = (cfg_get("FEATURE_GROW", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+if FEATURE_GROW and _build_grow_router is not None:
+    try:
+        _grow_router = _build_grow_router(resolve_tenant, can, need_auth, _forbidden,
+                                          firewall=_firewall_mod)
+        if _grow_router is not None:
+            app.include_router(_grow_router)
+    except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
+        import logging as _lg_grow
+        _lg_grow.getLogger("famit-caller").warning("grow router mount failed", exc_info=True)
+
+
+# ==============================================================================================
 # MODULE MOUNT — media-gen (provider-agnostic media-generation ENGINE, prefix /media). FLAG-GATED.
 # ----------------------------------------------------------------------------------------------
 # ⚠ TENANT ISOLATION: media-gen is a BODY-TENANT module — its bare module-level `router`
@@ -8765,6 +11021,79 @@ if FEATURE_MEDIA and _build_media_router is not None:
     except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
         import logging as _lg_media
         _lg_media.getLogger("famit-caller").warning("media_gen router mount failed", exc_info=True)
+
+
+# ==============================================================================================
+# MODULE MOUNT — pmodel (2D -> 3D Property Studio, prefix /pmodel). FLAG-GATED, default OFF.
+# ----------------------------------------------------------------------------------------------
+# Turns a 2D floor plan (or a text brief / built-in sample) into an interactive 3D property model
+# customers can explore via a public share link — a sales asset the voice agent can hand off.
+# build_router injects resolve_tenant/can/need_auth/_forbidden and derives the tenant from the
+# TOKEN ONLY (never body/query). The single public surface is the share-by-token read. Import-
+# guarded + flag-gated => a missing module or disabled flag is byte-identical to before.
+try:
+    from pmodel.router import build_router as _build_pmodel_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _build_pmodel_router = None
+
+FEATURE_PMODEL = (cfg_get("FEATURE_PMODEL", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+if FEATURE_PMODEL and _build_pmodel_router is not None:
+    try:
+        try:
+            _pmodel_s3 = _aim_s3()
+        except Exception:  # noqa: BLE001 — Spaces optional; uploads degrade to in-record only
+            _pmodel_s3 = None
+        _pmodel_router = _build_pmodel_router(
+            resolve_tenant, can, need_auth, _forbidden,
+            s3_client=_pmodel_s3,
+            spaces_bucket=(cfg_get("AIM_SPACES_BUCKET", "") or "").strip(),
+            presign=_rec_presign,
+            audit=_audit,
+        )
+        if _pmodel_router is not None:
+            app.include_router(_pmodel_router)
+    except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
+        import logging as _lg_pmodel
+        _lg_pmodel.getLogger("famit-caller").warning("pmodel router mount failed", exc_info=True)
+
+
+# ==============================================================================================
+# MODULE MOUNT — Haptica Flywheel (the RLHF/RLAIF self-improvement engine, prefix /flywheel). FLAG-GATED.
+# ----------------------------------------------------------------------------------------------
+# Every call becomes fuel: a side-pipeline that captures the (state, move, reward) trajectory of each
+# finalized call (via the _finalize_call hook above + the dispatch arm-stamp in run_job), scores a
+# fused & provenance-stamped reward, distributes it across turns (credit assignment → "which move is
+# +/-"), mines a proprietary (chosen,rejected) preference MOAT, and proposes GATED challengers that a
+# HUMAN approves in the super-admin console before promotion. The /flywheel/* router is the console
+# read/approve surface. `_flywheel_mod` (droplet glue: finalize hook + dispatch arm) is imported
+# UNCONDITIONALLY so the run_job/finalize hooks can reference it, but every hook is itself gated by
+# FLYWHEEL_ENABLED — so with the flag OFF the resting behaviour is byte-identical (no capture, no
+# router, no dispatch change). build_router injects resolve_tenant/can/need_auth/_forbidden +
+# require_super_admin + _audit, derives the tenant from the TOKEN, and self-returns None when FastAPI
+# is absent. The heavy offline loop runs in a SEPARATE process (flywheel_worker.py), never here.
+try:
+    import flywheel_app as _flywheel_mod  # noqa: E402 — droplet glue (finalize hook + dispatch arm)
+except Exception:  # noqa: BLE001
+    _flywheel_mod = None
+try:
+    from voice_ops.flywheel.router import build_router as _build_flywheel_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _build_flywheel_router = None
+
+FLYWHEEL_ENABLED = (cfg_get("FLYWHEEL_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+if FLYWHEEL_ENABLED and _build_flywheel_router is not None:
+    try:
+        _flywheel_router = _build_flywheel_router(
+            resolve_tenant, can, need_auth, _forbidden,
+            require_super_admin=require_super_admin, audit=_audit,
+        )
+        if _flywheel_router is not None:
+            app.include_router(_flywheel_router)
+    except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
+        import logging as _lg_flywheel
+        _lg_flywheel.getLogger("famit-caller").warning("flywheel router mount failed", exc_info=True)
 
 
 # ==============================================================================================
@@ -8940,55 +11269,10 @@ except Exception:  # noqa: BLE001
 
 FEATURE_BOOKING = (cfg_get("FEATURE_BOOKING", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
 
-# IN-BOX VOICE-TOOL BOOKING EXEMPTION (POST /booking/book only).
-# The outbound voice agent (agent.py `_do_booking_http`, flag BOOKING_HTTP_ENABLED) books a
-# site-visit mid-call by POSTing the contract {phone, lead_name, datetime_iso, campaign_id, notes}
-# to http://127.0.0.1:8209/booking/book. That local call carries NO auth token, so resolve_tenant
-# returns None -> 401. This resolver lets ONLY a genuine loopback peer through, and resolves the
-# OWNING tenant from the body's campaign_id (the campaign JSON carries tenant_id) so the booking
-# persists under the right tenant (RLS-correct) — never a guessed/admin default.
-# SECURITY: uvicorn runs WITHOUT --proxy-headers, so request.client.host is the real TCP peer;
-# X-Forwarded-* cannot spoof loopback. We additionally require BOOKING_LOCALHOST_EXEMPT!=0 (default
-# ON, env-revocable) and a non-empty campaign_id that maps to a real tenant. Any non-loopback peer,
-# missing/unknown campaign, or the flag off -> return None -> the route 401s exactly as before.
-_BOOKING_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
-
-
-def _booking_loopback_resolver(request: Request, body: dict):
-    """Return the campaign-owning tenant dict for a genuine in-box loopback /booking/book POST,
-    else None. Never raises (any fault -> None -> the route falls through to need_auth())."""
-    try:
-        if (cfg_get("BOOKING_LOCALHOST_EXEMPT", "1") or "1").strip().lower() in ("0", "false", "no", "off"):
-            return None
-        client = getattr(request, "client", None)
-        host = getattr(client, "host", "") if client else ""
-        if host not in _BOOKING_LOOPBACK_HOSTS:
-            return None
-        cid = str((body or {}).get("campaign_id") or "").strip()
-        if not cid:
-            return None
-        camp = get_campaign(cid)
-        tid = str((camp or {}).get("tenant_id") or "").strip()
-        if not tid:
-            return None
-        t = _tenant_by_id(tid)
-        if t:
-            return t
-        # Tenant id present in the campaign but not in the tenants store (e.g. the seeded "admin"
-        # tenant is synthesized, not file-backed) -> synthesize a minimal write-capable ctx so the
-        # book persists under the correct tenant_id. is_admin stays False (RLS-scoped, no bypass).
-        if tid == ADMIN_ID:
-            return ADMIN_TENANT
-        return {"tenant_id": tid, "role": "manager", "is_admin": False}
-    except Exception:  # noqa: BLE001 — resolver must be fail-closed (None), never break the route
-        return None
-
-
 if FEATURE_BOOKING and _build_booking_router is not None:
     try:
         _booking_router = _build_booking_router(
-            resolve_tenant, can, need_auth, _forbidden, firewall=_firewall_mod,
-            loopback_resolver=_booking_loopback_resolver,
+            resolve_tenant, can, need_auth, _forbidden, firewall=_firewall_mod
         )
         if _booking_router is not None:
             app.include_router(_booking_router)
@@ -9040,6 +11324,43 @@ if FEATURE_PAYMENTS and _payments_router is not None and _payments_wire is not N
     except Exception:  # noqa: BLE001 — a mount failure must never crash the live spine
         import logging as _lg_payments
         _lg_payments.getLogger("famit-caller").warning("payments router mount failed", exc_info=True)
+
+
+# ==============================================================================================
+# MODULE MOUNT -- credits (credit-wallet + buy-credits + service costing matrix, prefix /credits).
+# FLAG-GATED.
+# ----------------------------------------------------------------------------------------------
+# THE CREDIT LAYER: one customer-facing unit (the credit) on top of the existing wallet/billing.json/
+# cost_ledger primitives, via a PLUGGABLE BillingEngine (LocalCreditEngine default; FlexpriceEngine
+# when BILLING_ENGINE=flexprice). Razorpay + Stripe top-up rails are DORMANT-UNTIL-KEYS. Tenant is
+# ALWAYS token-derived (credits.router._tenant -> resolve_tenant); admin writes pass require_super_admin
+# + the Action-Firewall step-up. A credits failure can never break a call (everything best-effort).
+#
+# IMPORT: the package lives at droplet_work/credits/ (a plain top-level package, like ai_manager/comm)
+# so `from credits.router import router` resolves with NO sys.path hack on the box and in the repo.
+#
+# IMPORT-GUARD (house pattern): a missing/broken credits package can NEVER break startup.
+# FEATURE FLAG default OFF: FEATURE_CREDITS!=1/true => router NOT mounted => byte-identical behavior.
+try:
+    from credits.router import router as _credits_router, wire as _credits_wire  # noqa: E402
+except Exception:  # noqa: BLE001
+    _credits_router = None
+    _credits_wire = None
+
+FEATURE_CREDITS = (cfg_get("FEATURE_CREDITS", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+if FEATURE_CREDITS and _credits_router is not None and _credits_wire is not None:
+    try:
+        _credits_wire(
+            resolve_tenant=resolve_tenant, can=can, need_auth=need_auth,
+            forbidden=_forbidden, firewall=_firewall_mod,
+            require_super_admin=require_super_admin, audit=_audit,
+            step_up_guard=_step_up_guard,
+        )
+        app.include_router(_credits_router, prefix="/credits")
+    except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
+        import logging as _lg_credits
+        _lg_credits.getLogger("famit-caller").warning("credits router mount failed", exc_info=True)
 
 
 # ==============================================================================================
@@ -9377,6 +11698,144 @@ if COMM_ENABLED and _build_comm_router is not None:
         _lg_comm.getLogger("famit-caller").warning("communication router mount failed", exc_info=True)
 
 
+# ==============================================================================================
+# MODULE MOUNT — twenty-crm (deep Twenty CRM integration, prefix /twenty). TWENTY-CRM-INTEGRATION.
+# ----------------------------------------------------------------------------------------------
+# WHAT: a server-side proxy + value-bridge over a tenant's Twenty CRM (https://twenty.com). The panel
+# renders NATIVE Haptica UI (Pipeline kanban / Companies / People) over the normalized /twenty/* contract
+# this router serves — NO iframe, NO cross-origin. The workspace API key (a JWT) stays SERVER-SIDE: the
+# browser never sees it (status reads hand back only a masked tail).
+#
+# TENANT ISOLATION: build_router(resolve_tenant, can, need_auth, forbidden) — same token-deriving shape as
+# forms/workflow/comm. The Twenty connection (URL+key) is resolved PER TENANT from
+# resolve_tenant(request)["tenant_id"] via a small JSON store under VAR (never a body/query field). Writes
+# enforce can(t,"write"). A genuine 401 still bounces via need_auth.
+#
+# DORMANT-SAFE BY DESIGN: with no per-tenant connection AND no env fallback, every READ returns
+# {connected:false}+empty (200) so the panel shows a calm "Connect your Twenty CRM" state, and the module
+# makes ZERO external calls / touches NOTHING. So even with the flag ON the resting state for an
+# unconnected tenant is inert. The flag defaults ON (this is an explicitly-shipped feature that must be
+# connectable out of the box); set FEATURE_TWENTY_CRM=0 to unmount entirely. Optional single-tenant/dev
+# fallback creds: TWENTY_API_URL + TWENTY_API_KEY.
+#
+# IMPORT-GUARD (house pattern): a missing/broken twenty_crm package or absent FastAPI can NEVER break
+# startup — the import is swallowed and the mount is wrapped.
+try:
+    from twenty_crm import build_router as _build_twenty_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _build_twenty_router = None
+
+FEATURE_TWENTY_CRM = (cfg_get("FEATURE_TWENTY_CRM", "1") or "1").strip().lower() in ("1", "true", "yes", "on")
+
+if FEATURE_TWENTY_CRM and _build_twenty_router is not None:
+    try:
+        _twenty_self_host = (cfg_get("TWENTY_SELF_HOST", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+        _twenty_router = _build_twenty_router(
+            resolve_tenant, can, need_auth, _forbidden,
+            var_dir=VAR,
+            env_url=cfg_get("TWENTY_API_URL", "") or "",
+            env_key=cfg_get("TWENTY_API_KEY", "") or "",
+            # Self-hosted (zero-touch) mode: Haptica auto-provisions an isolated Twenty
+            # workspace per tenant against the internal Twenty (no API key from the user).
+            self_host=_twenty_self_host,
+            internal_url=cfg_get("TWENTY_INTERNAL_URL", "") or "",
+            provision_domain=cfg_get("TWENTY_PROVISION_DOMAIN", "crm.haptica.local") or "crm.haptica.local",
+            provision_secret=cfg_get("TWENTY_PROVISION_SECRET", "") or cfg_get("TWENTY_APP_SECRET", "") or "",
+        )
+        if _twenty_router is not None:
+            app.include_router(_twenty_router)
+    except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
+        import logging as _lg_twenty
+        _lg_twenty.getLogger("famit-caller").warning("twenty-crm router mount failed", exc_info=True)
+
+
+# ==============================================================================================
+# MODULE MOUNT -- auto-lead (real-time multi-source lead ingestion, prefix /auto-lead). AUTO-LEAD.
+# ----------------------------------------------------------------------------------------------
+# WHAT: connect sources (website/custom webhooks, Zapier, Meta/Google lead ads, WhatsApp, email,
+# Apollo) -> ingest leads in REAL TIME -> validate/dedupe -> route into the LEADS store (so Riya can
+# call them) + a live activity feed. The hero is the PUBLIC webhook POST /auto-lead/ingest/{token}:
+# unauthenticated by design (tenant derived from the unguessable per-source token, never a request
+# field), with a 64KB size cap + honeypot on top of caller.py's global IP rate-limit (forms' model).
+#
+# LEADS INTEGRATION: we inject ONE async callable `_al_add_lead(tenant_id, lead)` that does the exact
+# lock-guarded, phone-normalised, per-tenant-deduped write to leads.json the /leads endpoint does -- so
+# ingested leads are first-class Haptica leads (single source of truth; no schema drift).
+#
+# PULL SOURCES (email IMAP / Apollo) are polled by the router's poll_once(), driven from a startup task
+# below (a separate @app.on_event so it can't disturb scheduler_loop). Default interval 120s.
+#
+# IMPORT-GUARD (house pattern): a missing/broken auto_lead package can NEVER break startup.
+# FEATURE FLAG default ON (additive + dormant-safe; set FEATURE_AUTO_LEAD=0 to unmount).
+try:
+    from auto_lead import build_router as _build_auto_lead_router  # noqa: E402
+except Exception:  # noqa: BLE001
+    _build_auto_lead_router = None
+
+FEATURE_AUTO_LEAD = (cfg_get("FEATURE_AUTO_LEAD", "1") or "1").strip().lower() in ("1", "true", "yes", "on")
+_auto_lead_router = None
+
+if FEATURE_AUTO_LEAD and _build_auto_lead_router is not None:
+    async def _al_add_lead(tenant_id: str, lead: dict) -> dict:
+        """Add ONE ingested lead to leads.json (same dedup/normalise/tenant-scope as POST /leads).
+        Returns {added: bool, lead_id?, reason?}. Lock-guarded against the run-path."""
+        phone = norm(lead.get("phone", "") or "")
+        if not phone:
+            return {"added": False, "reason": "invalid_phone"}
+        async with _STORE_LOCK:
+            store = _read_raw(LEADS_FILE, [])
+            existing = None
+            for x in store:
+                if x.get("tenant_id", ADMIN_ID) == tenant_id and x.get("phone") == phone:
+                    existing = x
+                    break
+            if existing is not None:
+                return {"added": False, "reason": "duplicate", "lead_id": existing.get("id")}
+            lid = uuid.uuid4().hex[:8]
+            rec = {
+                "id": lid, "tenant_id": tenant_id,
+                "name": (lead.get("name") or "").strip(), "phone": phone,
+                "status": (lead.get("status") or "new"),
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+                "source": lead.get("source") or "auto_lead",
+            }
+            if lead.get("email"):
+                rec["email"] = str(lead["email"]).strip()
+            if lead.get("tags"):
+                rec["tags"] = [str(x) for x in lead["tags"] if str(x).strip()]
+            if lead.get("hot"):
+                rec["hot"] = True
+                rec["score"] = 70
+            store.append(rec)
+            _write_raw(LEADS_FILE, store)
+        return {"added": True, "lead_id": lid}
+
+    try:
+        _auto_lead_router = _build_auto_lead_router(
+            resolve_tenant, can, need_auth, _forbidden,
+            var_dir=VAR, add_lead=_al_add_lead, norm=norm, client_ip=_client_ip,
+        )
+        if _auto_lead_router is not None:
+            app.include_router(_auto_lead_router)
+
+        _AL_POLL_INTERVAL = int(cfg_get("AUTO_LEAD_POLL_INTERVAL", "120") or "120")
+
+        @app.on_event("startup")
+        async def _start_auto_lead_pollers():  # noqa: ANN202
+            async def _loop():
+                while True:
+                    await asyncio.sleep(max(30, _AL_POLL_INTERVAL))
+                    try:
+                        if _auto_lead_router is not None:
+                            await _auto_lead_router.poll_once()
+                    except Exception:  # noqa: BLE001 -- a poll hiccup never stops the loop
+                        pass
+            asyncio.create_task(_loop())
+    except Exception:  # noqa: BLE001 -- a mount failure must never crash the live spine
+        import logging as _lg_al
+        _lg_al.getLogger("famit-caller").warning("auto-lead router mount failed", exc_info=True)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LPR — PLATFORM PROVIDER KEY-STORE (super-admin only). Hot-reloadable: a key added
 # here reaches the live AIM rotation on the next pick() with NO redeploy/restart.
@@ -9487,6 +11946,143 @@ async def admin_provider_keys_status(request: Request):
     return JSONResponse({"status": out})
 
 
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# P2: MANAGED PROVIDER LAYER — encrypted ProviderKeyStore + health-scored KeyRouter (the W13 engine).
+# Additive + IMPORT-GUARDED + DORMANT-SAFE: every route self-503s until voice_ops.config is importable
+# AND (for writes) a keystore master secret is set. This is the canonical store going forward; the
+# legacy /admin/provider-keys above stays until the panel + agent are fully repointed. No agent path
+# is touched here — the live call is unaffected. Backs the P3 Service Control Center.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+try:
+    from voice_ops.config.router_bridge import get_key_router as _vk_get_router  # noqa: E402
+    from voice_ops.config.keys import ProviderKeyStore as _VkKeyStore  # noqa: E402
+except Exception:  # noqa: BLE001
+    _vk_get_router = None  # type: ignore
+    _VkKeyStore = None  # type: ignore
+
+# Platform-scoped key set the earner shares (per-tenant BYO is a later unit). is_admin=True so the
+# managed router/store operate cross-tenant for the super-admin console.
+_PLATFORM_TENANT = (os.getenv("PLATFORM_TENANT_ID") or "_platform").strip()
+
+
+def _vk_unavailable():
+    return JSONResponse({"error": "managed provider layer unavailable (voice_ops.config not importable)"},
+                        status_code=503)
+
+
+@app.get("/admin/provider-pool/health")
+async def admin_provider_pool_health(request: Request, provider: str = ""):
+    """Per-key health (score / circuit / latency / success-rate / status) for the managed providers.
+    No secrets — fingerprints only. Degrades to an empty shape if the key store isn't reachable."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _vk_get_router is None:
+        return _vk_unavailable()
+    try:
+        return JSONResponse({"health": _vk_get_router(_PLATFORM_TENANT, is_admin=True).health(provider or None),
+                             "platform_tenant": _PLATFORM_TENANT})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"health": {}, "error": type(exc).__name__})
+
+
+@app.get("/admin/provider-pool/usage")
+async def admin_provider_pool_usage(request: Request, minutes: int = 1440):
+    """Per-key provider usage. `durable` is the CROSS-PROCESS truth (ClickHouse, flushed by the
+    agent workers — success/failure/429/latency/score/status per key); `live` is THIS process's
+    in-memory snapshot (usually empty in the API process). The P3 UI reads `durable`."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _vk_get_router is None:
+        return _vk_unavailable()
+    live = {"providers": {}}
+    try:
+        live = _vk_get_router(_PLATFORM_TENANT, is_admin=True).analytics_snapshot()
+    except Exception:  # noqa: BLE001
+        pass
+    durable, durable_err = [], None
+    if _obs_q is not None:
+        try:
+            r = await _obs_q.provider_key_usage(minutes)
+            durable = r.get("rows", [])
+            durable_err = r.get("error")
+        except Exception as exc:  # noqa: BLE001
+            durable_err = type(exc).__name__
+    return JSONResponse({"live": live, "durable": durable,
+                         **({"durable_error": durable_err} if durable_err else {})})
+
+
+@app.post("/admin/provider-pool/keys")
+async def admin_provider_pool_add_key(request: Request, provider: str = Form(...),
+                                      key: str = Form(...), label: str = Form("")):
+    """Add an ENCRYPTED provider key (AES-256-GCM at rest; plaintext only at call time). Joins the
+    health pool live. Requires a keystore master secret (else 400 with a clear hint)."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _VkKeyStore is None:
+        return _vk_unavailable()
+    p = (provider or "").strip().lower()
+    if not p:
+        return JSONResponse({"error": "provider required"}, status_code=400)
+    if not (key or "").strip():
+        return JSONResponse({"error": "empty key"}, status_code=400)
+    actor = t.get("tenant_id", "") if isinstance(t, dict) else ""
+    try:
+        rec = _VkKeyStore().add_key(_PLATFORM_TENANT, p, key, label=label, added_by=actor, is_admin=True)
+    except Exception as exc:  # noqa: BLE001 — most often VaultError (no master secret) or store down
+        return JSONResponse({"error": "add failed (is a keystore master secret + config store configured?)",
+                             "detail": type(exc).__name__}, status_code=400)
+    _audit(request, t, "provider_pool.key.add", "provider_key", rec.get("fingerprint", ""),
+           channel="control", meta={"provider": p})
+    return JSONResponse({"ok": True, **rec})
+
+
+@app.put("/admin/provider-pool/keys/{provider}/{fingerprint}")
+async def admin_provider_pool_update_key(request: Request, provider: str, fingerprint: str,
+                                         enabled: str = Form("")):
+    """Enable/disable a managed key by fingerprint (never edits the secret). Hot-reloads live."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _VkKeyStore is None:
+        return _vk_unavailable()
+    p = (provider or "").strip().lower()
+    en = str(enabled).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    actor = t.get("tenant_id", "") if isinstance(t, dict) else ""
+    try:
+        store = _VkKeyStore()
+        res = (store.enable_key(_PLATFORM_TENANT, p, fingerprint, actor=actor, is_admin=True) if en
+               else store.disable_key(_PLATFORM_TENANT, p, fingerprint, actor=actor, is_admin=True))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "update failed", "detail": type(exc).__name__}, status_code=400)
+    if res.get("status") == "not_found":
+        return JSONResponse({"error": "key not found", "fingerprint": fingerprint}, status_code=404)
+    _audit(request, t, "provider_pool.key.update", "provider_key", fingerprint,
+           channel="control", meta={"provider": p, "enabled": en})
+    return JSONResponse(res)
+
+
+@app.delete("/admin/provider-pool/keys/{provider}/{fingerprint}")
+async def admin_provider_pool_delete_key(request: Request, provider: str, fingerprint: str):
+    """Delete a managed key by fingerprint. Removed from rotation on the next resolve."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _VkKeyStore is None:
+        return _vk_unavailable()
+    p = (provider or "").strip().lower()
+    actor = t.get("tenant_id", "") if isinstance(t, dict) else ""
+    try:
+        res = _VkKeyStore().remove_key(_PLATFORM_TENANT, p, fingerprint, actor=actor, is_admin=True)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": "delete failed", "detail": type(exc).__name__}, status_code=400)
+    _audit(request, t, "provider_pool.key.delete", "provider_key", fingerprint,
+           channel="control", meta={"provider": p})
+    return JSONResponse({"ok": True, **res})
+
+
 # === PVS PHASE-1: CUSTOM PROVIDER CRUD (super-admin gated; isolated store) ===
 # Separate from the live provider key-store (which feeds the earner pool) — registering a custom
 # provider here NEVER changes the earner pipeline. Routing an outbound call through a custom
@@ -9512,8 +12108,8 @@ async def admin_custom_providers_list(request: Request):
 
 @app.post("/admin/custom-providers")
 async def admin_custom_providers_add(request: Request, name: str = Form(...), kind: str = Form(...),
-                                     base_url: str = Form(...), model: str = Form(...),
-                                     key: str = Form("")):
+                                     base_url: str = Form(...), model: str = Form(""),
+                                     key: str = Form(""), logo_url: str = Form("")):
     t = require_super_admin(request)
     if isinstance(t, JSONResponse):
         return t
@@ -9521,7 +12117,7 @@ async def admin_custom_providers_add(request: Request, name: str = Form(...), ki
     if cp is None:
         return JSONResponse({"error": "custom-provider store unavailable"}, status_code=503)
     try:
-        res = cp.add(name, kind, base_url, model, key=key)
+        res = cp.add(name, kind, base_url, model, key=key, logo_url=logo_url)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
@@ -9570,3 +12166,672 @@ async def admin_custom_providers_delete(request: Request, cid: str):
     _audit(request, t, "custom_provider.delete", "custom_provider", cid, channel="control")
     return JSONResponse(res)
 # === /PVS PHASE-1 custom-provider CRUD ===
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# TOLEX — agent tooling & capability system (CONTROL PLANE). Import-guarded (a missing tolex module
+# returns 503, never a startup error) + every route require_super_admin. The agent RUNTIME hook is a
+# separate flag (TOLEX_ENABLED) in agent.py; this control plane works regardless so you can configure
+# grants before turning the runtime on.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+try:
+    import tolex as _tolex_mod  # noqa: E402
+except Exception:  # noqa: BLE001
+    _tolex_mod = None
+
+
+@app.get("/admin/tolex/catalog")
+async def admin_tolex_catalog(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"catalog": _tolex_mod.catalog(), "runtime_enabled": _tolex_mod.enabled()})
+
+
+@app.get("/admin/tolex/grants")
+async def admin_tolex_grants_get(request: Request, campaign_id: str = ""):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"grants": _tolex_mod.get_grants("", campaign_id)})
+
+
+@app.put("/admin/tolex/grants")
+async def admin_tolex_grants_put(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    cid = str((body or {}).get("campaign_id", "") or "")
+    en = bool((body or {}).get("enabled", False))
+    tools = (body or {}).get("tools", {}) or {}
+    res = _tolex_mod.set_grants("", cid, en, tools)
+    _audit(request, t, "tolex.grants.set", "tolex", cid or "_default", channel="control",
+           meta={"enabled": en, "tools": list(tools.keys()) if isinstance(tools, dict) else []})
+    return JSONResponse({"ok": True, "grants": res})
+
+
+@app.post("/admin/tolex/grants/enable-recommended")
+async def admin_tolex_enable_recommended(request: Request, campaign_id: str = ""):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    res = _tolex_mod.enable_recommended("", campaign_id)
+    _audit(request, t, "tolex.grants.enable_recommended", "tolex", campaign_id or "_default", channel="control")
+    return JSONResponse({"ok": True, "grants": res})
+
+
+@app.get("/admin/tolex/ops")
+async def admin_tolex_ops(request: Request, campaign_id: str = "", limit: int = 200):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"ops": _tolex_mod.recent_ops(campaign_id, limit)})
+
+
+# ── Tolex TENANT surface (/tolex/*) — a tenant manages ONLY its own agent's tooling. The scope is the
+# AUTH-derived tenant id (never a client-supplied one), so a tenant can only ever read/write its own
+# node + see its own operations: hard isolation, no cross-tenant access. Mirrors the /bookings auth.
+@app.get("/tolex/catalog")
+async def tolex_catalog(request: Request):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"catalog": _tolex_mod.catalog(), "runtime_enabled": _tolex_mod.enabled()})
+
+
+@app.get("/tolex/grants")
+async def tolex_grants_get(request: Request, campaign_id: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"grants": _tolex_mod.get_grants(t.get("tenant_id", "") or "", campaign_id)})
+
+
+@app.put("/tolex/grants")
+async def tolex_grants_put(request: Request):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    cid = str((body or {}).get("campaign_id", "") or "")
+    en = bool((body or {}).get("enabled", False))
+    tools = (body or {}).get("tools", {}) or {}
+    res = _tolex_mod.set_grants(t.get("tenant_id", "") or "", cid, en, tools)
+    return JSONResponse({"ok": True, "grants": res})
+
+
+@app.post("/tolex/grants/enable-recommended")
+async def tolex_enable_recommended(request: Request, campaign_id: str = ""):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    res = _tolex_mod.enable_recommended(t.get("tenant_id", "") or "", campaign_id)
+    return JSONResponse({"ok": True, "grants": res})
+
+
+@app.get("/tolex/ops")
+async def tolex_ops_tenant(request: Request, campaign_id: str = "", limit: int = 200):
+    t = resolve_tenant(request)
+    if not t:
+        return need_auth()
+    if _tolex_mod is None:
+        return JSONResponse({"error": "tolex unavailable"}, status_code=503)
+    return JSONResponse({"ops": _tolex_mod.recent_ops(campaign_id, limit, t.get("tenant_id", "") or "")})
+# === /TOLEX control plane ===
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# VOICE-CONFIG STORE — super-admin reads/writes VAR/voice_keys.json, the SAME file the agent reads.
+# Raw keys NEVER leave the server: GET masks every secret to its last-4 chars. POST is a MERGE — only
+# the fields the caller actually sends are touched (an empty string CLEARS that one field; absent
+# fields are left untouched so you can't accidentally wipe sibling keys). Super-admin gated.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+VOICE_KEYS_FILE = VAR / "voice_keys.json"   # canonical voice STT/TTS provider keys (agent reads this)
+_VOICE_KEY_FIELDS = ("deepgram_api_key", "sarvam_api_key", "elevenlabs_api_key", "groq_api_key")
+_VOICE_PROVIDERS = ("deepgram", "sarvam", "elevenlabs", "groq")
+
+
+def _mask_secret(val: str) -> str:
+    """Mask a secret to a fixed dot prefix + its last 4 chars. Empty/short -> ''."""
+    s = str(val or "")
+    if len(s) < 4:
+        return ""
+    return "••••" + s[-4:]
+
+
+def _voice_config_masked(cfg: dict) -> dict:
+    """Build the public (masked) voice-config view. Never echoes a raw key."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    providers = {}
+    for prov in _VOICE_PROVIDERS:
+        raw = str(cfg.get(f"{prov}_api_key", "") or "")
+        # emit BOTH name sets so any reader works (FE reads configured/key_masked; has_key/masked kept).
+        providers[prov] = {"has_key": bool(raw), "configured": bool(raw),
+                           "masked": _mask_secret(raw), "key_masked": _mask_secret(raw)}
+    return {
+        "stt_provider": str(cfg.get("stt_provider", "") or "") or "sarvam",
+        "providers": providers,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# VOICE TUNING — super-admin live TTS knobs. Written to VAR/voice_keys.json (the SAME file the
+# agent reads per-call via _voice_cfg), so every change applies on the NEXT call with NO restart.
+# Byte-identical resting: an unset knob => the agent's env/default. Numeric knobs are clamped.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+_VOICE_TUNING_KEYS = ("tts_provider", "el_speed", "el_stability", "el_similarity", "el_style",
+                      "el_speaker_boost", "voice_id", "sarvam_tts_speaker", "sarvam_tts_model")
+_VOICE_TUNING_DEFAULTS = {
+    "tts_provider": "elevenlabs", "el_speed": "1.1", "el_stability": "0.45",
+    "el_similarity": "0.80", "el_style": "0.0", "el_speaker_boost": "0",
+    "voice_id": "", "sarvam_tts_speaker": "anushka", "sarvam_tts_model": "bulbul:v2",
+}
+_VOICE_TUNING_CLAMPS = {"el_speed": (0.7, 1.2), "el_stability": (0.0, 1.0),
+                        "el_similarity": (0.0, 1.0), "el_style": (0.0, 1.0)}
+
+
+def _voice_tuning_view():
+    cfg = _read_raw(VOICE_KEYS_FILE, {}) or {}
+    out = {}
+    for k in _VOICE_TUNING_KEYS:
+        v = cfg.get(k)
+        out[k] = (str(v) if v not in (None, "") else _VOICE_TUNING_DEFAULTS[k])
+    return out
+
+
+@app.get("/admin/voice-tuning")
+async def admin_voice_tuning_get(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    return JSONResponse(_voice_tuning_view())
+
+
+@app.post("/admin/voice-tuning")
+async def admin_voice_tuning_post(request: Request):
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+    cfg = _read_raw(VOICE_KEYS_FILE, {}) or {}
+    for k in _VOICE_TUNING_KEYS:
+        if k not in body:
+            continue
+        v = body.get(k)
+        if k in _VOICE_TUNING_CLAMPS:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            lo, hi = _VOICE_TUNING_CLAMPS[k]
+            cfg[k] = str(round(max(lo, min(hi, fv)), 3))
+        elif k == "el_speaker_boost":
+            cfg[k] = "1" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "0"
+        elif k == "tts_provider":
+            cfg[k] = "sarvam" if str(v).strip().lower() == "sarvam" else "elevenlabs"
+        else:
+            cfg[k] = str(v or "").strip()
+    _atomic_write_json(VOICE_KEYS_FILE, cfg)
+    try:
+        _audit(request, t, "voice_tuning.update", "voice_keys", "voice_tuning",
+               channel="control", meta=_voice_tuning_view())
+    except Exception:
+        pass
+    return JSONResponse(_voice_tuning_view())
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/admin/voice-config")
+async def admin_voice_config_get(request: Request):
+    """Return the current voice STT/TTS provider config (MASKED — raw keys never returned).
+    Reads VAR/voice_keys.json (the same file the agent reads); missing file -> defaults."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    cfg = _read_raw(VOICE_KEYS_FILE, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return JSONResponse(_voice_config_masked(cfg))
+
+
+@app.post("/admin/voice-config")
+async def admin_voice_config_set(request: Request):
+    """MERGE a partial voice-config into VAR/voice_keys.json. Only the fields the caller sends
+    are touched: an empty string CLEARS that field; an absent field is left untouched (so other
+    keys are never wiped). Writes atomically. Returns the masked config (same shape as GET)."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    cfg = _read_raw(VOICE_KEYS_FILE, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    changed = []
+    if "stt_provider" in body:
+        sp = str(body.get("stt_provider", "") or "").strip().lower()
+        if sp:
+            cfg["stt_provider"] = sp
+            changed.append("stt_provider")
+    for field in _VOICE_KEY_FIELDS:
+        if field in body:
+            val = body.get(field)
+            if val is None:
+                continue   # explicit null == "leave untouched", same as absent
+            cfg[field] = str(val)   # "" clears the field; non-empty sets it
+            changed.append(field)
+    _atomic_write_json(VOICE_KEYS_FILE, cfg)
+    _audit(request, t, "voice_config.update", "voice_config", "voice_keys.json",
+           channel="control", meta={"fields": changed})
+    return JSONResponse(_voice_config_masked(cfg))
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# GROQ TOKEN-BUDGET — super-admin manages MULTIPLE Groq keys + a per-day token limit per key, and sees
+# each key's LIVE remaining budget. The agent worker writes a daily per-key token-usage snapshot
+# (VAR/groq_budget_status.json) after every call; this plane reads it and, crucially, the worker also
+# READS the config to skip a key that's about to hit its 100k-tokens/day free-tier wall BEFORE the
+# call (proactive rotation — the fix for the dead-air-on-quota glitch). Super-admin gated. The raw
+# keys never leave the server (GET masks). All best-effort; a missing file degrades to env-only.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+_GROQ_TPD_DEFAULT = 100000   # Groq free-tier daily token cap for llama-3.3-70b (the binding limit)
+_GROQ_LOW_DEFAULT = 10000    # "low" warning threshold; worker rotates off a key under this remaining
+
+
+def _groq_day() -> str:
+    """UTC date string — Groq's daily token limits reset at 00:00 UTC. The worker uses the SAME
+    basis so the usage snapshot and this plane agree on 'today'."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _groq_fingerprint(key: str) -> str:
+    """Stable, non-reversible 12-char fingerprint of a Groq key. IDENTICAL formula in agent.py so the
+    worker's usage rows map to the keys shown here. Never raises."""
+    try:
+        return hashlib.sha256((key or "").strip().encode("utf-8")).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _groq_budget_config() -> dict:
+    """Read VAR/groq_budget.json (super-admin CONFIG). Shape:
+        {"tpd_limit_default": int, "low_threshold": int, "keys": [{"key", "label", "tpd_limit"}]}
+    Missing/garbage → sane defaults. The raw keys live here (panel-added fallback keys)."""
+    cfg = _read_raw(GROQ_BUDGET_FILE, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg.setdefault("tpd_limit_default", _GROQ_TPD_DEFAULT)
+    cfg.setdefault("low_threshold", _GROQ_LOW_DEFAULT)
+    if not isinstance(cfg.get("keys"), list):
+        cfg["keys"] = []
+    return cfg
+
+
+def _groq_budget_status() -> dict:
+    """Read the worker-written daily usage snapshot VAR/groq_budget_status.json. Shape:
+        {"date": "YYYY-MM-DD", "keys": {"<fp>": {"tokens", "calls", "last_used_ms", "last_429_ms"}}}"""
+    st = _read_raw(GROQ_BUDGET_STATUS_FILE, {})
+    return st if isinstance(st, dict) else {}
+
+
+def _groq_all_keys(cfg: dict) -> list[dict]:
+    """Every Groq key the worker would use, in worker order: env GROQ_API_KEY/_2..20 first, then the
+    panel store keys, then the legacy single voice_keys.json key. De-duped by raw value. Each entry:
+        {"raw", "source": "env"|"store", "label", "tpd_limit"}."""
+    default_lim = int(cfg.get("tpd_limit_default") or _GROQ_TPD_DEFAULT)
+    out: list[dict] = []
+    seen: set = set()
+    for name in ["GROQ_API_KEY"] + [f"GROQ_API_KEY_{i}" for i in range(2, 21)]:
+        v = (os.getenv(name) or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append({"raw": v, "source": "env", "label": name, "tpd_limit": default_lim})
+    for k in cfg.get("keys", []):
+        if not isinstance(k, dict):
+            continue
+        v = str(k.get("key", "") or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append({"raw": v, "source": "store", "label": str(k.get("label", "") or "key"),
+                        "tpd_limit": int(k.get("tpd_limit") or default_lim)})
+    vk = _read_raw(VOICE_KEYS_FILE, {})
+    if isinstance(vk, dict):
+        v = str(vk.get("groq_api_key", "") or "").strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append({"raw": v, "source": "store", "label": "voice_keys.json", "tpd_limit": default_lim})
+    return out
+
+
+def _groq_budget_view() -> dict:
+    """Merge config (limits) + worker usage snapshot → per-key remaining budget + a summary. No raw
+    keys; every key is masked to last-4. This is what the Services panel renders + the preflight reads."""
+    cfg = _groq_budget_config()
+    keys = _groq_all_keys(cfg)
+    status = _groq_budget_status()
+    today = _groq_day()
+    usage = status.get("keys", {}) if (status.get("date") == today and isinstance(status.get("keys"), dict)) else {}
+    low = int(cfg.get("low_threshold") or _GROQ_LOW_DEFAULT)
+    rows: list[dict] = []
+    total_remaining = 0
+    healthy = 0
+    for k in keys:
+        fp = _groq_fingerprint(k["raw"])
+        u = usage.get(fp, {}) if isinstance(usage.get(fp), dict) else {}
+        used = int(u.get("tokens", 0) or 0)
+        lim = int(k["tpd_limit"] or _GROQ_TPD_DEFAULT)
+        rem = max(0, lim - used)
+        total_remaining += rem
+        st = "exhausted" if rem <= 0 else ("low" if rem < low else "healthy")
+        if st == "healthy":
+            healthy += 1
+        rows.append({
+            "fingerprint": fp, "label": k["label"], "source": k["source"],
+            "masked": _mask_secret(k["raw"]), "tpd_limit": lim, "used_today": used,
+            "remaining": rem, "calls_today": int(u.get("calls", 0) or 0),
+            "last_used_ms": int(u.get("last_used_ms", 0) or 0),
+            "last_429_ms": int(u.get("last_429_ms", 0) or 0), "status": st,
+        })
+    summary = {
+        "key_count": len(rows), "healthy_keys": healthy, "total_remaining": total_remaining,
+        "low_threshold": low, "tpd_limit_default": int(cfg.get("tpd_limit_default") or _GROQ_TPD_DEFAULT),
+        "date": today, "snapshot_age_ok": (status.get("date") == today),
+        # the worker rotates OFF a key whose remaining < low_threshold; if none qualify it still
+        # runs (never starves a call) but the operator should add a key / upgrade the tier.
+        "all_low": (len(rows) > 0 and healthy == 0),
+    }
+    return {"keys": rows, "summary": summary}
+
+
+@app.get("/admin/groq-budget")
+async def admin_groq_budget_get(request: Request):
+    """Per-key Groq token budget: each key's daily limit, tokens used today (from the worker snapshot),
+    and remaining — so super-admin can see at a glance which key the next call will ride and whether to
+    add a fallback. Raw keys never returned (masked). Super-admin gated; never 500s."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        return JSONResponse(_groq_budget_view())
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"keys": [], "summary": {}, "error": repr(exc)[:140]})
+
+
+@app.post("/admin/groq-budget")
+async def admin_groq_budget_set(request: Request):
+    """Mutate the Groq budget CONFIG (VAR/groq_budget.json). Action-based so raw keys never need to be
+    echoed back: send any of
+        {"tpd_limit_default": int, "low_threshold": int}        — settings
+        {"add_key": {"key": "gsk_…", "label": str, "tpd_limit": int}}
+        {"update_key": {"fingerprint": str, "label"?: str, "tpd_limit"?: int}}
+        {"remove_fingerprint": str}
+    Returns the masked budget view (same shape as GET). Super-admin gated; writes atomically + audits."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    cfg = _groq_budget_config()
+    changed: list = []
+    if "tpd_limit_default" in body:
+        try:
+            cfg["tpd_limit_default"] = max(1000, int(body["tpd_limit_default"]))
+            changed.append("tpd_limit_default")
+        except Exception:  # noqa: BLE001
+            pass
+    if "low_threshold" in body:
+        try:
+            cfg["low_threshold"] = max(0, int(body["low_threshold"]))
+            changed.append("low_threshold")
+        except Exception:  # noqa: BLE001
+            pass
+    add = body.get("add_key")
+    if isinstance(add, dict):
+        raw = str(add.get("key", "") or "").strip()
+        if len(raw) >= 8:
+            fp = _groq_fingerprint(raw)
+            # don't duplicate an existing store key
+            if not any(_groq_fingerprint(str(k.get("key", "")).strip()) == fp for k in cfg["keys"]):
+                cfg["keys"].append({"key": raw, "label": str(add.get("label", "") or "key")[:60],
+                                    "tpd_limit": int(add.get("tpd_limit") or cfg["tpd_limit_default"])})
+                changed.append("add_key")
+    upd = body.get("update_key")
+    if isinstance(upd, dict):
+        fp = str(upd.get("fingerprint", "") or "")
+        for k in cfg["keys"]:
+            if _groq_fingerprint(str(k.get("key", "")).strip()) == fp:
+                if "label" in upd:
+                    k["label"] = str(upd.get("label", "") or "")[:60]
+                if "tpd_limit" in upd:
+                    try:
+                        k["tpd_limit"] = max(1000, int(upd["tpd_limit"]))
+                    except Exception:  # noqa: BLE001
+                        pass
+                changed.append("update_key")
+                break
+    rem_fp = str(body.get("remove_fingerprint", "") or "")
+    if rem_fp:
+        before = len(cfg["keys"])
+        cfg["keys"] = [k for k in cfg["keys"]
+                       if _groq_fingerprint(str(k.get("key", "")).strip()) != rem_fp]
+        if len(cfg["keys"]) != before:
+            changed.append("remove_key")
+    _atomic_write_json(GROQ_BUDGET_FILE, cfg)
+    _audit(request, t, "groq_budget.update", "groq_budget", "groq_budget.json",
+           channel="control", meta={"actions": changed})
+    return JSONResponse(_groq_budget_view())
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# TIER CONFIG (Voice Defaults) — super-admin sets the per-tier STT/LLM/TTS/voice default stack + the
+# telephony rate that the Run-page cost meter + quality slider read. This is the "Advanced — choose
+# each component" picker MOVED OUT of the per-campaign Run page into one operator-controlled place.
+# Stored as VAR/tier_overrides.json and deep-merged over the static defaults by GET /tiers. Super-admin
+# gated; best-effort.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+@app.get("/admin/tier-config")
+async def admin_tier_config_get(request: Request):
+    """Return the current tier overrides + the EFFECTIVE merged tiers/rate-card (so the panel can show
+    what's live). Super-admin gated; never 500s."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        from llm_router import tiers as _tiers
+        overrides = _read_raw(TIER_OVERRIDES_FILE, {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        return JSONResponse({"overrides": overrides, "effective": _tiers.tiers_payload(overrides or None)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"overrides": {}, "effective": {}, "error": repr(exc)[:140]})
+
+
+@app.post("/admin/tier-config")
+async def admin_tier_config_set(request: Request):
+    """Deep-merge a partial override doc into VAR/tier_overrides.json. Recognized keys:
+        {"telephony_inr_per_min": float, "telephony_verified": bool, "assumptions": {...},
+         "tiers": {"lean"|"standard"|"premium": {"stt"|"llm"|"tts"|"voice": {...}, "est_inr_per_min": N}}}
+    Only sent keys are touched (deep-merge), so you can retune one tier's TTS without rewriting the
+    rest. Returns the same shape as GET. Super-admin gated; writes atomically + audits."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    try:
+        from llm_router import tiers as _tiers
+        cur = _read_raw(TIER_OVERRIDES_FILE, {})
+        if not isinstance(cur, dict):
+            cur = {}
+        merged = _tiers._deep_merge(cur, body)
+        _atomic_write_json(TIER_OVERRIDES_FILE, merged)
+        _audit(request, t, "tier_config.update", "tier_config", "tier_overrides.json",
+               channel="control", meta={"keys": list(body.keys())})
+        return JSONResponse({"overrides": merged, "effective": _tiers.tiers_payload(merged or None)})
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": repr(exc)[:140]}, status_code=500)
+
+
+@app.get("/admin/recording-proxy")
+async def recording_proxy(request: Request, url: str = ""):
+    """Same-origin proxy for a presigned recording: the browser fetches the WHOLE file from us (one
+    fast hop) and plays it from memory, instead of streaming cross-region (choppy on a Singapore→India
+    path). SSRF-guarded to either a *.digitaloceanspaces.com presigned URL (X-Amz-Signature) OR a
+    *.blob.core.windows.net Azure SAS URL (sig) — the signature IS the capability in both cases.
+    Super-admin gated; NEVER raises into the request."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    try:
+        p = urllib.parse.urlparse(url or "")
+        host = (p.hostname or "").lower()
+        qs = urllib.parse.parse_qs(p.query or "")
+        # Accept a DO Spaces presigned URL (X-Amz-Signature) OR an Azure Blob SAS URL (sig). Both
+        # carry their own capability in the signature; anything else is rejected as a forbidden host.
+        ok_spaces = host.endswith(".digitaloceanspaces.com") and "X-Amz-Signature" in qs
+        ok_azure = host.endswith(".blob.core.windows.net") and "sig" in qs
+        if not (ok_spaces or ok_azure):
+            return JSONResponse({"error": "forbidden host"}, status_code=400)
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as cli:
+            r = await cli.get(url)
+        if r.status_code != 200:
+            return JSONResponse({"error": "upstream", "status": r.status_code}, status_code=502)
+        return Response(content=r.content,
+                        media_type=r.headers.get("content-type", "audio/mpeg"),
+                        headers={"Cache-Control": "private, max-age=600"})
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "proxy failed"}, status_code=502)
+
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# COMPANY LOGO FETCH — best-effort logo resolver for a company website. NEVER raises: on any failure
+# it falls back to the always-works Google s2 favicon. Tries Clearbit, then the site's own
+# <link rel=icon>/apple-touch-icon/og:image, then the Google favicon. Super-admin gated; httpx async.
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+def _logo_domain(url: str) -> str:
+    """Normalize an arbitrary website string to a bare registrable host (no scheme/path/www)."""
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    if "://" not in s:
+        s = "http://" + s
+    try:
+        host = urllib.parse.urlparse(s).netloc or ""
+    except Exception:  # noqa: BLE001
+        host = ""
+    host = host.split("@")[-1].split(":")[0].strip().lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _google_favicon(domain: str) -> str:
+    return f"https://www.google.com/s2/favicons?domain={urllib.parse.quote(domain)}&sz=128"
+
+
+@app.get("/admin/fetch-logo")
+async def admin_fetch_logo(request: Request, url: str = ""):
+    """Best-effort company-logo resolver for a website URL. Returns {logo_url, source}. NEVER
+    raises — on any error it returns the always-works Google favicon. Strategy (first that works):
+    (1) Clearbit logo by domain, (2) the site's own <link rel=icon>/apple-touch-icon/og:image,
+    (3) Google s2 favicon fallback. Super-admin gated."""
+    t = require_super_admin(request)
+    if isinstance(t, JSONResponse):
+        return t
+    domain = _logo_domain(url)
+    if not domain:
+        return JSONResponse({"error": "missing or invalid url"}, status_code=400)
+    fallback = _google_favicon(domain)
+    try:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True,
+                                     headers={"User-Agent": "Mozilla/5.0 (famit-logo-fetch)"}) as cli:
+            # (1) Clearbit — a clean, high-quality brand logo when they have it.
+            try:
+                r = await cli.head(f"https://logo.clearbit.com/{domain}")
+                if r.status_code == 200:
+                    return JSONResponse({"logo_url": f"https://logo.clearbit.com/{domain}",
+                                         "source": "clearbit"})
+            except Exception:  # noqa: BLE001
+                pass
+            # (2) Parse the site's own HTML for an icon / og:image, resolve to absolute, HEAD-check.
+            try:
+                page = await cli.get(f"https://{domain}/")
+                html = page.text or ""
+                base = str(page.url) or f"https://{domain}/"
+                cand = None
+                src = "favicon"
+                m = re.search(
+                    r'<link[^>]+rel=["\'][^"\']*(?:apple-touch-icon|shortcut icon|icon)[^"\']*["\'][^>]*>',
+                    html, re.IGNORECASE)
+                if m:
+                    hm = re.search(r'href=["\']([^"\']+)["\']', m.group(0), re.IGNORECASE)
+                    if hm:
+                        cand = hm.group(1)
+                        src = "favicon"
+                if not cand:
+                    om = re.search(
+                        r'<meta[^>]+property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
+                        html, re.IGNORECASE)
+                    if not om:
+                        om = re.search(
+                            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']',
+                            html, re.IGNORECASE)
+                    if om:
+                        cand = om.group(1)
+                        src = "og"
+                if cand:
+                    abs_url = urllib.parse.urljoin(base, cand.strip())
+                    try:
+                        hr = await cli.head(abs_url)
+                        if hr.status_code == 200:
+                            return JSONResponse({"logo_url": abs_url, "source": src})
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    # (3) Always-works fallback.
+    return JSONResponse({"logo_url": fallback, "source": "favicon"})

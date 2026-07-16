@@ -4,12 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import Layout from "@/components/Layout";
+import AudioPlayer from "@/components/AudioPlayer";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
 import Modal from "@/components/Modal";
 import Spinner from "@/components/Spinner";
+import Badge, { type BadgeVariant } from "@/components/Badge";
 import {
     getContact,
     getContactTimeline,
@@ -28,6 +30,7 @@ import {
 } from "../client";
 import {
     StageBadge,
+    TempBadge,
     initials,
     fmtDate,
     fmtDateTime,
@@ -35,6 +38,7 @@ import {
     kindMeta,
     nbaMeta,
 } from "../_ui";
+import type { ContactAnalysis } from "../client";
 
 // Timeline kind filter tabs (each maps to the ?kinds= query param).
 const KIND_FILTERS = [
@@ -45,10 +49,11 @@ const KIND_FILTERS = [
     { id: 5, name: "Notes", key: "note" },
 ];
 
-// Main right-column tabs: Timeline feed vs. Relationship Memory.
+// Main right-column tabs: the A-Z Assessment (default) · Timeline feed · Memory.
 const MAIN_TABS = [
-    { id: 1, name: "Timeline" },
-    { id: 2, name: "Memory" },
+    { id: 1, name: "Assessment" },
+    { id: 2, name: "Timeline" },
+    { id: 3, name: "Memory" },
 ];
 
 export default function ContactProfilePage() {
@@ -165,57 +170,39 @@ export default function ContactProfilePage() {
             .finally(() => setTlLoading(false));
     }, [id, kind, detail]);
 
-    // REFRESH-LOOP FIX: the contact `load` above refetches every 10s and hands a
-    // BRAND-NEW `detail` object each tick. Effects that depended on `detail` (the
-    // whole object) therefore refired every 10s — re-fetching the recordings +
-    // memory, swapping the presigned <audio src> for a fresh one mid-listen, and
-    // resetting the player so you could never click/play. We collapse the only
-    // thing those effects actually need — the contact's phone key — into a STABLE
-    // primitive string. It only changes when you open a different contact, so the
-    // 10s contact refresh no longer churns the recordings/memory queries.
-    const contactPhone = useMemo(() => {
-        const c = detail?.contact;
-        if (!c) return "";
-        return c.phone_key || c.phone_display || id || "";
-    }, [detail?.contact?.phone_key, detail?.contact?.phone_display, id]);
-
-    // Lazy recordings — fetched ONCE when the section opens (or the contact
-    // changes), keyed on the STABLE phone (not `detail`) so the 10s contact
-    // refresh never reloads the player out from under the user. "Load more" is a
-    // pure CLIENT slice (`recLimit`) over this single fetch — it does NOT re-hit
-    // the API, so incrementing it never mints fresh presigned URLs that would
-    // reset a row's <audio src> mid-listen.
-    const [allRecordings, setAllRecordings] = useState<Recording[]>([]);
+    // Lazy recordings — only fetched when the Recordings section is opened,
+    // paginated (recLimit rows). Re-fetches on recLimit change for "Load more".
     useEffect(() => {
         if (!recOpen) return;
-        if (!contactPhone) return;
+        const c = detail?.contact;
+        if (!c) return;
+        const phone = c.phone_key || c.phone_display || id;
+        if (!phone) return;
         setRecLoading(true);
-        getContactRecordings(contactPhone)
-            .then((r) => setAllRecordings(r.recordings || []))
-            .catch(() => setAllRecordings([]))
+        getContactRecordings(phone)
+            .then((r) => setRecordings((r.recordings || []).slice(0, recLimit)))
+            .catch(() => setRecordings([]))
             .finally(() => setRecLoading(false));
-    }, [recOpen, contactPhone]);
+    }, [recOpen, recLimit, detail, id]);
 
-    // Client-side pagination: show `recLimit` of the fetched recordings.
+    // Load the lead's durable memory + episode history (W4). Same phone key as
+    // recordings. Both client calls never throw -> the section degrades calmly.
     useEffect(() => {
-        setRecordings(allRecordings.slice(0, recLimit));
-    }, [allRecordings, recLimit]);
-
-    // Load the lead's durable memory + episode history (W4). Same STABLE phone key
-    // as recordings. Both client calls never throw -> the section degrades calmly.
-    useEffect(() => {
-        if (!contactPhone) {
+        const c = detail?.contact;
+        if (!c) return;
+        const phone = c.phone_key || c.phone_display || id;
+        if (!phone) {
             setMemLoading(false);
             return;
         }
         setMemLoading(true);
         Promise.all([
-            getLeadMemory(contactPhone).then((r) => setMemory(r.memory)).catch(() => setMemory(null)),
-            getLeadEpisodes(contactPhone, { limit: 50 })
+            getLeadMemory(phone).then((r) => setMemory(r.memory)).catch(() => setMemory(null)),
+            getLeadEpisodes(phone, { limit: 50 })
                 .then((r) => setEpisodes(r.episodes || []))
                 .catch(() => setEpisodes([])),
         ]).finally(() => setMemLoading(false));
-    }, [contactPhone]);
+    }, [detail, id]);
 
     const contact = detail?.contact;
     // Live API projects lead truth INTO `contact` (no separate top-level lead);
@@ -437,7 +424,7 @@ export default function ContactProfilePage() {
                                 onOpen={() => setRecOpen(true)}
                                 loading={recLoading}
                                 recordings={recordings}
-                                hasMore={allRecordings.length > recordings.length}
+                                hasMore={recordings.length >= recLimit}
                                 onLoadMore={() => setRecLimit((l) => l + 10)}
                             />
                         )}
@@ -459,11 +446,21 @@ export default function ContactProfilePage() {
                                                 : "border-transparent text-t-secondary hover:text-t-primary"
                                         }`}
                                     >
-                                        {tab.id === 2 && (
+                                        {tab.id === 1 && (
+                                            <Icon
+                                                name="chart"
+                                                className={`size-4 ${
+                                                    mainTab.id === 1
+                                                        ? "fill-primary-01"
+                                                        : "fill-t-tertiary"
+                                                }`}
+                                            />
+                                        )}
+                                        {tab.id === 3 && (
                                             <Icon
                                                 name="profile"
                                                 className={`size-4 ${
-                                                    mainTab.id === 2
+                                                    mainTab.id === 3
                                                         ? "fill-primary-01"
                                                         : "fill-t-tertiary"
                                                 }`}
@@ -471,7 +468,7 @@ export default function ContactProfilePage() {
                                         )}
                                         {tab.name}
                                         {/* badge: episode count on the Memory tab */}
-                                        {tab.id === 2 && !memLoading && episodes.length > 0 && (
+                                        {tab.id === 3 && !memLoading && episodes.length > 0 && (
                                             <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full text-caption font-semibold bg-primary-01/12 text-primary-01 td-num">
                                                 {episodes.length}
                                             </span>
@@ -481,8 +478,17 @@ export default function ContactProfilePage() {
                             </div>
                         )}
 
-                        {/* ── Timeline tab ──────────────────────────────── */}
+                        {/* ── Assessment tab (default — the A-Z analysis) ── */}
                         {(loading || mainTab.id === 1) && (
+                            <AssessmentPanel
+                                loading={loading}
+                                contact={contact}
+                                nba={nba}
+                            />
+                        )}
+
+                        {/* ── Timeline tab ──────────────────────────────── */}
+                        {!loading && mainTab.id === 2 && (
                             <Card
                                 title="Timeline"
                                 headContent={
@@ -548,7 +554,7 @@ export default function ContactProfilePage() {
                         )}
 
                         {/* ── Memory tab ────────────────────────────────── */}
-                        {!loading && mainTab.id === 2 && (
+                        {!loading && mainTab.id === 3 && (
                             <MemoryPanel
                                 loading={memLoading}
                                 memory={memory}
@@ -569,6 +575,368 @@ export default function ContactProfilePage() {
                 transcript={transcript}
             />
         </Layout>
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ASSESSMENT TAB — the A-Z profile analysis (the headline view).
+//
+// Everything here is derived from REAL signals the backend crm spine computed in
+// `contact.analysis`: the lead's score/lifecycle + every call's interest, outcome,
+// and transcript. No fabricated deltas. Dormant-safe: no analysis -> a calm note.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// behaviour value -> a semantic tone (mirrors the panel's pill language).
+const TONE_TEXT: Record<string, string> = {
+    success: "text-[#00A656]",
+    warning: "text-[#C77E08] dark:text-[#EF9D0E]",
+    danger: "text-primary-03",
+    neutral: "text-t-secondary",
+};
+function toneText(t?: string): string {
+    return TONE_TEXT[t || "neutral"] ?? TONE_TEXT.neutral;
+}
+
+const ENGAGE_TONE: Record<string, string> = {
+    high: "success", medium: "warning", low: "neutral", none: "neutral",
+};
+const RESPOND_TONE: Record<string, string> = {
+    responsive: "success", slow: "warning", unreachable: "danger", unknown: "neutral",
+};
+const SENTIMENT_TONE: Record<string, string> = {
+    positive: "success", mixed: "warning", negative: "danger", neutral: "neutral",
+};
+const MOMENTUM_TONE: Record<string, string> = {
+    rising: "success", steady: "neutral", cooling: "danger",
+};
+const LEVEL_VARIANT: Record<string, BadgeVariant> = {
+    high: "success", medium: "warning", low: "neutral", none: "neutral",
+};
+const JOURNEY_LABEL: Record<string, string> = {
+    new: "New", contacted: "Contacted", engaged: "Engaged",
+    qualified: "Qualified", booked: "Booked",
+};
+
+function cap(s?: string): string {
+    if (!s) return "—";
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function fmtTalk(sec?: number): string {
+    const s = Math.max(0, Math.round(sec || 0));
+    if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    if (s >= 60) return `${Math.floor(s / 60)}m`;
+    return `${s}s`;
+}
+
+function AssessmentPanel({
+    loading,
+    contact,
+    nba,
+}: {
+    loading: boolean;
+    contact: ContactDetailResponse["contact"] | undefined;
+    nba: ContactDetailResponse["nba"] | undefined;
+}) {
+    if (loading) return <AssessmentSkeleton />;
+    const an = contact?.analysis;
+    if (!an) {
+        return (
+            <Card title="Assessment">
+                <div className="px-5 pb-5 max-lg:px-3">
+                    <MemoryEmptyState
+                        icon="chart"
+                        title="No assessment yet"
+                        sub="Once this person is called we score their intent and build a full read here — temperature, conversion chance, interests, behaviour, and the next best move."
+                    />
+                </div>
+            </Card>
+        );
+    }
+    return (
+        <div className="space-y-3">
+            <AssessmentHero an={an} nba={nba} />
+            <BehaviourCard an={an} />
+            <JourneyCard journey={an.journey || []} />
+        </div>
+    );
+}
+
+// ── Headline card: temperature (+ why) · lead score · conversion chance · interest
+function AssessmentHero({
+    an,
+    nba,
+}: {
+    an: ContactAnalysis;
+    nba: ContactDetailResponse["nba"] | undefined;
+}) {
+    const score = an.score ?? 0;
+    const convPct = an.conversion_pct ?? Math.round((an.conversion_prob ?? 0) * 100);
+    const level = an.interest_level || "none";
+    return (
+        <Card
+            title="Lead Assessment"
+            headContent={
+                <div className="ml-auto pr-5">
+                    <TempBadge lifecycle={an.temperature} />
+                </div>
+            }
+        >
+            <div className="px-5 pb-5 max-lg:px-3 space-y-5">
+                {/* why this temperature */}
+                {an.temperature_reason && (
+                    <div className="flex items-start gap-3 p-4 rounded-2xl bg-b-surface1 dark:bg-shade-04/40">
+                        <span className="grid place-items-center size-9 shrink-0 rounded-full bg-primary-01/12">
+                            <Icon name="magic-pencil" className="size-4.5 fill-primary-01" />
+                        </span>
+                        <div className="min-w-0">
+                            <div className="text-caption text-t-tertiary uppercase tracking-wide mb-0.5">
+                                Why this temperature
+                            </div>
+                            <p className="text-body-2 text-t-primary">{an.temperature_reason}</p>
+                        </div>
+                    </div>
+                )}
+
+                {/* the three headline metrics */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+                    <MeterStat label="Lead score" value={`${score}`} sub="/ 100" pct={score} fill="bg-primary-01" />
+                    <MeterStat label="Conversion chance" value={`${convPct}%`} pct={convPct} fill="bg-[#00A656]" />
+                    <div className="space-y-2">
+                        <div className="eyebrow">Interest</div>
+                        <div className="flex items-center h-9">
+                            <Badge variant={LEVEL_VARIANT[level] ?? "neutral"}>
+                                {level === "none" ? "Not scored" : cap(level)}
+                            </Badge>
+                        </div>
+                    </div>
+                </div>
+
+                {/* latest call summary */}
+                {an.summary && (
+                    <div>
+                        <div className="eyebrow mb-1.5">Latest call summary</div>
+                        <p className="text-body-2 text-t-secondary leading-relaxed">{an.summary}</p>
+                    </div>
+                )}
+
+                {/* interests */}
+                {an.interests && an.interests.length > 0 && (
+                    <div>
+                        <div className="eyebrow mb-2">Interested in</div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {an.interests.map((t) => (
+                                <span
+                                    key={t}
+                                    className="px-2.5 h-7 inline-flex items-center rounded-full text-caption bg-primary-01/8 text-primary-01"
+                                >
+                                    {t}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* next best action recap (mirrors the rail NBA, so the headline is self-contained) */}
+                {nba && nba.action && nba.action !== "none" && (
+                    <div className="flex items-center gap-2 text-caption text-t-tertiary">
+                        <Icon name="magic-pencil" className="size-3.5 fill-primary-01 shrink-0" />
+                        <span>
+                            Next best move:{" "}
+                            <span className="text-t-secondary capitalize">
+                                {nba.action.replace(/_/g, " ")}
+                            </span>
+                        </span>
+                    </div>
+                )}
+            </div>
+        </Card>
+    );
+}
+
+function MeterStat({
+    label,
+    value,
+    sub,
+    pct,
+    fill,
+}: {
+    label: string;
+    value: string;
+    sub?: string;
+    pct: number;
+    fill: string;
+}) {
+    const w = Math.max(2, Math.min(100, pct || 0));
+    return (
+        <div className="space-y-2">
+            <div className="eyebrow">{label}</div>
+            <div className="flex items-baseline gap-1">
+                <span className="text-h5 text-t-primary td-num">{value}</span>
+                {sub && <span className="text-caption text-t-tertiary">{sub}</span>}
+            </div>
+            <div className="meter">
+                <div className={`meter-fill ${fill}`} style={{ width: `${w}%` }} />
+            </div>
+        </div>
+    );
+}
+
+// ── Behaviour & signals: engagement / responsiveness / sentiment / momentum +
+//    call stats + objections.
+function BehaviourCard({ an }: { an: ContactAnalysis }) {
+    const b = an.behaviour || {};
+    const stats = an.stats || {};
+    const rows: { label: string; value?: string; tone?: string }[] = [
+        { label: "Engagement", value: b.engagement, tone: ENGAGE_TONE[b.engagement || ""] },
+        { label: "Responsiveness", value: b.responsiveness, tone: RESPOND_TONE[b.responsiveness || ""] },
+        { label: "Sentiment", value: b.sentiment, tone: SENTIMENT_TONE[b.sentiment || ""] },
+    ];
+    if (b.momentum) {
+        rows.push({ label: "Momentum", value: b.momentum, tone: MOMENTUM_TONE[b.momentum] });
+    }
+    return (
+        <Card title="Behaviour & Signals">
+            <div className="px-5 pb-5 max-lg:px-3 space-y-5">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    {rows.map((r) => (
+                        <div key={r.label} className="space-y-1">
+                            <div className="eyebrow">{r.label}</div>
+                            <div className={`text-body-1-str font-semibold capitalize ${toneText(r.tone)}`}>
+                                {r.value || "—"}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <StatBlock label="Calls" value={String(stats.total_calls ?? 0)} />
+                    <StatBlock label="Answered" value={String(stats.answered_calls ?? 0)} />
+                    <StatBlock label="No-answer" value={String(stats.missed_calls ?? 0)} />
+                    <StatBlock label="Talk time" value={fmtTalk(stats.talk_time_s)} />
+                </div>
+
+                {b.objections && b.objections.length > 0 && (
+                    <div>
+                        <div className="eyebrow mb-2">Objections raised</div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {b.objections.map((o, i) => (
+                                <span
+                                    key={i}
+                                    className="inline-flex items-center px-2.5 h-7 rounded-full bg-primary-03/10 text-caption text-primary-03"
+                                >
+                                    {o}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {(stats.first_contact_at || stats.last_contact_at) && (
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-caption text-t-tertiary">
+                        {stats.first_contact_at && (
+                            <span>First contact · {fmtDate(stats.first_contact_at)}</span>
+                        )}
+                        {stats.last_contact_at && (
+                            <span>Last contact · {fmtRelative(stats.last_contact_at)}</span>
+                        )}
+                    </div>
+                )}
+            </div>
+        </Card>
+    );
+}
+
+function StatBlock({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="rounded-2xl bg-b-surface1 dark:bg-shade-04/40 p-3 text-center">
+            <div className="text-h6 text-t-primary td-num">{value}</div>
+            <div className="text-caption text-t-tertiary mt-0.5">{label}</div>
+        </div>
+    );
+}
+
+// ── Funnel journey: New -> Contacted -> Engaged -> Qualified -> Booked.
+function JourneyCard({ journey }: { journey: NonNullable<ContactAnalysis["journey"]> }) {
+    if (!journey.length) return null;
+    return (
+        <Card title="Journey">
+            <div className="px-5 pb-7 pt-2 max-lg:px-3">
+                <div
+                    className="grid gap-1"
+                    style={{ gridTemplateColumns: `repeat(${journey.length}, minmax(0, 1fr))` }}
+                >
+                    {journey.map((step, i) => {
+                        const nextDone = i < journey.length - 1 && !!journey[i + 1].done;
+                        return (
+                            <div key={step.stage} className="relative flex flex-col items-center gap-2">
+                                {/* connector to the next dot (sits behind the dots) */}
+                                {i < journey.length - 1 && (
+                                    <span
+                                        aria-hidden
+                                        className={`absolute top-4 left-1/2 w-full h-0.5 ${
+                                            nextDone ? "bg-primary-01" : "bg-s-subtle"
+                                        }`}
+                                    />
+                                )}
+                                <span
+                                    className={`relative z-1 grid place-items-center size-8 shrink-0 rounded-full text-caption font-semibold ${
+                                        step.done
+                                            ? "bg-primary-01 text-white"
+                                            : "bg-b-surface2 text-t-tertiary ring-1 ring-s-subtle dark:bg-shade-04/80"
+                                    }`}
+                                >
+                                    {step.done ? (
+                                        <Icon name="check" className="size-4 fill-white" />
+                                    ) : (
+                                        i + 1
+                                    )}
+                                </span>
+                                <span
+                                    className={`text-caption text-center leading-tight ${
+                                        step.done ? "text-t-primary font-medium" : "text-t-tertiary"
+                                    }`}
+                                >
+                                    {JOURNEY_LABEL[step.stage] || step.stage}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </Card>
+    );
+}
+
+function AssessmentSkeleton() {
+    return (
+        <div className="space-y-3">
+            <Card title="Lead Assessment">
+                <div className="px-5 pb-5 max-lg:px-3 space-y-5">
+                    <div className="skeleton h-16 w-full rounded-2xl" />
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+                        {[...Array(3)].map((_, i) => (
+                            <div key={i} className="space-y-2">
+                                <div className="skeleton h-3.5 w-20" />
+                                <div className="skeleton h-7 w-16" />
+                                <div className="skeleton h-1.5 w-full" />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </Card>
+            <Card title="Behaviour & Signals">
+                <div className="px-5 pb-5 max-lg:px-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        {[...Array(4)].map((_, i) => (
+                            <div key={i} className="space-y-2">
+                                <div className="skeleton h-3.5 w-16" />
+                                <div className="skeleton h-5 w-20" />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </Card>
+        </div>
     );
 }
 
@@ -1092,24 +1460,7 @@ function RecordingRow({ r }: { r: Recording }) {
             </div>
 
             {r.url ? (
-                <div className="flex items-center gap-2 max-sm:flex-col max-sm:items-stretch">
-                    <audio
-                        controls
-                        preload="none"
-                        src={r.url}
-                        className="h-9 w-full min-w-0"
-                    >
-                        Your browser does not support the audio element.
-                    </audio>
-                    <a
-                        href={r.url}
-                        download
-                        className="shrink-0 inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-full border border-s-subtle text-button text-t-secondary transition-colors hover:border-s-highlight hover:text-t-primary"
-                    >
-                        <Icon name="download" className="size-3.5 fill-current" />
-                        <span className="max-sm:hidden">Download</span>
-                    </a>
-                </div>
+                <AudioPlayer src={r.url} durationFallback={r.duration_s} />
             ) : (
                 <div className="flex items-center gap-2 text-caption text-t-tertiary">
                     <Icon name="clock" className="size-3.5 fill-t-tertiary shrink-0" />

@@ -1,0 +1,26 @@
+# Haptica AI edge — Caddy reverse proxy for haptica.famit.in.
+# HTTPS uses a real Let's Encrypt cert obtained via the Cloudflare DNS-01
+# challenge (works while the record is proxied/orange). We ALSO serve plain
+# HTTP so the origin works regardless of the zone's Cloudflare SSL mode
+# (Full/Full-strict -> CF hits :443; Flexible -> CF hits :80). Both legs are
+# reachable only from Cloudflare IPs (locked at the DO firewall).
+
+haptica.famit.in {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+		resolvers 1.1.1.1 1.0.0.1
+		# famit.in has a 1800s negative-cache TTL, so the client-side propagation
+		# poll keeps seeing the stale "no record" answer and times out. Skip the
+		# poll (propagation_timeout -1) and instead wait a fixed delay for the
+		# new TXT to reach Cloudflare's authoritative NS before LE validates.
+		propagation_delay 45s
+		propagation_timeout -1
+	}
+	encode zstd gzip
+	reverse_proxy frontend:3000
+}
+
+http://haptica.famit.in {
+	encode zstd gzip
+	reverse_proxy frontend:3000
+}

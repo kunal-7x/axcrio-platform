@@ -100,19 +100,49 @@ export function HeroCard({
 // kept in the type so existing callers compile, but `subtitle` is intentionally
 // IGNORED and `title` is no longer re-rendered (Layout owns it). This kills the
 // "two stacked headings + subtitle" clutter the founder rejects.
+// COMPACT main strip — only the most-used pages. Everything else lives under "⋯ More" so the
+// strip never overflows on a laptop (the founder asked for this). Reorder freely; the strip and
+// the overflow are just two lists.
 const ADMIN_TABS = [
     { label: "Overview", href: "/super-admin" },
+    { label: "Clients", href: "/super-admin/clients" },
     { label: "Vendors", href: "/super-admin/vendors" },
-    // CL-F3 — Feature Flags / Plans / Usage / Audit (these 4 pages).
+    // Observability + control the operator lives in day to day.
+    { label: "System Logs", href: "/super-admin/system-logs" },
+    { label: "Services", href: "/super-admin/services" },
+];
+
+// ⋯ More overflow — everything secondary. Keeps the main strip compact.
+const ADMIN_OVERFLOW_TABS = [
+    { label: "Performance", href: "/super-admin/performance" },
+    { label: "Voice Analytics", href: "/super-admin/voice-performance" },
+    // Voice Config — pick the live STT provider (Sarvam vs Deepgram) + its keys.
+    { label: "Voice Config", href: "/super-admin/voice-config" },
+    { label: "Voice Tuning", href: "/super-admin/voice-tuning" },
+    // Verticals — multi-vertical/persona/language catalogue + no-deploy overrides.
+    { label: "Verticals", href: "/super-admin/verticals" },
+    // Tolex — agent tooling & capability control (grant + gate what the voice agent can DO).
+    { label: "Tolex", href: "/super-admin/tolex" },
+    // Flywheel — read/approve console for the RLHF/RLAIF self-improvement engine (human-gated promotion).
+    { label: "Flywheel", href: "/super-admin/flywheel" },
     { label: "Feature Flags", href: "/super-admin/flags" },
     { label: "Plans", href: "/super-admin/plans" },
+    { label: "Credits", href: "/super-admin/credits" },
     { label: "Usage", href: "/super-admin/usage" },
     { label: "Audit", href: "/super-admin/audit" },
-    // LPR — platform LLM/STT provider keys (Groq/Sarvam/SambaNova/OpenRouter).
-    { label: "API Keys", href: "/super-admin/api-keys" },
+    // Per-tenant Sidebar Builder — drag/show/hide/relabel any tenant's sidebar.
+    { label: "Sidebar", href: "/super-admin/sidebar" },
+    // (API Keys folded into Services — the single provider control center.)
     // Universal Provider / Connector registry (the all-tenants console twin).
     { label: "Integrations", href: "/super-admin/integrations" },
 ];
+
+const adminTabCls = (active: boolean) =>
+    `shrink-0 inline-flex items-center justify-center h-11 px-5 max-md:h-9 max-md:px-3.5 max-md:text-caption rounded-full text-button transition-colors ${
+        active
+            ? "bg-b-surface2 text-t-primary ring-1 ring-inset ring-s-subtle"
+            : "text-t-secondary hover:bg-b-surface2/60 hover:text-t-primary"
+    }`;
 
 export function AdminHeader({
     title: _title,
@@ -126,34 +156,62 @@ export function AdminHeader({
     actions?: React.ReactNode;
 }) {
     const pathname = usePathname();
+    const [moreOpen, setMoreOpen] = useState(false);
+    const moreRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (!moreOpen) return;
+        const onDown = (e: MouseEvent) => {
+            if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+        };
+        document.addEventListener("mousedown", onDown);
+        return () => document.removeEventListener("mousedown", onDown);
+    }, [moreOpen]);
+    const overflowActive = ADMIN_OVERFLOW_TABS.some((t) => pathname === t.href);
     return (
         <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
-            {/* ROUND-2 §1c — transparent-pill tab strip, matching BillingTabs (the
-                canon). Was the grey-box "segmented control" (bg-b-surface2 ring +
-                bg-b-surface1 shadow active chip); now a flat rounded-full border pill
-                row: inactive = border-transparent text-t-secondary, active =
-                border-s-stroke2 text-t-primary. Identical idiom to app/billing
-                BillingTabs so every tab strip in the panel reads the same. The
-                ADMIN_TABS list + usePathname active logic are UNCHANGED. */}
-            <div className="flex flex-wrap gap-1 max-w-full overflow-x-auto scrollbar-none">
+            {/* transparent-pill tab strip (matches BillingTabs). Secondary pages collapse into
+                a ⋯ More dropdown so the strip never overflows as the control plane grows.
+                NOTE: tabs WRAP (no overflow-x-auto) — an overflow container would clip the
+                absolutely-positioned More dropdown. */}
+            <div className="flex flex-wrap gap-1 max-w-full items-center">
                 {ADMIN_TABS.map((t) => {
                     const active =
                         pathname === t.href ||
                         (t.href === "/super-admin/vendors" && pathname.startsWith("/super-admin/vendors"));
                     return (
-                        <Link
-                            key={t.href}
-                            href={t.href}
-                            className={`shrink-0 flex justify-center items-center h-12 px-5.5 rounded-full border text-button transition-colors hover:text-t-primary ${
-                                active
-                                    ? "border-s-stroke2 text-t-primary"
-                                    : "border-transparent text-t-secondary"
-                            }`}
-                        >
+                        <Link key={t.href} href={t.href} className={adminTabCls(active)}>
                             {t.label}
                         </Link>
                     );
                 })}
+                <span className="mx-1.5 self-center h-6 w-px bg-s-subtle max-md:hidden" aria-hidden />
+                <div className="relative shrink-0" ref={moreRef}>
+                    <button
+                        type="button"
+                        onClick={() => setMoreOpen((o) => !o)}
+                        aria-label="More pages"
+                        className={`${adminTabCls(overflowActive || moreOpen)} gap-1.5`}
+                    >
+                        <Icon name="dots" className="size-4 fill-current" />
+                        More
+                    </button>
+                    {moreOpen && (
+                        <div className="absolute right-0 mt-2 w-52 z-50 rounded-2xl bg-b-surface1 ring-1 ring-s-subtle shadow-2xl py-1.5">
+                            {ADMIN_OVERFLOW_TABS.map((t) => (
+                                <Link
+                                    key={t.href}
+                                    href={t.href}
+                                    onClick={() => setMoreOpen(false)}
+                                    className={`block px-4 py-2.5 text-button transition-colors hover:bg-b-surface2 ${
+                                        pathname === t.href ? "text-t-primary" : "text-t-secondary hover:text-t-primary"
+                                    }`}
+                                >
+                                    {t.label}
+                                </Link>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
             {actions && <div className="flex items-center gap-3 shrink-0">{actions}</div>}
         </div>
@@ -239,7 +297,7 @@ export function ago(d?: string): string {
 export const SuperAdminHeaderF3 = AdminHeader;
 
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState, useRef } from "react";
 import Spinner from "@/components/Spinner";
 import { useMe, isAdmin } from "@/lib/auth";
 import type { FeatureMode } from "@/lib/api";

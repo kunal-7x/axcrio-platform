@@ -30,16 +30,39 @@ const interDisplay = localFont({
     variable: "--font-inter-display",
 });
 
-// FONT (W1 decision, design/ui-font-heading-plan.md §3): Inter Display is the
-// single app-wide family — it ships all five weights (300–700) the type scale
-// requests, so every weight resolves to a real face. Gilroy was removed from the
-// cascade: its free release ships only 300/800, so 400/500/600/700 silently fell
-// through to Inter — "the font never changed." If a Gilroy brand wordmark is ever
-// wanted, load it as a display-only face for the logo lockup, never as body.
+// Gilroy (FULL version) — the app-wide brand font, all weights 100–900 + italics,
+// self-hosted from /public/fonts/gilroy. The full release fixes the weight-gap that
+// caused Gilroy's earlier removal (free version only had 300/800). Exposed as
+// --font-gilroy and made primary in globals.css; Inter Display + system stack remain
+// as fallbacks (incl. Devanagari coverage, since Gilroy is Latin-only).
+const gilroy = localFont({
+    src: [
+        { path: "../public/fonts/gilroy/Gilroy-Thin.woff2", weight: "100", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-ThinItalic.woff2", weight: "100", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-UltraLight.woff2", weight: "200", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-UltraLightItalic.woff2", weight: "200", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Light.woff2", weight: "300", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-LightItalic.woff2", weight: "300", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Regular.woff2", weight: "400", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-RegularItalic.woff2", weight: "400", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Medium.woff2", weight: "500", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-MediumItalic.woff2", weight: "500", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Semibold.woff2", weight: "600", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-SemiboldItalic.woff2", weight: "600", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Bold.woff2", weight: "700", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-BoldItalic.woff2", weight: "700", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Extrabold.woff2", weight: "800", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-ExtraboldItalic.woff2", weight: "800", style: "italic" },
+        { path: "../public/fonts/gilroy/Gilroy-Black.woff2", weight: "900", style: "normal" },
+        { path: "../public/fonts/gilroy/Gilroy-BlackItalic.woff2", weight: "900", style: "italic" },
+    ],
+    variable: "--font-gilroy",
+    display: "swap",
+});
 
 export const metadata: Metadata = {
-    title: "Famit",
-    description: "Famit AI Tele-Calling Panel",
+    title: "Haptica AI",
+    description: "Haptica AI — Voice Telecaller (by Famit)",
 };
 
 export default function RootLayout({
@@ -48,10 +71,14 @@ export default function RootLayout({
     children: React.ReactNode;
 }>) {
     return (
-        <html lang="en" suppressHydrationWarning>
+        <html
+            lang="en"
+            className={`${gilroy.variable} ${interDisplay.variable}`}
+            suppressHydrationWarning
+        >
             <head />
             <body
-                className={`${interDisplay.variable} bg-b-surface1 font-inter text-body-1 text-t-primary antialiased`}
+                className={`${gilroy.variable} ${interDisplay.variable} bg-b-surface1 font-inter text-body-1 text-t-primary antialiased`}
             >
                 <Providers>{children}</Providers>
             </body>

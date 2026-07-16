@@ -1,0 +1,16 @@
+# Keep build contexts lean + reproducible (a fresh clone has none of these,
+# but this protects local builds too).
+**/node_modules
+**/.next
+**/out
+**/*.tsbuildinfo
+.git
+.venv
+venv
+famit-var
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.log
+.DS_Store
+gilroy-font-full-version

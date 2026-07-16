@@ -1,9 +1,3 @@
-// ROUND-6 LANE 4 — DYNAMIC permission registry: merge nav-derived module/page
-// nodes into the static FEATURE_REGISTRY so the super-admin matrix auto-tracks the
-// live sidebar (navRegistry imports only the TYPE back from here → no runtime
-// cycle; the runtime edge is api → navRegistry → contstants/navigation only).
-import { mergeNavRegistry } from "@/lib/navRegistry";
-
 // W15: exported (additive) so the reporting client (lib/report.ts) can hit the
 // W14 /report* seam through the SAME base + auth as every other call. No behaviour
 // change — these were already the module-internal base/auth used everywhere.
@@ -31,6 +25,18 @@ async function handle401(res: Response) {
     }
 }
 
+// Full-download a presigned Spaces recording via the same-origin backend proxy → object URL, so the
+// <audio> plays from memory (no choppy cross-region streaming from Singapore). "" on ANY failure so
+// the caller falls back to the streaming src. Only proxies DO-Spaces presigned URLs.
+export async function fetchRecordingBlob(url: string): Promise<string> {
+    try {
+        if (!url || !/digitaloceanspaces\.com/.test(url)) return "";
+        const res = await fetch(`${BASE}/admin/recording-proxy?url=${encodeURIComponent(url)}`, { headers: authHeaders() });
+        if (!res.ok) return "";
+        return URL.createObjectURL(await res.blob());
+    } catch { return ""; }
+}
+
 // ---- Types ----
 export type Campaign = {
     id: string;
@@ -54,6 +60,7 @@ export type CampaignFields = {
     voice_provider?: string;
     stt_provider?: string;
     llm_provider?: string;
+    llm_model?: string;       // per-campaign Groq model (Advanced → LLM model); env default when unset
     tts_provider?: string;
     custom_provider_id?: string;
     est_avg_call_min?: number;
@@ -155,7 +162,16 @@ export async function login(email: string, password: string): Promise<LoginResul
     fd.append("email", email);
     fd.append("password", password);
     const res = await fetch(`${BASE}/login`, { method: "POST", body: fd });
-    if (!res.ok) throw new Error("Invalid credentials");
+    if (!res.ok) {
+        let msg = "Invalid email or password.";
+        try {
+            const b = await res.json();
+            if (b && typeof b.error === "string" && b.error) msg = b.error;
+        } catch {
+            /* non-JSON */
+        }
+        throw new Error(msg);
+    }
     return res.json();
 }
 
@@ -166,6 +182,11 @@ export type Me = {
     name: string;
     role: Role;
     is_admin: boolean;
+    status?: string;
+    restricted?: string[];
+    demo?: boolean;
+    demo_minutes?: number;
+    demo_remaining_s?: number;
 };
 
 export async function getMe(): Promise<Me> {
@@ -173,6 +194,232 @@ export async function getMe(): Promise<Me> {
     await handle401(res);
     if (!res.ok) throw new Error("Failed to fetch current user");
     return res.json();
+}
+
+// ---- Client management (Super Admin) ----
+export type ClientInfo = {
+    tenant_id: string;
+    email: string;
+    name: string;
+    role: Role;
+    is_admin: boolean;
+    status: string; // "active" | "suspended"
+    created_at: string;
+    restricted: string[];
+    demo: boolean;
+    demo_minutes?: number;
+    demo_started_at?: string;
+    demo_remaining_s?: number;
+    demo_expired?: boolean;
+};
+
+export async function getClients(): Promise<{ clients: ClientInfo[]; total: number }> {
+    const res = await fetch(`${BASE}/admin/clients`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to load clients");
+    return res.json();
+}
+
+export async function createClient(body: {
+    email: string; password: string; name?: string; role?: Role;
+    demo?: boolean; demo_minutes?: number; restricted?: string[];
+}): Promise<{ client: ClientInfo }> {
+    const fd = new FormData();
+    fd.append("email", body.email);
+    fd.append("password", body.password);
+    if (body.name) fd.append("name", body.name);
+    fd.append("role", body.role || "manager");
+    fd.append("demo", body.demo ? "1" : "0");
+    fd.append("demo_minutes", String(body.demo_minutes ?? 0));
+    fd.append("restricted", JSON.stringify(body.restricted || []));
+    const res = await fetch(`${BASE}/admin/clients`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to create client");
+    return res.json();
+}
+
+export async function updateClient(tid: string, body: Partial<{
+    name: string; email: string; role: Role; status: string;
+    demo: boolean; demo_minutes: number; demo_reset: boolean; restricted: string[];
+}>): Promise<{ client: ClientInfo }> {
+    const fd = new FormData();
+    if (body.name != null) fd.append("name", body.name);
+    if (body.email != null) fd.append("email", body.email);
+    if (body.role != null) fd.append("role", body.role);
+    if (body.status != null) fd.append("status", body.status);
+    if (body.demo != null) fd.append("demo", body.demo ? "1" : "0");
+    if (body.demo_minutes != null) fd.append("demo_minutes", String(body.demo_minutes));
+    if (body.demo_reset) fd.append("demo_reset", "1");
+    if (body.restricted != null) fd.append("restricted", JSON.stringify(body.restricted));
+    const res = await fetch(`${BASE}/admin/clients/${encodeURIComponent(tid)}`, { method: "PUT", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to update client");
+    return res.json();
+}
+
+export async function setClientStatus(tid: string, status: "active" | "suspended"): Promise<{ ok: boolean; status: string }> {
+    const fd = new FormData();
+    fd.append("status", status);
+    const res = await fetch(`${BASE}/admin/clients/${encodeURIComponent(tid)}/status`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to change status");
+    return res.json();
+}
+
+export async function resetClientPassword(tid: string, password: string): Promise<{ ok: boolean }> {
+    const fd = new FormData();
+    fd.append("password", password);
+    const res = await fetch(`${BASE}/admin/clients/${encodeURIComponent(tid)}/password`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to reset password");
+    return res.json();
+}
+
+export async function deleteClient(tid: string): Promise<{ ok: boolean; purged: Record<string, number> }> {
+    const res = await fetch(`${BASE}/admin/clients/${encodeURIComponent(tid)}`, { method: "DELETE", headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to delete client");
+    return res.json();
+}
+
+// ---- Public signup (email + 4-digit OTP) ----
+export async function signupStart(body: { email: string; password: string; name?: string }): Promise<{ ok: boolean; sent_to: string }> {
+    const fd = new FormData();
+    fd.append("email", body.email);
+    fd.append("password", body.password);
+    if (body.name) fd.append("name", body.name);
+    const res = await fetch(`${BASE}/signup/start`, { method: "POST", body: fd });
+    if (!res.ok) {
+        let m = "Could not start signup.";
+        try { const b = await res.json(); if (b && typeof b.error === "string") m = b.error; } catch { /* */ }
+        throw new Error(m);
+    }
+    return res.json();
+}
+
+export async function signupVerify(email: string, otp: string): Promise<LoginResult & { ok: boolean }> {
+    const fd = new FormData();
+    fd.append("email", email);
+    fd.append("otp", otp);
+    const res = await fetch(`${BASE}/signup/verify`, { method: "POST", body: fd });
+    if (!res.ok) {
+        let m = "Verification failed.";
+        try { const b = await res.json(); if (b && typeof b.error === "string") m = b.error; } catch { /* */ }
+        throw new Error(m);
+    }
+    return res.json();
+}
+
+export async function getSignupSettings(): Promise<{ default_role: string }> {
+    const res = await fetch(`${BASE}/admin/signup-settings`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to load signup settings");
+    return res.json();
+}
+
+export async function setSignupDefaultRole(role: "agent" | "manager"): Promise<{ ok: boolean; default_role: string }> {
+    const fd = new FormData();
+    fd.append("default_role", role);
+    const res = await fetch(`${BASE}/admin/signup-settings`, { method: "PUT", headers: authHeaders(), body: fd });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to save signup settings");
+    return res.json();
+}
+
+// ---- Advanced monitoring: sessions / location / device ----
+export type SessionRow = {
+    ts: string;
+    ip: string;
+    browser: string;
+    os: string;
+    device: string; // Desktop | Mobile | Tablet
+    ua?: string;
+    country?: string;
+    country_code?: string;
+    region?: string;
+    city?: string;
+    lat?: number | null;
+    lon?: number | null;
+    isp?: string;
+    ip_timezone?: string;
+    // browser-provided
+    tz?: string;
+    locale?: string;
+    screen?: string;
+    platform?: string;
+    geo_lat?: number | null;
+    geo_lon?: number | null;
+    geo_acc?: number | null;
+    // derived (server)
+    location?: string;
+    flag?: string;
+};
+
+export type ProfileInfo = {
+    tenant_id: string;
+    email: string;
+    name: string;
+    role: Role;
+    is_admin: boolean;
+    status: string;
+    created_at: string;
+    self_signup: boolean;
+    demo: boolean;
+    demo_minutes?: number;
+    demo_remaining_s?: number;
+    first_seen: string;
+    sessions_count: number;
+    last_session: SessionRow;
+    recent_sessions: SessionRow[];
+};
+
+// Full client profile for the Super-Admin monitoring panel.
+export type ClientProfile = ClientInfo & {
+    self_signup: boolean;
+    first_seen: string;
+    sessions_count: number;
+    last_session: SessionRow;
+    sessions: SessionRow[];
+};
+
+// Browser signals captured at app load (precise GPS only when consented).
+export type BeaconPayload = {
+    tz?: string;
+    locale?: string;
+    screen?: string;
+    platform?: string;
+    geo_lat?: number;
+    geo_lon?: number;
+    geo_acc?: number;
+};
+
+export async function sendSessionBeacon(payload: BeaconPayload): Promise<{ ok: boolean; session: SessionRow } | null> {
+    try {
+        const res = await fetch(`${BASE}/session/beacon`, {
+            method: "POST",
+            headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
+            body: JSON.stringify(payload || {}),
+        });
+        if (!res.ok) return null;
+        return res.json();
+    } catch {
+        return null; // monitoring is best-effort; never break the app
+    }
+}
+
+export async function getProfile(): Promise<ProfileInfo> {
+    const res = await fetch(`${BASE}/profile`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to load profile");
+    return res.json();
+}
+
+export async function getClientProfile(tid: string): Promise<ClientProfile> {
+    const res = await fetch(`${BASE}/admin/clients/${encodeURIComponent(tid)}/profile`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to load client profile");
+    const data = await res.json();
+    return data.profile as ClientProfile;
 }
 
 // ---- Control Layer (CL-F0) — versioned entitlements ----
@@ -250,6 +497,76 @@ export type FeatureRegistryRow = {
     min_role?: string | null;
     sort_order?: number;
 };
+
+// ============================================================
+// SIDEBAR / NAV CONFIG (Super-Admin Sidebar Builder)
+// Per-tenant {order, hidden, labels, childOrder} applied client-side over the
+// static nav. Keyed by a stable nav key (href, or "group:<title>"). Cosmetic.
+// ============================================================
+// A super-admin-created nav entry. isSection => a new top-level category (no href);
+// otherwise a link {href} that lives under `parent` (a section key).
+export type NavCustomItem = {
+    key: string;
+    label: string;
+    isSection?: boolean;
+    href?: string;
+    parent?: string;
+    icon?: string;
+};
+
+export type NavConfig = {
+    order?: string[]; // ordered top-level nav keys
+    hidden?: string[]; // nav keys to hide (top-level OR child)
+    labels?: Record<string, string>; // nav key -> custom label
+    childOrder?: Record<string, string[]>; // group key -> ordered child keys
+    parentOf?: Record<string, string>; // child key -> new parent (move to another category)
+    custom?: NavCustomItem[]; // admin-created links / sections
+    stage?: Record<string, "beta" | "premium">; // #25 nav key -> maturity pill
+    unavailable?: string[]; // #25 nav keys hidden from the end user
+};
+
+// The logged-in tenant's own sidebar config (the Sidebar applies it). Swallows
+// errors -> empty config so the sidebar NEVER breaks if the endpoint is down.
+export async function getMyNavConfig(): Promise<{ config: NavConfig }> {
+    try {
+        const res = await fetch(`${BASE}/me/nav-config`, { headers: authHeaders() });
+        if (!res.ok) return { config: {} };
+        return await res.json();
+    } catch {
+        return { config: {} };
+    }
+}
+
+// Super-admin: read a specific tenant's sidebar config (for the builder).
+export async function getAdminNavConfig(
+    tenantId: string
+): Promise<{ tenant_id: string; config: NavConfig }> {
+    const res = await fetch(
+        `${BASE}/admin/nav-config?tenant_id=${encodeURIComponent(tenantId)}`,
+        { headers: authHeaders() }
+    );
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to load sidebar config");
+    return res.json();
+}
+
+// Super-admin: save a tenant's sidebar config.
+export async function saveAdminNavConfig(
+    tenantId: string,
+    config: NavConfig
+): Promise<{ ok: boolean; config: NavConfig }> {
+    const fd = new FormData();
+    fd.append("tenant_id", tenantId);
+    fd.append("config", JSON.stringify(config));
+    const res = await fetch(`${BASE}/admin/nav-config`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to save sidebar config");
+    return res.json();
+}
 
 export async function getAdminFeatures(): Promise<{ features: FeatureRegistryRow[] }> {
     const res = await fetch(`${BASE}/admin/features`, { headers: authHeaders() });
@@ -381,6 +698,233 @@ export async function getControlAudit(opts?: { limit?: number; offset?: number; 
 }
 
 // ============================================================================
+// SYSTEM LOGS & ERRORS — super-admin observability ("System Logs" in the panel).
+// Backed by /admin/logs* (logging_service). All super-admin-gated; degrade to a
+// clean empty shape on 404 so the page never throws when the module is dormant.
+// ============================================================================
+export type SystemLogLevel = "debug" | "info" | "warning" | "error" | "critical";
+
+export type SystemEvent = {
+    id: string;
+    seq: number;
+    ts: string;
+    level: SystemLogLevel;
+    source: string;
+    message: string;
+    error_type?: string;
+    tenant_id?: string;
+    call_id?: string;
+    fingerprint?: string;
+    context?: Record<string, unknown>;
+    // present on the detail endpoint:
+    count?: number;
+    first_seen?: string;
+    last_seen?: string;
+    suggestion?: string;
+};
+
+export type SystemLogsPage = {
+    events: SystemEvent[];
+    total: number;
+    limit: number;
+    offset: number;
+    note?: string;
+};
+
+export type SystemLogSummary = {
+    by_level: Partial<Record<SystemLogLevel, number>>;
+    total: number;
+    last_24h: number;
+    errors_24h: number;
+    top_errors: {
+        fingerprint: string;
+        level: SystemLogLevel;
+        source: string;
+        message: string;
+        count: number;
+        last_seen?: string;
+        last_id?: string;
+    }[];
+    note?: string;
+};
+
+export type NotificationFeed = {
+    events: SystemEvent[];
+    latest_seq: number;
+    unread: number;
+    unread_errors: number;
+};
+
+export async function getSystemLogs(opts?: {
+    limit?: number; offset?: number; level?: string; source?: string;
+    tenant_id?: string; q?: string; since?: string;
+}): Promise<SystemLogsPage> {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    if (opts?.level) params.set("level", opts.level);
+    if (opts?.source) params.set("source", opts.source);
+    if (opts?.tenant_id) params.set("tenant_id", opts.tenant_id);
+    if (opts?.q) params.set("q", opts.q);
+    if (opts?.since) params.set("since", opts.since);
+    const res = await fetch(`${BASE}/admin/logs?${params.toString()}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { events: [], total: 0, limit: opts?.limit ?? 100, offset: opts?.offset ?? 0 };
+    if (!res.ok) throw new Error("Failed to fetch system logs");
+    return res.json();
+}
+
+export async function getSystemLogSummary(): Promise<SystemLogSummary> {
+    const res = await fetch(`${BASE}/admin/logs/summary`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return { by_level: {}, total: 0, last_24h: 0, errors_24h: 0, top_errors: [] };
+    return res.json();
+}
+
+export async function getSystemLogDetail(id: string): Promise<SystemEvent | null> {
+    const res = await fetch(`${BASE}/admin/logs/${encodeURIComponent(id)}`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return null;
+    return res.json();
+}
+
+export async function suggestSystemLogFix(id: string, force = false): Promise<string> {
+    try {
+        const res = await fetch(`${BASE}/admin/logs/${encodeURIComponent(id)}/suggest${force ? "?force=1" : ""}`, {
+            method: "POST",
+            headers: authHeaders(),
+        });
+        await handle401(res);
+        if (!res.ok) return "";
+        const d = (await res.json().catch(() => ({}))) as { suggestion?: string };
+        return d.suggestion || "";
+    } catch {
+        return "";
+    }
+}
+
+export type SystemLogHealth = {
+    ready: boolean;
+    path?: string;
+    writable?: boolean;
+    file_exists?: boolean;
+    file_bytes?: number;
+    ring_count?: number;
+    agg_groups?: number;
+    latest_seq?: number;
+    telegram?: boolean;
+    ai_fix?: boolean;
+    init_ok?: boolean;
+    note?: string;
+};
+
+// Self-test: is capture live, where does it write, can it write? Backs the System Logs status
+// chip. Returns {ready:false} on any failure (the route 503s when not ready but still sends JSON).
+export async function getSystemLogHealth(): Promise<SystemLogHealth> {
+    try {
+        const res = await fetch(`${BASE}/admin/logs/health`, { headers: authHeaders() });
+        await handle401(res);
+        return (await res.json()) as SystemLogHealth;
+    } catch {
+        return { ready: false };
+    }
+}
+
+// Emit a synthetic event so an operator can SEE capture working end-to-end.
+export async function emitTestSystemLog(): Promise<boolean> {
+    try {
+        const res = await fetch(`${BASE}/admin/logs/test`, { method: "POST", headers: authHeaders() });
+        await handle401(res);
+        const d = (await res.json().catch(() => ({}))) as { ok?: boolean };
+        return !!d.ok;
+    } catch {
+        return false;
+    }
+}
+
+export async function getNotifications(opts?: { after?: number; limit?: number }): Promise<NotificationFeed> {
+    try {
+        const params = new URLSearchParams();
+        if (opts?.after != null) params.set("after", String(opts.after));
+        if (opts?.limit != null) params.set("limit", String(opts.limit));
+        const res = await fetch(`${BASE}/admin/notifications?${params.toString()}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { events: [], latest_seq: 0, unread: 0, unread_errors: 0 };
+        return res.json();
+    } catch {
+        return { events: [], latest_seq: 0, unread: 0, unread_errors: 0 };
+    }
+}
+
+// ============================================================================
+// PERFORMANCE — white-labeled metrics for the super-admin Performance page. Thin proxy to the
+// observability backend's Prometheus query API via /admin/metrics/*. Returns the Prometheus
+// JSON shape; the page extracts scalars + series. NEVER throws (degrades to an error status).
+// ============================================================================
+export type PromValue = [number, string];
+export type PromSeries = { metric: Record<string, string>; value?: PromValue; values?: PromValue[] };
+export type PromResponse = { status: string; data?: { resultType: string; result: PromSeries[] }; error?: string };
+
+export async function getMetricInstant(query: string): Promise<PromResponse> {
+    try {
+        const res = await fetch(`${BASE}/admin/metrics/instant?query=${encodeURIComponent(query)}`,
+            { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { status: "error", error: `http_${res.status}` };
+        return res.json();
+    } catch {
+        return { status: "error", error: "unreachable" };
+    }
+}
+
+export async function getMetricRange(query: string, minutes = 60, step = 60): Promise<PromResponse> {
+    try {
+        const p = new URLSearchParams({ query, minutes: String(minutes), step: String(step) });
+        const res = await fetch(`${BASE}/admin/metrics/range?${p.toString()}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { status: "error", error: `http_${res.status}` };
+        return res.json();
+    } catch {
+        return { status: "error", error: "unreachable" };
+    }
+}
+
+// ============================================================================
+// OBSERVABILITY ANALYTICS — trace/APM/request data for the native System Logs (Traces/Requests)
+// + Performance dashboards. Backed by /admin/obs/* (ClickHouse). ClickHouse returns numeric
+// columns as STRINGS in JSONEachRow, so consumers Number() the values. NEVER throws.
+// ============================================================================
+export type ObsRow = Record<string, string | number | boolean | null>;
+export type ObsResponse = { rows: ObsRow[]; error?: string; row?: ObsRow };
+
+async function obsGet(path: string, params: Record<string, string | number>): Promise<ObsResponse> {
+    try {
+        const p = new URLSearchParams();
+        Object.entries(params).forEach(([k, v]) => {
+            if (v !== "" && v != null) p.set(k, String(v));
+        });
+        const qs = p.toString();
+        const res = await fetch(`${BASE}${path}${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { rows: [], error: `http_${res.status}` };
+        return res.json();
+    } catch {
+        return { rows: [], error: "unreachable" };
+    }
+}
+
+export const getObsServices = (minutes = 1440) => obsGet("/admin/obs/services", { minutes });
+export const getObsSummary = (minutes: number, service: string) => obsGet("/admin/obs/summary", { minutes, service });
+export const getObsRed = (minutes: number, service: string) => obsGet("/admin/obs/red", { minutes, service });
+export const getObsRoutes = (minutes: number, service: string, limit = 50) => obsGet("/admin/obs/routes", { minutes, service, limit });
+export const getObsStatus = (minutes: number, service: string) => obsGet("/admin/obs/status", { minutes, service });
+export const getObsServiceDist = (minutes: number) => obsGet("/admin/obs/service-dist", { minutes });
+export const getObsErrors = (minutes: number, service: string, limit = 20) => obsGet("/admin/obs/errors", { minutes, service, limit });
+export const getObsTraces = (opts: { minutes: number; service: string; errors_only?: number; q?: string; limit?: number }) =>
+    obsGet("/admin/obs/traces", { minutes: opts.minutes, service: opts.service, errors_only: opts.errors_only ?? 0, q: opts.q ?? "", limit: opts.limit ?? 60 });
+export const getObsTrace = (traceId: string) => obsGet(`/admin/obs/trace/${encodeURIComponent(traceId)}`, {});
+
+// ============================================================================
 // LPR — PLATFORM PROVIDER KEYS (super-admin). Groq / Sarvam / SambaNova /
 // OpenRouter keys the founder adds in the panel; stored encrypted on the box;
 // the live AIM rotation HOT-RELOADS them (no redeploy). Raw key is NEVER
@@ -466,6 +1010,179 @@ export async function deleteProviderKey(id: string): Promise<{ ok: boolean; dele
     return res.json();
 }
 
+// ---- P3 Service Control Center: the MANAGED (encrypted) provider layer (/admin/provider-pool/*) ----
+export type ProviderPoolKey = {
+    fingerprint: string;
+    status?: string;          // healthy | degraded | cooling
+    score?: number;
+    open?: boolean;
+    trips?: number;
+    latency_ewma_ms?: number;
+    reliability?: number;
+    success_count?: number;
+    fail_count?: number;
+    rate_limit_count?: number;
+    success_rate?: number;
+    last_used_ts?: number;
+    retry_in_s?: number;
+    last_error?: string;
+};
+export type ProviderPoolHealth = { provider: string; healthy: number; total: number; keys: ProviderPoolKey[] };
+export type ProviderPoolUsageRow = {
+    provider: string;
+    fingerprint: string;
+    calls?: number;
+    success?: number;
+    failures?: number;
+    rate_limits?: number;
+    latency_ms_avg?: number;
+    score?: number;
+    status?: string;
+    success_pct?: number;
+    last_used_ms?: number;
+};
+
+export async function getProviderPoolHealth(provider?: string): Promise<{ health: Record<string, ProviderPoolHealth>; platform_tenant?: string; error?: string }> {
+    try {
+        const q = provider ? `?provider=${encodeURIComponent(provider)}` : "";
+        const res = await fetch(`${BASE}/admin/provider-pool/health${q}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { health: {}, error: res.status === 503 ? "unavailable" : "error" };
+        return res.json();
+    } catch {
+        return { health: {}, error: "unreachable" };
+    }
+}
+
+export async function getProviderPoolUsage(minutes = 1440): Promise<{ durable: ProviderPoolUsageRow[]; durable_error?: string }> {
+    try {
+        const res = await fetch(`${BASE}/admin/provider-pool/usage?minutes=${minutes}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { durable: [], durable_error: "unavailable" };
+        const d = await res.json();
+        return { durable: Array.isArray(d.durable) ? d.durable : [], durable_error: d.durable_error };
+    } catch {
+        return { durable: [], durable_error: "unreachable" };
+    }
+}
+
+export async function addProviderPoolKey(provider: string, key: string, label?: string): Promise<{ ok: boolean; fingerprint?: string; error?: string; detail?: string }> {
+    const fd = new FormData();
+    fd.append("provider", provider);
+    fd.append("key", key);
+    if (label) fd.append("label", label);
+    const res = await fetch(`${BASE}/admin/provider-pool/keys`, { method: "POST", headers: authHeaders(), body: fd });
+    await handle401(res);
+    return res.json().catch(() => ({ ok: false, error: "bad response" }));
+}
+
+export async function setProviderPoolKeyEnabled(provider: string, fingerprint: string, enabled: boolean): Promise<{ status?: string; error?: string }> {
+    const fd = new FormData();
+    fd.append("enabled", enabled ? "1" : "0");
+    const res = await fetch(`${BASE}/admin/provider-pool/keys/${encodeURIComponent(provider)}/${encodeURIComponent(fingerprint)}`, { method: "PUT", headers: authHeaders(), body: fd });
+    await handle401(res);
+    return res.json().catch(() => ({ error: "bad response" }));
+}
+
+export async function deleteProviderPoolKey(provider: string, fingerprint: string): Promise<{ ok?: boolean; error?: string }> {
+    const res = await fetch(`${BASE}/admin/provider-pool/keys/${encodeURIComponent(provider)}/${encodeURIComponent(fingerprint)}`, { method: "DELETE", headers: authHeaders() });
+    await handle401(res);
+    return res.json().catch(() => ({ ok: false, error: "bad response" }));
+}
+
+// ============================================================================
+// VOICE CONFIG (super-admin) — pick the live STT provider (Sarvam vs Deepgram)
+// and manage the per-provider API keys the voice agent uses. Backed by
+// /admin/voice-config (require_super_admin). The GET returns the resolved
+// {stt_provider, providers} with MASKED keys (raw keys are never returned); the
+// POST takes a PARTIAL body (only the fields you change) and echoes back the
+// masked config. Dormant-safe: a 404 (older box / route not mounted) resolves to
+// a clean empty shape so the page degrades instead of error-walling.
+// ============================================================================
+export type VoiceSttProvider = "sarvam" | "deepgram";
+
+// One provider's voice-config slot. `key_masked` is a display-only masked value
+// (e.g. "dg_••••1234"); `configured` is true when a key is present on the box.
+export type VoiceProviderConfig = {
+    key_masked?: string;
+    configured?: boolean;
+    source?: "env" | "store";
+    [key: string]: unknown;
+};
+
+export type VoiceConfig = {
+    stt_provider: VoiceSttProvider | string;
+    providers: Record<string, VoiceProviderConfig>;
+};
+
+// Partial write body — send only what you change. `stt_provider` flips the live
+// STT; the `*_api_key` fields set/replace a provider key (omit to leave as-is).
+export type VoiceConfigUpdate = {
+    stt_provider?: VoiceSttProvider | string;
+    deepgram_api_key?: string;
+    sarvam_api_key?: string;
+    [key: string]: unknown;
+};
+
+const EMPTY_VOICE_CONFIG: VoiceConfig = { stt_provider: "sarvam", providers: {} };
+
+// Read the resolved voice config (STT provider + masked provider keys). 404 /
+// unreachable → a clean default so the page never throws.
+export async function getVoiceConfig(): Promise<VoiceConfig> {
+    try {
+        const res = await fetch(`${BASE}/admin/voice-config`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { ...EMPTY_VOICE_CONFIG };
+        const d = (await res.json()) as Partial<VoiceConfig>;
+        return {
+            stt_provider: d.stt_provider || EMPTY_VOICE_CONFIG.stt_provider,
+            providers: d.providers || {},
+        };
+    } catch {
+        return { ...EMPTY_VOICE_CONFIG };
+    }
+}
+
+// Save a PARTIAL voice config (only the fields present in `body`). Returns the
+// masked config the backend resolved after the write. Sent as JSON.
+export async function saveVoiceConfig(body: VoiceConfigUpdate): Promise<VoiceConfig> {
+    const res = await fetch(`${BASE}/admin/voice-config`, {
+        method: "POST",
+        headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to save voice config");
+    const d = (await res.json()) as Partial<VoiceConfig>;
+    return {
+        stt_provider: d.stt_provider || EMPTY_VOICE_CONFIG.stt_provider,
+        providers: d.providers || {},
+    };
+}
+
+// Resolve a company logo from its website URL (campaign create/edit). Backed by
+// GET /admin/fetch-logo?url=<encoded>. Best-effort: any failure (404 / unreachable
+// / no logo found) resolves to an empty logo_url so the caller degrades to "no
+// logo" instead of crashing the form. `source` describes how it was resolved
+// (e.g. "favicon" | "og:image" | "clearbit").
+export type CompanyLogoResult = { logo_url: string; source?: string };
+
+export async function fetchCompanyLogo(url: string): Promise<CompanyLogoResult> {
+    try {
+        const clean = (url || "").trim();
+        if (!clean) return { logo_url: "" };
+        const res = await fetch(`${BASE}/admin/fetch-logo?url=${encodeURIComponent(clean)}`, {
+            headers: authHeaders(),
+        });
+        await handle401(res);
+        if (!res.ok) return { logo_url: "" };
+        const d = (await res.json().catch(() => ({}))) as Partial<CompanyLogoResult>;
+        return { logo_url: d.logo_url || "", source: d.source };
+    } catch {
+        return { logo_url: "" };
+    }
+}
+
 // ---- Campaigns ----
 export async function getCampaigns(): Promise<{ campaigns: Campaign[] }> {
     const res = await fetch(`${BASE}/campaigns`, {
@@ -521,6 +1238,58 @@ export async function getCampaign(cid: string): Promise<Campaign | null> {
 // The backend merges these into the full `fields` object + rebuilds the system prompt. Callers MUST
 // pass the FULL fields object (merge their delta onto the campaign's existing fields first) — the
 // backend replaces `fields` wholesale, it does not patch.
+// AI-draft a campaign call-script with Claude Sonnet 3.5 (Script Studio "Generate with AI").
+// Read-only on the campaign — returns the drafted text; the operator edits + saves it. Never throws.
+export async function generateCampaignScript(
+    cid: string,
+    brief?: string,
+    opts?: Record<string, unknown>
+): Promise<{ ok: boolean; script?: string; model_label?: string; error?: string; message?: string }> {
+    try {
+        const res = await fetch(`${BASE}/campaigns/${encodeURIComponent(cid)}/script/generate`, {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({
+                brief: brief || "",
+                ...(opts && Object.keys(opts).length ? { opts } : {}),
+            }),
+        });
+        await handle401(res);
+        const d = (await res.json().catch(() => ({}))) as {
+            ok?: boolean; script?: string; model_label?: string; error?: string; message?: string;
+        };
+        if (!res.ok || !d.ok) return { ok: false, error: d.error || `http_${res.status}`, message: d.message };
+        return { ok: true, script: d.script, model_label: d.model_label };
+    } catch {
+        return { ok: false, error: "unreachable" };
+    }
+}
+
+// P7.3: AI-draft ONE Script Studio 2.0 block. Returns the block fields to merge onto the block.
+export type GeneratedBlock = {
+    type?: string; text?: string; items?: string[];
+    qa?: { q: string; a: string }[]; options?: string[]; goal?: string;
+};
+export async function generateScriptBlock(
+    cid: string, blockType: string, brief?: string,
+): Promise<{ ok: boolean; block?: GeneratedBlock; model_label?: string; error?: string; message?: string }> {
+    try {
+        const res = await fetch(`${BASE}/campaigns/${encodeURIComponent(cid)}/script/generate-block`, {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ block_type: blockType, brief: brief || "" }),
+        });
+        await handle401(res);
+        const d = (await res.json().catch(() => ({}))) as {
+            ok?: boolean; block?: GeneratedBlock; model_label?: string; error?: string; message?: string;
+        };
+        if (!res.ok || !d.ok) return { ok: false, error: d.error || `http_${res.status}`, message: d.message };
+        return { ok: true, block: d.block, model_label: d.model_label };
+    } catch {
+        return { ok: false, error: "unreachable" };
+    }
+}
+
 export async function updateCampaign(
     cid: string,
     fields: Record<string, unknown>
@@ -576,12 +1345,6 @@ export async function getLeads(opts?: {
     to?: string;
     campaign_id?: string;
     status?: string;
-    // ROUND-5 LANE A — column-header sort across ALL records (like CRM): `sort_by`
-    // names the column, `order` the direction. Forwarded to the box; if the live
-    // /leads ignores either (extra params are dropped, not errored) the Leads page's
-    // client-side sort fallback still orders the loaded rows.
-    sort_by?: string;
-    order?: "asc" | "desc";
 }): Promise<LeadsPage> {
     const params = new URLSearchParams();
     if (opts?.hot) params.set("hot", "1");
@@ -593,8 +1356,6 @@ export async function getLeads(opts?: {
     if (opts?.to) params.set("to", opts.to);
     if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
     if (opts?.status) params.set("status", opts.status);
-    if (opts?.sort_by) params.set("sort_by", opts.sort_by);
-    if (opts?.order) params.set("order", opts.order);
     const qs = params.toString();
     const res = await fetch(`${BASE}/leads${qs ? `?${qs}` : ""}`, {
         headers: authHeaders(),
@@ -782,6 +1543,42 @@ export async function getStatus(job: string): Promise<JobStatus> {
     return res.json();
 }
 
+// ---- Stop a running campaign job (halts new dialing; in-flight calls drain) ----
+export async function stopJob(job: string): Promise<{ ok: boolean; state?: string }> {
+    const res = await fetch(`${BASE}/jobs/${encodeURIComponent(job)}/stop`, {
+        method: "POST",
+        headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to stop campaign");
+    return res.json();
+}
+
+// ---- Pre-launch readiness (real provider RTT + db/redis/livekit + recent call latency) ----
+export type PreflightCheck = {
+    id: string;
+    label: string;
+    status: "green" | "yellow" | "red";
+    latency_ms: number | null;
+    detail: string;
+};
+export type PreflightResult = {
+    ok: boolean;
+    verdict: "ok" | "slow" | "down";
+    headline: string;
+    worst_latency_ms: number | null;
+    checks: PreflightCheck[];
+    at?: string;
+};
+export async function getPreflight(cid: string): Promise<PreflightResult> {
+    const res = await fetch(`${BASE}/campaigns/${encodeURIComponent(cid)}/preflight`, {
+        headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error("Failed to run preflight");
+    return res.json();
+}
+
 // ---- Calls ----
 // PERF UNIT-3: opt-in server pagination (backend UNIT-1 contract). A bare
 // getCalls() is byte-identical to the legacy call (`/calls?limit=200`, full rows,
@@ -803,6 +1600,8 @@ export type GetCallsOpts = {
     slim?: boolean;
     campaign_id?: string;
     outcome?: string;
+    from?: string;   // inclusive date-range filter on started_at (YYYY-MM-DD or ISO) — dashboard range
+    to?: string;
     // Lane C SPEED — ask the backend to sort across ALL records (not just the
     // loaded page). `sort_by` names the column; `order` the direction. The call
     // sites keep a client-side sort fallback for a backend that ignores these.
@@ -817,6 +1616,8 @@ export async function getCalls(opts?: GetCallsOpts): Promise<CallsPage> {
     if (opts?.slim) params.set("slim", "1");
     if (opts?.campaign_id) params.set("campaign_id", opts.campaign_id);
     if (opts?.outcome) params.set("outcome", opts.outcome);
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
     const res = await fetch(`${BASE}/calls?${params.toString()}`, {
         headers: authHeaders(),
     });
@@ -901,6 +1702,29 @@ export async function getCallRecording(id: string): Promise<CallRecording> {
     }
 }
 
+// Word-accurate, audio-aligned transcript for the synced playback highlight. The
+// backend re-transcribes the recording (cached) for per-word timestamps; when it
+// can't (no recording / disabled / failure) it returns {timed:false} and the panel
+// uses its estimate instead. NEVER throws.
+export type TimedWordApi = { w: string; s: number; e: number };
+export type TimedTurnApi = { role: string; text: string; t0: number; t1: number; words?: TimedWordApi[] };
+export type TimedTranscriptApi = { timed: boolean; turns?: TimedTurnApi[]; duration?: number };
+
+export async function getCallTranscriptTimed(id: string): Promise<TimedTranscriptApi> {
+    try {
+        const res = await fetch(
+            `${BASE}/calls/${encodeURIComponent(id)}/transcript/timed`,
+            { headers: authHeaders() }
+        );
+        await handle401(res);
+        if (!res.ok) return { timed: false };
+        const d = (await res.json().catch(() => ({}))) as TimedTranscriptApi;
+        return d && d.timed && Array.isArray(d.turns) ? d : { timed: false };
+    } catch {
+        return { timed: false };
+    }
+}
+
 // ---- Voices ----
 // PVS Phase-1: the backend now un-strips ElevenLabs' free public `preview_url` and adds
 // accent/gender/language + a `sample_url` (the /voice-preview proxy path). Sarvam returns a
@@ -981,6 +1805,154 @@ export async function getProviders(): Promise<{ providers: ProviderInfo[]; by_ro
     }
 }
 
+// Realtime provider network-health for the Providers "Live status" row: signal bars + latency,
+// graded green/yellow/red. Polled ~5s by the Voice & Providers card. Dormant-safe -> [] on any error.
+export type ProviderHealth = {
+    id: string;
+    role: string; // "llm" | "tts" | "stt" | ""
+    label: string;
+    available: boolean;
+    reachable: boolean;
+    latency_ms: number | null;
+    bars: number; // 0..5
+    status: "green" | "yellow" | "red";
+    note?: string;
+};
+
+export async function getProviderHealth(ids?: string[]): Promise<ProviderHealth[]> {
+    try {
+        const q = ids && ids.length ? `?ids=${encodeURIComponent(ids.join(","))}` : "";
+        const res = await fetch(`${BASE}/providers/health${q}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return [];
+        const d = (await res.json()) as { providers?: ProviderHealth[] };
+        return Array.isArray(d.providers) ? d.providers : [];
+    } catch {
+        return [];
+    }
+}
+
+// ---- P1 Voice Performance Analytics (reads over the agent-written haptica_voice_* CH tables) ----
+// All dormant-safe: a missing/empty obs backend -> empty shapes so the page shows a calm empty state.
+export type VoiceFilters = {
+    tenant_id?: string; campaign_id?: string; agent_name?: string; phone?: string;
+    provider?: string; model?: string; status?: string; stage?: string;
+};
+export type VoiceSummary = { row?: ObsRow; latency_by_stage?: ObsRow[]; error?: string };
+export type VoiceFilterOptions = {
+    row?: {
+        agents?: string[]; campaigns?: string[]; llm_providers?: string[]; tts_providers?: string[];
+        stt_providers?: string[]; models?: string[]; statuses?: string[]; tenants?: string[];
+    };
+    error?: string;
+};
+export type VoiceCost = {
+    telephony: number; stt: number; llm: number; tts: number; total: number; per_min: number;
+    duration_min: number; currency?: string; rate_keys?: Record<string, string>;
+};
+export type VoiceCallCampaign = { id: string; name?: string; category?: string; category_label?: string };
+export type VoiceCallBundle = { detail?: ObsRow; timeline?: ObsRow[]; latency?: ObsRow; cost?: VoiceCost; campaign?: VoiceCallCampaign; error?: string };
+export type VoiceStack = { combos: ObsRow[]; stages: ObsRow[]; error?: string };
+
+function voiceQS(minutes: number, f?: VoiceFilters, extra?: Record<string, string | number>): string {
+    const p = new URLSearchParams();
+    p.set("minutes", String(minutes));
+    if (f) for (const [k, v] of Object.entries(f)) if (v) p.set(k, String(v));
+    if (extra) for (const [k, v] of Object.entries(extra)) p.set(k, String(v));
+    return p.toString();
+}
+
+export async function getVoiceSummary(minutes: number, f?: VoiceFilters): Promise<VoiceSummary> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/summary?${voiceQS(minutes, f)}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { row: {}, latency_by_stage: [], error: "unavailable" };
+        return res.json();
+    } catch {
+        return { row: {}, latency_by_stage: [], error: "unreachable" };
+    }
+}
+
+export async function getVoiceRed(minutes: number, f?: VoiceFilters): Promise<{ rows: ObsRow[]; error?: string }> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/red?${voiceQS(minutes, f)}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { rows: [], error: "unavailable" };
+        return res.json();
+    } catch {
+        return { rows: [], error: "unreachable" };
+    }
+}
+
+export async function getVoiceCalls(minutes: number, f?: VoiceFilters, limit = 100): Promise<{ rows: ObsRow[]; error?: string }> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/calls?${voiceQS(minutes, f, { limit })}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { rows: [], error: "unavailable" };
+        return res.json();
+    } catch {
+        return { rows: [], error: "unreachable" };
+    }
+}
+
+export async function getVoiceFilterOptions(minutes = 1440): Promise<VoiceFilterOptions> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/filters?minutes=${minutes}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { row: {} };
+        return res.json();
+    } catch {
+        return { row: {} };
+    }
+}
+
+export async function getVoiceCall(callId: string): Promise<VoiceCallBundle> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/call/${encodeURIComponent(callId)}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { detail: {}, timeline: [], latency: {}, error: "unavailable" };
+        return res.json();
+    } catch {
+        return { detail: {}, timeline: [], latency: {}, error: "unreachable" };
+    }
+}
+
+export async function getVoiceStack(minutes: number, f?: VoiceFilters): Promise<VoiceStack> {
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/stack?${voiceQS(minutes, f)}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { combos: [], stages: [], error: "unavailable" };
+        return res.json();
+    } catch {
+        return { combos: [], stages: [], error: "unreachable" };
+    }
+}
+
+// ---- Transcript content-quality (LLM analysis of the actual dialogue) ----
+export type TranscriptIssue = { type?: string; severity?: string; quote?: string; note?: string };
+export type TranscriptQuality = {
+    ok: boolean;
+    score?: number;
+    grade?: string;
+    summary?: string;
+    dims?: Record<string, number>;
+    issues?: TranscriptIssue[];
+    cached?: boolean;
+    error?: string;
+    message?: string;
+};
+export async function getVoiceCallQuality(callId: string, opts?: { force?: boolean; cachedOnly?: boolean }): Promise<TranscriptQuality> {
+    const qs = opts?.force ? "?force=1" : opts?.cachedOnly ? "?cached=1" : "";
+    try {
+        const res = await fetch(`${BASE}/admin/obs/voice/call/${encodeURIComponent(callId)}/quality${qs}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { ok: false, error: "unavailable" };
+        return res.json();
+    } catch {
+        return { ok: false, error: "unreachable" };
+    }
+}
+
 // ---- Tiers (single source of truth for the slider mapping + cost-meter math) ----
 export type TierRole = { provider: string; model: string; rate_key: string };
 export type TierVoice = { provider: string; voice_id: string };
@@ -990,6 +1962,9 @@ export type Tier = {
     quality: string;
     blurb: string;
     est_inr_per_min: number;
+    available?: boolean;
+    recommended?: boolean;
+    unavailable_reason?: string;
     stt: TierRole;
     llm: TierRole;
     tts: TierRole;
@@ -1112,16 +2087,35 @@ export async function getTiers(): Promise<TiersPayload | null> {
 }
 
 // ---- Custom providers (super-admin; isolated Fernet store, NOT the live key pool) ----
+// Service categories the founder can register. The voice agent consumes stt/llm/tts today;
+// the rest are stored for routing / integration use. Mirrors _KINDS in custom_providers.py.
+export type ServiceKind =
+    | "stt" | "llm" | "tts" | "embedding" | "rerank" | "vad" | "telephony" | "realtime" | "webhook" | "other";
+
+export const SERVICE_KINDS: { id: ServiceKind; label: string; hint: string }[] = [
+    { id: "llm", label: "LLM", hint: "Chat / completion model (OpenAI-compatible)" },
+    { id: "stt", label: "STT", hint: "Speech-to-text" },
+    { id: "tts", label: "TTS", hint: "Text-to-speech" },
+    { id: "embedding", label: "Embedding", hint: "Vector embeddings" },
+    { id: "rerank", label: "Rerank", hint: "Reranker / relevance scorer" },
+    { id: "vad", label: "VAD", hint: "Voice-activity detection" },
+    { id: "telephony", label: "Telephony", hint: "SIP / PSTN trunk" },
+    { id: "realtime", label: "Realtime", hint: "Realtime / streaming voice" },
+    { id: "webhook", label: "Webhook", hint: "Outbound webhook / integration" },
+    { id: "other", label: "Other", hint: "Any other service" },
+];
+
 export type CustomProvider = {
     id: string;
     name: string;
-    kind: "stt" | "llm" | "tts";
+    kind: ServiceKind;
     base_url: string;
     model: string;
     enabled: boolean;
     added_at?: string;
     masked: string;
     available: boolean;
+    logo_url?: string;
 };
 
 export async function getCustomProviders(): Promise<{ custom_providers: CustomProvider[] }> {
@@ -1137,10 +2131,11 @@ export async function getCustomProviders(): Promise<{ custom_providers: CustomPr
 
 export async function addCustomProvider(data: {
     name: string;
-    kind: "stt" | "llm" | "tts";
+    kind: ServiceKind;
     base_url: string;
     model: string;
     key: string;
+    logo_url?: string;
 }): Promise<{ ok: boolean; id: string; name: string; kind: string; model: string; masked: string }> {
     const fd = new FormData();
     fd.append("name", data.name);
@@ -1148,6 +2143,7 @@ export async function addCustomProvider(data: {
     fd.append("base_url", data.base_url);
     fd.append("model", data.model);
     if (data.key) fd.append("key", data.key);
+    if (data.logo_url) fd.append("logo_url", data.logo_url);
     const res = await fetch(`${BASE}/admin/custom-providers`, {
         method: "POST",
         headers: authHeaders(),
@@ -1403,6 +2399,25 @@ export type FleetSummary = AdminVendorSummary;
 export type FleetVendorsResponse = AdminVendorsResponse;
 export const getFleetVendors = getAdminVendors;
 
+// #26 Control-Overview globe: recent call activity aggregated by Indian city.
+export type GeoPoint = { city: string; lat: number; lng: number; calls: number; weight: number };
+export type OverviewGeo = {
+    points: GeoPoint[];
+    hub: { lat: number; lng: number; label: string };
+    total_calls: number; mapped_calls: number; cities: number; live: number; generated_at?: string;
+};
+export async function getOverviewGeo(): Promise<OverviewGeo> {
+    const empty: OverviewGeo = { points: [], hub: { lat: 22.59, lng: 78.96, label: "India" }, total_calls: 0, mapped_calls: 0, cities: 0, live: 0 };
+    try {
+        const res = await fetch(`${BASE}/admin/overview/geo`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return empty;
+        return (await res.json().catch(() => empty)) as OverviewGeo;
+    } catch {
+        return empty;
+    }
+}
+
 // ============================================================
 // CONTROL LAYER (CL-F2) — Vendor Workspace + the PERMISSION MATRIX
 // The single-vendor admin surface: GET /admin/vendors/{id} returns the full
@@ -1520,6 +2535,8 @@ export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
     { key: "ai_manager.users", kind: "page", parent_key: "mod.ai_manager", label: "Authorized Users", nav_href: "/ai-manager/users", sort_order: 17 },
 
     { key: "mod.grow", kind: "module", parent_key: null, label: "Grow", sort_order: 20 },
+    { key: "grow.famit_growth", kind: "page", parent_key: "mod.grow", label: "Famit Growth", nav_href: "/growth", sort_order: 19 },
+    { key: "grow.signal_loop", kind: "page", parent_key: "mod.grow", label: "Signal Loop", nav_href: "/grow", sort_order: 20 },
     { key: "grow.campaigns", kind: "page", parent_key: "mod.grow", label: "Campaigns", nav_href: "/campaigns", sort_order: 21 },
     { key: "grow.campaigns.create", kind: "action", parent_key: "grow.campaigns", label: "Create campaign", sort_order: 22 },
 
@@ -1554,12 +2571,22 @@ export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
     { key: "automate.workflows", kind: "page", parent_key: "mod.automate", label: "Workflows", nav_href: "/workflows", sort_order: 51 },
     { key: "automate.webhooks", kind: "page", parent_key: "mod.automate", label: "Webhooks", nav_href: "/webhooks", sort_order: 52 },
 
-    { key: "mod.money", kind: "module", parent_key: null, label: "Money", sort_order: 60 },
+    // Money → renamed "Credits" (label is cosmetic; KEYS are preserved verbatim so the backend
+    // entitlement mirror keeps matching). The credit wallet is the CORE money surface (is_core →
+    // never hidden by an entitlement). Payments (collections) + Billing fold into the same hub.
+    { key: "mod.money", kind: "module", parent_key: null, label: "Credits", sort_order: 60 },
+    { key: "money.credits", kind: "page", parent_key: "mod.money", label: "Credits", nav_href: "/credits", is_core: true, sort_order: 60 },
     { key: "money.payments", kind: "page", parent_key: "mod.money", label: "Payments", nav_href: "/payments", sort_order: 61 },
     { key: "money.billing_overview", kind: "page", parent_key: "mod.money", label: "Billing", nav_href: "/billing/overview", is_core: true, sort_order: 62 },
 
     { key: "mod.intelligence", kind: "module", parent_key: null, label: "Intelligence", sort_order: 70 },
     { key: "intelligence.analytics", kind: "page", parent_key: "mod.intelligence", label: "Analytics", nav_href: "/analytics", sort_order: 71 },
+
+    // FAMIT RESEARCH — the premium "instrumented conversation science" lab (per-call affect/prosody
+    // dynamics + the closed-loop Outcomes correlation). Its OWN module so a super-admin can gate it
+    // as a high-end add-on per-tenant (mod.research → HIDE/LOCK drops/locks the rail entry + route).
+    { key: "mod.research", kind: "module", parent_key: null, label: "Famit Research", sort_order: 72 },
+    { key: "research.lab", kind: "page", parent_key: "mod.research", label: "Research Lab", nav_href: "/research", sort_order: 73 },
 
     { key: "mod.foundation", kind: "module", parent_key: null, label: "Foundation", is_core: true, sort_order: 80 },
     { key: "foundation.suppression", kind: "page", parent_key: "mod.foundation", label: "Do-Not-Call", nav_href: "/suppression", sort_order: 81 },
@@ -1568,17 +2595,8 @@ export const FEATURE_REGISTRY: FeatureRegistryNode[] = [
 
 // Compose the fallback resolved matrix: every catalog node resolves to "on" with
 // provenance "global" (the resting/default-plan state — byte-identical to today).
-//
-// ROUND-6 LANE 4 — the matrix is now DYNAMIC: we merge the static seed with the
-// registry DERIVED FROM THE LIVE SIDEBAR NAV (lib/navRegistry) so any module the
-// founder can see in the rail (Creative Studio, Message/WhatsApp, Revenue Tools,
-// Knowledge Base, Integrations, the campaign SCRIPT / render-brain locks) shows up
-// as a lockable On/Lock/Hide row WITHOUT hand-editing this seed. The merge is
-// additive + dedup-by-key (navRegistry.mergeNavRegistry); the seed keeps authoring
-// any key it already defines. navRegistry imports only the TYPE from this module
-// (erased at runtime) so there is no import cycle.
 function fallbackEntitlements(): ResolvedEntitlement[] {
-    return mergeNavRegistry(FEATURE_REGISTRY).map((n) => ({
+    return FEATURE_REGISTRY.map((n) => ({
         ...n,
         mode: "on" as FeatureMode,
         provenance: "global" as EntitlementProvenance,
@@ -2046,11 +3064,13 @@ export type DryRunResult = {
 export async function dryRunCampaign(
     cid: string,
     message: string,
-    asReturning = false
+    asReturning = false,
+    history?: { role: "user" | "assistant"; content: string }[],
 ): Promise<DryRunResult> {
     const fd = new FormData();
     fd.append("message", message);
     fd.append("as_returning", asReturning ? "1" : "");
+    if (history && history.length) fd.append("history", JSON.stringify(history));
     const res = await fetch(
         `${BASE}/campaigns/${encodeURIComponent(cid)}/dry-run`,
         { method: "POST", headers: authHeaders(), body: fd }
@@ -2527,4 +3547,1165 @@ export async function saveHandoffOrder(list: HandoffMember[]): Promise<{ ok: boo
     await handle401(res);
     if (!res.ok) return throwHandoff(res);
     return res.json().catch(() => ({ ok: true }));
+}
+
+// ============================================================================
+// CREDITS — credit-wallet + buy-credits + service costing matrix (/credits/*).
+// The whole tree is DORMANT-SAFE: when FEATURE_CREDITS is off (404) or the box is
+// older, every reader resolves to null / an empty-but-valid shape so the Credits
+// hub degrades to a calm "not enabled yet" state instead of an error wall. Amounts
+// arrive in BOTH ₹ (INR) and CREDITS (1 credit = ₹credit_rate_inr).
+// ============================================================================
+export type CreditWallet = {
+    tenant_id: string;
+    currency: string;
+    credit_rate_inr: number;
+    plan: string;
+    balance_inr: number;
+    balance_credits: number;
+    held_inr: number;
+    held_credits: number;
+    lifetime_topup_inr: number;
+    lifetime_topup_credits: number;
+    lifetime_spend_inr: number;
+    lifetime_spend_credits: number;
+    mtd_spend_inr: number;
+    mtd_spend_credits: number;
+    low_balance: boolean;
+    low_balance_threshold_inr: number;
+    wallet_available: boolean;
+    engine: string;
+};
+
+export type CreditLedgerEntry = {
+    id: string;
+    kind: "topup" | "grant" | "adjust" | "debit";
+    service: string;
+    description: string;
+    amount_inr: number;
+    amount_credits: number;
+    status: string;
+    ref: string;
+    at: string;
+};
+
+export type CreditUsageService = {
+    service: string;
+    label: string;
+    category: string;
+    unit: string;
+    qty: number;
+    count: number;
+    cost_inr: number;
+    cost_credits: number;
+};
+
+export type CreditUsage = {
+    currency: string;
+    credit_rate_inr: number;
+    from: string;
+    to: string;
+    total_inr: number;
+    total_credits: number;
+    services: CreditUsageService[];
+    series: { date: string; cost_inr: number; cost_credits: number }[];
+};
+
+export type CreditPricingService = {
+    key: string;
+    label: string;
+    category: string;
+    unit: string;
+    basis_inr: number;
+    markup_pct: number;
+    price_inr: number;
+    price_credits: number;
+    margin_inr: number;
+    margin_pct: number | null;
+    metered: boolean;
+    description: string;
+};
+
+export type CreditPricingMatrix = {
+    currency: string;
+    credit_rate_inr: number;
+    services: CreditPricingService[];
+    rate_card?: Record<string, unknown>;
+};
+
+export type CreditGatewayInfo = { configured: boolean; currency: string; display_name: string };
+
+export type CreditHealth = {
+    ok: boolean;
+    engine: string;
+    credit_rate_inr: number;
+    gateways: Record<string, CreditGatewayInfo>;
+    default_gateway: string;
+    topup_enabled: boolean;
+};
+
+export type CreditPackage = {
+    id: string;
+    credits: number;
+    bonus: number;
+    popular: boolean;
+    price_inr: number;
+    total_credits: number;
+    bonus_pct: number;
+};
+
+export type CreditPackages = {
+    packages: CreditPackage[];
+    credit_rate_inr: number;
+    gateways: Record<string, CreditGatewayInfo>;
+    default_gateway: string;
+    topup_enabled: boolean;
+    min_topup_inr: number;
+};
+
+export type CreditCheckoutResult = {
+    status: "created" | "not_configured" | "error";
+    provider?: string;
+    // razorpay
+    order_id?: string;
+    key_id?: string;
+    // stripe
+    session_id?: string;
+    checkout_url?: string;
+    amount_inr?: number;
+    amount_minor?: number;
+    credits?: number;
+    currency?: string;
+    message?: unknown;
+};
+
+export type CreditAdminTenant = {
+    tenant_id: string;
+    name: string;
+    email: string;
+    plan: string;
+    balance_inr: number;
+    balance_credits: number;
+    mtd_spend_inr: number;
+    low_balance: boolean;
+};
+
+export type CreditAdminOverview = {
+    currency: string;
+    credit_rate_inr: number;
+    engine: string;
+    tenants: CreditAdminTenant[];
+    tenant_count: number;
+    outstanding_inr: number;
+    outstanding_credits: number;
+    mtd_revenue_inr: number;
+    mtd_cost_inr: number;
+    mtd_margin_inr: number;
+    gateways: Record<string, CreditGatewayInfo>;
+    error?: string;
+};
+
+async function _creditsGet<T>(path: string): Promise<T | null> {
+    try {
+        const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return null; // 404 (CREDITS off) / 5xx → dormant-safe
+        return (await res.json()) as T;
+    } catch {
+        return null;
+    }
+}
+
+export async function getCreditsHealth(): Promise<CreditHealth | null> {
+    return _creditsGet<CreditHealth>("/credits/health");
+}
+
+export async function getCreditsWallet(): Promise<CreditWallet | null> {
+    return _creditsGet<CreditWallet>("/credits/wallet");
+}
+
+export async function getCreditsLedger(limit = 100): Promise<{ ledger: CreditLedgerEntry[]; total: number }> {
+    const data = await _creditsGet<{ ledger: CreditLedgerEntry[]; total: number }>(
+        `/credits/ledger?limit=${limit}`
+    );
+    return data ?? { ledger: [], total: 0 };
+}
+
+export async function getCreditsUsage(opts?: { from?: string; to?: string }): Promise<CreditUsage | null> {
+    const p = new URLSearchParams();
+    if (opts?.from) p.set("from", opts.from);
+    if (opts?.to) p.set("to", opts.to);
+    const qs = p.toString();
+    return _creditsGet<CreditUsage>(`/credits/usage${qs ? `?${qs}` : ""}`);
+}
+
+export async function getCreditsPricing(): Promise<CreditPricingMatrix | null> {
+    return _creditsGet<CreditPricingMatrix>("/credits/pricing");
+}
+
+export async function getCreditsPackages(): Promise<CreditPackages | null> {
+    return _creditsGet<CreditPackages>("/credits/packages");
+}
+
+// Create a Razorpay order / Stripe session for a top-up. Never throws — returns the
+// gateway result (incl. {status:"not_configured"} when no gateway is keyed).
+export async function createCreditsCheckout(input: {
+    amount_inr?: number;
+    credits?: number;
+    package_id?: string;
+    provider?: string;
+}): Promise<CreditCheckoutResult> {
+    try {
+        const fd = new FormData();
+        if (input.amount_inr != null) fd.append("amount_inr", String(input.amount_inr));
+        if (input.credits != null) fd.append("credits", String(input.credits));
+        if (input.package_id) fd.append("package_id", input.package_id);
+        if (input.provider) fd.append("provider", input.provider);
+        const res = await fetch(`${BASE}/credits/topup/checkout`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: fd,
+        });
+        await handle401(res);
+        if (res.status === 404) return { status: "not_configured" };
+        const body = (await res.json().catch(() => ({}))) as CreditCheckoutResult;
+        return body && body.status ? body : { status: "error" };
+    } catch {
+        return { status: "error" };
+    }
+}
+
+// ---- Super-admin credits control ----
+export async function getCreditsAdminOverview(): Promise<CreditAdminOverview | null> {
+    return _creditsGet<CreditAdminOverview>("/credits/admin/overview");
+}
+
+export async function getCreditsAdminPricing(): Promise<CreditPricingMatrix | null> {
+    return _creditsGet<CreditPricingMatrix>("/credits/admin/pricing");
+}
+
+export async function saveCreditsPricing(
+    overrides: Record<string, Partial<CreditPricingService>>
+): Promise<CreditPricingMatrix | { ok: false }> {
+    try {
+        const res = await fetch(`${BASE}/credits/admin/pricing`, {
+            method: "PUT",
+            headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" },
+            body: JSON.stringify({ overrides }),
+        });
+        await handle401(res);
+        if (!res.ok) return { ok: false };
+        return (await res.json()) as CreditPricingMatrix;
+    } catch {
+        return { ok: false };
+    }
+}
+
+export async function grantCredits(input: {
+    tenant_id: string;
+    credits?: number;
+    amount_inr?: number;
+    note?: string;
+}): Promise<{ ok: boolean; credited_credits?: number; balance_credits?: number }> {
+    try {
+        const fd = new FormData();
+        fd.append("tenant_id", input.tenant_id);
+        if (input.credits != null) fd.append("credits", String(input.credits));
+        if (input.amount_inr != null) fd.append("amount_inr", String(input.amount_inr));
+        if (input.note) fd.append("note", input.note);
+        const res = await fetch(`${BASE}/credits/admin/grant`, {
+            method: "POST",
+            headers: authHeaders(),
+            body: fd,
+        });
+        await handle401(res);
+        if (!res.ok) return { ok: false };
+        return (await res.json()) as { ok: boolean; credited_credits?: number; balance_credits?: number };
+    } catch {
+        return { ok: false };
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// Tolex — agent tooling & capability system (super-admin control plane). All dormant-safe: a missing
+// backend module (503) resolves to empty/disabled shapes so the console renders a calm state.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+export type TolexCriticality = "normal" | "sensitive" | "critical";
+export type TolexMode = "off" | "allow" | "confirm" | "pin" | "approve";
+
+export type TolexTool = {
+    key: string;
+    name: string;
+    category: string;          // info | data | scheduling | comms | handoff | transaction
+    criticality: TolexCriticality;
+    description: string;
+    params: { type: string; properties: Record<string, unknown>; required?: string[] };
+};
+
+export type TolexToolGrant = { mode: TolexMode; max_amount?: number; hours?: string; dry_run?: boolean };
+
+export type TolexGrants = {
+    campaign_id: string;
+    inherited: boolean;        // true ⇒ showing the default profile this campaign would inherit
+    enabled: boolean;
+    tools: Record<string, TolexToolGrant>;
+};
+
+export type TolexOp = {
+    id: string; ts: string; campaign_id?: string; tenant_id?: string; phone?: string;
+    tool: string; name?: string; criticality?: TolexCriticality; mode?: string;
+    action: string;            // execute | queue | deny
+    result?: string;           // executed | queued | denied | error
+    needs?: string | null; reason?: string; detail?: string;
+};
+
+const EMPTY_TOLEX_GRANTS = (cid: string): TolexGrants =>
+    ({ campaign_id: cid, inherited: false, enabled: false, tools: {} });
+
+export async function getTolexCatalog(): Promise<{ catalog: TolexTool[]; runtime_enabled: boolean }> {
+    try {
+        const res = await fetch(`${BASE}/admin/tolex/catalog`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { catalog: [], runtime_enabled: false };
+        return res.json();
+    } catch {
+        return { catalog: [], runtime_enabled: false };
+    }
+}
+
+export async function getTolexGrants(campaignId = ""): Promise<{ grants: TolexGrants }> {
+    try {
+        const q = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+        const res = await fetch(`${BASE}/admin/tolex/grants${q}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { grants: EMPTY_TOLEX_GRANTS(campaignId) };
+        return res.json();
+    } catch {
+        return { grants: EMPTY_TOLEX_GRANTS(campaignId) };
+    }
+}
+
+export async function saveTolexGrants(data: {
+    campaign_id: string; enabled: boolean; tools: Record<string, TolexToolGrant>;
+}): Promise<{ ok: boolean; grants: TolexGrants }> {
+    const res = await fetch(`${BASE}/admin/tolex/grants`, {
+        method: "PUT",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to save Tolex grants");
+    return res.json();
+}
+
+export async function enableRecommendedTolex(campaignId = ""): Promise<{ ok: boolean; grants: TolexGrants }> {
+    const q = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+    const res = await fetch(`${BASE}/admin/tolex/grants/enable-recommended${q}`, {
+        method: "POST", headers: authHeaders(),
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to enable recommended");
+    return res.json();
+}
+
+export async function getTolexOps(campaignId = "", limit = 200): Promise<{ ops: TolexOp[] }> {
+    try {
+        const p = new URLSearchParams();
+        if (campaignId) p.set("campaign_id", campaignId);
+        p.set("limit", String(limit));
+        const res = await fetch(`${BASE}/admin/tolex/ops?${p.toString()}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { ops: [] };
+        return res.json();
+    } catch {
+        return { ops: [] };
+    }
+}
+
+// ---- Tenant surface (/tolex/*) — a tenant manages ONLY its own agent's tooling. Same shapes; the
+// scope is the caller's auth-derived tenant (server-enforced). Used by the Grow "Agent Tools" page. ----
+export const TolexApiAdmin = { getCatalog: getTolexCatalog, getGrants: getTolexGrants, saveGrants: saveTolexGrants, enableRecommended: enableRecommendedTolex, getOps: getTolexOps };
+
+export async function getMyToolsCatalog(): Promise<{ catalog: TolexTool[]; runtime_enabled: boolean }> {
+    try {
+        const res = await fetch(`${BASE}/tolex/catalog`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { catalog: [], runtime_enabled: false };
+        return res.json();
+    } catch {
+        return { catalog: [], runtime_enabled: false };
+    }
+}
+
+export async function getMyToolsGrants(campaignId = ""): Promise<{ grants: TolexGrants }> {
+    try {
+        const q = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+        const res = await fetch(`${BASE}/tolex/grants${q}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { grants: EMPTY_TOLEX_GRANTS(campaignId) };
+        return res.json();
+    } catch {
+        return { grants: EMPTY_TOLEX_GRANTS(campaignId) };
+    }
+}
+
+export async function saveMyToolsGrants(data: {
+    campaign_id: string; enabled: boolean; tools: Record<string, TolexToolGrant>;
+}): Promise<{ ok: boolean; grants: TolexGrants }> {
+    const res = await fetch(`${BASE}/tolex/grants`, {
+        method: "PUT",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+    });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to save agent tools");
+    return res.json();
+}
+
+export async function enableRecommendedMyTools(campaignId = ""): Promise<{ ok: boolean; grants: TolexGrants }> {
+    const q = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+    const res = await fetch(`${BASE}/tolex/grants/enable-recommended${q}`, { method: "POST", headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to enable recommended");
+    return res.json();
+}
+
+export async function getMyToolsOps(campaignId = "", limit = 200): Promise<{ ops: TolexOp[] }> {
+    try {
+        const p = new URLSearchParams();
+        if (campaignId) p.set("campaign_id", campaignId);
+        p.set("limit", String(limit));
+        const res = await fetch(`${BASE}/tolex/ops?${p.toString()}`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return { ops: [] };
+        return res.json();
+    } catch {
+        return { ops: [] };
+    }
+}
+
+export const TolexApiTenant = { getCatalog: getMyToolsCatalog, getGrants: getMyToolsGrants, saveGrants: saveMyToolsGrants, enableRecommended: enableRecommendedMyTools, getOps: getMyToolsOps };
+
+export type TolexApi = typeof TolexApiAdmin;
+
+// ════════════════════════════════════════════════════════════════════════════
+// FAMIT RESEARCH — instrumented conversation science. Mirrors the backend wire contract
+// (voice_ops/research/schema.py + droplet_work/research_query.py). Every value carries a
+// `confidence` / `source` so the UI can badge provenance honestly; arousal/friction each carry a
+// variance so the chart draws an uncertainty band. `demo:true` ⇒ the dataset is the real affect
+// filter over scripted archetype calls (labelled in-product), not a live tenant's numbers.
+// ════════════════════════════════════════════════════════════════════════════
+export type ResearchSource = "asr_metadata" | "acoustic_pyin" | "egemaps" | "demo" | string;
+export type ResearchRegime =
+    | "steady" | "warming" | "rising_friction" | "disengaging" | "resolving" | string;
+
+export type ResearchTurn = {
+    turn_num: number;
+    t_sec: number;
+    ts_iso?: string;
+    speaker?: string;
+    // prosody (the shippable 8 kHz-telephony set)
+    f0_mean_hz: number;
+    f0_range_hz: number;
+    f0_slope_hz_s: number;
+    f0_var_hz: number;
+    loudness_db: number;
+    speech_rate_sps: number;
+    pause_ratio: number;
+    turn_latency_ms: number;
+    voiced_sec: number;
+    // latent affect (online multimodal Kalman) — index 0..100, 50 = caller baseline; *_var = variance
+    arousal: number;
+    arousal_var: number;
+    friction: number;
+    friction_var: number;
+    engagement: number;           // conversational engagement/entrainment axis
+    engagement_var: number;
+    valence_hint: number;
+    // multimodal channels (Upgrades #1-#3) + predictive (Phase 2)
+    llm_valence?: number | null;
+    intent?: string;              // LLM/heuristic stance (interested|objecting|price-resistant|...)
+    objection?: number | null;
+    buying_intent?: number | null;
+    talk_share?: number | null;
+    backchannel_rate?: number | null;
+    entrainment?: number | null;
+    ssl_arousal?: number | null;  // live learned-SER arousal estimate (0..1) when the tap is on
+    conversion_risk?: number | null; // 0..100 cumulative through this turn
+    intervene?: boolean;          // conformal "intervene now" flag
+    // honesty metadata
+    confidence: number;
+    source: ResearchSource;
+    regime: ResearchRegime;
+    low_conf: boolean;
+    transcript?: string;
+    // optional clinical extras — never headline (telephone-band unreliable)
+    jitter_local?: number | null;
+    shimmer_local?: number | null;
+    hnr_db?: number | null;
+};
+
+export type ResearchCallSummary = {
+    call_id: string;
+    tenant_id?: string;
+    ts?: string;
+    turns: number;
+    duration_s: number;
+    arousal_mean: number;
+    arousal_peak: number;
+    friction_mean: number;
+    friction_peak: number;
+    arousal_trend: number;
+    friction_trend: number;
+    engagement_mean?: number;
+    engagement_peak?: number;
+    engagement_trend?: number;
+    conversion_risk?: number;     // final calibrated conversion-risk 0..100
+    intervene?: boolean | number; // the call crossed the conformal intervene trigger
+    top_intent?: string;
+    f0_mean_hz: number;
+    speech_rate_sps: number;
+    pause_ratio: number;
+    confidence: number;
+    source: ResearchSource;
+    regimes: string[] | string;
+    outcome: string;
+    converted: boolean | number;
+    has_outcome?: boolean | number;
+    deal_value: number;
+};
+
+export type ResearchOutcomeArm = {
+    n: number;
+    avg_friction_peak: number;
+    avg_arousal_trend: number;
+    avg_friction_trend: number;
+};
+
+export type ResearchDashboard = {
+    demo: boolean;
+    enabled?: boolean;
+    range: { minutes: number };
+    summary: {
+        calls: number;
+        resolved?: number; // calls with a known outcome (has_outcome=1)
+        unknown_outcome?: number; // calls not yet resolved
+        turns: number;
+        avg_arousal: number;
+        avg_friction: number;
+        peak_friction: number;
+        avg_engagement?: number;
+        avg_conversion_risk?: number;
+        intervened?: number;     // calls that crossed the intervene trigger
+        avg_speech_rate: number;
+        confidence: number;
+        converted: number;
+        conversion_rate: number; // over RESOLVED calls only
+    };
+    outcomes: { won: ResearchOutcomeArm; lost: ResearchOutcomeArm };
+    regime_counts: Record<string, number>;
+    calls: ResearchCallSummary[];
+    error?: string;
+};
+
+export type ResearchCallDetail = {
+    demo: boolean;
+    call: ResearchCallSummary;
+    turns: ResearchTurn[];
+    error?: string;
+};
+
+export async function getResearchDashboard(minutes = 1440): Promise<ResearchDashboard> {
+    const res = await fetch(`${BASE}/research/dashboard?minutes=${minutes}`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) throw new Error(`research dashboard ${res.status}`);
+    return res.json();
+}
+
+export async function getResearchCall(callId: string): Promise<ResearchCallDetail> {
+    const res = await fetch(`${BASE}/research/call/${encodeURIComponent(callId)}`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) throw new Error(`research call ${res.status}`);
+    return res.json();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// HAPTICA FLYWHEEL — the read/approve seam over the backend RLHF/RLAIF
+// self-improvement engine (prefix /flywheel). Mirrors getResearchDashboard's
+// shape EXACTLY: GETs use authHeaders(), a 404 (FLYWHEEL_ENABLED=0 / older box)
+// resolves to a clean empty shape so the console never throws when dormant, and
+// real non-ok statuses throw after handle401. POSTs are FormData (super-admin
+// only). Every value carries provenance/confidence so the UI badges honestly.
+// Backend dataclasses: voice_ops/flywheel/* (judge / bandit / preferences /
+// optimizer / monitors / labels). HUMAN-gated promotion — challengers are
+// proposed, never auto-applied without an explicit approve.
+// ════════════════════════════════════════════════════════════════════════════
+
+export type FlywheelHealth = {
+    enabled: boolean;
+    store_configured: boolean;
+    read_configured: boolean;
+    judge_enabled: boolean;
+    judge_model: string;
+    judge_sample_rate: number;
+    bandit_enabled: boolean;
+    bandit_epsilon: number;
+    optimizer_enabled: boolean;
+    auto_promote: boolean;
+    rubric_version: string;
+    holdout_pct: number;
+    worker_interval_s: number;
+    active: boolean;
+};
+
+export type FlywheelCoverageCell = {
+    objection_type: string;
+    lead_temperature: string;
+    n: number;
+};
+
+export type FlywheelDashboard = {
+    enabled?: boolean;
+    error?: string;
+    trajectory: {
+        turns: number;
+        calls: number;
+        avg_reward: number;
+        confidence: number;
+        low_conf_turns: number;
+        judged_turns: number;
+    };
+    preferences: {
+        pairs: number;
+        outcome_anchored: number;
+        survived_swap: number;
+        pair_conf: number;
+    };
+    coverage_grid: FlywheelCoverageCell[];
+};
+
+// A learned "move" — does this play (in this regime / objection / temperature
+// bucket) lift the booking rate vs the baseline? lift is the hero signal; the
+// CI [ci_low, ci_high] keeps it honest at low n_samples.
+export type FlywheelMove = {
+    move_type: string;
+    objection_type: string;
+    regime: string;
+    lead_temperature: string;
+    book_rate: number;
+    baseline_rate: number;
+    lift: number;
+    n_samples: number;
+    ci_low: number;
+    ci_high: number;
+};
+
+// One contextual-bandit arm (Thompson sampling: alpha/beta Beta posterior).
+// guardrail_* are the safety rails that must hold for an arm to keep playing.
+export type FlywheelArm = {
+    campaign_id: string;
+    vertical: string;
+    knob: string;
+    arm_id: string;
+    context_bucket: string;
+    alpha: number;
+    beta: number;
+    plays: number;
+    reward_sum: number;
+    discounted: number;
+    guardrail_optout_rate: number;
+    guardrail_cost_per_booking: number;
+    ts: string;
+    mean: number;
+};
+
+// A preference pair = the Moat. chosen vs rejected text the engine learned from,
+// with the margin, where it came from (source), and honesty badges (survived a
+// swap test, compliant, outcome-anchored vs judge-only).
+export type FlywheelPair = {
+    pair_id: string;
+    ts: string;
+    objection_type: string;
+    lead_temperature: string;
+    regime: string;
+    vertical: string;
+    chosen_text: string;
+    rejected_text: string;
+    margin: number;
+    source: string;
+    survived_swap: boolean;
+    confidence: number;
+    compliant: boolean;
+    outcome_anchored: boolean;
+    campaign_id: string;
+};
+
+// A proposed config change (new prompt/knob/policy). Promotion is HUMAN-gated:
+// gates_passed + shadow_ok + the OPE (SNIPS) value are decision aids, never an
+// auto-apply. status moves proposed → approved/rejected by a super-admin.
+export type FlywheelChallenger = {
+    challenger_id: string;
+    ts: string;
+    kind: string;
+    campaign_id: string;
+    proposed_config_json: string;
+    rationale: string;
+    ope_snips_value: number;
+    gates_passed: boolean;
+    replay_delta: number;
+    shadow_ok: boolean;
+    status: string;
+    approved_by: string;
+    reward_lift: number;
+    ttft_ms: number;
+    cost_per_appointment: number;
+    // POWER-UP tier (additive, all optional — older boxes omit them). The backend
+    // Challenger now carries the sequential confidence-sequence verdict (anytime-valid
+    // significance + the reward CS lower bound), the OPE confidence interval, the
+    // world-model sim pre-eval lift, and an is_shadow flag (shadow-only, never live Riya).
+    seq_significant?: boolean;
+    reward_cs_lower?: number;
+    ope_cs_lower?: number;
+    ope_cs_upper?: number;
+    sim_reward_lift?: number;
+    is_shadow?: boolean;
+};
+
+// A human calibration label on a turn (good/bad) — feeds the judge calibration.
+export type FlywheelLabel = {
+    call_id: string;
+    turn_num: number;
+    ts: string;
+    trigger: string;
+    label: string;
+    labeler: string;
+    rationale: string;
+    used_for_calibration: boolean;
+};
+
+// A Goodhart canary: a tracked metric vs its threshold. threshold_breached=true
+// means the optimizer may be gaming a proxy — the UI makes this visually loud.
+export type FlywheelMonitor = {
+    metric: string;
+    ts: string;
+    value: number;
+    arm_id: string;
+    threshold_breached: boolean;
+};
+
+// One turn of a credited trajectory (the per-turn reward decomposition the
+// engine learns from): the move, the latent state, the chosen arm, propensity,
+// and the reward (raw → capped) with confidence + low-conf honesty flag.
+export type FlywheelTurn = {
+    turn_num: number;
+    ts: string;
+    move_type: string;
+    objection_type: string;
+    state_friction: number;
+    state_arousal: number;
+    state_regime: string;
+    arm_model: string;
+    arm_voice: string;
+    arm_variant: string;
+    propensity: number;
+    affect_delta: number;
+    judge_score: number;
+    credit_advantage: number;
+    reward_raw: number;
+    reward_capped: number;
+    confidence: number;
+    low_conf: boolean;
+    agent_text: string;
+    caller_text: string;
+};
+
+// Empty shapes returned on 404 (dormant) so the console renders a friendly
+// "enable FLYWHEEL_ENABLED" card instead of throwing.
+const EMPTY_FLYWHEEL_DASHBOARD: FlywheelDashboard = {
+    enabled: false,
+    trajectory: { turns: 0, calls: 0, avg_reward: 0, confidence: 0, low_conf_turns: 0, judged_turns: 0 },
+    preferences: { pairs: 0, outcome_anchored: 0, survived_swap: 0, pair_conf: 0 },
+    coverage_grid: [],
+};
+
+const EMPTY_FLYWHEEL_HEALTH: FlywheelHealth = {
+    enabled: false,
+    store_configured: false,
+    read_configured: false,
+    judge_enabled: false,
+    judge_model: "",
+    judge_sample_rate: 0,
+    bandit_enabled: false,
+    bandit_epsilon: 0,
+    optimizer_enabled: false,
+    auto_promote: false,
+    rubric_version: "",
+    holdout_pct: 0,
+    worker_interval_s: 0,
+    active: false,
+};
+
+export async function getFlywheelHealth(): Promise<FlywheelHealth> {
+    const res = await fetch(`${BASE}/flywheel/health`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { ...EMPTY_FLYWHEEL_HEALTH };
+    if (!res.ok) throw new Error(`flywheel health ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelDashboard(minutes = 43200): Promise<FlywheelDashboard> {
+    const res = await fetch(`${BASE}/flywheel/dashboard?minutes=${minutes}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { ...EMPTY_FLYWHEEL_DASHBOARD };
+    if (!res.ok) throw new Error(`flywheel dashboard ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelMoves(vertical = ""): Promise<{ moves: FlywheelMove[]; error?: string }> {
+    const qs = vertical ? `?vertical=${encodeURIComponent(vertical)}` : "";
+    const res = await fetch(`${BASE}/flywheel/moves${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { moves: [] };
+    if (!res.ok) throw new Error(`flywheel moves ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelBandit(campaignId = ""): Promise<{ arms: FlywheelArm[]; error?: string }> {
+    const qs = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+    const res = await fetch(`${BASE}/flywheel/bandit${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { arms: [] };
+    if (!res.ok) throw new Error(`flywheel bandit ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelPreferences(
+    objection = "",
+    temp = "",
+    limit = 100,
+): Promise<{ pairs: FlywheelPair[]; error?: string }> {
+    const q = new URLSearchParams();
+    if (objection) q.set("objection", objection);
+    if (temp) q.set("temp", temp);
+    q.set("limit", String(limit));
+    const res = await fetch(`${BASE}/flywheel/preferences?${q.toString()}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { pairs: [] };
+    if (!res.ok) throw new Error(`flywheel preferences ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelChallengers(status = ""): Promise<{ challengers: FlywheelChallenger[]; error?: string }> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : "";
+    const res = await fetch(`${BASE}/flywheel/challengers${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { challengers: [] };
+    if (!res.ok) throw new Error(`flywheel challengers ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelLabels(): Promise<{ labels: FlywheelLabel[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/labels`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { labels: [] };
+    if (!res.ok) throw new Error(`flywheel labels ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelMonitors(minutes = 43200): Promise<{ monitors: FlywheelMonitor[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/monitors?minutes=${minutes}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { monitors: [] };
+    if (!res.ok) throw new Error(`flywheel monitors ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelTrajectory(
+    callId: string,
+): Promise<{ call_id: string; turns: FlywheelTurn[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/trajectory/${encodeURIComponent(callId)}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { call_id: callId, turns: [] };
+    if (!res.ok) throw new Error(`flywheel trajectory ${res.status}`);
+    return res.json();
+}
+
+// ── HUMAN-gated promotion + calibration writes (FormData, super-admin only) ──
+export async function approveFlywheelChallenger(
+    id: string,
+): Promise<{ ok: boolean; challenger_id: string; config?: unknown }> {
+    const res = await fetch(`${BASE}/flywheel/challengers/${encodeURIComponent(id)}/approve`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: new FormData(),
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error(`flywheel approve ${res.status}`);
+    return res.json();
+}
+
+export async function rejectFlywheelChallenger(
+    id: string,
+    reason: string,
+): Promise<{ ok: boolean; challenger_id: string }> {
+    const fd = new FormData();
+    fd.append("reason", reason);
+    const res = await fetch(`${BASE}/flywheel/challengers/${encodeURIComponent(id)}/reject`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+    });
+    await handle401(res);
+    if (!res.ok) throw new Error(`flywheel reject ${res.status}`);
+    return res.json();
+}
+
+export async function submitFlywheelLabel(
+    callId: string,
+    turn: number,
+    label: string,
+    rationale: string,
+): Promise<{ ok: boolean }> {
+    const fd = new FormData();
+    fd.append("label", label);
+    fd.append("rationale", rationale);
+    const res = await fetch(
+        `${BASE}/flywheel/labels/${encodeURIComponent(callId)}/${encodeURIComponent(String(turn))}`,
+        { method: "POST", headers: authHeaders(), body: fd },
+    );
+    await handle401(res);
+    if (!res.ok) throw new Error(`flywheel label ${res.status}`);
+    return res.json();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// HAPTICA FLYWHEEL — POWER-UP TIER. The next layer over the same /flywheel seam:
+// CAUSAL effects (CATE, not correlation), the learned reward/value CRITIC, the
+// contextual POLICY (+ OPE 3-leg) & rebuttal PLAY library, the caller WORLD MODEL
+// (archetypes + filter-only sim rollouts), SEQUENTIAL confidence-sequences, and
+// self-hosted shadow DISTILL runs. SAME contract as the base block: GET +
+// authHeaders(), a 404 (FLYWHEEL_ENABLED=0 / older box / route not mounted)
+// resolves to a clean empty shape so the console never error-walls when dormant,
+// real non-ok statuses throw after handle401. Everything human-gated / shadow-only.
+// ════════════════════════════════════════════════════════════════════════════
+
+// A CAUSAL effect estimate — the CATE (conditional average treatment effect) of a
+// move in a cell, i.e. how much this play actually CAUSES bookings (vs the merely
+// correlational raw_lift). Promote only when the CI lower bound (cate_lower) > 0.
+// overlap_min < 0.02 = an untrustworthy cell (no positivity); sign_agree = the
+// causal sign matches the correlational sign.
+export type FlywheelCATE = {
+    move_type: string;
+    objection_type: string;
+    regime: string;
+    lead_temperature: string;
+    cate: number;
+    cate_lower: number;
+    cate_upper: number;
+    raw_lift: number;
+    n_treated: number;
+    overlap_min: number;
+    sign_agree: boolean;
+};
+
+// A learned critic model row: the V(state)=P(book) value model (+ trained reward
+// potential) powering live momentum. platt_a/platt_b = the Platt calibration; auc
+// + ece (expected calibration error) are the quality gates; active = currently live.
+export type FlywheelCritic = {
+    ts: string;
+    vertical: string;
+    model_type: string;
+    platt_a: number;
+    platt_b: number;
+    auc: number;
+    ece: number;
+    n_rows: number;
+    active: boolean;
+    coef_json: string;
+};
+
+// A contextual-policy model (per campaign/knob) with the 3-leg OPE: SNIPS / FQE /
+// MAGIC and the pessimistic ope_lower (the promote-only-when-lower-bound>0 floor).
+export type FlywheelPolicy = {
+    ts: string;
+    campaign_id: string;
+    vertical: string;
+    knob: string;
+    n_features: number;
+    ope_snips: number;
+    ope_fqe: number;
+    ope_magic: number;
+    ope_lower: number;
+    active: boolean;
+    arms_json: string;
+};
+
+// A rebuttal template in the play library, keyed by objection_type.
+export type FlywheelPlay = {
+    template_id: string;
+    objection_type: string;
+    text: string;
+    label: string;
+};
+
+// A caller-archetype = a synthetic persona the world-model simulates against. weight
+// is its coverage weight; base_book_rate is its prior; the *_json hold the objection
+// histogram + affect template the simulator samples from.
+export type FlywheelArchetype = {
+    archetype_id: string;
+    label: string;
+    temperament: string;
+    base_book_rate: number;
+    weight: number;
+    n_calls: number;
+    objection_hist_json: string;
+    affect_template_json: string;
+};
+
+// One simulated rollout from the FILTER-ONLY caller simulator (it proposes/removes
+// challengers, never promotes). ece > 0.15 = the sim self-disabled (low fidelity).
+export type FlywheelSimRollout = {
+    ts: string;
+    archetype_id: string;
+    challenger_id: string;
+    policy_label: string;
+    sim_outcome: string;
+    sim_reward: number;
+    turns: number;
+    usi: number;
+    ece: number;
+};
+
+// One state of a sequential (anytime-valid) confidence sequence for a challenger's
+// metric. significant=true once the CS [cs_lower, cs_upper] excludes 0.
+export type FlywheelSeqState = {
+    challenger_id: string;
+    metric: string;
+    n: number;
+    running_mean: number;
+    cs_lower: number;
+    cs_upper: number;
+    significant: boolean;
+};
+
+// A self-hosted shadow distillation run (DPO/KTO/etc). status moves
+// queued→running→done/failed; adapter_uri is the trained shadow adapter. SHADOW-ONLY
+// — these never touch live Riya.
+export type FlywheelDistillRun = {
+    ts: string;
+    run_id: string;
+    method: string;
+    base_model: string;
+    n_desirable: number;
+    n_undesirable: number;
+    status: string;
+    adapter_uri: string;
+};
+
+export async function getFlywheelCausal(vertical = ""): Promise<{ moves: FlywheelCATE[]; error?: string }> {
+    const qs = vertical ? `?vertical=${encodeURIComponent(vertical)}` : "";
+    const res = await fetch(`${BASE}/flywheel/causal${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { moves: [] };
+    if (!res.ok) throw new Error(`flywheel causal ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelCritic(): Promise<{ critics: FlywheelCritic[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/critic`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { critics: [] };
+    if (!res.ok) throw new Error(`flywheel critic ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelPolicy(campaignId = ""): Promise<{ policies: FlywheelPolicy[]; error?: string }> {
+    const qs = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : "";
+    const res = await fetch(`${BASE}/flywheel/policy${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { policies: [] };
+    if (!res.ok) throw new Error(`flywheel policy ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelPlayLibrary(objection = ""): Promise<{ templates: FlywheelPlay[]; error?: string }> {
+    const qs = objection ? `?objection=${encodeURIComponent(objection)}` : "";
+    const res = await fetch(`${BASE}/flywheel/play-library${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { templates: [] };
+    if (!res.ok) throw new Error(`flywheel play-library ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelArchetypes(): Promise<{ archetypes: FlywheelArchetype[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/archetypes`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { archetypes: [] };
+    if (!res.ok) throw new Error(`flywheel archetypes ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelSimRollouts(minutes = 43200): Promise<{ rollouts: FlywheelSimRollout[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/sim-rollouts?minutes=${minutes}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { rollouts: [] };
+    if (!res.ok) throw new Error(`flywheel sim-rollouts ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelSequential(challengerId = ""): Promise<{ states: FlywheelSeqState[]; error?: string }> {
+    const qs = challengerId ? `?challenger_id=${encodeURIComponent(challengerId)}` : "";
+    const res = await fetch(`${BASE}/flywheel/sequential${qs}`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { states: [] };
+    if (!res.ok) throw new Error(`flywheel sequential ${res.status}`);
+    return res.json();
+}
+
+export async function getFlywheelDistill(): Promise<{ runs: FlywheelDistillRun[]; error?: string }> {
+    const res = await fetch(`${BASE}/flywheel/distill`, { headers: authHeaders() });
+    await handle401(res);
+    if (res.status === 404) return { runs: [] };
+    if (!res.ok) throw new Error(`flywheel distill ${res.status}`);
+    return res.json();
+}
+
+
+// Script Studio 2.0 option catalogue (categories/goals/lead-warmth/dials) — drives the builder UI.
+export type ScriptStudioMeta = {
+    categories: { id: string; label: string; when?: string; framework?: string }[];
+    goals: { id: string; label: string }[];
+    lead_warmth: { id: string; label: string }[];
+    tones: string[];
+    lengths: string[];
+    push: string[];
+    model_label?: string;
+};
+const _EMPTY_STUDIO_META: ScriptStudioMeta = {
+    categories: [], goals: [], lead_warmth: [], tones: [], lengths: [], push: [],
+};
+export async function getScriptStudioMeta(): Promise<ScriptStudioMeta> {
+    try {
+        const res = await fetch(`${BASE}/script/studio-meta`, { headers: authHeaders() });
+        await handle401(res);
+        if (!res.ok) return _EMPTY_STUDIO_META;
+        return (await res.json().catch(() => _EMPTY_STUDIO_META)) as ScriptStudioMeta;
+    } catch {
+        return _EMPTY_STUDIO_META;
+    }
+}
+
+// VOICE TUNING (super-admin) — live TTS knobs written to voice_keys.json (agent applies next call, no restart).
+export type VoiceTuning = { tts_provider: string; el_speed: string; el_stability: string; el_similarity: string; el_style: string; el_speaker_boost: string; voice_id: string; sarvam_tts_speaker: string; sarvam_tts_model: string; };
+export async function getVoiceTuning(): Promise<VoiceTuning> {
+    const res = await fetch(`${BASE}/admin/voice-tuning`, { headers: authHeaders() });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to load voice tuning");
+    return (await res.json()) as VoiceTuning;
+}
+export async function saveVoiceTuning(partial: Partial<VoiceTuning>): Promise<VoiceTuning> {
+    const res = await fetch(`${BASE}/admin/voice-tuning`, { method: "POST", headers: { ...(authHeaders() as Record<string, string>), "Content-Type": "application/json" }, body: JSON.stringify(partial) });
+    await handle401(res);
+    if (!res.ok) return throwForStatus(res, "Failed to save voice tuning");
+    return (await res.json()) as VoiceTuning;
 }

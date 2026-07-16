@@ -24,7 +24,12 @@ import uuid
 _VAR_DIR = os.getenv("FAMIT_VAR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "var"))
 _STORE_ENC = os.path.join(_VAR_DIR, "custom_providers.json.enc")
 _STORE_PLAIN = os.path.join(_VAR_DIR, "custom_providers.json")
-_KINDS = ("stt", "llm", "tts")
+# Service categories the founder can register. Beyond the three voice-pipeline roles
+# (stt/llm/tts) we accept the full set of AI service kinds so ANY provider can be added
+# from the control center; the voice agent only consumes stt/llm/tts today, the rest are
+# stored for routing/integration use (embeddings, rerank, VAD, telephony/SIP, realtime,
+# webhooks, etc.). "other" is the catch-all.
+_KINDS = ("stt", "llm", "tts", "embedding", "rerank", "vad", "telephony", "realtime", "webhook", "other")
 
 _LOCK = threading.RLock()
 _CACHE: list | None = None
@@ -135,13 +140,14 @@ def list_masked() -> list:
             "model": x.get("model", ""),
             "enabled": bool(x.get("enabled", True)),
             "added_at": x.get("added_at", ""),
+            "logo_url": x.get("logo_url", ""),
             "masked": mask(x.get("key", "")),
             "available": bool(x.get("enabled", True)) and bool((x.get("key") or "").strip()),
         })
     return out
 
 
-def add(name: str, kind: str, base_url: str, model: str, key: str = "") -> dict:
+def add(name: str, kind: str, base_url: str, model: str, key: str = "", logo_url: str = "") -> dict:
     """Register a custom provider. Returns {id, name, kind, masked}. Raises ValueError on bad input."""
     nm = (name or "").strip()
     k = (kind or "").strip().lower()
@@ -151,16 +157,16 @@ def add(name: str, kind: str, base_url: str, model: str, key: str = "") -> dict:
     if not nm:
         raise ValueError("name required")
     if k not in _KINDS:
-        raise ValueError("kind must be one of stt|llm|tts")
+        raise ValueError("kind must be one of " + "|".join(_KINDS))
     if not bu:
         raise ValueError("base_url required")
-    if not md:
-        raise ValueError("model required")
+    # model is OPTIONAL — some STT/TTS providers have no model id; store "" when absent.
     with _LOCK:
         items = _decrypt_load(_store_path())
         cid = "cp_" + uuid.uuid4().hex[:10]
         items.append({
             "id": cid, "name": nm, "kind": k, "base_url": bu, "model": md, "key": ky,
+            "logo_url": (logo_url or "").strip(),
             "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         })
         _atomic_write(_store_path(), items)

@@ -21,8 +21,6 @@ import Icon from "@/components/Icon";
 
 export type ProviderLockState = "config-only" | "live";
 
-type Chip = { role: string; label: string; provider: string };
-
 type Props = {
     state: ProviderLockState;
     stt: string;
@@ -52,12 +50,6 @@ export default function ProviderLock({
     inboundLive,
 }: Props) {
     const live = state === "live";
-
-    const chips: Chip[] = [
-        { role: "STT", label: pretty(stt), provider: stt },
-        { role: "LLM", label: pretty(llm), provider: llm },
-        { role: "TTS", label: pretty(tts), provider: tts },
-    ];
 
     return (
         <div
@@ -107,31 +99,27 @@ export default function ProviderLock({
                 </span>
             </div>
 
-            {/* the resolved triple + voice */}
-            <div className="flex flex-wrap items-center gap-2">
-                {chips.map((c) => (
-                    <span
-                        key={c.role}
-                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-b-surface2 border border-s-subtle text-caption"
-                    >
-                        <span className="text-t-tertiary">{c.role}</span>
-                        <span className="text-t-primary font-medium">
-                            {c.label}
-                        </span>
-                    </span>
-                ))}
-                {voice && (
-                    <span className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-primary-01/8 border border-primary-01/20 text-caption">
-                        <Icon
-                            name="profile"
-                            className="size-3.5 fill-primary-01"
-                        />
-                        <span className="text-t-primary font-medium truncate max-w-40">
-                            {voice}
-                        </span>
-                    </span>
-                )}
+            {/* the resolved pipeline: STT → LLM → TTS (dynamic from the triple),
+                each node carrying the real provider logo + a flowing red signal
+                labelled "Famit Infra". */}
+            <div className="overflow-x-auto pt-6 pb-2 scrollbar scrollbar-thumb-t-tertiary/30 scrollbar-track-transparent">
+                <div className="mx-auto flex w-max items-center">
+                    <PipeNode role="STT" provider={stt} name={pretty(stt)} />
+                    <PipeConnector />
+                    <PipeNode role="LLM" provider={llm} name={pretty(llm)} />
+                    <PipeConnector />
+                    <PipeNode role="TTS" provider={tts} name={pretty(tts)} />
+                </div>
             </div>
+            {voice && (
+                <div className="mt-3 inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-primary-01/8 border border-primary-01/20 text-caption">
+                    <Icon name="profile" className="size-3.5 fill-primary-01" />
+                    <span className="text-t-tertiary">Voice</span>
+                    <span className="text-t-primary font-medium truncate max-w-44">
+                        {voice}
+                    </span>
+                </div>
+            )}
 
             {/* honest state explainer */}
             <p className="mt-3 text-caption text-t-secondary leading-relaxed">
@@ -162,4 +150,77 @@ export default function ProviderLock({
             </p>
         </div>
     );
+}
+
+// ── one pipeline node (matches the Figma): a large dark pill with the provider
+// logo inside a dark circle on the left + a BIG role + the provider name. ──
+function PipeNode({
+    role,
+    provider,
+    name,
+}: {
+    role: string;
+    provider: string;
+    name: string;
+}) {
+    return (
+        <div className="pipe-node flex shrink-0 items-center gap-3.5 rounded-full py-2.5 pl-2.5 pr-6 ring-1 ring-white/[0.06] ring-inset">
+            <span className="pipe-badge grid size-12 shrink-0 place-items-center rounded-full ring-1 ring-white/[0.08] ring-inset">
+                <ProviderGlyph id={provider} />
+            </span>
+            <span className="leading-none">
+                <span className="block text-[1.6rem] font-light leading-none tracking-tight text-white">
+                    {role}
+                </span>
+                <span className="mt-1 block truncate max-w-[7rem] text-[0.76rem] text-white/45">
+                    {name}
+                </span>
+            </span>
+        </div>
+    );
+}
+
+// ── the "Famit Infra" connector: a calm hairline track with a travelling
+// signal comet + soft glowing end-nodes (premium, not a garish red band). ──
+function PipeConnector() {
+    return (
+        <div
+            className="relative flex shrink-0 items-center"
+            style={{ width: "6rem" }}
+        >
+            <span className="pipe-dot" aria-hidden />
+            <span className="pipe-line" aria-hidden>
+                <span className="pipe-comet" aria-hidden />
+                <span className="pipe-comet pipe-comet-2" aria-hidden />
+            </span>
+            <span className="pipe-dot" aria-hidden />
+            <span className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[0.74rem] font-medium text-t-tertiary">
+                Famit Infra
+            </span>
+        </div>
+    );
+}
+
+// ── provider logo (dynamic). Known providers render their real brand SVG as a
+// white CSS mask, sized to sit inside the node's circle; else a monogram. ──
+function ProviderGlyph({ id }: { id: string }) {
+    const s = (id || "").toLowerCase();
+    const mask = (file: string, w: string, h: string) => (
+        <span
+            aria-hidden
+            className="prov-logo block shrink-0"
+            style={{
+                width: w,
+                height: h,
+                WebkitMaskImage: `url(/provider-logos/${file})`,
+                maskImage: `url(/provider-logos/${file})`,
+            }}
+        />
+    );
+    if (s.includes("sarvam")) return mask("sarvam.svg", "1.7rem", "1.7rem");
+    if (s.includes("groq")) return mask("groq.svg", "2.15rem", "0.79rem");
+    if (s.includes("eleven"))
+        return mask("elevenlabs-mark.svg", "0.62rem", "1.5rem");
+    const ch = (id || "?").trim().charAt(0).toUpperCase() || "?";
+    return <span className="text-base font-semibold leading-none text-white">{ch}</span>;
 }

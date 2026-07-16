@@ -16,6 +16,7 @@ import { useParams } from "next/navigation";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import Select from "@/components/Select";
 import Icon from "@/components/Icon";
 import Tabs from "@/components/Tabs";
 import Table from "@/components/Table";
@@ -588,24 +589,25 @@ function MapSelect({
     disabled?: boolean;
     onChange: (v: string) => void;
 }) {
+    const FIELD_OPTS = options.map((f, i) => ({
+        id: i,
+        name: `${f.label} (${f.key})`,
+        value: f.key,
+    }));
     return (
         <label className="block">
             <span className="block mb-1.5 text-caption text-t-tertiary">
                 {label}
             </span>
-            <select
-                value={value}
+            <Select
+                className="w-full"
+                classButton="!h-11"
+                placeholder={`Auto (${label.toLowerCase()})`}
                 disabled={disabled}
-                onChange={(e) => onChange(e.target.value)}
-                className="input-base w-full h-11 px-3.5 rounded-2xl text-body-2"
-            >
-                <option value="">Auto ({label.toLowerCase()})</option>
-                {options.map((f) => (
-                    <option key={f.key} value={f.key}>
-                        {f.label} ({f.key})
-                    </option>
-                ))}
-            </select>
+                value={FIELD_OPTS.find((o) => o.value === value) ?? null}
+                options={FIELD_OPTS}
+                onChange={(o) => onChange(FIELD_OPTS[o.id].value)}
+            />
         </label>
     );
 }

@@ -6,6 +6,9 @@
 !.env.example
 !*/.env.example
 !*/.env.local.example
+!.env.deploy.example
+!*/.env.deploy.example
+!*.example
 *.pem
 *.key
 *.p12

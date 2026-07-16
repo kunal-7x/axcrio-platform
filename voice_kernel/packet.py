@@ -19,7 +19,6 @@ Pure-stdlib only (dataclasses/enum/typing) — import-safe for aim_voice_agent.p
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Optional
@@ -27,16 +26,6 @@ from typing import Optional
 from .errors import BudgetExceededError, ClampError
 from .fences import defang_fences
 from .tokens import clamp_chars, clamp_list, estimate_tokens
-
-
-def _card_scripts_enabled() -> bool:
-    """R5-P1.3 card-script gate (DEFAULT OFF). When OFF the campaign card's
-    ready-to-speak `negotiation_ladder` / `closing_lines` SCRIPT slots are NOT
-    rendered into the prefix (they are the verbatim "NEGOTIATION:"/"CLOSE:" lines
-    the LLM parrots into premature closings). Campaign DESCRIPTIONS/facts still
-    render; only the behavioral script lines are stripped. Set CARD_SCRIPTS=1 to
-    restore the old verbatim behaviour."""
-    return os.getenv("CARD_SCRIPTS", "0") in ("1", "true", "True")
 
 
 # --------------------------------------------------------------------------- #
@@ -358,20 +347,10 @@ class ContextPacket:
         if c.objections:
             obj = " | ".join(f"Q:{o.q} A:{o.a}" for o in c.objections)
             card_lines.append("OBJECTIONS: " + obj)
-        # R5-P1.3 — KILL THE CARD-SCRIPT LEAK (default OFF). The campaign's
-        # `negotiation_ladder` / `closing_lines` are ready-to-speak SCRIPTS the LLM
-        # parrots verbatim ("NEGOTIATION: ...", "CLOSE: ..."), which drives the
-        # scripted/premature closings the founder hears. By default we DROP these
-        # script slots from the prefix (campaign DESCRIPTIONS/facts above — PRODUCT/
-        # ABOUT/OFFER/USPS/TALKING POINTS/QUALIFY/OBJECTIONS — still render: this is
-        # "facts, not scripts"). Set CARD_SCRIPTS=1 to restore the old verbatim
-        # behaviour. The behavioral CLOSE discipline now lives in the L0 engagement
-        # block + the brain-pack closing PRINCIPLE, not a recited card line.
-        if _card_scripts_enabled():
-            if c.negotiation_ladder:
-                card_lines.append("NEGOTIATION: " + " -> ".join(c.negotiation_ladder))
-            if c.closing_lines:
-                card_lines.append("CLOSE: " + "; ".join(c.closing_lines))
+        if c.negotiation_ladder:
+            card_lines.append("NEGOTIATION: " + " -> ".join(c.negotiation_ladder))
+        if c.closing_lines:
+            card_lines.append("CLOSE: " + "; ".join(c.closing_lines))
         if c.do:
             card_lines.append("DO: " + "; ".join(c.do))
         if c.dont:

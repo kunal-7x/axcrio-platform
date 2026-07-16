@@ -114,6 +114,16 @@ export default function DashboardPage() {
     );
 }
 
+// The shared status filter is a LEAD-status vocabulary (hot/warm/cold/dead/booked/callback/
+// interested). Only some of those map to a CALL outcome — apply those to the calls-derived tiles;
+// the lead tiers (hot/warm/…) are handled by the report (lead) tiles, so we don't outcome-filter the
+// calls table by them (it would wrongly empty it).
+const OUTCOME_FROM_STATUS: Record<string, string> = {
+    booked: "booked", callback: "callback", interested: "interested",
+};
+// How often the dashboard silently refreshes (live, no page reload).
+const LIVE_REFRESH_MS = 20000;
+
 function DashboardInner() {
     const { range, campaign, status } = useGlobalFilters();
     const [usage, setUsage] = useState<UsageData | null>(null);
@@ -143,9 +153,31 @@ function DashboardInner() {
         };
     }, [range, campaign, status]);
 
-    // Recent calls — fetch only 8 initially; "Show more" loads the next page.
+    // P4 live: silently refresh the report every LIVE_REFRESH_MS (no spinner, no page reload).
+    // Last-write-wins (self-corrects next tick); re-armed when the filters change.
+    useEffect(() => {
+        const id = setInterval(() => {
+            getReport(range, { campaign: campaign || undefined, lead_status: status || undefined })
+                .then((r) => setReport(r))
+                .catch(() => {});
+        }, LIVE_REFRESH_MS);
+        return () => clearInterval(id);
+    }, [range, campaign, status]);
+
+    // Recent calls — fetch only 8 initially; "Show more" loads the next page. P4: the calls-derived
+    // tiles (table, hourly heatmap, top-campaigns) honor the shared range + campaign filter, and the
+    // status filter when it maps to a call outcome. Polled live.
     const [callsPage, setCallsPage] = useState(8);
-    const callsQuery = useCalls({ limit: callsPage, order: "desc", slim: true });
+    const callsQuery = useCalls(
+        {
+            limit: callsPage, order: "desc", slim: true,
+            campaign_id: campaign || undefined,
+            from: range.from || undefined,
+            to: range.to || undefined,
+            outcome: OUTCOME_FROM_STATUS[status] || undefined,
+        },
+        { refetchInterval: LIVE_REFRESH_MS },
+    );
     const calls: CallLog[] = useMemo(
         () => callsQuery.data?.calls ?? [],
         [callsQuery.data]
@@ -154,8 +186,8 @@ function DashboardInner() {
     const callsLoading = callsQuery.isLoading && calls.length === 0;
     const hasMoreCalls = calls.length < callsTotal;
 
-    // Day-over-day delta from the (real) stats series — honest, no fabricated periods.
-    const statsQuery = useStats();
+    // Day-over-day delta from the (real) stats series — honest, no fabricated periods. Polled live.
+    const statsQuery = useStats({ refetchInterval: LIVE_REFRESH_MS });
     const trendDelta = useMemo(() => {
         const series = statsQuery.data?.series ?? [];
         if (series.length < 2) return null;
@@ -928,7 +960,7 @@ function DashboardInner() {
                                                         </span>
                                                         {s.step_conv > 0 && s.stage !== "uploaded" && (
                                                             <span className="text-t-tertiary tabular-nums">
-                                                                {Math.min(100, s.step_conv)}%
+                                                                {s.step_conv}%
                                                             </span>
                                                         )}
                                                     </div>

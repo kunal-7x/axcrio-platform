@@ -25,11 +25,11 @@ import Tabs from "@/components/Tabs";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import Modal from "@/components/Modal";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { useMe, canWrite } from "@/lib/auth";
 import {
     getBookingStatus,
     listBookings,
+    listCapturedBookings,
     getAvailability,
     book,
     cancelBooking,
@@ -39,6 +39,7 @@ import {
     isDormant,
     type BookingConfig,
     type BookingRow,
+    type CapturedBooking,
     type FreeSlot,
     type TickResult,
 } from "./api";
@@ -106,41 +107,7 @@ const STATUS_TABS = [
     { id: 5, name: "Cancelled", key: "cancelled" },
 ];
 
-const bookingHead = ["Contact", "When", "Title", "Calendar", "Status", "Actions"];
-
-// Per-row Google Calendar indicator. A booking is "on calendar" when the
-// workspace has the two-way Google Calendar sync connected (cfg.calendar_configured)
-// AND the booking is still active (booked/rescheduled → a live event exists).
-// Cancelled/completed rows show a muted "—". When calendar isn't connected yet
-// the row shows a calm "not synced" hint rather than a false green.
-function CalendarCell({
-    booking,
-    connected,
-}: {
-    booking: BookingRow;
-    connected: boolean;
-}) {
-    const active = booking.status === "booked" || booking.status === "rescheduled";
-    if (!active) return <span className="text-t-tertiary">—</span>;
-    return (
-        <span
-            className={`inline-flex items-center gap-1.5 text-caption ${
-                connected ? "text-primary-02" : "text-t-tertiary"
-            }`}
-            title={
-                connected
-                    ? "Synced to Google Calendar"
-                    : "Google Calendar not connected — connect it in Integrations to two-way sync this visit"
-            }
-        >
-            <Icon
-                name="calendar"
-                className={`!size-3.5 ${connected ? "fill-primary-02" : "fill-t-tertiary"}`}
-            />
-            {connected ? "On calendar" : "Not synced"}
-        </span>
-    );
-}
+const bookingHead = ["Contact", "When", "Title", "Status", "Actions"];
 
 // ===========================================================================
 // Page
@@ -160,6 +127,10 @@ export default function BookingPage() {
     const [statusTab, setStatusTab] = useState(STATUS_TABS[0]);
     const statusFilter = statusTab.key;
 
+    // captured site-visits (live BC1 fast-capture — always available, even when the engine is dormant)
+    const [captured, setCaptured] = useState<CapturedBooking[]>([]);
+    const [capturedLoading, setCapturedLoading] = useState(true);
+
     // reminder/no-show preview (tick dry-run)
     const [preview, setPreview] = useState<TickResult | null>(null);
     const [previewLoading, setPreviewLoading] = useState(false);
@@ -171,7 +142,6 @@ export default function BookingPage() {
     const [reschedTarget, setReschedTarget] = useState<BookingRow | null>(null);
 
     const [toast, setToast] = useState<Toast | null>(null);
-    const [cancelTarget, setCancelTarget] = useState<BookingRow | null>(null);
     const showToast = (msg: string, type: "success" | "error" = "success") => {
         setToast({ msg, type });
         setTimeout(() => setToast(null), 4000);
@@ -192,20 +162,17 @@ export default function BookingPage() {
         setStatusLoaded(true);
     }, []);
 
-    const loadBookings = useCallback(
-        async (silent = false) => {
-            if (!silent) setBookingsLoading(true);
-            const r = await listBookings({ status: statusFilter, limit: 200 });
-            if (isDormant(r)) {
-                if (!silent) setBookings([]);
-                setBookingsLoading(false);
-                return;
-            }
-            setBookings(r.bookings || []);
+    const loadBookings = useCallback(async () => {
+        setBookingsLoading(true);
+        const r = await listBookings({ status: statusFilter, limit: 200 });
+        if (isDormant(r)) {
+            setBookings([]);
             setBookingsLoading(false);
-        },
-        [statusFilter]
-    );
+            return;
+        }
+        setBookings(r.bookings || []);
+        setBookingsLoading(false);
+    }, [statusFilter]);
 
     const loadPreview = useCallback(async () => {
         setPreviewLoading(true);
@@ -219,20 +186,22 @@ export default function BookingPage() {
         setPreviewLoading(false);
     }, []);
 
+    const loadCaptured = useCallback(async () => {
+        setCapturedLoading(true);
+        const r = await listCapturedBookings(200);
+        setCaptured(r.bookings || []);
+        setCapturedLoading(false);
+    }, []);
+
     useEffect(() => {
         loadStatus();
-    }, [loadStatus]);
+        loadCaptured();
+    }, [loadStatus, loadCaptured]);
 
     useEffect(() => {
         if (!statusLoaded) return;
         loadBookings();
         if (!dormant) loadPreview();
-        // Real-time: silently refresh booked site-visits in the background so a
-        // booking the voice agent just persisted (in-call → finalize) appears
-        // within seconds with no manual reload. Skip while dormant.
-        if (dormant) return;
-        const t = setInterval(() => loadBookings(true), 20000);
-        return () => clearInterval(t);
     }, [statusLoaded, dormant, loadBookings, loadPreview]);
 
     // ---- derived KPIs ---------------------------------------------------
@@ -257,14 +226,9 @@ export default function BookingPage() {
     }, [bookings]);
 
     // ---- actions --------------------------------------------------------
-    function handleCancel(b: BookingRow) {
-        setCancelTarget(b);
-    }
-
-    async function confirmCancel() {
-        const b = cancelTarget;
-        if (!b) return;
-        setCancelTarget(null);
+    async function handleCancel(b: BookingRow) {
+        if (!confirm(`Cancel the appointment for ${b.name || b.phone_display || "this contact"}?`))
+            return;
         const r = await cancelBooking(b.id);
         if (isDormant(r)) return showToast("Booking engine not available", "error");
         if (r.status === "ok" || r.status === "noop") {
@@ -329,8 +293,8 @@ export default function BookingPage() {
                     <MetricItem
                         icon="calendar"
                         title="Upcoming"
-                        value={dormant ? "—" : kpis.upcoming}
-                        sub={`${kpis.active} active`}
+                        value={dormant ? (captured.length || "—") : kpis.upcoming}
+                        sub={dormant ? "captured by voice" : `${kpis.active} active`}
                         accent
                     />
                     <MetricItem
@@ -370,6 +334,50 @@ export default function BookingPage() {
                 </div>
             </Card>
 
+            {/* Captured site-visits (live voice capture) — shown whenever any exist, even if the
+                full Postgres engine is dormant. This is what the agent books on a call. */}
+            {(capturedLoading || captured.length > 0) && (
+                <Card
+                    className="mb-3"
+                    title="Captured site visits"
+                    headContent={
+                        <span className="ml-auto mr-3 inline-flex items-center gap-2 text-caption text-t-secondary">
+                            <span className="pill pill-info"><span className="pill-dot" />voice</span>
+                            {captured.length > 0 && <span>{captured.length} captured</span>}
+                        </span>
+                    }
+                >
+                    <div className="px-5 pb-5 pt-1">
+                        {capturedLoading ? (
+                            <div className="py-8 text-center text-body-2 text-t-secondary">Loading captured bookings…</div>
+                        ) : captured.length === 0 ? (
+                            <div className="py-8 text-center text-body-2 text-t-secondary">No site visits captured yet.</div>
+                        ) : (
+                            <div className="flex flex-col divide-y divide-s-subtle">
+                                {captured.map((c) => (
+                                    <div key={c.id} className="flex items-center gap-3 py-3 flex-wrap sm:flex-nowrap">
+                                        <div className="min-w-0 flex-1">
+                                            <div className="text-body-2 text-t-primary truncate">{c.name || "—"}</div>
+                                            <div className="text-caption text-t-secondary truncate">
+                                                {c.phone || "—"}{c.campaign_id ? ` · ${c.campaign_id}` : ""}
+                                            </div>
+                                        </div>
+                                        <div className="min-w-0 sm:w-56">
+                                            <div className="text-body-2 text-t-primary truncate">{c.when_text || fmtDateTime(c.datetime_iso)}</div>
+                                            {c.datetime_iso && c.when_text && (
+                                                <div className="text-caption text-t-secondary">{fmtDateTime(c.datetime_iso)}</div>
+                                            )}
+                                        </div>
+                                        <span className="pill pill-info shrink-0"><span className="pill-dot" />{c.status || "captured"}</span>
+                                        <span className="text-caption text-t-tertiary shrink-0 hidden sm:inline">{fmtDateTime(c.created_at)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </Card>
+            )}
+
             {dormant ? (
                 <DormantPanel cfg={cfg} loaded={statusLoaded} />
             ) : (
@@ -400,7 +408,7 @@ export default function BookingPage() {
                                     >
                                         {[...Array(5)].map((_, i) => (
                                             <TableRow key={i}>
-                                                {[...Array(6)].map((__, j) => (
+                                                {[...Array(5)].map((__, j) => (
                                                     <td key={j}>
                                                         <div className="skeleton h-4 w-24 rounded-lg" />
                                                     </td>
@@ -443,8 +451,7 @@ export default function BookingPage() {
                                                 className={
                                                     h === "Actions"
                                                         ? "text-right"
-                                                        : h === "Title" ||
-                                                          h === "Calendar"
+                                                        : h === "Title"
                                                         ? "max-lg:hidden"
                                                         : ""
                                                 }
@@ -473,14 +480,6 @@ export default function BookingPage() {
                                                     </td>
                                                     <td className="text-t-secondary max-lg:hidden">
                                                         {b.title || "Appointment"}
-                                                    </td>
-                                                    <td className="max-lg:hidden">
-                                                        <CalendarCell
-                                                            booking={b}
-                                                            connected={
-                                                                !!cfg?.calendar_configured
-                                                            }
-                                                        />
                                                     </td>
                                                     <td>
                                                         <StatusPill
@@ -580,26 +579,6 @@ export default function BookingPage() {
                     }}
                 />
             )}
-
-            <ConfirmDeleteModal
-                open={!!cancelTarget}
-                onClose={() => setCancelTarget(null)}
-                onConfirm={confirmCancel}
-                title="Cancel appointment?"
-                message={
-                    <>
-                        Cancel the appointment for{" "}
-                        <span className="text-t-primary">
-                            {cancelTarget?.name ||
-                                cancelTarget?.phone_display ||
-                                "this contact"}
-                        </span>
-                        ? This can&apos;t be undone.
-                    </>
-                }
-                confirmLabel="Cancel appointment"
-                cancelLabel="Keep"
-            />
         </Layout>
     );
 }

@@ -1,0 +1,30 @@
+# Haptica-prod metrics exporters — node-exporter (host CPU/mem/disk/net) + cadvisor (per-
+# container). READ-ONLY observers (they never modify anything). Runs ON haptica-prod; the obs
+# droplet's Prometheus scrapes these over the BLR backbone. Ports are published on the host and
+# the prod DO firewall (haptica-fw) allows ONLY the obs droplet IP to reach them.
+name: haptica-prod-exporters
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - "/:/host:ro,rslave"
+    pid: host
+    ports:
+      - "9100:9100"   # firewalled to the obs droplet only
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - "/:/rootfs:ro"
+      - "/var/run:/var/run:ro"
+      - "/sys:/sys:ro"
+      - "/var/lib/docker/:/var/lib/docker:ro"
+      - "/dev/disk/:/dev/disk:ro"
+    ports:
+      - "8085:8080"   # firewalled to the obs droplet only

@@ -1,0 +1,15 @@
+[Unit]
+Description=Restrict obs Docker-published ports to haptica-prod (DOCKER-USER)
+After=docker.service
+Requires=docker.service
+# PartOf => when docker restarts (which flushes/recreates DOCKER-USER), this unit restarts too
+# and re-applies the rules, so the ports are never left open after a docker upgrade/restart.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/haptica-obs-fw.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

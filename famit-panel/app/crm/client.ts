@@ -146,6 +146,39 @@ export function isDormantResponse(r: { note?: string; error?: string }): boolean
     return !!(r.note && DORMANT_NOTES.has(r.note)) || !!r.error;
 }
 
+// The A-Z assessment the crm spine computes for one person (real signals only —
+// derived from the lead's score/lifecycle + every call's interest/outcome/
+// transcript). Every field is optional so a partial/dormant payload degrades calmly.
+export type ContactAnalysis = {
+    temperature: "hot" | "warm" | "cold" | "dead";
+    temperature_reason?: string;
+    stage?: string;
+    score?: number;
+    conversion_prob?: number; // 0..1
+    conversion_pct?: number; // 0..100
+    interest_level?: "high" | "medium" | "low" | "none";
+    interests?: string[];
+    behaviour?: {
+        engagement?: string;
+        responsiveness?: string;
+        sentiment?: string;
+        objections?: string[];
+        momentum?: string;
+    };
+    signals?: { label: string; value: string; tone?: string }[];
+    stats?: {
+        total_calls?: number;
+        answered_calls?: number;
+        missed_calls?: number;
+        talk_time_s?: number;
+        first_contact_at?: string;
+        last_contact_at?: string;
+    };
+    journey?: { stage: string; done?: boolean; at?: string }[];
+    summary?: string;
+    next_action?: string;
+};
+
 // Full contact (§3.1). Reads tolerate missing optional fields.
 export type ContactFull = {
     id: string;
@@ -165,6 +198,9 @@ export type ContactFull = {
     created_at?: string;
     updated_at?: string;
     data?: Record<string, unknown>;
+    // The full profile assessment (temperature, lead score, conversion chance,
+    // interest, behaviour, journey, call stats) — see ContactAnalysis.
+    analysis?: ContactAnalysis;
 };
 
 // The authoritative lead row joined alongside the contact (§7 GET /contacts/{id}).

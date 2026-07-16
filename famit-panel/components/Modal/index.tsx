@@ -55,7 +55,7 @@ const Modal = ({
                     className={`bg-b-surface1 ${
                         isSlidePanel
                             ? "relative w-114 h-svh duration-300 ease-out data-[closed]:translate-x-full max-md:w-full"
-                            : "w-full max-w-143 m-auto p-12 shadow-depth rounded-3xl duration-300 ease-out data-[closed]:scale-95 data-[closed]:opacity-0 max-md:p-6 dark:shadow-[0px_2.15px_0.5px_-2px_rgba(0,0,0,0.25),0px_5px_1.5px_-4px_rgba(8,8,8,0.2),0px_6px_4px_-4px_rgba(8,8,8,0.16),0px_6px_13px_0px_rgba(8,8,8,0.12),0px_24px_24px_-16px_rgba(8,8,8,0.08)]"
+                            : "w-full max-w-143 m-auto p-12 max-h-[calc(100svh-2rem)] overflow-y-auto shadow-depth rounded-3xl duration-300 ease-out data-[closed]:scale-95 data-[closed]:opacity-0 max-md:p-6 dark:shadow-[0px_2.15px_0.5px_-2px_rgba(0,0,0,0.25),0px_5px_1.5px_-4px_rgba(8,8,8,0.2),0px_6px_4px_-4px_rgba(8,8,8,0.16),0px_6px_13px_0px_rgba(8,8,8,0.12),0px_24px_24px_-16px_rgba(8,8,8,0.08)]"
                     } ${classWrapper || ""}`}
                     transition
                 >

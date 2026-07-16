@@ -16,7 +16,7 @@ import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
+import Select from "@/components/Select";
 import { useMe, canWrite, isAdmin } from "@/lib/auth";
 import {
     ErrorBanner,
@@ -74,6 +74,25 @@ const SECTIONS = [
     { id: "team", label: "Team", icon: "profile" },
     { id: "capabilities", label: "What it can do", icon: "grid" },
 ] as const;
+
+// Design-system Select option arrays (id === array index; the parallel `value`
+// carries the original token each state setter expects). Built once at module
+// scope from the static catalogs in _lib.ts.
+const LANGUAGE_OPTS = AIM_LANGUAGES.map((l, i) => ({ id: i, name: l.label, value: l.value }));
+const VOICE_PROVIDER_OPTS = AIM_VOICE_PROVIDERS.map((v, i) => ({ id: i, name: v.label, value: v.value }));
+const TIMEZONE_OPTS = AIM_TIMEZONES.map((tz, i) => ({ id: i, name: tz, value: tz }));
+const ROLE_OPTS = AIM_ROLES.map((r, i) => ({ id: i, name: r, value: r }));
+const VERIFY_MODE_OPTS = AIM_VERIFY_MODES.map((m, i) => ({
+    id: i,
+    name: m === "voice_pin" ? "Voice PIN (4–6 digit, spoken)" : "OTP SMS",
+    value: m,
+}));
+// L4 ("Blocked") is excluded — it can never be a step-up threshold.
+const PIN_LEVEL_OPTS = AIM_RISK_LEVELS.filter((r) => r.value !== "L4").map((r, i) => ({
+    id: i,
+    name: `${plainRisk(r.value)} — ${r.hint}`,
+    value: r.value,
+}));
 
 function stripNulls(p: AimProfile): Partial<AimProfile> {
     const out: Record<string, unknown> = {};
@@ -277,32 +296,24 @@ export default function SetupTab() {
                                 <Card title="Voice & language">
                                     <div className="px-5 pb-5 max-lg:px-3 grid grid-cols-2 gap-5 max-sm:grid-cols-1">
                                         <FormRow label="Language" hint="The language the AI speaks and understands by default.">
-                                            <select
-                                                value={form.language_preference ?? ""}
-                                                onChange={(e) => set("language_preference", e.target.value)}
-                                                className={selectCls}
+                                            <Select
+                                                className="w-full"
+                                                classButton={selectCls}
+                                                value={LANGUAGE_OPTS.find((o) => o.value === form.language_preference) ?? null}
+                                                options={LANGUAGE_OPTS}
+                                                onChange={(o) => set("language_preference", LANGUAGE_OPTS[o.id].value)}
                                                 disabled={formDisabled}
-                                            >
-                                                {AIM_LANGUAGES.map((l) => (
-                                                    <option key={l.value} value={l.value}>
-                                                        {l.label}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            />
                                         </FormRow>
                                         <FormRow label="Default voice provider" hint="Text-to-speech engine for the AI's spoken replies.">
-                                            <select
-                                                value={form.default_voice_provider ?? ""}
-                                                onChange={(e) => set("default_voice_provider", e.target.value)}
-                                                className={selectCls}
+                                            <Select
+                                                className="w-full"
+                                                classButton={selectCls}
+                                                value={VOICE_PROVIDER_OPTS.find((o) => o.value === form.default_voice_provider) ?? null}
+                                                options={VOICE_PROVIDER_OPTS}
+                                                onChange={(o) => set("default_voice_provider", VOICE_PROVIDER_OPTS[o.id].value)}
                                                 disabled={formDisabled}
-                                            >
-                                                {AIM_VOICE_PROVIDERS.map((v) => (
-                                                    <option key={v.value} value={v.value}>
-                                                        {v.label}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            />
                                         </FormRow>
                                     </div>
                                 </Card>
@@ -325,18 +336,14 @@ export default function SetupTab() {
                                             hint="Any command at or above this risk demands a fresh, scoped PIN before it runs. Lower-risk reads run without one."
                                         >
                                             <div className="flex items-center gap-3 flex-wrap">
-                                                <select
-                                                    value={form.require_pin_for_level ?? "L3"}
-                                                    onChange={(e) => set("require_pin_for_level", e.target.value as AimRiskLevel)}
-                                                    className={`${selectCls} max-w-xs`}
+                                                <Select
+                                                    className="max-w-xs w-full"
+                                                    classButton={selectCls}
+                                                    value={PIN_LEVEL_OPTS.find((o) => o.value === (form.require_pin_for_level ?? "L3")) ?? null}
+                                                    options={PIN_LEVEL_OPTS}
+                                                    onChange={(o) => set("require_pin_for_level", PIN_LEVEL_OPTS[o.id].value)}
                                                     disabled={formDisabled}
-                                                >
-                                                    {AIM_RISK_LEVELS.filter((r) => r.value !== "L4").map((r) => (
-                                                        <option key={r.value} value={r.value}>
-                                                            {plainRisk(r.value)} — {r.hint}
-                                                        </option>
-                                                    ))}
-                                                </select>
+                                                />
                                                 <Badge variant={riskVariant(form.require_pin_for_level)} dot>
                                                     {plainRisk(form.require_pin_for_level ?? "L3")} and above
                                                 </Badge>
@@ -433,18 +440,14 @@ export default function SetupTab() {
                                             />
                                         </FormRow>
                                         <FormRow label="Timezone" hint="The window above is interpreted in this zone.">
-                                            <select
-                                                value={form.timezone ?? ""}
-                                                onChange={(e) => set("timezone", e.target.value)}
-                                                className={selectCls}
+                                            <Select
+                                                className="w-full"
+                                                classButton={selectCls}
+                                                value={TIMEZONE_OPTS.find((o) => o.value === form.timezone) ?? null}
+                                                options={TIMEZONE_OPTS}
+                                                onChange={(o) => set("timezone", TIMEZONE_OPTS[o.id].value)}
                                                 disabled={formDisabled}
-                                            >
-                                                {AIM_TIMEZONES.map((tz) => (
-                                                    <option key={tz} value={tz}>
-                                                        {tz}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                            />
                                         </FormRow>
                                     </div>
                                 </Card>
@@ -853,11 +856,13 @@ function UserModal({
                     </FormRow>
                 </div>
                 <FormRow label="Role" hint="Effective permission = role allows AND a matching grant is checked below. Default-deny.">
-                    <select value={role} onChange={(e) => setRole(e.target.value as AimRole)} className={selectCls}>
-                        {AIM_ROLES.map((r) => (
-                            <option key={r} value={r}>{r}</option>
-                        ))}
-                    </select>
+                    <Select
+                        className="w-full"
+                        classButton={selectCls}
+                        value={ROLE_OPTS.find((o) => o.value === role) ?? null}
+                        options={ROLE_OPTS}
+                        onChange={(o) => setRole(ROLE_OPTS[o.id].value)}
+                    />
                 </FormRow>
                 <FormRow label="What they can command">
                     <div className="flex flex-wrap gap-2">
@@ -1202,17 +1207,13 @@ function AddNumberModal({
                 </div>
 
                 <FormRow label="Verification mode" hint="How this number authenticates commands — voice PIN (default) or OTP SMS.">
-                    <select
-                        value={role}
-                        onChange={(e) => setRole(e.target.value as AimVerifyMode)}
-                        className={selectCls}
-                    >
-                        {AIM_VERIFY_MODES.map((m) => (
-                            <option key={m} value={m}>
-                                {m === "voice_pin" ? "Voice PIN (4–6 digit, spoken)" : "OTP SMS"}
-                            </option>
-                        ))}
-                    </select>
+                    <Select
+                        className="w-full"
+                        classButton={selectCls}
+                        value={VERIFY_MODE_OPTS.find((o) => o.value === role) ?? null}
+                        options={VERIFY_MODE_OPTS}
+                        onChange={(o) => setRole(VERIFY_MODE_OPTS[o.id].value)}
+                    />
                 </FormRow>
 
                 <FormRow label="Capability grants" hint="What the AI will allow from this number. Default-deny for anything not listed.">
@@ -1271,15 +1272,12 @@ function NumbersCard({
     onAdded: (msg: string) => void;
 }) {
     const [deletingId, setDeletingId] = useState<string | null>(null);
-    const [delTarget, setDelTarget] = useState<AimNumber | null>(null);
 
     const rows = numbers?.kind === "ok" ? numbers.data.numbers : [];
     const numsDormant = dormant || numbers?.kind === "dormant";
 
-    async function confirmDelete() {
-        const n = delTarget;
-        if (!n) return;
-        setDelTarget(null);
+    async function handleDelete(n: AimNumber) {
+        if (!confirm(`Remove ${n.phone} (${n.label || "unlabelled"})? This cannot be undone.`)) return;
         setDeletingId(n.number_id);
         try {
             await deleteAimNumber(n.number_id);
@@ -1344,7 +1342,7 @@ function NumbersCard({
                                             {!numsDormant && writable && (
                                                 <button
                                                     onClick={onOpenAdd}
-                                                    className="mt-4 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-primary-01 text-white text-button hover:bg-primary-02 transition-colors"
+                                                    className="mt-4 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-primary-01 text-t-light text-button hover:opacity-90 transition-opacity"
                                                 >
                                                     <Icon name="plus" className="size-3.5 fill-current" />
                                                     Register first number
@@ -1378,7 +1376,7 @@ function NumbersCard({
                                                     icon="delete"
                                                     label={deletingId === n.number_id ? "Removing…" : "Remove"}
                                                     danger
-                                                    onClick={() => setDelTarget(n)}
+                                                    onClick={() => handleDelete(n)}
                                                 />
                                             </td>
                                         )}
@@ -1397,24 +1395,6 @@ function NumbersCard({
                     onError={onError}
                 />
             )}
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={confirmDelete}
-                title="Remove this number?"
-                message={
-                    <>
-                        Remove{" "}
-                        <span className="text-t-primary tabular-nums">
-                            {delTarget?.phone}
-                        </span>{" "}
-                        ({delTarget?.label || "unlabelled"}) from AI Manager?
-                        This cannot be undone.
-                    </>
-                }
-                confirmLabel="Remove"
-            />
         </>
     );
 }

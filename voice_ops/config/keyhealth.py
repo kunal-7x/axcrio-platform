@@ -56,6 +56,24 @@ class KeyHealth:
     cooldown_until: float = 0.0
     last_error: str = ""
     last_code: Optional[int] = None
+    # P2 usage analytics (lifetime counters for the Service Control Center health view)
+    success_count: int = 0
+    fail_count: int = 0
+    rate_limit_count: int = 0       # subset of fail_count that were 429s
+    pick_count: int = 0
+    last_used_ts: float = 0.0
+
+    def success_rate(self) -> float:
+        total = self.success_count + self.fail_count
+        return 1.0 if total <= 0 else self.success_count / total
+
+    def status_label(self) -> str:
+        """Coarse health bucket for the UI badge: healthy | degraded | cooling."""
+        if self.open:
+            return "cooling"
+        if self.reliability < 0.6 or self.error_ewma > 0.25 or len(self._recent_429_ts) >= 2:
+            return "degraded"
+        return "healthy"
 
     def _capacity_score(self) -> float:
         if self.remaining_capacity is None or not self.capacity_limit:
@@ -187,6 +205,10 @@ class HealthScoredKeyPool:
         contenders = sorted((fp for s, fp in scored if top - s <= self.tie_epsilon))
         chosen = contenders[self._rr % len(contenders)]
         self._rr += 1
+        ch = self._keys.get(chosen)
+        if ch is not None:
+            ch.pick_count += 1
+            ch.last_used_ts = now
         self._decide("pick", chosen, f"selected healthiest key ({len(contenders)} tied)", top)
         return chosen
 
@@ -197,6 +219,7 @@ class HealthScoredKeyPool:
         for fp, h in self._keys.items():
             keys.append({
                 "fingerprint": fp,
+                "status": h.status_label(),
                 "score": round(h.score(now, self.target_latency_ms), 3),
                 "open": h.open,
                 "trips": h.trips,
@@ -208,6 +231,13 @@ class HealthScoredKeyPool:
                 "retry_in_s": max(0.0, round(h.cooldown_until - now, 1)) if h.open else 0.0,
                 "last_error": h.last_error,
                 "last_code": h.last_code,
+                # P2 usage analytics
+                "success_count": h.success_count,
+                "fail_count": h.fail_count,
+                "rate_limit_count": h.rate_limit_count,
+                "pick_count": h.pick_count,
+                "success_rate": round(h.success_rate(), 3),
+                "last_used_ts": round(h.last_used_ts, 1) if h.last_used_ts else 0.0,
             })
         keys.sort(key=lambda k: k["score"], reverse=True)
         return {"provider": self.provider, "healthy": self.healthy_count, "total": len(self._keys), "keys": keys}
@@ -232,6 +262,7 @@ class HealthScoredKeyPool:
         h = self._keys.get(fingerprint)
         if h is None:
             return
+        h.success_count += 1
         if latency_ms > 0:
             self.observe_latency(fingerprint, latency_ms)
         h.consecutive_fails = 0
@@ -252,7 +283,9 @@ class HealthScoredKeyPool:
             self._decide("ignore_4xx", fingerprint, f"{code} is a request bug, not a key fault", 0.0)
             return
         now = self._now()
+        h.fail_count += 1
         if code == 429:
+            h.rate_limit_count += 1
             h._recent_429_ts.append(now)
         else:
             h.error_ewma = self.ewma_alpha + (1 - self.ewma_alpha) * h.error_ewma

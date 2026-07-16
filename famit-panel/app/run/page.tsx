@@ -22,6 +22,7 @@ import {
     addLeads,
     run,
     getStatus,
+    stopJob,
     getCalledLeadKeys,
     RunError,
     type Campaign,
@@ -42,6 +43,7 @@ import { type SelectOption } from "@/types/select";
 import { type TabsOption } from "@/types/tabs";
 import HandoffTeam from "@/app/ai-manager/_handoff";
 import VoiceProviders from "./_voice-providers";
+import LaunchPreflight from "@/components/LaunchPreflight";
 import Stepper, { type Step } from "./_stepper";
 import { SOURCE_TABS, SOURCE_ID, TEMP_DEFS, type Temp } from "./_lib/types";
 import {
@@ -179,10 +181,8 @@ export default function RunPage() {
     // How many times an unanswered/busy lead is re-dialed, and how many minutes
     // to wait between attempts. Feeds the backend callback/retry scheduler
     // (max_retries / retry_interval_min in the run payload). 0 retries = call once.
-    // Default to 0 — only re-dial when the user explicitly opts in. A run dials
-    // each lead exactly once unless retry attempts are set above zero.
-    const [maxRetries, setMaxRetries] = useState(0);
-    const [retryIntervalMin, setRetryIntervalMin] = useState(0);
+    const [maxRetries, setMaxRetries] = useState(2);
+    const [retryIntervalMin, setRetryIntervalMin] = useState(60);
 
     // ── Retention & storage (recordings + transcripts) ──
     // Compliance-friendly default: store both, auto-trash after 30 days. The
@@ -202,6 +202,8 @@ export default function RunPage() {
     const [jobState, setJobState] = useState("");
     const [toast, setToast] = useState("");
     const [toastType, setToastType] = useState<"success" | "warning" | "error">("success");
+    const [showPreflight, setShowPreflight] = useState(false);
+    const [stopping, setStopping] = useState(false);
     const [queuedResult, setQueuedResult] = useState<RunResult | null>(null);
     const [insufficient, setInsufficient] = useState(false);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -501,7 +503,8 @@ export default function RunPage() {
         };
     }
 
-    async function handleStart() {
+    // Validate, then open the premium pre-launch readiness check. It calls doLaunch() on proceed.
+    function handleStart() {
         if (!campaignId) {
             setToastType("error");
             setToast("Please select a campaign");
@@ -514,6 +517,29 @@ export default function RunPage() {
             setStep(0);
             return;
         }
+        setToast("");
+        setShowPreflight(true);
+    }
+
+    // Stop a running/queued campaign — halts new dialing; in-flight calls drain on their own.
+    async function handleStop() {
+        if (!jobId) return;
+        setStopping(true);
+        try {
+            const r = await stopJob(jobId);
+            setJobState(r.state || "stopping");
+            setToastType("warning");
+            setToast("Campaign stopping — no new calls will be placed; active calls are wrapping up.");
+        } catch (e: unknown) {
+            setToastType("error");
+            setToast(e instanceof Error ? e.message : "Failed to stop campaign");
+        } finally {
+            setStopping(false);
+        }
+    }
+
+    async function doLaunch() {
+        setShowPreflight(false);
         setStarting(true);
         setToast("");
         setQueuedResult(null);
@@ -1092,7 +1118,7 @@ export default function RunPage() {
 
                     {/* ③ Pacing & Handoff ────────────────────────────────── */}
                     {step === 2 && (
-                        <div key="step-2" className="step-reveal grid grid-cols-2 gap-4 items-start max-lg:grid-cols-1">
+                        <div key="step-2" className="step-reveal flex flex-col gap-4">
                             <Card title="Pacing & caps">
                                 <div className="px-5 pb-5 max-lg:px-3">
                                     {/* WAVE C: smart pacing-defaults chip (one-click, DID-protective, override-able) */}
@@ -1217,16 +1243,16 @@ export default function RunPage() {
                                             <Field
                                                 label="Minutes between attempts"
                                                 type="number"
-                                                min={0}
+                                                min={5}
                                                 step={5}
                                                 value={String(retryIntervalMin)}
                                                 onChange={(e) =>
                                                     setRetryIntervalMin(
                                                         Math.max(
-                                                            0,
+                                                            5,
                                                             parseInt(
                                                                 e.target.value
-                                                            ) || 0
+                                                            ) || 5
                                                         )
                                                     )
                                                 }
@@ -1257,7 +1283,6 @@ export default function RunPage() {
                             key="step-retention"
                             className="step-reveal flex flex-col gap-4"
                         >
-                          <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                             <Card title="Recordings">
                                 <div className="px-5 pb-5 max-lg:px-3">
                                     <RetentionToggle
@@ -1321,7 +1346,6 @@ export default function RunPage() {
                                     </p>
                                 </div>
                             </Card>
-                          </div>
 
                             <div className="flex items-start gap-2 p-3.5 rounded-3xl surface text-body-2 text-t-secondary">
                                 <Icon
@@ -1504,6 +1528,32 @@ export default function RunPage() {
                                 }
                             >
                                 <div className="px-2 max-lg:px-1">
+                                    {jobId &&
+                                        ["queued", "running", "stopping"].includes(jobState) && (
+                                            <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-s-stroke2 px-4 py-3 max-md:flex-col max-md:items-stretch">
+                                                <div className="flex items-center gap-2.5">
+                                                    <span className="relative flex h-2.5 w-2.5">
+                                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400/60" />
+                                                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                                                    </span>
+                                                    <span className="text-sm text-t-secondary">
+                                                        {jobState === "stopping"
+                                                            ? "Stopping — wrapping up active calls…"
+                                                            : "Campaign live — dialing leads"}
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    onClick={handleStop}
+                                                    disabled={stopping || jobState === "stopping"}
+                                                    className="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-2xl border border-rose-400/30 bg-rose-400/5 text-sm font-medium text-rose-300 transition-colors hover:bg-rose-400/10 hover:border-rose-400/50 disabled:opacity-50 max-md:w-full"
+                                                >
+                                                    <span className="h-2.5 w-2.5 rounded-[3px] bg-rose-400" />
+                                                    {stopping || jobState === "stopping"
+                                                        ? "Stopping…"
+                                                        : "Stop campaign"}
+                                                </button>
+                                            </div>
+                                        )}
                                     {!jobId ? (
                                         <div className="state-block">
                                             <span className="state-glyph">
@@ -1695,6 +1745,17 @@ export default function RunPage() {
                                 </p>
                             )}
                         </div>
+
+                        {/* Premium INLINE pre-launch readiness check — renders right below the Launch
+                            summary; runs real network/provider/infra/latency checks, warns if slow. */}
+                        {showPreflight && (
+                            <LaunchPreflight
+                                campaignId={campaignId || ""}
+                                campaignName={campaign?.name}
+                                onProceed={doLaunch}
+                                onClose={() => setShowPreflight(false)}
+                            />
+                        )}
                     </div>
                 </aside>
             </div>

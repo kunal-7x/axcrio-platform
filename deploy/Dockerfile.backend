@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Haptica AI — caller.py FastAPI backend (production image), uvicorn on :8091.
+# Build context MUST be the repo root (so droplet_work/ is available):
+#   docker build -f deploy/Dockerfile.backend -t haptica-backend .
+
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 FAMIT_VAR=/data
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /data
+# deps first (cache layer)
+COPY deploy/requirements.backend.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+# backend source (caller.py + modules). .env is NOT copied — provided at runtime.
+COPY droplet_work/ ./droplet_work/
+# P2/P3 managed-provider layer lives in voice_ops/ (+ voice_kernel/ it can lazily use). caller.py
+# imports voice_ops.config under a try/except, so shipping these lets the managed layer LOAD; absent
+# or broken, it stays dormant (never a startup error). PYTHONPATH=/app makes `import voice_ops`
+# resolve while the app still runs from droplet_work/.
+COPY voice_ops/ ./voice_ops/
+COPY voice_kernel/ ./voice_kernel/
+ENV PYTHONPATH=/app
+WORKDIR /app/droplet_work
+EXPOSE 8091
+CMD ["uvicorn", "caller:app", "--host", "0.0.0.0", "--port", "8091", "--log-level", "warning"]
