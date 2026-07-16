@@ -1,0 +1,68 @@
+# ============================================================================
+#  docker-compose.pin.yml — REPRODUCIBILITY LOCK
+# ============================================================================
+#  The base compose files use floating :latest tags for the upstream open-source
+#  images. That is fine on a box that is already running, and a landmine on a
+#  fresh one: a redeploy six months from now would silently pull a DIFFERENT
+#  LiveKit/SIP/egress than the one this product was built and tuned against.
+#
+#  These digests are the EXACT images that were running in production on
+#  haptica-prod (DO blr1) on 2026-07-17, captured from `docker inspect`.
+#  Pinning them is what makes "deploy on any cloud and it behaves identically"
+#  a true statement instead of a hope.
+#
+#  Apply it LAST so it wins:
+#    docker compose -f deploy/docker-compose.yml \
+#                   -f deploy/docker-compose.tls.yml \
+#                   -f deploy/docker-compose.voice.yml \
+#                   -f deploy/docker-compose.twenty.yml \
+#                   -f deploy/docker-compose.pin.yml \
+#                   --env-file deploy/.env.deploy up -d --build
+#
+#  To intentionally take a newer upstream version: drop this file from the -f
+#  chain, verify with a real test call, then re-capture digests here.
+#
+#  NOTE: backend / frontend / worker / caddy are NOT pinned here on purpose —
+#  they are built from this repo's own source (build context: repo root), so
+#  the git commit IS their version.
+# ============================================================================
+name: haptica-ai
+
+services:
+  # --- voice layer (docker-compose.voice.yml) -------------------------------
+  livekit:
+    # was livekit/livekit-server:latest
+    image: livekit/livekit-server@sha256:2c6869d2d5ff6c9c0166f47be1c92dad6928bfecfa5e4060a6ece48db8accfa3
+
+  sip:
+    # was livekit/sip:latest — running version v1.5.0
+    image: livekit/sip@sha256:f8621da1f203ba46e567f08311771ee5f77b0f93aad3eb7f24aaf93067f253cc
+
+  egress:
+    # was livekit/egress:latest
+    image: livekit/egress@sha256:980ff439431df2c773573721ab6da19e15bdc1f049ab7cb80e87470bf174c12f
+
+  redis:
+    # was redis:7-alpine
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+
+  # --- core (docker-compose.yml) --------------------------------------------
+  clickhouse:
+    # was clickhouse/clickhouse-server:24.8
+    image: clickhouse/clickhouse-server@sha256:1ffa82edee000a42c09313bd9f1293d94c570aee74babc1b3ca9983a35fa597b
+
+  # --- CRM (docker-compose.twenty.yml) --------------------------------------
+  twenty:
+    # was twentycrm/twenty:v2.14.4
+    image: twentycrm/twenty@sha256:fc6106b72c6a4fbabc763a68babd8609eeb385d660c61cd8c7000347330e34d6
+
+  twenty-worker:
+    image: twentycrm/twenty@sha256:fc6106b72c6a4fbabc763a68babd8609eeb385d660c61cd8c7000347330e34d6
+
+  twenty-db:
+    # was postgres:16
+    image: postgres@sha256:081f1bc7bd5e143dbb6e487b710bbc27712cdcfaced4c071b8e47349aa1b4171
+
+  twenty-redis:
+    # was redis:7
+    image: redis@sha256:33d7c9a245edd95e6703a0addbeaa48fe40c3b3b4783627a72085155462ebfdb
