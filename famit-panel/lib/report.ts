@@ -164,33 +164,14 @@ export type HotLeadRow = {
     call_id: string;
     name: string;
     phone_masked: string;
-    phone?: string; // raw phone — fallback when phone_masked is blank
     campaign_id?: string;
     source?: string;
     booked?: boolean;
-    score?: number; // 0..100 flat score the backend may surface alongside the prob
-    conversion_prob?: number; // 0..1 (NORMALIZED by normalizeHotLead — never >1)
+    conversion_prob?: number; // 0..1
     summary?: string;
     next_action?: string;
     ts_iso?: string;
 };
-
-// The live `/report` seam (caller.py _enrich_report_temperature) leaves each
-// hot-lead's `conversion_prob` in WHATEVER scale the reporting store held — it may
-// be a 0..1 fraction OR a 0..100 percentage (it only normalizes a sibling `score`).
-// If the UI then does `prob * 100` it can render "8000%". So we normalize HERE to a
-// guaranteed 0..1 once, for the whole panel: prefer the backend's flat `score`
-// (0..100), else coerce a >1 prob down by /100, and clamp to [0,1]. Also surface a
-// usable display phone (phone_masked → phone) so the report's phone cell is never
-// blank when a raw number exists.
-function normalizeHotLead(r: HotLeadRow): HotLeadRow {
-    let prob = r.conversion_prob;
-    if (typeof r.score === "number") prob = r.score / 100;
-    else if (typeof prob === "number" && prob > 1) prob = prob / 100;
-    if (typeof prob === "number") prob = Math.max(0, Math.min(1, prob));
-    const phone_masked = r.phone_masked || r.phone || "";
-    return { ...r, conversion_prob: prob, phone_masked };
-}
 
 // A richer temperature distribution the W14 seam may emit per range: each tier's
 // count + its share of the total + a day-over-day delta. The dashboard's
@@ -269,7 +250,7 @@ async function tryLiveReport(
                     dead: data.totals.dead ?? 0,
                 },
             temperature_distribution: data.temperature_distribution,
-            hot_leads: (data.hot_leads ?? []).map(normalizeHotLead),
+            hot_leads: data.hot_leads ?? [],
             live_seam: true,
         };
     } catch {

@@ -15,6 +15,13 @@
 //
 // Shapes match the backend ads_engine 1:1 (service.status / config.healthcheck /
 // service.propose_campaign / approve / pause / optimize).
+//
+// W7.0 EXTENSION: the additive read/write helpers for the new ad-engine sub-paths
+// (analytics / decisions / guardrails / leads / consent / creative) + a tiny
+// page-level realtime hook are appended below. The 6 core fns above remain
+// BYTE-STABLE — every later wave only imports the new helpers, never edits these.
+
+import { useEffect } from "react";
 
 const BASE =
     typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_BASE
@@ -61,7 +68,7 @@ export type AdsHealth = {
     module: string;
     dry_run: boolean;
     require_approval: boolean;
-    providers: { meta: AdsProviderStatus; google: AdsProviderStatus };
+    providers: { meta: AdsProviderStatus; google: AdsProviderStatus; whatsapp?: AdsProviderStatus };
     active_provider: string; // "meta" | "google" | "not_configured"
     caps: {
         daily_cap_minor: number;
@@ -71,6 +78,13 @@ export type AdsHealth = {
         cpl_min_conversions: number;
         poll_minutes: number;
         currency: string;
+    };
+    // BLINDSPOTS B13/B15: non-secret ad-budget block (funded balance + gateway connected?).
+    budget?: {
+        balance_minor: number;
+        currency: string;
+        gateway: { provider?: string; configured: boolean; default_provider?: string; currency?: string };
+        funded: boolean;
     };
 };
 
@@ -155,7 +169,49 @@ export type AdsBrief = {
     budget_daily_minor?: number;
     variants?: number;
     caps?: Record<string, number>;
+    // V2-W5: attribution back to the live VOICE campaign the brief was drafted
+    // from (CampaignSelect → getCampaign → campaignToBrief). The backend planner
+    // accepts arbitrary extra fields, so this is additive and non-breaking; the
+    // ad engine stamps it through AdsPlan → ad_events for the closed-loop view.
+    source_campaign_id?: string;
+    // free-text instruction the creative generator reads (the campaign's pitch).
+    instruction?: string;
 };
+
+// V2-W5 field-mapper — turn a live VOICE Campaign (with its `fields` pitch blob)
+// into a PARTIAL ad brief so the wizard PREFILLS instead of making the founder
+// re-type product / audience / geo / budget that already lives on the campaign.
+// Tolerant by construction: every field is optional and missing keys are simply
+// dropped (never a fabricated value). Money in `budget_cap_inr` (major rupees) is
+// converted to paise. Returns only the keys it could resolve — the caller spreads
+// it over the wizard's own defaults.
+export function campaignToBrief(c: {
+    id?: string;
+    name?: string;
+    product?: string;
+    fields?: Record<string, unknown>;
+}): Partial<AdsBrief> {
+    const f = c.fields || {};
+    const str = (v: unknown): string | undefined =>
+        typeof v === "string" && v.trim() ? v.trim() : undefined;
+    const out: Partial<AdsBrief> = {};
+    if (c.id) out.source_campaign_id = c.id;
+    const name = str(f.name) || str(c.name);
+    if (name) out.name = name;
+    const product = str(f.product) || str(c.product);
+    if (product) out.product = product;
+    const audience = str(f.audience) || str(f.target_audience);
+    if (audience) out.audience = { description: audience };
+    const geo = str(f.location) || str(f.geo) || str(f.city);
+    if (geo) out.geo = geo.split(",").map((s) => s.trim()).filter(Boolean);
+    const budgetMajor = Number(f.budget_cap_inr);
+    if (Number.isFinite(budgetMajor) && budgetMajor > 0) {
+        out.budget_daily_minor = Math.round(budgetMajor * 100);
+    }
+    const pitch = str(f.opener) || str(f.offer) || str(f.raw_script);
+    if (pitch) out.instruction = pitch;
+    return out;
+}
 
 // The objective enum the planner understands (planner._OBJECTIVE_MAP keys).
 export const ADS_OBJECTIVES = ["leads", "sales", "traffic", "awareness", "engagement"] as const;
@@ -262,6 +318,105 @@ export const pauseCampaign = (planId: string, reason = "manual_pause") =>
 export const runOptimize = (dryRun = true) =>
     write<OptimizeResponse>("/ads/optimize", { dry_run: dryRun });
 
+/* ------------------------------------------ ad connections (BLINDSPOTS B2/B15)
+ * The paste-key -> CONNECTED loop. GET status mirrors vault_adapter.list_status —
+ * the instant a vendor saves a Meta/Google/WhatsApp key blob (named_provider def +
+ * credential), the channel flips "not_configured" -> "configured". POST test does a
+ * SECRET-FREE round-trip (resolve def -> decrypt blob -> assert the connector's
+ * required fields are present) and returns ONLY field NAMES (missing/present),
+ * never a secret value. Status read is dormant-safe (404 -> dormant). */
+
+export type AdsConnChannel = "meta" | "google" | "whatsapp";
+
+export type AdsConnectionsStatus = {
+    ok: boolean;
+    providers: Record<AdsConnChannel, AdsProviderStatus>;
+};
+
+export const getAdsConnectionsStatus = () =>
+    read<AdsConnectionsStatus>("/ads/connections/status");
+
+// The secret-free round-trip result (vault_adapter.test_connection). `missing` /
+// `present` are field NAMES only — proof the engine can resolve+read the key.
+export type AdsConnTest = {
+    ok: boolean;
+    channel: string;
+    reason: string; // ok | registry_disabled | not_configured | no_credential | missing_fields | bad_channel
+    missing: string[];
+    present: string[];
+};
+
+export const testAdConnection = (channel: AdsConnChannel) =>
+    write<AdsConnTest>("/ads/connections/test", { channel });
+
+/* ---------------------------------------------- ad-budget funding (BLINDSPOTS B13/B14)
+ * The vendor funds their OWN ad budget through a gateway key (Razorpay/Stripe) stored in the
+ * vault. Reads are dormant-until-creds (no gateway key => configured:false). The fund call
+ * returns a gateway order id + public key for the checkout; confirm credits the paise balance
+ * after the gateway signature is verified server-side. Money is minor units (paise). */
+
+export type BudgetGatewayStatus = {
+    provider: string;
+    configured: boolean;
+    default_provider?: string;
+    currency?: string;
+};
+
+export type BudgetBalance = {
+    balance_minor: number;
+    currency: string;
+    funded_total_minor?: number;
+    spent_total_minor?: number;
+    gateway?: BudgetGatewayStatus;
+};
+
+export type FundingIntent = {
+    ok: boolean;
+    status: "created" | "paid" | "not_configured" | "awaiting_gateway" | "invalid_request";
+    intent_id: string;
+    provider: string;
+    amount_minor: number;
+    currency: string;
+    order_id: string;
+    public_key?: string;
+    needs_setup?: boolean;
+    reason?: string;
+    exists?: boolean;
+};
+
+export type BudgetLedgerRow = {
+    kind: "credit" | "debit";
+    delta_minor: number;
+    balance_after_minor: number;
+    currency: string;
+    ts: number;
+    intent_id?: string;
+    campaign_id?: string;
+    provider?: string;
+};
+
+export const getBudgetBalance = () => read<BudgetBalance>("/ads/budget/balance");
+export const getBudgetIntents = () =>
+    read<{ ok: boolean; intents: FundingIntent[] }>("/ads/budget/intents");
+export const getBudgetLedger = () =>
+    read<{ ok: boolean; ledger: BudgetLedgerRow[] }>("/ads/budget/ledger");
+
+// Create (idempotently, by idem_key) a funding intent for `amountMinor` paise.
+export const fundBudget = (amountMinor: number, opts?: { currency?: string; idemKey?: string; description?: string }) =>
+    write<FundingIntent>("/ads/budget/fund", {
+        amount_minor: amountMinor,
+        currency: opts?.currency ?? "",
+        idem_key: opts?.idemKey ?? "",
+        description: opts?.description ?? "",
+    });
+
+// Confirm a completed gateway payment (server verifies the signature, then credits the balance).
+export const confirmBudget = (intentId: string, paymentId: string, signature: string) =>
+    write<{ ok: boolean; status: string; intent_id: string; credited_minor?: number; balance_minor?: number }>(
+        "/ads/budget/confirm",
+        { intent_id: intentId, payment_id: paymentId, signature },
+    );
+
 /* ------------------------------------------------------------------ helpers */
 
 // minor units (paise) -> "₹1,500". `0` and unset render as "—" via the caller.
@@ -287,3 +442,450 @@ export function fmtTs(ts?: number | null): string {
         return "—";
     }
 }
+
+/* ================================================================= W7.0 ADD
+ *
+ * Additive read/write helpers for the deferred ad-engine sub-paths
+ * (ARCHITECTURE.md §4). All reuse `read`/`write` above, so they inherit the
+ * SAME auth (`X-Auth`), 401→/login handler, dormant degradation (404/501/503 →
+ * {kind:"dormant"} on reads), and friendly throw + step-up 403 copy on writes.
+ * Money stays `_minor` (paise) end-to-end. None of the 6 core fns change.
+ * =========================================================================== */
+
+// Build a `?k=v` query string from a flat filter bag (drops empty values). Used
+// by every read helper that takes filters so dormant routes still 404 cleanly.
+function qs(filters?: Record<string, string | number | undefined | null>): string {
+    if (!filters) return "";
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(filters)) {
+        if (v === undefined || v === null || v === "") continue;
+        parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+    }
+    return parts.length ? `?${parts.join("&")}` : "";
+}
+
+type Filters = Record<string, string | number | undefined | null>;
+
+/* ----------------------------------------------------------------- analytics */
+
+// The four analytics sub-paths the engine exposes. Each returns its own shape;
+// callers pass the kind + filters (range/campaign/platform) and get a dormant-
+// safe ReadResult back. Shapes are intentionally loose (Record) at W7.0 — the
+// Analytics + Command waves narrow them when they render.
+export type AdsAnalyticsKind = "funnel" | "per-ad" | "per-platform" | "real-vs-reported";
+
+export type AdsAnalyticsResponse = {
+    kind?: string;
+    rows?: Array<Record<string, unknown>>;
+    funnel?: Array<{ stage: string; count: number; pct_of_top: number; step_conv: number }>;
+    totals?: Record<string, number>;
+    [k: string]: unknown;
+};
+
+export const getAdsAnalytics = (kind: AdsAnalyticsKind, filters?: Filters) =>
+    read<AdsAnalyticsResponse>(`/ads/analytics/${kind}${qs(filters)}`);
+
+/* ------------------------------------------------------------------ decisions */
+
+// One row of the append-only AI decision feed (decision_log.json).
+export type AdsDecision = {
+    id: string;
+    ts: number;
+    campaign?: string;
+    plan_id?: string;
+    decision: string; // scale | realloc | pause | redial | ...
+    inputs?: Record<string, unknown>;
+    guard_chain?: Array<{ guard: string; result: string }>;
+    outcome: string; // auto_applied | needs_approval | blocked_* | ...
+    reversible?: boolean;
+    revert_ref?: string;
+    [k: string]: unknown;
+};
+
+export type AdsDecisionsResponse = { ok: boolean; decisions: AdsDecision[]; count?: number };
+
+export const getAdsDecisions = (filters?: Filters) =>
+    read<AdsDecisionsResponse>(`/ads/decisions${qs(filters)}`);
+
+/* ----------------------------------------------------------------- guardrails */
+
+// The configurable caps / breaker / approval gate (GET) + the save body (POST).
+export type AdsGuardrails = {
+    daily_cap_minor: number;
+    org_daily_cap_minor: number;
+    per_account_cap_minor?: number;
+    cpl_max_minor: number;
+    cpl_breaker_on: boolean;
+    anomaly_breaker_on?: boolean;
+    require_approval: boolean;
+    no_tracking_gate?: boolean;
+    poll_minutes?: number;
+    currency?: string;
+    // live state echoed back for the spend-vs-cap meters
+    spend_today_minor?: number;
+    current_cpl_minor?: number | null;
+    [k: string]: unknown;
+};
+
+export const getAdsGuardrails = () => read<AdsGuardrails>("/ads/guardrails");
+
+// Spend-mutating → step-up gated; passes X-Step-Up when a token is available.
+export type SaveGuardrailsResponse = { ok: boolean; guardrails: AdsGuardrails };
+export const saveAdsGuardrails = (body: Partial<AdsGuardrails>, stepUpToken?: string) =>
+    write<SaveGuardrailsResponse>(
+        "/ads/guardrails",
+        { ...body },
+        stepUpToken ? { "X-Step-Up": stepUpToken } : undefined,
+    );
+
+/* ---------------------------------------------------------------------- leads */
+
+// One ad-lead row with its consent + gate decision + call outcome.
+export type AdsLead = {
+    id: string;
+    name?: string;
+    phone_masked?: string;
+    source?: string; // meta_leadgen | ctwa | form | ...
+    consent_status?: string; // dpdp_ok | dca_dlt_ok | blocked_no_consent | ...
+    gate_decision?: string; // allowed | blocked_ncpr | blocked_cooloff | ...
+    score?: string | number; // hot | warm | cold | numeric
+    call_outcome?: string; // booked | qualified | no_answer | ...
+    cpl_minor?: number | null;
+    campaign?: string;
+    ts?: number;
+    [k: string]: unknown;
+};
+
+export type AdsLeadsResponse = {
+    ok: boolean;
+    leads: AdsLead[];
+    next_cursor?: string | null;
+    count?: number;
+};
+
+export const getAdsLeads = (cursor?: string | null, filters?: Filters) =>
+    read<AdsLeadsResponse>(`/ads/leads${qs({ cursor: cursor || undefined, ...filters })}`);
+
+export const getAdsLead = (id: string) =>
+    read<AdsLead>(`/ads/leads/${encodeURIComponent(id)}`);
+
+export type RedialResponse = { ok: boolean; status: string; lead_id: string };
+export const redialLead = (id: string, stepUpToken?: string) =>
+    write<RedialResponse>(
+        `/ads/leads/${encodeURIComponent(id)}/redial`,
+        {},
+        stepUpToken ? { "X-Step-Up": stepUpToken } : undefined,
+    );
+
+// Dead-lead revival — ingest a consented lead list back into the engine. The
+// caller MUST attest a signed DPA / lead consent (`dpa_acknowledged`); the backend
+// fail-closes if it's absent. `column_map` maps the engine's canonical fields
+// (name/phone/email/source/campaign) onto the uploaded columns. `rows` carries
+// the parsed records (header + data) or the caller passes raw `csv` text — the
+// backend accepts either. Re-contacting prior leads SPENDS dial budget, so this
+// is step-up gated (X-Step-Up passed through when a token is available).
+export type ImportLeadsResult = {
+    ok: boolean;
+    imported: number;
+    skipped?: number;
+    duplicates?: number;
+    rejected?: Array<{ row: number; reason: string }>;
+    batch_id?: string;
+};
+export const importLeads = (
+    body: {
+        dpa_acknowledged: boolean;
+        source?: string;
+        campaign?: string;
+        column_map?: Record<string, string>;
+        rows?: Array<Record<string, string>>;
+        csv?: string;
+    },
+    stepUpToken?: string,
+) =>
+    write<ImportLeadsResult>(
+        "/ads/leads/import",
+        { ...body },
+        stepUpToken ? { "X-Step-Up": stepUpToken } : undefined,
+    );
+
+/* -------------------------------------------------------------------- consent */
+
+// The immutable consent ledger snapshot for a lead (hash-chained, read-only).
+export type AdsConsentResponse = {
+    ok: boolean;
+    lead_id: string;
+    entries: Array<{
+        ts: number;
+        kind: string; // dpdp | dca_dlt | revoke | ...
+        status: string;
+        hash?: string;
+        prev_hash?: string;
+        [k: string]: unknown;
+    }>;
+};
+
+export const getAdsConsent = (leadId: string) =>
+    read<AdsConsentResponse>(`/ads/consent/${encodeURIComponent(leadId)}`);
+
+export type ConsentMutationResponse = { ok: boolean; lead_id: string; status: string };
+export const postConsent = (leadId: string, body: Record<string, unknown>) =>
+    write<ConsentMutationResponse>("/ads/consent", { lead_id: leadId, ...body });
+export const revokeConsent = (leadId: string, reason = "user_request") =>
+    write<ConsentMutationResponse>("/ads/consent/revoke", { lead_id: leadId, reason });
+
+/* ------------------------------------------------------------------- creative */
+
+// An ad-variant generation job + its produced variants with a moderation verdict.
+export type CreativeJob = {
+    job_id: string;
+    state: string; // queued | running | done | failed | ...
+    prompt?: string;
+    created_ts?: number;
+    variant_ids?: string[];
+    [k: string]: unknown;
+};
+
+export type CreativeVariant = {
+    variant_id: string;
+    job_id?: string;
+    url?: string;
+    headline?: string;
+    primary_text?: string;
+    moderation_status?: string; // pending | approved | blocked | ...
+    moderation_reason?: string;
+    [k: string]: unknown;
+};
+
+export type SubmitCreativeResponse = { ok: boolean; job_id: string; state: string };
+export const submitCreative = (body: Record<string, unknown>) =>
+    write<SubmitCreativeResponse>("/ads/creative/generate", { ...body });
+
+export const getCreativeJobs = () =>
+    read<{ ok: boolean; jobs: CreativeJob[] }>("/ads/creative/jobs");
+
+export const getCreativeVariants = (filters?: Filters) =>
+    read<{ ok: boolean; variants: CreativeVariant[] }>(`/ads/creative/variants${qs(filters)}`);
+
+export type ModerateResponse = { ok: boolean; variant_id: string; moderation_status: string };
+export const moderateVariant = (
+    id: string,
+    decision: "approved" | "blocked",
+    stepUpToken?: string,
+) =>
+    write<ModerateResponse>(
+        `/ads/creative/variants/${encodeURIComponent(id)}/moderate`,
+        { decision },
+        stepUpToken ? { "X-Step-Up": stepUpToken } : undefined,
+    );
+
+/* ----------------------------------------------------------- realtime refresh */
+
+// Visibility-gated polling — the verified app/analytics/page.tsx:128-141 idiom.
+// Fires `load` on an interval ONLY while the tab is visible, and re-loads on
+// focus; cleans up on unmount. This is the page-level realtime spine every tab
+// shares (the page also keeps its manual Refresh button). Pass a `useCallback`-
+// stable `load` so the interval isn't torn down every render.
+export function useRealtimeRefresh(load: () => void, intervalMs = 30000): void {
+    useEffect(() => {
+        const t = setInterval(() => {
+            if (typeof document === "undefined" || document.visibilityState === "visible") load();
+        }, intervalMs);
+        const onVis = () => {
+            if (document.visibilityState === "visible") load();
+        };
+        if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVis);
+        return () => {
+            clearInterval(t);
+            if (typeof document !== "undefined")
+                document.removeEventListener("visibilitychange", onVis);
+        };
+    }, [load, intervalMs]);
+}
+
+/* ================================================================ WIZARD ADD
+ *
+ * The Run-a-Campaign wizard (_tabs/_campaign-wizard) + the per-row Approve fix
+ * need a few more helpers. ALL reuse the SAME `read`/`write`/auth above, so they
+ * inherit the X-Auth header, 401→/login, dormant degradation, friendly throws and
+ * the X-Step-Up pass-through. The 6 core fns + every W7.0 helper above stay
+ * BYTE-STABLE — this block only appends.
+ * =========================================================================== */
+
+/* ------------------------------------------------- the ad platform selector */
+
+// The three paid channels a campaign can run on. The wizard's Step-2 multi-select
+// renders these; only platforms the tenant has actually connected are enabled
+// (read from /ads/connect/providers — meta/google — plus the WhatsApp channel on
+// the health payload). Icons map to real glyphs (facebook / earth / chat).
+export type AdsPlatform = "meta" | "google" | "whatsapp";
+
+export const ADS_PLATFORMS: { id: AdsPlatform; label: string; icon: string; hint: string }[] = [
+    { id: "meta", label: "Meta", icon: "facebook", hint: "Facebook & Instagram" },
+    { id: "google", label: "Google", icon: "earth", hint: "Search & Display" },
+    { id: "whatsapp", label: "WhatsApp", icon: "chat", hint: "Click-to-WhatsApp" },
+];
+
+/* ------------------------------------------- step-up (spend) PIN challenge */
+
+// Mint a short-TTL `spend`-scope step-up token from a PIN, mirroring the live
+// reveal flow (lib/integrations.ts:verifyPin → POST /firewall/verify-pin, Form-
+// encoded pin+scope) but RETURNING the token so a spend action can replay it as
+// `X-Step-Up`. `spend` is the exact scope the ad-engine verifies server-side
+// (endpoints.py _verify_spend_step_up → firewall.verify_step_up_token(token,
+// "spend", sub)). Throws a friendly, specific message the PIN modal surfaces.
+export type StepUpMint = {
+    ok: boolean;
+    step_up_token?: string;
+    expires_in?: number;
+    scope?: string;
+    reason?: string;
+    error?: string;
+};
+
+export async function mintStepUp(pin: string, scope = "spend"): Promise<string> {
+    const form = new URLSearchParams({ pin, scope });
+    let res: Response;
+    try {
+        res = await fetch(`${BASE}/firewall/verify-pin`, {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/x-www-form-urlencoded" },
+            body: form.toString(),
+        });
+    } catch {
+        throw new Error("Couldn't reach the security service — check your connection and try again.");
+    }
+    handle401(res);
+    if (res.status === 401) throw new Error("That PIN didn't match. Try again.");
+    if (res.status === 400) throw new Error("No security PIN is set yet — set one in Settings before approving spend.");
+    if (res.status === 503) throw new Error("The security service is unavailable right now. Try again shortly.");
+    if (!res.ok) throw new Error(`Verification failed (${res.status}).`);
+    let data: StepUpMint;
+    try {
+        data = (await res.json()) as StepUpMint;
+    } catch {
+        throw new Error("Malformed response from the security service.");
+    }
+    if (!data.ok || !data.step_up_token) {
+        throw new Error(data.reason || data.error || "Verification failed — no token issued.");
+    }
+    return data.step_up_token;
+}
+
+/* ------------------------------------------------------ creative (upload) */
+
+// Adopt a vendor's OWN gallery asset as an ad variant (backend /ads/creative/upload
+// → import_upload). The SAME moderation gate runs (RERA/Housing/brand/broken-text)
+// before it can spend. DRY: a variant-row write, no spend.
+export type UploadCreativeResponse = { ok: boolean; variant?: CreativeVariant; error?: string };
+export const uploadCreative = (
+    planId: string,
+    assetId: string,
+    opts?: { kind?: string; brief?: Record<string, unknown> },
+) =>
+    write<UploadCreativeResponse>("/ads/creative/upload", {
+        plan_id: planId,
+        asset_id: assetId,
+        kind: opts?.kind ?? "uploaded_image",
+        brief: opts?.brief ?? {},
+    });
+
+/* -------------------------------------------------------- autorun (autopilot) */
+
+// Opt the tenant into the autonomous orchestrator (routes_autorun.enable). With
+// `autopilotLaunch` the engine sequences propose → creative → moderation →
+// viability → launch on its own — but every spend/launch stays behind the SAME
+// gates as the manual surface (global ADS_AUTORUN_AUTOLAUNCH + per-tenant opt-in +
+// ADS_DRY_RUN), so this adds NO new spend authority. Dormant-safe friendly throw.
+export type AutorunEnableResponse = {
+    ok: boolean;
+    status?: string;
+    autopilot_launch?: boolean;
+    error?: string;
+    [k: string]: unknown;
+};
+export const enableAutorun = (
+    brief: AdsBrief,
+    opts?: { autopilotLaunch?: boolean; uploadedAssetId?: string },
+) =>
+    write<AutorunEnableResponse>("/ads/autorun/enable", {
+        brief,
+        autopilot_launch: !!opts?.autopilotLaunch,
+        uploaded_asset_id: opts?.uploadedAssetId ?? "",
+    });
+
+/* ----------------------------------------------- autorun status/disable/advance
+ * The read + the two operator mutations that complete the autopilot surface. The
+ * status read is dormant-safe (404/501/503 → {kind:"dormant"}); disable + advance
+ * throw the friendly message on a dormant backend. Shapes mirror
+ * ads_engine.orchestrator.status()/disable()/advance() 1:1 — phase is one of the
+ * AUTORUN_PHASES below; `preconditions` is the key/budget/brief checklist. */
+
+// The orchestrator's phase machine (orchestrator.PH_*). `idle` waits on the
+// preconditions; the middle phases each advance by exactly ONE step per tick;
+// `launched`/`done` are terminal-success; `blocked` is a hard stop. `disabled`
+// is the not-opted-in state the status read returns when enabled:false.
+export type AutorunPhase =
+    | "idle"
+    | "proposing"
+    | "creating_creative"
+    | "moderating"
+    | "viability"
+    | "launch_pending"
+    | "launched"
+    | "blocked"
+    | "done"
+    | "disabled"
+    | string;
+
+export const AUTORUN_PHASES: AutorunPhase[] = [
+    "idle",
+    "proposing",
+    "creating_creative",
+    "moderating",
+    "viability",
+    "launch_pending",
+    "launched",
+];
+
+export type AutorunPreconditions = {
+    connected_key: boolean;
+    funded_budget: boolean;
+    has_brief: boolean;
+};
+
+export type AutorunTransition = { from?: string; to?: string; note?: string; ts?: number };
+
+export type AutorunStatus = {
+    ok: boolean;
+    enabled: boolean;
+    autopilot_launch: boolean;
+    preconditions_ok: boolean;
+    preconditions_reason: string; // no_brief | no_connected_key | no_funded_budget | ""
+    preconditions: AutorunPreconditions;
+    phase: AutorunPhase;
+    plan_id?: string;
+    job_id?: string;
+    variant_ids?: string[];
+    blocked_reason?: string | null;
+    global_autorun?: boolean;
+    autolaunch_flag?: boolean;
+    dry_run?: boolean;
+    history?: AutorunTransition[];
+    error?: string;
+};
+
+export const getAutorunStatus = () => read<AutorunStatus>("/ads/autorun/status");
+
+export type AutorunDisableResponse = { ok: boolean; status?: string; error?: string };
+export const disableAutorun = () => write<AutorunDisableResponse>("/ads/autorun/disable", {});
+
+// Advance the cursor by exactly ONE phase (the operator kick). Returns the step
+// result + a fresh status snapshot, so the panel can re-render from `status`.
+export type AutorunAdvanceResponse = {
+    ok: boolean;
+    result?: { phase?: AutorunPhase; advanced?: boolean; reason?: string; [k: string]: unknown };
+    status?: AutorunStatus;
+    error?: string;
+};
+export const advanceAutorun = () => write<AutorunAdvanceResponse>("/ads/autorun/advance", {});

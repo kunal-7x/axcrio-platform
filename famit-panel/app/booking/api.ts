@@ -300,6 +300,33 @@ export async function listBookings(opts?: {
     return safeGet<BookingsList>(`/booking/bookings${qs ? `?${qs}` : ""}`);
 }
 
+// ---------------------------------------------------------------------------
+// Captured site-visits — the LIVE fast-capture surface (BC1). The voice agent
+// appends every agreed slot to /data/bookings.jsonl; GET /bookings exposes them
+// (newest first). This is ALWAYS available even when the full Postgres booking
+// engine is dormant, so booked site-visits show up in the panel regardless.
+// ---------------------------------------------------------------------------
+export type CapturedBooking = {
+    id: string;
+    tenant_id?: string;
+    phone: string;
+    name: string;
+    when_text: string;     // the spoken time, e.g. "kal sham 4 baje"
+    datetime_iso: string;  // resolved ISO when the resolver succeeded (else "")
+    campaign_id?: string;
+    notes?: string;
+    room?: string;
+    source?: string;       // "voice"
+    status?: string;       // "captured"
+    created_at?: string;   // ISO
+};
+
+export async function listCapturedBookings(limit = 200): Promise<{ bookings: CapturedBooking[]; total: number }> {
+    const r = await safeGet<{ bookings?: CapturedBooking[]; total?: number }>(`/bookings?limit=${limit}`);
+    if (isDormant(r)) return { bookings: [], total: 0 };
+    return { bookings: r.bookings || [], total: r.total || 0 };
+}
+
 export async function createResource(payload: {
     name: string;
     kind?: string;

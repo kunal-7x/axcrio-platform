@@ -32,17 +32,43 @@ UNIVERSAL_OBJECTION_STANCE: tuple[str, ...] = (
     "Re-close softly — return to the nearest low-commitment next step.",
 )
 
-# Business-context HOOKS: *how to reason* (terse pointers, R5-P1.4-compressed).
-# NOT replies, NOT campaign content. Keys are concern categories the model detects.
+# Business-context HOOKS: *how to reason*, with a pointer to the deep pack. NOT
+# replies, NOT campaign content. Keys are concern categories the model detects.
 OBJECTION_HOOKS: dict[str, str] = {
-    "price": "VALUE before price; break into per-unit/EMI/appreciation; defer discounts to the team",
-    "not_interested": "respect-first; find the real reason; agree a CONCRETE callback, not 'later'",
-    "trust": "proof + transparency; name the honest human-handoff; follow up on the real blocker",
-    "competitor": "never bad-mouth; reframe on genuine differentiators; specific + consistent",
-    "think_over": "uncover the real hesitation; set a follow-up tied to that blocker",
-    "family_authority": "respect the decision-maker; offer to include them / a concrete callback",
-    "urgency": "only REAL honest scarcity (genuine slot/inventory/deadline); never fabricate",
-    "deep_fact": "for facts the brief lacks, RETRIEVE from the docs — grounded/specific, never invent",
+    "price": (
+        "establish VALUE before price; break price into per-unit / EMI / "
+        "appreciation / cost-of-inaction framing; defer discounts to the team"
+    ),
+    "not_interested": (
+        "respect-first; find the real door-reason; agree a CONCRETE callback "
+        "instead of a vague 'later'"
+    ),
+    "trust": (
+        "proof + transparency; name the honest human-handoff for high-ticket; "
+        "set a specific follow-up tied to the real decision blocker"
+    ),
+    "competitor": (
+        "do not bad-mouth; reframe on the campaign's genuine differentiators; "
+        "stay specific and consistent"
+    ),
+    "think_over": (
+        "uncover the real hesitation behind 'let me think'; set a specific "
+        "follow-up tied to that blocker, not a vague one"
+    ),
+    "family_authority": (
+        "respect the decision-maker; offer to include them / a concrete callback "
+        "when they can decide together"
+    ),
+    "urgency": (
+        "only REAL, honest scarcity (genuine slot/inventory/offer deadlines); "
+        "never fabricate urgency"
+    ),
+    "deep_fact": (
+        "for deep factual questions the campaign brief doesn't hold, reach into "
+        "RETRIEVAL over the uploaded docs rather than inventing — grounded, "
+        "consistent, specific (the exact facts come from the vertical's own docs, "
+        "never assumed)"
+    ),
 }
 
 # Hooks that coach a SALES MOVE (price-framing, competitor-reframe, scarcity).

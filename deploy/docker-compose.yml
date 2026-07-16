@@ -1,0 +1,85 @@
+# Haptica AI — full app (panel + backend) for the target box.
+# NON-DISRUPTIVE by design: the backend is internal-only, and the panel publishes
+# on a NON-default host port (PANEL_PORT, default 3100), so it never collides with
+# a live site already serving :80/:443.
+#
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env.deploy up -d --build
+name: haptica-ai
+
+services:
+  backend:
+    build:
+      context: ..                       # repo root
+      dockerfile: deploy/Dockerfile.backend
+    image: haptica-backend:latest
+    restart: unless-stopped
+    env_file:
+      - .env.deploy                      # = deploy/.env.deploy (gitignored)
+    environment:
+      FAMIT_VAR: /data
+      # Voice Analytics read path → the self-hosted ClickHouse below (same haptica-ai network).
+      # Creds are in the URL (obs_query sends them as HTTP basic auth via httpx userinfo). Overrides
+      # the (empty) CLICKHOUSE_URL in .env.deploy. obs_query is dormant-safe: if CH is down/absent it
+      # returns empty rows, never an error — so this can never break the backend.
+      CLICKHOUSE_URL: http://haptica:${CLICKHOUSE_PASSWORD}@clickhouse:8123
+      # Performance dashboard: record one row per HTTP request to ClickHouse (best-effort, batched
+      # off the hot path; auto-creates haptica_http_requests). Replaces the SigNoz APM source.
+      HTTP_METRICS_ENABLED: "1"
+    volumes:
+      - haptica-data:/data               # persists admin secret + tenants
+    expose:
+      - "8091"                           # internal only; reached by the panel
+
+  # ── Voice Analytics telemetry store (self-hosted, single-node) ──────────────
+  # Reached by BOTH the backend (read) and the voice worker (write) over the shared haptica-ai
+  # network as http://haptica:…@clickhouse:8123. NOT host-published (internal only). Setting
+  # CLICKHOUSE_USER/PASSWORD creates a network-enabled user AND stops the image from locking the
+  # default user to localhost — while still running the server as the `clickhouse` OS user (do NOT
+  # use CLICKHOUSE_SKIP_USER_SETUP: it runs as root and crashes on the clickhouse-owned data dir).
+  # No custom config.d: the image already listens on all interfaces (IPv6-tolerant) and caps memory
+  # to the cgroup (mem_limit). Schema auto-loads on first start from /docker-entrypoint-initdb.d.
+  # NO service depends_on this — if it's down the voice path + panel keep working (best-effort write,
+  # reads degrade to empty).
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 2g
+    environment:
+      CLICKHOUSE_USER: haptica
+      # Secret lives ONLY in deploy/.env.deploy (gitignored, on the box) — never committed. Compose
+      # errors out if it's unset, so the store can never start with an empty password.
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in deploy/.env.deploy}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./observability/voice_analytics.sql:/docker-entrypoint-initdb.d/voice_analytics.sql:ro
+    expose:
+      - "8123"                           # HTTP — internal only
+    healthcheck:
+      # $$ → literal $ so the password is read from the container's own env at runtime (not baked here).
+      test: ["CMD-SHELL", "clickhouse-client --user haptica --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: haptica-frontend:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BACKEND_ORIGIN: http://backend:8091  # Next /api/* proxy -> backend container
+    depends_on:
+      - backend
+    ports:
+      - "${PANEL_PORT:-3100}:3000"        # live site on :80/:443 stays untouched
+
+volumes:
+  haptica-data:
+  clickhouse-data:

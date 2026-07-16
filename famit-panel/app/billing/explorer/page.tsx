@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import Select from "@/components/Select";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import NoFound from "@/components/NoFound";
@@ -69,6 +70,11 @@ export default function BillingExplorerPage() {
     const sumCost = useMemo(() => rows.reduce((s, r) => s + (r.total_cost || 0), 0), [rows]);
     const avgCost = rows.length ? sumCost / rows.length : 0;
     const hasFilter = !!(from || to || campaignId);
+    const CAMPAIGN_OPTS = campaigns.map((c, i) => ({
+        id: i,
+        name: c.name,
+        value: c.id,
+    }));
 
     return (
         <Layout title="Spending">
@@ -129,18 +135,14 @@ export default function BillingExplorerPage() {
                     </div>
                     <div>
                         <label className={labelCls}>Campaign</label>
-                        <select
-                            value={campaignId}
-                            onChange={(e) => setCampaignId(e.target.value)}
-                            className={inputCls}
-                        >
-                            <option value="">All campaigns</option>
-                            {campaigns.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                    {c.name}
-                                </option>
-                            ))}
-                        </select>
+                        <Select
+                            className="w-full"
+                            classButton="!h-12"
+                            placeholder="All campaigns"
+                            value={CAMPAIGN_OPTS.find((o) => o.value === campaignId) ?? null}
+                            options={CAMPAIGN_OPTS}
+                            onChange={(o) => setCampaignId(CAMPAIGN_OPTS[o.id].value)}
+                        />
                     </div>
                     <Button isBlack onClick={load} disabled={loading}>
                         {loading ? "Loading…" : "Apply"}

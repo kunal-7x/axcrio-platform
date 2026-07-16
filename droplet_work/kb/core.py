@@ -299,6 +299,15 @@ def ingest(tenant_id: str, content: str, *, title: str = "", kind: str = "paste"
                      "cs": channel_scope, "cid": scope_campaign_id, "pid": scope_product_id,
                      "tok": max(1, len(ch["content"]) // _CHARS_PER_TOKEN), "emb": emb_param})
         logger.info("kb.ingest tenant=%s chunks=%d embedded=%d", tenant_id, len(chunks), embedded)
+        # CREDITS metering — one "kb.index" unit per ingested document. Dormant-safe: any failure
+        # (credits package absent / FEATURE off) must NEVER break ingestion. Idempotent on src_id.
+        try:
+            import credits
+            credits.get_engine().record_usage(
+                tenant_id, "kb.index", 1,
+                meta={"idem_key": f"kb:{src_id}", "document_id": doc_id, "chunks": len(chunks)})
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": True, "source_id": src_id, "document_id": doc_id,
                 "chunks": len(chunks), "embedded": embedded,
                 "reason": "embedded" if use_dense else "fts_only"}

@@ -19,6 +19,7 @@ type SelectProps = {
     options: SelectOption[];
     isBlack?: boolean;
     placeholder?: string;
+    disabled?: boolean;
 };
 
 const Select = ({
@@ -31,12 +32,14 @@ const Select = ({
     options,
     isBlack,
     placeholder,
+    disabled,
 }: SelectProps) => {
     return (
         <Listbox
-            className={`${className || ""}`}
+            className={`${className || ""} ${disabled ? "opacity-50 pointer-events-none" : ""}`}
             value={value}
             onChange={onChange}
+            disabled={disabled}
             as="div"
         >
             {label && (

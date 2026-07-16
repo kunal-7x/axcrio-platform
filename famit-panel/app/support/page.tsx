@@ -439,7 +439,7 @@ function TicketModal({
                                                 "Reply sent."
                                             )
                                         }
-                                        className="shrink-0 h-10 px-4 rounded-2xl bg-primary-01 text-white text-button font-medium transition-opacity disabled:opacity-40 hover:opacity-90"
+                                        className="shrink-0 h-10 px-4 rounded-2xl bg-primary-01 text-t-light text-button font-medium transition-opacity disabled:opacity-40 hover:opacity-90"
                                     >
                                         {busy === "reply" ? "Sending…" : "Send"}
                                     </button>

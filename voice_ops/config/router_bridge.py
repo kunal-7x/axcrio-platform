@@ -27,6 +27,7 @@ Importing this pulls ZERO droplet/agent code (the W5 router/keypool are voice_ke
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -137,9 +138,46 @@ class KeyRouter:
         self._pool(provider).set_capacity(fingerprint, remaining, limit)
 
     def health(self, provider: Optional[str] = None) -> dict:
-        """Health snapshot (NO secrets) for the panel badge. One or all providers."""
-        provs = [provider.strip().lower()] if provider else list(self._pools.keys())
-        return {p: self._pool(p).snapshot() for p in provs}
+        """Health snapshot (NO secrets) for the panel badge. One or all providers. When no provider
+        is given we first ensure a pool exists for every provider that has keys configured, so
+        configured-but-idle providers still appear (not just ones already touched this process)."""
+        if provider:
+            return {provider.strip().lower(): self._pool(provider).snapshot()}
+        try:
+            for p in (self.key_store.list_keys(self.tenant_id, is_admin=self.is_admin).get("providers") or {}):
+                self._pool(p)
+        except Exception:  # noqa: BLE001 — store unavailable -> just show already-known pools
+            pass
+        return {p: self._pool(p).snapshot() for p in self._pools}
+
+    def analytics_snapshot(self) -> dict:
+        """Aggregate per-provider usage analytics (success/failure/429/pick counts + success rate)
+        across this tenant's pools — the Service Control Center usage view. No secrets. Best-effort."""
+        try:
+            for p in (self.key_store.list_keys(self.tenant_id, is_admin=self.is_admin).get("providers") or {}):
+                self._pool(p)
+        except Exception:  # noqa: BLE001
+            pass
+        out: dict = {"tenant_id": self.tenant_id, "providers": {}}
+        for p, pool in self._pools.items():
+            snap = pool.snapshot()
+            keys = snap.get("keys", [])
+            success = sum(int(k.get("success_count", 0)) for k in keys)
+            failures = sum(int(k.get("fail_count", 0)) for k in keys)
+            rate_limits = sum(int(k.get("rate_limit_count", 0)) for k in keys)
+            total = success + failures
+            out["providers"][p] = {
+                "provider": p,
+                "healthy": snap.get("healthy", 0),
+                "total": snap.get("total", 0),
+                "success": success,
+                "failures": failures,
+                "rate_limits": rate_limits,
+                "picks": sum(int(k.get("pick_count", 0)) for k in keys),
+                "success_rate": round(success / total, 3) if total else 1.0,
+                "keys": keys,
+            }
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -191,3 +229,25 @@ class LiveProviderRouter:
         if rk.found:
             self._last_fp[provider.strip().lower()] = rk.fingerprint
         return rk
+
+
+# --------------------------------------------------------------------------- #
+# Process-singleton KeyRouter registry. The agent + the admin API share the SAME router per tenant
+# so a key's health state (a trip on call N) PERSISTS to call N+1 within a worker — that's what makes
+# "instant failover" stick. Keyed by (scope, tenant). Thread-safe.
+# --------------------------------------------------------------------------- #
+_ROUTERS: dict[str, "KeyRouter"] = {}
+_ROUTERS_LOCK = threading.Lock()
+
+
+def get_key_router(tenant_id: str = "", *, is_admin: bool = False,
+                   key_store: Optional[ProviderKeyStore] = None) -> "KeyRouter":
+    """Return the process-cached KeyRouter for (tenant_id, is_admin), creating it once. Sharing the
+    instance is what lets health/analytics accumulate across calls within a worker."""
+    key = f"{'admin' if is_admin else 'tenant'}:{(tenant_id or '').strip()}"
+    with _ROUTERS_LOCK:
+        r = _ROUTERS.get(key)
+        if r is None:
+            r = KeyRouter(tenant_id, key_store, is_admin=is_admin)
+            _ROUTERS[key] = r
+        return r

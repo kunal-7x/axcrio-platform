@@ -12,54 +12,23 @@
 import type { VendorStatus } from "@/lib/api";
 import Badge, { type BadgeVariant } from "@/components/Badge";
 import Icon from "@/components/Icon";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import ProviderLogo from "@/components/ProviderLogo";
+import { HubTabsView } from "../credits/_shared";
 import {
     ResponsiveContainer,
     AreaChart,
     Area,
 } from "recharts";
 
-// ---- cross-route tab strip (replaces the old PageHeader masthead) ----------
-// Plain pill row matching the reference Tabs aesthetic. No title/eyebrow/
-// subtitle here — the page title lives in <Layout title>.
-const BILLING_TABS = [
-    { label: "Overview", href: "/billing/overview" },
-    { label: "Vendors", href: "/billing/vendors" },
-    { label: "Spending", href: "/billing/explorer" },
-    { label: "Plan", href: "/billing/plan" },
-    { label: "Audit", href: "/billing/audit" },
-    // ROUND-2 §1b — Money is now ONE rail entry; Payments (collections) joins the
-    // billing tab hub instead of being a separate rail child. /payments mounts
-    // <BillingTabs /> so it lives inside this same strip; active-state keys off
-    // pathname below (exact `/payments` match — it is not under /billing/*).
-    { label: "Payments", href: "/payments" },
-];
-
+// ---- cross-route tab strip --------------------------------------------------
+// The Money area is now the unified CREDITS hub. BillingTabs renders the SAME strip the credits
+// pages use — defined ONCE in ../credits/_shared as HubTabsView — so every billing/payments page
+// shows the full hub (Wallet / Buy Credits / Usage / Pricing / Overview / Vendors / Spending /
+// Plan / Audit / Payments). activeTab=null => only the route-based tabs light up here (we're on a
+// /billing or /payments route, never a /credits ?tab panel). No /billing route was removed — they
+// all still resolve, just inside the bigger hub.
 export function BillingTabs() {
-    const pathname = usePathname();
-    return (
-        <div className="flex flex-wrap gap-1 mb-5 max-md:mb-4">
-            {BILLING_TABS.map((t) => {
-                const active =
-                    pathname === t.href ||
-                    (t.href.includes("/vendors") && pathname.startsWith("/billing/vendors"));
-                return (
-                    <Link
-                        key={t.href}
-                        href={t.href}
-                        className={`flex justify-center items-center h-12 px-5.5 rounded-full border text-button transition-colors hover:text-t-primary ${
-                            active
-                                ? "border-s-stroke2 text-t-primary"
-                                : "border-transparent text-t-secondary"
-                        }`}
-                    >
-                        {t.label}
-                    </Link>
-                );
-            })}
-        </div>
-    );
+    return <HubTabsView activeTab={null} />;
 }
 
 export function money(n: number | null | undefined, currency: string): string {
@@ -194,16 +163,22 @@ export function BarRow({
     pct,
     color,
     badge,
+    provider,
 }: {
     label: string;
     value: string;
     pct: number; // 0..100
     color: string;
     badge?: React.ReactNode;
+    provider?: string; // when set, lead with the REAL vendor logo, not a swatch
 }) {
     return (
         <div className="flex items-center">
-            <span className="size-3 rounded-sm shrink-0" style={{ background: color }} />
+            {provider ? (
+                <ProviderLogo provider={provider} size={38} className="!rounded-xl" />
+            ) : (
+                <span className="size-3 rounded-sm shrink-0" style={{ background: color }} />
+            )}
             <div className="grow pl-4 min-w-0">
                 <div className="flex justify-between gap-3 mb-2 text-sub-title-2">
                     <span className="flex items-center gap-2 min-w-0">

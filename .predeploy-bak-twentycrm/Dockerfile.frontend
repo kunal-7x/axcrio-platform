@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+# Haptica AI — Next.js 15 / React 19 panel (production image).
+# Build context MUST be the repo root (so famit-panel/ + .dockerignore apply):
+#   docker build -f deploy/Dockerfile.frontend -t haptica-frontend .
+
+# ---- build ----
+FROM node:20-alpine AS build
+WORKDIR /app
+RUN apk add --no-cache libc6-compat                 # native deps (sharp)
+ENV NEXT_TELEMETRY_DISABLED=1
+# deps first for layer caching; .npmrc carries legacy-peer-deps for React 19
+COPY famit-panel/package.json famit-panel/.npmrc ./
+COPY famit-panel/package-lock.json* ./
+RUN npm install --legacy-peer-deps
+# app source + production build
+COPY famit-panel/ ./
+# Next.js evaluates next.config rewrites() at BUILD time and bakes them into the
+# routes manifest, so BACKEND_ORIGIN must be set HERE (a runtime env is ignored
+# for rewrites). Defaults to the backend container on the compose network.
+ARG BACKEND_ORIGIN=http://backend:8091
+ENV BACKEND_ORIGIN=$BACKEND_ORIGIN
+# App version shown bottom-right in the panel. NEXT_PUBLIC_* is inlined at build
+# time, so set it HERE (override per deploy with --build-arg APP_VERSION=x.y.z).
+ARG APP_VERSION=1.4.0
+ENV NEXT_PUBLIC_APP_VERSION=$APP_VERSION
+RUN npm run build
+
+# ---- run ----
+FROM node:20-alpine AS run
+WORKDIR /app
+RUN apk add --no-cache libc6-compat
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000
+COPY --from=build /app ./
+EXPOSE 3000
+# `next start` honours $PORT and $BACKEND_ORIGIN (the /api/* proxy target)
+CMD ["npm", "run", "start"]

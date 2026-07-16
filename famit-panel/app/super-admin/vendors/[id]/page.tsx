@@ -52,6 +52,13 @@ import {
     type VendorAccountStatus,
 } from "@/lib/api";
 import type { SelectOption } from "@/types/select";
+import {
+    getVendorAdUsage,
+    fmtMoney as fmtAdMoney,
+    fmtRoas,
+    healthMeta,
+    type VendorAdUsageResponse,
+} from "../_ads-roi";
 
 type Toast = { msg: string; type: "success" | "error" };
 
@@ -103,6 +110,11 @@ export default function VendorWorkspacePage() {
     const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set());
     const [planBusy, setPlanBusy] = useState(false);
 
+    // Ad-spend/usage drill-down — its own dormant-safe read (cross-tenant ad ROI
+    // route), lazy-loaded when the admin opens the Usage tab. Read-only.
+    const [adUsage, setAdUsage] = useState<VendorAdUsageResponse | null>(null);
+    const [adState, setAdState] = useState<"idle" | "loading" | "ok" | "dormant" | "error">("idle");
+
     const showToast = (msg: string, type: "success" | "error" = "success") => {
         setToast({ msg, type });
         setTimeout(() => setToast(null), 4000);
@@ -121,6 +133,24 @@ export default function VendorWorkspacePage() {
     useEffect(() => {
         load();
     }, [load]);
+
+    // Lazily pull the ad-spend panel the first time the Usage tab is opened.
+    // Dormant-safe: an unmounted /admin/ads/roi route renders the "coming soon"
+    // panel inside the Usage tab, never an error wall.
+    useEffect(() => {
+        if (tab !== "Usage" || !id || adState !== "idle") return;
+        setAdState("loading");
+        getVendorAdUsage(id).then((r) => {
+            if (r.kind === "ok") {
+                setAdUsage(r.data);
+                setAdState("ok");
+            } else if (r.kind === "dormant") {
+                setAdState("dormant");
+            } else {
+                setAdState("error");
+            }
+        });
+    }, [tab, id, adState]);
 
     useEffect(() => {
         getAdminPlans()
@@ -389,7 +419,7 @@ export default function VendorWorkspacePage() {
                             ) : tab === "Overview" ? (
                                 <OverviewTab vendor={vendor} />
                             ) : tab === "Usage" ? (
-                                <UsageTab vendor={vendor} />
+                                <UsageTab vendor={vendor} adUsage={adUsage} adState={adState} />
                             ) : tab === "Permissions" ? (
                                 <PermissionsTab
                                     vendor={vendor}
@@ -502,16 +532,118 @@ function OverviewTab({ vendor }: { vendor: AdminVendorDetail | null }) {
     );
 }
 
-function UsageTab({ vendor }: { vendor: AdminVendorDetail | null }) {
+function UsageTab({
+    vendor,
+    adUsage,
+    adState,
+}: {
+    vendor: AdminVendorDetail | null;
+    adUsage: VendorAdUsageResponse | null;
+    adState: "idle" | "loading" | "ok" | "dormant" | "error";
+}) {
     const u = vendor?.usage;
     return (
-        <div className="grid grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1 gap-3">
-            <HeroCard label="Calls (30d)" glyph="chat" value={num(u?.calls_30d ?? 0)} />
-            <HeroCard label="Minutes (30d)" glyph="clock" value={num(u?.minutes_30d ?? 0)} />
-            <HeroCard label="Active now" glyph="dashboard" value={num(u?.active_now ?? 0)} />
-            <HeroCard label="Leads" glyph="profile" value={num(u?.leads ?? 0)} />
-            <HeroCard label="Campaigns" glyph="promote" value={num(u?.campaigns ?? 0)} />
-            <HeroCard label="WhatsApp (30d)" glyph="chat" value={num(u?.whatsapp_30d ?? 0)} />
+        <div className="space-y-5">
+            <div className="grid grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1 gap-3">
+                <HeroCard label="Calls (30d)" glyph="chat" value={num(u?.calls_30d ?? 0)} />
+                <HeroCard label="Minutes (30d)" glyph="clock" value={num(u?.minutes_30d ?? 0)} />
+                <HeroCard label="Active now" glyph="dashboard" value={num(u?.active_now ?? 0)} />
+                <HeroCard label="Leads" glyph="profile" value={num(u?.leads ?? 0)} />
+                <HeroCard label="Campaigns" glyph="promote" value={num(u?.campaigns ?? 0)} />
+                <HeroCard label="WhatsApp (30d)" glyph="chat" value={num(u?.whatsapp_30d ?? 0)} />
+            </div>
+            <AdSpendPanel adUsage={adUsage} adState={adState} />
+        </div>
+    );
+}
+
+// Cross-tenant ad-spend/usage drill-down for one vendor. Read-only + audited
+// server-side. Dormant-safe — an unmounted ROI route renders the premium panel.
+function AdSpendPanel({
+    adUsage,
+    adState,
+}: {
+    adUsage: VendorAdUsageResponse | null;
+    adState: "idle" | "loading" | "ok" | "dormant" | "error";
+}) {
+    const cur = adUsage?.currency || "INR";
+    const h = healthMeta(adUsage?.campaign_health);
+    const capPct =
+        adUsage?.daily_cap_minor && adUsage.daily_cap_minor > 0
+            ? Math.min(100, Math.round(((adUsage.spend_today_minor ?? 0) / adUsage.daily_cap_minor) * 100))
+            : null;
+
+    return (
+        <div className="rounded-3xl bg-b-surface2 ring-1 ring-s-subtle ring-inset p-5">
+            <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="text-h6 text-t-primary">Ad spend & ROI</div>
+                {adState === "ok" && <Badge variant={h.variant} dot={h.dot}>{h.label}</Badge>}
+            </div>
+
+            {adState === "loading" || adState === "idle" ? (
+                <div className="grid grid-cols-3 max-sm:grid-cols-1 gap-3">
+                    {[...Array(3)].map((_, i) => (
+                        <div key={i} className="kpi">
+                            <div className="skeleton h-4 w-24 mb-4" />
+                            <div className="skeleton h-9 w-28" />
+                        </div>
+                    ))}
+                </div>
+            ) : adState === "dormant" ? (
+                <div className="state-block">
+                    <span className="state-glyph">
+                        <Icon name="chart" className="fill-inherit" />
+                    </span>
+                    <div className="state-title">Ad ROI is warming up</div>
+                    <div className="state-sub">
+                        Once this vendor connects a Meta or Google ad account and starts spending, their
+                        spend, ROAS, and campaign health show here.
+                    </div>
+                </div>
+            ) : adState === "error" ? (
+                <div className="state-block">
+                    <span className="state-glyph">
+                        <Icon name="info" className="fill-inherit" />
+                    </span>
+                    <div className="state-title">Couldn&apos;t load ad spend</div>
+                    <div className="state-sub">Reopen the Usage tab to try again.</div>
+                </div>
+            ) : (
+                <div className="space-y-4">
+                    <div className="grid grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1 gap-3">
+                        <HeroCard label="Spend (30d)" glyph="usd-circle" accent="var(--primary-01)" value={fmtAdMoney(adUsage?.spend_30d_minor, cur)} />
+                        <HeroCard label="Revenue (30d)" glyph="wallet" value={fmtAdMoney(adUsage?.revenue_30d_minor, cur)} />
+                        <HeroCard label="ROAS" glyph="chart" value={fmtRoas(adUsage?.roas)} />
+                        <HeroCard label="Leads (30d)" glyph="profile" value={num(adUsage?.leads_30d ?? 0)} foot={`${num(adUsage?.qualified_30d ?? 0)} qualified`} />
+                        <HeroCard label="Cost / lead" glyph="usd-circle" value={fmtAdMoney(adUsage?.cpl_minor, cur)} />
+                        <HeroCard label="Active campaigns" glyph="promote" value={num(adUsage?.active_campaigns ?? 0)} />
+                    </div>
+                    {capPct != null && (
+                        <div>
+                            <div className="flex items-center justify-between text-caption text-t-secondary mb-1.5">
+                                <span>Today&apos;s spend vs daily cap</span>
+                                <span className="tabular-nums text-t-primary">
+                                    {fmtAdMoney(adUsage?.spend_today_minor, cur)} / {fmtAdMoney(adUsage?.daily_cap_minor, cur)}
+                                </span>
+                            </div>
+                            <div className="meter">
+                                <div
+                                    className="meter-fill"
+                                    style={{
+                                        width: `${capPct}%`,
+                                        background:
+                                            capPct >= 100
+                                                ? "var(--primary-03)"
+                                                : capPct >= 90
+                                                ? "var(--primary-05)"
+                                                : "var(--primary-02)",
+                                    }}
+                                />
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 }

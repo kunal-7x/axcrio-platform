@@ -14,16 +14,21 @@
     --shade-08: #e2e2e2;
     --shade-09: #f1f1f1;
     --shade-10: #fdfdfd;
-    --primary-01: #2a85ff;
-    --primary-02: #00a656;
-    --primary-03: #ff381c;
-    --primary-04: #7f5fff;
-    --primary-05: #ff9d34;
-    --secondary-01: #ffbc99;
-    --secondary-02: #cabdff;
-    --secondary-03: #b1e5fc;
-    --secondary-04: #b5e4ca;
-    --secondary-05: #ffd88d;
+    /* ANTHROPIC GEIST palette — ONE brand accent = "Book Cloth" clay, used as
+       the single colour across the whole app, analytics included. primary-02/05
+       are its Kraft/Manilla tints (warm chart series), primary-03 is Geist Error
+       red, primary-04 a neutral Cloud grey. secondary-* are the soft Ivory/Cloud
+       surface tints. Clay reads on both light + dark, so no theme flip needed. */
+    --primary-01: #cc785c; /* Book Cloth — THE accent */
+    --primary-02: #d4a27f; /* Kraft */
+    --primary-03: #bf4d43; /* Geist Error red (danger / negative) */
+    --primary-04: #91918d; /* Cloud Medium (neutral series) */
+    --primary-05: #ebdbbc; /* Manilla */
+    --secondary-01: #ebdbbc; /* Manilla */
+    --secondary-02: #d4a27f; /* Kraft */
+    --secondary-03: #e5e4df; /* Ivory Dark */
+    --secondary-04: #bfbfba; /* Cloud Light */
+    --secondary-05: #f0f0eb; /* Ivory Medium */
     --backgrounds-surface1: var(--shade-09);
     --backgrounds-surface2: var(--shade-10);
     --backgrounds-surface2-overlay: var(--shade-10);
@@ -45,12 +50,12 @@
     --stroke-focus: var(--primary-01);
     --stroke-highlight: rgba(123, 123, 123, 0.5);
     --stroke-stroke2: var(--shade-08);
-    --accent: #f52495;
+    --accent: #cc785c;
     --mask-1-stop50: rgba(253, 253, 253, 0);
     --mask-1-stop100: var(--shade-10);
     --mask-2-stop1: var(--shade-09);
     --mask-2-stop2: rgba(241, 241, 241, 0);
-    --chart-green: #00b512;
+    --chart-green: #cc785c;
     --chart-purple: var(--primary-04);
     --chart-yellow: var(--primary-05);
     --chart-min: var(--shade-08);
@@ -107,7 +112,7 @@
     --stroke-focus: var(--primary-01);
     --stroke-highlight: rgba(114, 114, 114, 0.5);
     --stroke-stroke2: #282828;
-    --accent: #f52495;
+    --accent: #cc785c;
     --mask-1-stop50: rgba(40, 40, 40, 0);
     --mask-1-stop100: var(--shade-03);
     --mask-2-stop1: var(--shade-02);
@@ -201,7 +206,12 @@
     --default-transition-duration: 0.2s;
     --default-border-width: 1.5px;
     --border-width-1: 1px;
-    --font-inter: var(--font-inter-display);
+    /* Gilroy is the primary app-wide family (see app/layout.tsx); Inter Display +
+       system stack stay as fallbacks, incl. Devanagari coverage (Gilroy is Latin-only).
+       The inline `var(--x, ui-sans-serif)` fallback is load-bearing: a bare undefined
+       var() poisons the WHOLE font-family declaration -> browser default (Times). */
+    --font-inter: var(--font-gilroy, ui-sans-serif), var(--font-inter-display, ui-sans-serif),
+        ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --text-0: 0;
     /* Type scale — aligned to the reference kit (core-2-dashboard-builder-react,
        design/ui-font-heading-plan.md §3). Inter Display reads premium via light
@@ -282,8 +292,8 @@
 @layer base {
     html {
         @apply text-[calc(0.7rem+0.4vw)] max-[2300px]:text-[calc(0.7rem+0.3vw)] max-[2150px]:text-[calc(0.7rem+0.25vw)] max-[2000px]:text-[1rem];
-        font-family: var(--font-inter-display), ui-sans-serif, system-ui,
-            -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: var(--font-gilroy, ui-sans-serif), var(--font-inter-display, ui-sans-serif),
+            ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     body {
         -webkit-font-smoothing: antialiased;
@@ -329,8 +339,8 @@
     .gradient-repeat-lines-green {
         background-image: linear-gradient(
             to right,
-            #00b512 0,
-            #00b512 2px,
+            #cc785c 0,
+            #cc785c 2px,
             transparent 2px
         );
         background-repeat: repeat-x;
@@ -371,7 +381,7 @@
         @apply border border-[#00A656]/15 bg-[#00A656]/5 text-[#00A656];
     }
     .label-red {
-        @apply border border-[#FF6A55]/15 bg-[#FF6A55]/5 text-[#FF6A55];
+        @apply border border-[#BF4D43]/15 bg-[#BF4D43]/5 text-[#BF4D43];
     }
     .label-yellow {
         @apply border border-[#EF9D0E]/15 bg-[#EF9D0E]/5 text-[#EF9D0E];
@@ -519,13 +529,13 @@
         @apply border border-[#00A656]/20 bg-[#00A656]/8 text-[#00A656];
     }
     .pill-danger {
-        @apply border border-[#FF6A55]/20 bg-[#FF6A55]/8 text-[#FF6A55];
+        @apply border border-[#BF4D43]/20 bg-[#BF4D43]/8 text-[#BF4D43];
     }
     .pill-warning {
         @apply border border-[#EF9D0E]/20 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E];
     }
     .pill-info {
-        @apply border border-[#2A85FF]/20 bg-[#2A85FF]/8 text-[#2A85FF];
+        @apply border border-s-stroke2 bg-b-surface1 text-t-secondary dark:bg-shade-04/50;
     }
     .pill-neutral {
         @apply border border-s-stroke2 bg-b-surface1 text-t-secondary dark:bg-shade-04/50;
@@ -541,11 +551,11 @@
         @apply w-full text-body-2 border-separate border-spacing-0;
     }
     .data-table thead th {
-        @apply sticky top-0 z-1 h-11 px-5 text-left align-middle text-overline text-t-tertiary
+        @apply sticky top-0 z-1 h-11 px-5 max-md:px-3 max-sm:px-2 text-left align-middle text-overline text-t-tertiary
             bg-b-surface2 border-b border-s-subtle;
     }
     .data-table tbody td {
-        @apply h-14 px-5 align-middle border-b border-s-subtle/70;
+        @apply h-14 px-5 max-md:px-3 max-sm:px-2 align-middle border-b border-s-subtle/70;
     }
     .data-table tbody tr:last-child td {
         @apply border-b-0;
@@ -558,6 +568,22 @@
     }
     .data-table .td-num {
         font-variant-numeric: tabular-nums;
+    }
+
+    /* P5 — reusable responsive wrappers (compose with existing patterns; no JS).
+       .table-scroll: the standard horizontal-scroll container for a wide .data-table on small
+       screens. On mobile it pulls out the page/card gutter (negative margin) so the table uses the
+       full width instead of being double-squeezed, and re-pads so the first/last cells aren't flush. */
+    .table-scroll {
+        @apply overflow-x-auto max-md:-mx-3 max-md:px-3 max-sm:-mx-2 max-sm:px-2;
+    }
+    /* .card-stack / .card-stack-4: multi-card grids that collapse cleanly tablet -> phone, so pages
+       stop hand-rolling the same grid-cols chain. */
+    .card-stack {
+        @apply grid gap-3 grid-cols-2 max-lg:grid-cols-1;
+    }
+    .card-stack-4 {
+        @apply grid gap-3 grid-cols-4 max-2xl:grid-cols-3 max-lg:grid-cols-2 max-sm:grid-cols-1;
     }
 
     /* Premium empty / loading states. Calm, centered, with a soft glyph. */
@@ -777,6 +803,19 @@
             border border-[#EF9D0E]/25 bg-[#EF9D0E]/8 text-[#C77E08] dark:text-[#EF9D0E];
     }
 
+    /* Stage pills on a nav item (Super-Admin Sidebar Builder → per-item stage).
+       "Beta" = a violet maturity cue (still shows, but flagged early-access);
+       "Premium" = a gold tier cue (upsell). Same compact shape as Soon/Locked
+       so the rail reads consistently. Purely cosmetic labels. */
+    .nav-beta {
+        @apply inline-flex items-center h-4 px-1.5 rounded-full text-[0.5625rem] font-semibold uppercase tracking-[0.08em]
+            border border-[#8B5CF6]/25 bg-[#8B5CF6]/8 text-[#7C4DDF] dark:text-[#A78BFA];
+    }
+    .nav-premium {
+        @apply inline-flex items-center h-4 px-1.5 rounded-full text-[0.5625rem] font-semibold uppercase tracking-[0.08em]
+            border border-[#D4A017]/30 bg-[#D4A017]/10 text-[#B8860B] dark:text-[#E6C200];
+    }
+
     /* Refined active nav item: the template pill + a left signal bar in
        brand blue. The bar is the through-line that ties shell -> page. */
     .nav-active-bar {
@@ -820,7 +859,7 @@
         @apply border border-[#00A656]/20 bg-[#00A656]/8 text-[#00A656];
     }
     .toast-error {
-        @apply border border-[#FF6A55]/20 bg-[#FF6A55]/8 text-[#FF6A55];
+        @apply border border-[#BF4D43]/20 bg-[#BF4D43]/8 text-[#BF4D43];
     }
 
     /* Soft brand glow used behind the login mark + section heroes. */
@@ -849,14 +888,15 @@
     .gl-card {
         --gl-dot: var(--shade-10); /* near-white spark core */
         --gl-dot-soft: var(--shade-07); /* grey spark halo */
-        --gl-spark-tint: var(--primary-01); /* Signal-blue crest tint */
+        --gl-spark-tint: #e0b59e; /* warm clay crest */
 
         /* Aurora 3-stop palette (resolved by the shader via getComputedStyle).
-           deep indigo-black -> Signal blue -> cool white highlight. Anchored on
-           the brand token so the whole field reads as Signal, not grey. */
-        --gl-aur-a: #0a0d17; /* deep base */
-        --gl-aur-b: var(--primary-01); /* Signal blue energy */
-        --gl-aur-c: #d1e5ff; /* cool white highlight */
+           Warm GEIST accent: near-black base -> Book Cloth clay energy ->
+           Manilla highlight. Fixed values (not primary-01) since this card is
+           always dark in both themes. */
+        --gl-aur-a: #100b09; /* warm deep base */
+        --gl-aur-b: #cc785c; /* Book Cloth energy */
+        --gl-aur-c: #ebdbbc; /* Manilla highlight */
 
         @apply relative mx-auto p-8 max-md:p-6 rounded-4xl bg-b-dark2
             shadow-depth ring-1 ring-white/[0.04] text-center
@@ -1053,6 +1093,160 @@
         }
         .gl-ellipsis {
             clip-path: inset(0 0 0 0);
+        }
+    }
+
+    /* ============================================================
+       VOICE POSTER CARDS — animated aurora gradient + play motion.
+       Premium, GPU-cheap (transform/opacity only), reduced-motion safe.
+       ============================================================ */
+    /* The card art is a real fluid-gradient IMAGE; the inner layer slowly
+       ken-burns (scale + drift) for life and speeds up + brightens on play. */
+    .va-img {
+        @apply absolute overflow-hidden;
+    }
+    .va-img-inner {
+        @apply absolute inset-0;
+        background-size: cover;
+        background-position: center;
+        animation: va-pan 24s ease-in-out infinite alternate;
+        will-change: transform, filter;
+        transition: filter 0.6s ease;
+    }
+    @keyframes va-pan {
+        from {
+            transform: scale(1.06) translate(0, 0);
+        }
+        to {
+            transform: scale(1.16) translate(-3%, -3%);
+        }
+    }
+    /* playing → the art drifts faster + glows brighter */
+    .voice-poster.is-playing .va-img-inner {
+        animation-duration: 7s;
+        filter: saturate(1.25) brightness(1.12);
+    }
+    /* soft pulsing ring on the play button while playing */
+    .voice-play-pulse {
+        animation: voice-play-pulse 1.7s ease-out infinite;
+    }
+    @keyframes voice-play-pulse {
+        0% {
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.32);
+        }
+        100% {
+            box-shadow: 0 0 0 16px rgba(255, 255, 255, 0);
+        }
+    }
+    /* bottom scroll fade+blur: the gradient melts the half-row into the panel
+       and the mask makes the backdrop-blur strongest at the very bottom. */
+    .gallery-fade {
+        -webkit-mask-image: linear-gradient(to top, #000 28%, transparent 100%);
+        mask-image: linear-gradient(to top, #000 28%, transparent 100%);
+    }
+
+    /* ============================================================
+       PROVIDER PIPELINE — STT → LLM → TTS with a flowing red signal.
+       ============================================================ */
+    /* near-black node with a soft top-left sheen (matches the Figma) */
+    .pipe-node {
+        background: radial-gradient(
+            125% 120% at 22% 12%,
+            #232327 0%,
+            #131316 55%,
+            #0e0e11 100%
+        );
+        box-shadow:
+            inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+            0 12px 32px -16px rgba(0, 0, 0, 0.85);
+    }
+    .pipe-badge {
+        background: radial-gradient(
+            110% 110% at 30% 20%,
+            #26262b 0%,
+            #141417 70%
+        );
+        box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+    }
+    /* a faint white hairline track */
+    .pipe-line {
+        @apply relative flex-1 rounded-full;
+        height: 2px;
+        background: rgba(255, 255, 255, 0.16);
+    }
+    /* slow white signal — TWO staggered comets so the flow is CONTINUOUS (always
+       one mid-line) with the fade only at the very ends to hide the reset. */
+    .pipe-comet {
+        @apply absolute rounded-full;
+        top: 50%;
+        left: 0;
+        width: 7px;
+        height: 7px;
+        margin-top: -3.5px;
+        background: #fff;
+        box-shadow: 0 0 12px 3px rgba(255, 255, 255, 0.55);
+        animation: pipe-comet 4.5s linear infinite;
+    }
+    .pipe-comet-2 {
+        animation-delay: 2.25s;
+    }
+    @keyframes pipe-comet {
+        0% {
+            left: 0;
+            opacity: 0;
+        }
+        8% {
+            opacity: 1;
+        }
+        92% {
+            opacity: 1;
+        }
+        100% {
+            left: 100%;
+            opacity: 0;
+        }
+    }
+    /* small soft white end-nodes */
+    .pipe-dot {
+        @apply relative shrink-0 rounded-full;
+        width: 6px;
+        height: 6px;
+        background: #fff;
+        box-shadow: 0 0 8px 1px rgba(255, 255, 255, 0.5);
+    }
+    @keyframes pipe-dot-pulse {
+        0% {
+            transform: scale(1);
+            opacity: 0.55;
+        }
+        100% {
+            transform: scale(2.6);
+            opacity: 0;
+        }
+    }
+    /* a provider's brand SVG painted WHITE via CSS mask (any source fill) */
+    .prov-logo {
+        background-color: #fff;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .va-img-inner,
+        .voice-poster.is-playing .va-img-inner,
+        .voice-play-pulse,
+        .pipe-comet {
+            animation: none;
+        }
+        .pipe-comet {
+            opacity: 0;
+        }
+        .voice-play-pulse {
+            box-shadow: none;
         }
     }
 }

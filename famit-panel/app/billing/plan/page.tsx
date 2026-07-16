@@ -9,6 +9,7 @@ import Badge from "@/components/Badge";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import NoFound from "@/components/NoFound";
+import Select from "@/components/Select";
 import {
     getBilling,
     getBillingLedger,
@@ -317,28 +318,37 @@ function AdminBillingPanel({
             <form onSubmit={handleSave} className="px-5 pb-5 pt-2 space-y-4 max-lg:px-3">
                 <div>
                     <label className={labelCls}>Tenant</label>
-                    <select
-                        value={tenantId}
-                        onChange={(e) => setTenantId(e.target.value)}
-                        className={inputCls}
-                    >
-                        {tenants.map((t) => (
-                            <option key={t.tenant_id} value={t.tenant_id}>
-                                {t.name} ({t.tenant_id})
-                            </option>
-                        ))}
-                    </select>
+                    <Select
+                        className="w-full"
+                        value={(() => {
+                            const i = tenants.findIndex((t) => t.tenant_id === tenantId);
+                            return i >= 0
+                                ? { id: i, name: `${tenants[i].name} (${tenants[i].tenant_id})` }
+                                : null;
+                        })()}
+                        onChange={(o) => setTenantId(tenants[o.id]?.tenant_id || "")}
+                        options={tenants.map((t, i) => ({
+                            id: i,
+                            name: `${t.name} (${t.tenant_id})`,
+                        }))}
+                        placeholder="Select tenant"
+                    />
                 </div>
                 <div>
                     <label className={labelCls}>Plan</label>
-                    <select
-                        value={plan}
-                        onChange={(e) => setPlan(e.target.value as "prepaid" | "postpaid")}
-                        className={inputCls}
-                    >
-                        <option value="postpaid">postpaid</option>
-                        <option value="prepaid">prepaid</option>
-                    </select>
+                    <Select
+                        className="w-full"
+                        value={
+                            plan === "prepaid"
+                                ? { id: 1, name: "prepaid" }
+                                : { id: 0, name: "postpaid" }
+                        }
+                        onChange={(o) => setPlan(o.id === 1 ? "prepaid" : "postpaid")}
+                        options={[
+                            { id: 0, name: "postpaid" },
+                            { id: 1, name: "prepaid" },
+                        ]}
+                    />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                     <div>

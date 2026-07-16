@@ -13,7 +13,6 @@ import Tabs from "@/components/Tabs";
 import Select from "@/components/Select";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import {
     getContacts,
     getSegments,
@@ -27,17 +26,15 @@ import {
 import { StageBadge, TempBadge, tempOf, initials, fmtRelative } from "./_ui";
 
 // Stage filter tabs (mirrors §4.1 derivation order). "all" is special.
-// ROUND-6 LANE 4 — "Won"/"Lost" REMOVED from the stage filter per founder: the
-// active pipeline stages are new → contacted → engaged → qualified (Booked kept
-// as the conversion stage). Won/Lost are terminal outcomes shown elsewhere, not
-// a working-pipeline filter. The `won`/`lost` STAGE VALUES still render via
-// StageBadge if a contact carries them; only the FILTER options are trimmed.
 const STAGE_TABS = [
     { id: 1, name: "All", key: "all" },
     { id: 2, name: "New", key: "new" },
     { id: 3, name: "Contacted", key: "contacted" },
     { id: 4, name: "Engaged", key: "engaged" },
     { id: 5, name: "Qualified", key: "qualified" },
+    { id: 6, name: "Booked", key: "booked" },
+    { id: 7, name: "Won", key: "won" },
+    { id: 8, name: "Lost", key: "lost" },
 ];
 
 // Lifecycle/heat filter — maps to the contact's lifecycle_state field.
@@ -115,7 +112,6 @@ function CrmWorkspaceInner() {
     // Delete in-progress set
     const [deleting, setDeleting] = useState<Set<string>>(new Set());
     const [deleteError, setDeleteError] = useState("");
-    const [delTarget, setDelTarget] = useState<{ id: string; name: string } | null>(null);
 
     const [segments, setSegments] = useState<Segment[]>([]);
 
@@ -386,6 +382,15 @@ function CrmWorkspaceInner() {
                                 placeholder="Search name or phone"
                                 isGray
                             />
+                            {/* Cross-link to the Twenty-powered deal pipeline (the
+                                relational sales CRM that lives beside this call timeline). */}
+                            <Link
+                                href="/crm/sales"
+                                className="group inline-flex items-center gap-2 h-10 mr-3 px-4 rounded-full border border-s-stroke2 text-button text-t-secondary fill-t-secondary transition-colors hover:text-t-primary hover:fill-t-primary hover:border-s-highlight max-md:hidden"
+                            >
+                                <Icon name="chart" className="size-4 fill-inherit" />
+                                Sales Pipeline
+                            </Link>
                             {/* Stage filter — right-side dropdown (was a tab strip) */}
                             <Select
                                 className="w-44 mr-4 max-md:w-full max-md:mr-0"
@@ -480,7 +485,9 @@ function CrmWorkspaceInner() {
                                                 <td className="font-medium text-t-primary">
                                                     <Link
                                                         href={`/crm/${encodeURIComponent(
-                                                            c.id
+                                                            // plain digits — no %2B for a
+                                                            // Next.js rewrite to double-encode
+                                                            c.id.replace(/^\+/, "")
                                                         )}`}
                                                         className="flex items-center gap-3"
                                                     >
@@ -542,12 +549,7 @@ function CrmWorkspaceInner() {
                                                         type="button"
                                                         disabled={isDeleting}
                                                         onClick={() =>
-                                                            setDelTarget({
-                                                                id: c.id,
-                                                                name:
-                                                                    c.name ||
-                                                                    "this contact",
-                                                            })
+                                                            handleDelete(c.id)
                                                         }
                                                         className="inline-flex items-center justify-center size-7 rounded-full text-t-tertiary hover:text-primary-03 hover:bg-primary-03/10 transition-colors disabled:opacity-40"
                                                         title="Delete contact"
@@ -585,25 +587,6 @@ function CrmWorkspaceInner() {
                     </div>
                 </div>
             )}
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={() => {
-                    if (delTarget) handleDelete(delTarget.id);
-                    setDelTarget(null);
-                }}
-                title="Delete this contact?"
-                message={
-                    <>
-                        Delete{" "}
-                        <span className="text-t-primary">
-                            {delTarget?.name}
-                        </span>{" "}
-                        from your CRM? This action cannot be undone.
-                    </>
-                }
-            />
         </Layout>
     );
 }

@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import Icon from "@/components/Icon";
+import Select from "@/components/Select";
 import {
     FIELD_TYPES,
     type FieldType,
@@ -25,6 +26,12 @@ type Props = {
     onChange: (fields: FormField[]) => void;
     disabled?: boolean;
 };
+
+const FIELD_TYPE_OPTS = FIELD_TYPES.map((t, i) => ({
+    id: i,
+    name: FIELD_TYPE_META[t].label,
+    value: t,
+}));
 
 function emptyField(type: FieldType, existing: FormField[]): FormField {
     // derive a unique default key so the allow-list never trips on first add
@@ -212,28 +219,28 @@ function FieldRow({
                             <span className="block mb-1.5 text-caption text-t-tertiary">
                                 Type
                             </span>
-                            <select
-                                value={field.type}
+                            <Select
+                                className="w-full"
+                                classButton="!h-10"
                                 disabled={disabled}
-                                onChange={(e) =>
+                                value={
+                                    FIELD_TYPE_OPTS.find(
+                                        (o) => o.value === field.type
+                                    ) ?? null
+                                }
+                                options={FIELD_TYPE_OPTS}
+                                onChange={(o) => {
+                                    const next = FIELD_TYPE_OPTS[o.id]
+                                        .value as FieldType;
                                     onUpdate({
-                                        type: e.target.value as FieldType,
+                                        type: next,
                                         // clear options when leaving an option-bearing type
-                                        options: FIELD_TYPE_META[
-                                            e.target.value as FieldType
-                                        ]?.hasOptions
+                                        options: FIELD_TYPE_META[next]?.hasOptions
                                             ? field.options
                                             : [],
-                                    })
-                                }
-                                className="input-base w-full h-10 px-3 rounded-2xl text-body-2"
-                            >
-                                {FIELD_TYPES.map((t) => (
-                                    <option key={t} value={t}>
-                                        {FIELD_TYPE_META[t].label}
-                                    </option>
-                                ))}
-                            </select>
+                                    });
+                                }}
+                            />
                         </label>
                         <label className="block">
                             <span className="block mb-1.5 text-caption text-t-tertiary">

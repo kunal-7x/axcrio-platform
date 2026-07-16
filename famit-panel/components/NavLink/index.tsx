@@ -9,6 +9,8 @@ type NavLinkProps = {
         title: string;
         icon?: string;
         counter?: number;
+        // Stage pill (Super-Admin Sidebar Builder): cosmetic "Beta"/"Premium" label.
+        badge?: "beta" | "premium";
     };
     onClick?: () => void;
 };
@@ -71,8 +73,13 @@ const NavLink = ({ value, onClick }: NavLinkProps) => {
                 />
             )}
             <div className="relative z-2 mr-3">{value.title}</div>
+            {value.badge && (
+                <span className={`relative z-2 ml-auto ${value.badge === "premium" ? "nav-premium" : "nav-beta"}`}>
+                    {value.badge === "premium" ? "Premium" : "Beta"}
+                </span>
+            )}
             {value.counter && (
-                <div className="relative z-2 flex justify-center items-center min-w-6 h-6 px-1.5 ml-auto rounded-lg bg-primary-01/12 text-button text-primary-01 tabular-nums">
+                <div className={`relative z-2 flex justify-center items-center min-w-6 h-6 px-1.5 ${value.badge ? "ml-2" : "ml-auto"} rounded-lg bg-primary-01/12 text-button text-primary-01 tabular-nums`}>
                     {value.counter}
                 </div>
             )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
@@ -11,7 +12,7 @@ import Table from "@/components/Table";
 import Select from "@/components/Select";
 import Modal from "@/components/Modal";
 import VirtualRows from "@/components/VirtualRows";
-import { StatusBadge } from "@/lib/badges";
+import { StatusBadge, LeadBadge } from "@/lib/badges";
 // Shared temperature classification — the SAME source CRM uses, so the
 // Hot/Warm/Cold/Dead column + filter never drift between the two pages.
 import { TempBadge, tempOf, type Temperature } from "@/app/crm/_ui";
@@ -44,9 +45,9 @@ function initials(name?: string): string {
 }
 
 // Temperature filter (replaces the old All/Hot tab strip). `key` carries the
-// canonical temperature; "all" = no filter. Backend GET /leads only knows `hot`,
-// so Hot can use the server-side fast path; the rest are derived client-side via
-// tempOf over the already-loaded pages (degrades gracefully).
+// canonical temperature; "all" = no filter. EVERY band (Hot/Warm/Cold/Dead) maps
+// to the backend GET /leads ?status= filter, so all of them page server-side using
+// the SAME classifier as the panel badge — no client-only partial filter.
 const TEMP_VIEWS: (SelectOption & { key: "all" | Temperature })[] = [
     { id: 1, name: "All", key: "all" },
     { id: 2, name: "Hot", key: "hot" },
@@ -55,47 +56,16 @@ const TEMP_VIEWS: (SelectOption & { key: "all" | Temperature })[] = [
     { id: 5, name: "Dead", key: "dead" },
 ];
 
-// ROUND-5 LANE A — CLICK-TO-SORT column headers (mirrors CRM exactly). Every
-// header is clickable; clicking sorts across ALL records via the backend
-// `sort_by`/`order` params (same contract CRM uses), with a client-side sort over
-// the loaded pages as the graceful fallback. The sortable columns + the backend
-// sort_by key each maps to. The `added` column maps to the box's recency sort.
-type LeadSortKey =
-    | "name"
-    | "phone"
-    | "temperature"
-    | "status"
-    | "score"
-    | "last_outcome"
-    | "added_at";
-
-// Every column header is clickable. `className` mirrors the responsive
-// hide-on-narrow rules already on the body cells so header + cell stay aligned.
-// ROUND-6 LANE 4 — the duplicate "Lead" column (LeadBadge, also a temperature
-// tier) was REMOVED: the dedicated "Temperature" column already shows the same
-// heat signal, so the two read as duplicates. Temperature is the single source.
-const LEAD_COLS: { label: string; key: LeadSortKey; className?: string }[] = [
-    { label: "Name", key: "name" },
-    { label: "Phone", key: "phone" },
-    { label: "Temperature", key: "temperature" },
-    { label: "Status", key: "status", className: "max-md:hidden" },
-    { label: "Last outcome", key: "last_outcome", className: "max-lg:hidden" },
-    { label: "Added", key: "added_at", className: "text-right" },
+// Sort options — map to the backend GET /leads `sort` param. "recent" (newest
+// first) is the default the founder asked for. Each option's `id` carries the
+// raw sort key the API expects.
+const SORTS: (SelectOption & { sort: string })[] = [
+    { id: 1, name: "Newest first", sort: "recent" },
+    { id: 2, name: "Oldest first", sort: "oldest" },
+    { id: 3, name: "Name (A–Z)", sort: "name" },
+    { id: 4, name: "Status", sort: "status" },
+    { id: 5, name: "Score (high→low)", sort: "score" },
 ];
-
-// Temperature ordering for the client-side fallback sort (hot is "highest").
-const LEAD_TEMP_RANK: Record<string, number> = { hot: 4, warm: 3, cold: 2, dead: 1 };
-
-// Map a sort key + direction onto the backend GET /leads `sort` token (the legacy
-// param the box already understands) so the server-side fast path stays wired even
-// where `sort_by`/`order` are not yet honored.
-function legacySortToken(key: LeadSortKey, dir: "asc" | "desc"): string | undefined {
-    if (key === "added_at") return dir === "asc" ? "oldest" : "recent";
-    if (key === "name") return "name";
-    if (key === "status") return "status";
-    if (key === "score" || key === "temperature") return "score";
-    return undefined;
-}
 
 export default function LeadsPage() {
     const [text, setText] = useState("");
@@ -104,10 +74,7 @@ export default function LeadsPage() {
     const [toast, setToast] = useState("");
     const [toastErr, setToastErr] = useState(false);
     const [view, setView] = useState<SelectOption>(TEMP_VIEWS[0]);
-    // ROUND-5 LANE A — click-to-sort header state (mirrors CRM). Default = newest
-    // added first.
-    const [sortKey, setSortKey] = useState<LeadSortKey>("added_at");
-    const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+    const [sort, setSort] = useState<SelectOption>(SORTS[0]);
     const [query, setQuery] = useState("");
     // ── Multi-select + delete state ──
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -120,39 +87,24 @@ export default function LeadsPage() {
     const writable = canWrite(me);
     const queryClient = useQueryClient();
 
+    const router = useRouter();
     const tempKey = (TEMP_VIEWS.find((v) => v.id === view.id) ?? TEMP_VIEWS[0]).key;
-    // Hot uses the server-side fast path; warm/cold/dead are derived client-side.
-    const hotOnly = tempKey === "hot";
+    // EVERY temperature band now pages SERVER-SIDE via ?status= (the backend uses the
+    // SAME Hot/Warm/Cold/Dead classifier as the panel badge). This fixes the old bug
+    // where Warm/Cold/Dead only filtered the ~60 already-loaded rows and looked empty.
+    const statusFilter = tempKey === "all" ? undefined : tempKey;
+    const sortKey = (SORTS.find((s) => s.id === sort.id) ?? SORTS[0]).sort;
 
-    // Click-to-sort header toggle (identical UX to CRM): clicking the active column
-    // flips direction; clicking a new column selects it ascending.
-    function handleSort(key: LeadSortKey) {
-        if (sortKey === key) {
-            setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-        } else {
-            setSortKey(key);
-            setSortDir("asc");
-        }
-    }
-
-    // PERF UNIT-4: cursor-paged read keyed by the hot filter + sort. Loads ONE
+    // PERF UNIT-4: cursor-paged read keyed by the temperature band + sort. Loads ONE
     // page (~60 rows) at a time and fetches the next as you scroll near the end.
-    // ROUND-5: the active column + direction re-key the query so a header click
-    // starts a fresh page-0 fetch ordered across ALL records (sort_by/order, like
-    // CRM); `sort` carries the legacy token for the box's server-side fast path.
+    // Switching bands, changing the sort, and tab-back are instant.
     const {
         data,
         isLoading,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useLeadsInfinite({
-        pageSize: 60,
-        hot: hotOnly,
-        sort: legacySortToken(sortKey, sortDir),
-        sort_by: sortKey,
-        order: sortDir,
-    });
+    } = useLeadsInfinite({ pageSize: 60, status: statusFilter, sort: sortKey });
     const leads: Lead[] = useMemo(
         () => (data?.pages ?? []).flatMap((p) => p.leads),
         [data]
@@ -201,60 +153,28 @@ export default function LeadsPage() {
         }
     }
 
-    // Real count signals over the loaded set (no fabricated deltas).
+    // Real count signals over the loaded set (no fabricated deltas). Uses the SAME
+    // tempOf classifier the row's Hot badge uses, so the "N hot" chip never undercounts
+    // relative to the red Hot badges on screen (booked/qualified/interested also count).
     const hotCount = useMemo(
-        () => leads.filter((l) => (l.score ?? 0) >= 70).length,
+        () => leads.filter((l) => tempOf(l) === "hot").length,
         [leads]
     );
 
     // Client-side search over the already-fetched pages (no API change). Active
     // search pauses infinite-scroll fetching (the user is narrowing the loaded set).
+    // Temperature is now filtered SERVER-SIDE (see statusFilter), so the loaded rows
+    // are already the right band — only the search query narrows them here.
     const searching = query.trim().length > 0;
-    // Temperature filter (client-side for warm/cold/dead; hot already came filtered
-    // from the server). Active when not "all" and not the hot fast-path.
-    const tempFiltering = tempKey !== "all" && tempKey !== "hot";
     const visibleLeads = useMemo(() => {
-        let rows = leads;
-        if (tempFiltering) {
-            rows = rows.filter((l) => tempOf(l) === tempKey);
-        }
         const q = query.trim().toLowerCase();
-        if (q) {
-            rows = rows.filter(
-                (l) =>
-                    l.name?.toLowerCase().includes(q) ||
-                    l.phone?.toLowerCase().includes(q)
-            );
-        }
-        // ROUND-5 client-side sort fallback (mirrors CRM): the backend sort_by/order
-        // orders across ALL records; this re-orders the loaded set so a header click
-        // is instant and stays correct even when the box ignores the params.
-        const dir = sortDir === "asc" ? 1 : -1;
-        return [...rows].sort((a, b) => {
-            switch (sortKey) {
-                case "name":
-                    return dir * (a.name || "").localeCompare(b.name || "");
-                case "phone":
-                    return dir * (a.phone || "").localeCompare(b.phone || "");
-                case "temperature":
-                    return (
-                        dir *
-                        ((LEAD_TEMP_RANK[tempOf(a)] ?? 0) -
-                            (LEAD_TEMP_RANK[tempOf(b)] ?? 0))
-                    );
-                case "status":
-                    return dir * (a.status || "").localeCompare(b.status || "");
-                case "score":
-                    return dir * ((a.score ?? 0) - (b.score ?? 0));
-                case "last_outcome":
-                    return dir * (a.last_outcome || "").localeCompare(b.last_outcome || "");
-                case "added_at":
-                    return dir * ((a.added_at || "").localeCompare(b.added_at || ""));
-                default:
-                    return 0;
-            }
-        });
-    }, [leads, query, tempFiltering, tempKey, sortKey, sortDir]);
+        if (!q) return leads;
+        return leads.filter(
+            (l) =>
+                l.name?.toLowerCase().includes(q) ||
+                l.phone?.toLowerCase().includes(q)
+        );
+    }, [leads, query]);
 
     // ── Selection helpers (scoped to the currently visible/loaded rows) ──
     const allVisibleSelected =
@@ -352,12 +272,13 @@ export default function LeadsPage() {
             <th>Phone</th>
             <th>Temperature</th>
             <th className="max-md:hidden">Status</th>
+            <th>Lead</th>
             <th className="max-lg:hidden">Last outcome</th>
             <th className="text-right">Added</th>
             {writable && <th className="w-12 text-right" />}
         </>
     );
-    const colCount = writable ? 8 : 6;
+    const colCount = writable ? 9 : 7;
 
     return (
         <Layout title="Leads">
@@ -395,15 +316,19 @@ export default function LeadsPage() {
                                 isGray
                             />
                             <Select
-                                className="w-40 mr-4 max-md:w-full max-md:mr-0"
+                                className="w-40 mr-3 max-md:w-full max-md:mr-0"
                                 classButton="!h-10"
                                 value={view}
                                 onChange={setView}
                                 options={TEMP_VIEWS}
                             />
-                            {/* ROUND-5: the sort Select is gone — every column header
-                                below is click-to-sort (Name/Phone/Temperature/Status/
-                                Lead/Last outcome/Added), sorting across ALL records. */}
+                            <Select
+                                className="w-44 mr-4 max-md:w-full max-md:mr-0"
+                                classButton="!h-10"
+                                value={sort}
+                                onChange={setSort}
+                                options={SORTS}
+                            />
                         </div>
 
                         {/* ── Bulk action toolbar (writable only) ── */}
@@ -464,7 +389,7 @@ export default function LeadsPage() {
                                         ? `${leads.length} of ${total} ${total === 1 ? "lead" : "leads"}`
                                         : `${leads.length} ${leads.length === 1 ? "lead" : "leads"}`}
                                 </span>
-                                {hotCount > 0 && !hotOnly && (
+                                {hotCount > 0 && tempKey === "all" && (
                                     <span className="flex items-center gap-1.5">
                                         <span className="size-1.5 rounded-full bg-primary-02" />
                                         {hotCount} hot
@@ -547,42 +472,13 @@ export default function LeadsPage() {
                                                     />
                                                 </th>
                                             )}
-                                            {/* ROUND-5: every column header click-to-sorts
-                                                across ALL records (same UX as CRM). */}
-                                            {LEAD_COLS.map((col) => {
-                                                const active = sortKey === col.key;
-                                                return (
-                                                    <th
-                                                        key={col.label}
-                                                        className={`cursor-pointer select-none ${col.className ?? ""}`}
-                                                        onClick={() => handleSort(col.key)}
-                                                        aria-sort={
-                                                            active
-                                                                ? sortDir === "asc"
-                                                                    ? "ascending"
-                                                                    : "descending"
-                                                                : "none"
-                                                        }
-                                                    >
-                                                        <span
-                                                            className={`inline-flex items-center gap-1 ${
-                                                                col.className?.includes("text-right")
-                                                                    ? "justify-end"
-                                                                    : ""
-                                                            }`}
-                                                        >
-                                                            {col.label}
-                                                            <span className="text-t-tertiary text-caption">
-                                                                {active
-                                                                    ? sortDir === "asc"
-                                                                        ? "↑"
-                                                                        : "↓"
-                                                                    : ""}
-                                                            </span>
-                                                        </span>
-                                                    </th>
-                                                );
-                                            })}
+                                            <th>Name</th>
+                                            <th>Phone</th>
+                                            <th>Temperature</th>
+                                            <th className="max-md:hidden">Status</th>
+                                            <th>Lead</th>
+                                            <th className="max-lg:hidden">Last outcome</th>
+                                            <th className="text-right">Added</th>
                                             {writable && <th className="w-12 text-right" />}
                                         </tr>
                                     </thead>
@@ -604,6 +500,16 @@ export default function LeadsPage() {
                                                     selected: selected.has(l.id),
                                                     onToggle: () => toggleRow(l.id),
                                                     onDelete: () => handleDeleteRow(l.id),
+                                                    onOpen: () =>
+                                                        router.push(
+                                                            // Strip the leading "+" so the
+                                                            // URL is plain digits (no %2B that
+                                                            // a Next.js rewrite can double-encode);
+                                                            // the backend re-normalizes to E.164.
+                                                            `/crm/${encodeURIComponent(
+                                                                (l.phone || l.id).replace(/^\+/, "")
+                                                            )}`
+                                                        ),
                                                     deleting,
                                                 })
                                             }
@@ -772,18 +678,20 @@ function renderLeadRow(
         selected: boolean;
         onToggle: () => void;
         onDelete: () => void;
+        onOpen: () => void;
         deleting: boolean;
     }
 ) {
     const isHot = (l.score ?? 0) >= 70;
     return (
         <tr
-            className={`group relative [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3 ${
+            onClick={opts.onOpen}
+            className={`group relative cursor-pointer transition-colors hover:bg-b-surface1/60 dark:hover:bg-shade-04/40 [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3 ${
                 opts.selected ? "bg-primary-01/5" : ""
             }`}
         >
             {opts.writable && (
-                <td className="w-10">
+                <td className="w-10" onClick={(e) => e.stopPropagation()}>
                     <input
                         type="checkbox"
                         className="size-4 rounded cursor-pointer accent-primary-01"
@@ -804,7 +712,9 @@ function renderLeadRow(
                     >
                         {initials(l.name)}
                     </span>
-                    <span className="truncate max-w-44">{l.name}</span>
+                    <span className="truncate max-w-44 group-hover:text-primary-01 transition-colors">
+                        {l.name}
+                    </span>
                 </div>
             </td>
             <td className="text-t-secondary td-num">{l.phone}</td>
@@ -815,6 +725,10 @@ function renderLeadRow(
             <td className="max-md:hidden">
                 <StatusBadge status={l.status} />
             </td>
+            <td>
+                {/* W15 §4 — business-friendly tier (Hot/Warm/Cold/…), not a raw score */}
+                <LeadBadge lead={l} />
+            </td>
             <td className="text-t-secondary text-caption capitalize max-lg:hidden">
                 {l.last_outcome ? l.last_outcome.replace(/_/g, " ") : "—"}
             </td>
@@ -822,7 +736,7 @@ function renderLeadRow(
                 {fmtDate(l.added_at)}
             </td>
             {opts.writable && (
-                <td className="w-12 text-right">
+                <td className="w-12 text-right" onClick={(e) => e.stopPropagation()}>
                     <button
                         type="button"
                         onClick={opts.onDelete}

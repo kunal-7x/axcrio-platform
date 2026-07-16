@@ -273,7 +273,7 @@ function SourcesTab() {
 
             {/* Global / shared sources */}
             {globalSources.length > 0 && (
-                <Card title={`Famit Knowledge Base (${globalSources.length})`}>
+                <Card title={`Haptica AI Knowledge Base (${globalSources.length})`}>
                     <div className="px-5 pb-5 max-lg:px-3 divide-y divide-s-subtle">
                         {globalSources.map((s) => (
                             <SourceRow key={s.id} source={s} shared />

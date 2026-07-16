@@ -5,11 +5,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Button from "@/components/Button";
+import Select from "@/components/Select";
 import Icon from "@/components/Icon";
 import Search from "@/components/Search";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { StatusBadge } from "@/lib/badges";
 import {
     extract,
@@ -17,15 +17,44 @@ import {
     deleteCampaign,
     getVoices,
     getCampaignAB,
+    fetchCompanyLogo,
     type Campaign,
     type ExtractedFields,
     type Voice,
     type CampaignVariant,
     type ABResults,
 } from "@/lib/api";
+import {
+    getVerticals, subOptionsFor, fieldByKey, languageByCode,
+    type VerticalsCatalogue,
+} from "@/lib/verticals";
+import { type SelectOption } from "@/types/select";
 import { useCampaigns } from "@/lib/queries";
 import { useMe, canWrite } from "@/lib/auth";
 import ScriptStudio from "./_script-studio";
+
+// Code-keyed dropdown on the core dashboard Select (not a native <select>). Maps a string
+// `value`/`onChange(code)` API onto SelectOption {id,name} by index.
+function CodeSelect({ value, onChange, items, placeholder, disabled }: {
+    value: string;
+    onChange: (code: string) => void;
+    items: { code: string; label: string }[];
+    placeholder?: string;
+    disabled?: boolean;
+}) {
+    const opts: SelectOption[] = items.map((it, i) => ({ id: i, name: it.label }));
+    const idx = items.findIndex((it) => it.code === value);
+    const selected: SelectOption | null = idx >= 0 ? opts[idx] : null;
+    return (
+        <Select
+            value={selected}
+            onChange={(o) => onChange(items[o.id as number]?.code ?? "")}
+            options={opts}
+            placeholder={placeholder}
+            disabled={disabled}
+        />
+    );
+}
 
 function fmtDate(d: string) {
     if (!d) return "—";
@@ -64,11 +93,17 @@ export default function CampaignsPage() {
     const [fieldsJson, setFieldsJson] = useState("");
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<Toast | null>(null);
-    const [delTarget, setDelTarget] = useState<string | null>(null);
 
     // Voice
     const [voices, setVoices] = useState<Voice[]>([]);
     const [selectedVoice, setSelectedVoice] = useState("");
+
+    // Industry & Persona (multi-vertical layer — additive, optional)
+    const [verticalsCat, setVerticalsCat] = useState<VerticalsCatalogue | null>(null);
+    const [verticalKey, setVerticalKey] = useState("");
+    const [subOptionKey, setSubOptionKey] = useState("");
+    const [personaKey, setPersonaKey] = useState("");
+    const [languageCode, setLanguageCode] = useState("");
 
     // Calling window
     const [windowStart, setWindowStart] = useState("09:00");
@@ -95,6 +130,14 @@ export default function CampaignsPage() {
     // Vendor script for the CREATE flow (optional — pasted with the new campaign)
     const [rawScript, setRawScript] = useState("");
 
+    // Company website → logo (optional). On blur / "Fetch logo" we resolve the
+    // company's logo from its site and stash it on the campaign's `company_logo`
+    // field (inside the editable Extracted-Fields JSON). Best-effort: a failure
+    // just leaves the logo empty — it never blocks saving the campaign.
+    const [companyWebsite, setCompanyWebsite] = useState("");
+    const [companyLogo, setCompanyLogo] = useState("");
+    const [fetchingLogo, setFetchingLogo] = useState(false);
+
     // RBAC
     const { me } = useMe();
     const writable = canWrite(me);
@@ -113,7 +156,19 @@ export default function CampaignsPage() {
                 if (r.voices.length > 0) setSelectedVoice(r.voices[0].voice_id);
             })
             .catch(() => {});
+        getVerticals().then(setVerticalsCat).catch(() => {});
     }, []);
+
+    // Industry & Persona: pick a field -> reset use-case, pre-fill default persona/language.
+    function onPickVertical(key: string) {
+        setVerticalKey(key);
+        setSubOptionKey("");
+        const f = verticalsCat && key ? fieldByKey(verticalsCat, key) : undefined;
+        if (f) {
+            if (!personaKey && f.default_persona) setPersonaKey(f.default_persona);
+            if (!languageCode && f.default_languages[0]) setLanguageCode(f.default_languages[0]);
+        }
+    }
 
     async function handleExtract() {
         if (!brief.trim()) return;
@@ -127,6 +182,47 @@ export default function CampaignsPage() {
             showToast(e instanceof Error ? e.message : "Extract failed", "error");
         } finally {
             setExtracting(false);
+        }
+    }
+
+    // Merge a logo URL into the editable Extracted-Fields JSON as `company_logo`
+    // (and the website as `company_website`). Tolerant of invalid JSON: if the
+    // textarea can't be parsed we leave it untouched and just keep the preview
+    // state — handleSave will re-attach company_logo at save time as a fallback.
+    function mergeLogoIntoFields(logoUrl: string, website: string) {
+        setFieldsJson((prev) => {
+            if (!prev.trim()) return prev;
+            try {
+                const obj = JSON.parse(prev);
+                if (logoUrl) obj.company_logo = logoUrl;
+                if (website) obj.company_website = website;
+                return JSON.stringify(obj, null, 2);
+            } catch {
+                return prev; // don't clobber half-typed JSON
+            }
+        });
+    }
+
+    async function handleFetchLogo() {
+        const url = companyWebsite.trim();
+        if (!url || fetchingLogo) return;
+        setFetchingLogo(true);
+        try {
+            const { logo_url } = await fetchCompanyLogo(url);
+            if (logo_url) {
+                setCompanyLogo(logo_url);
+                mergeLogoIntoFields(logo_url, url);
+                showToast("Logo fetched from website", "success");
+            } else {
+                // Graceful: no logo found — keep the form usable, just no preview.
+                mergeLogoIntoFields("", url);
+                showToast("No logo found for that website", "error");
+            }
+        } catch {
+            // Never crash the form on a logo-fetch failure.
+            showToast("Couldn't fetch logo — you can still save", "error");
+        } finally {
+            setFetchingLogo(false);
         }
     }
 
@@ -146,6 +242,10 @@ export default function CampaignsPage() {
             if (selectedVoice) {
                 fields.voice_id = selectedVoice;
             }
+            // Company website → logo (fallback): attach whatever we have so the
+            // logo persists even if it was fetched after the JSON last parsed.
+            if (companyWebsite.trim() && !fields.company_website) fields.company_website = companyWebsite.trim();
+            if (companyLogo && !fields.company_logo) fields.company_logo = companyLogo;
             fields.call_window_start = windowStart;
             fields.call_window_end = windowEnd;
             fields.retry_max_attempts = retryMax;
@@ -171,16 +271,26 @@ export default function CampaignsPage() {
             // Vendor script (optional) — stored losslessly; the inbound agent adopts it.
             // Omit entirely when blank so a plain campaign renders byte-identical.
             if (rawScript.trim()) fields.raw_script = rawScript;
+            // Industry & Persona (multi-vertical layer) — additive; only stamped when chosen,
+            // so a plain campaign is byte-identical. The agent reads these only when
+            // FEATURE_VERTICALS is enabled (it is, on this box).
+            if (verticalKey) fields.vertical = verticalKey;
+            if (subOptionKey) fields.sub_option = subOptionKey;
+            if (personaKey) fields.persona = personaKey;
+            if (languageCode) fields.language = languageCode;
             const result = await saveCampaign(fields);
             showToast(`Campaign "${result.name}" saved successfully!`, "success");
             setBrief("");
             setExtracted(null);
             setFieldsJson("");
             setVariants([]);
+            setVerticalKey(""); setSubOptionKey(""); setPersonaKey(""); setLanguageCode("");
             setWaFollowup(false);
             setWaTemplateInterested("");
             setWaTemplateCallback("");
             setRawScript("");
+            setCompanyWebsite("");
+            setCompanyLogo("");
             refreshCampaigns();
         } catch (e: unknown) {
             showToast(e instanceof Error ? e.message : "Save failed", "error");
@@ -189,10 +299,8 @@ export default function CampaignsPage() {
         }
     }
 
-    async function confirmDelete() {
-        const id = delTarget;
-        if (!id) return;
-        setDelTarget(null);
+    async function handleDelete(id: string) {
+        if (!confirm("Delete this campaign?")) return;
         try {
             await deleteCampaign(id);
             showToast("Campaign deleted", "success");
@@ -321,7 +429,14 @@ export default function CampaignsPage() {
                                     {visibleCampaigns.map((c) => (
                                         <TableRow key={c.id}>
                                             <td className="text-sub-title-1">
-                                                {c.name}
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span>{c.name}</span>
+                                                    {c.category_label && (
+                                                        <span className="inline-flex items-center h-5 px-2 rounded-full text-caption font-medium bg-primary-01/12 text-primary-01">
+                                                            {c.category_label}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </td>
                                             <td className="text-t-secondary max-lg:hidden">
                                                 {c.company}
@@ -363,7 +478,7 @@ export default function CampaignsPage() {
                                                             isStroke
                                                             className="!h-9 !px-4 hover:!border-primary-03/30 hover:!text-primary-03"
                                                             onClick={() =>
-                                                                setDelTarget(c.id)
+                                                                handleDelete(c.id)
                                                             }
                                                         >
                                                             Delete
@@ -420,17 +535,113 @@ export default function CampaignsPage() {
                                             <label className="block text-button mb-3 text-t-primary">
                                                 AI Voice
                                             </label>
-                                            <select
-                                                value={selectedVoice}
-                                                onChange={(e) => setSelectedVoice(e.target.value)}
-                                                className="w-full h-11 px-4 border border-s-stroke2 rounded-3xl text-body-2 text-t-primary outline-none transition-colors hover:border-s-highlight focus:border-s-highlight bg-transparent"
+                                            {(() => {
+                                                const VOICE_OPTS = voices.map((v, i) => ({ id: i, name: v.name, value: v.voice_id }));
+                                                return (
+                                                    <Select
+                                                        className="w-full"
+                                                        classButton="!h-11"
+                                                        value={VOICE_OPTS.find((o) => o.value === selectedVoice) ?? null}
+                                                        options={VOICE_OPTS}
+                                                        onChange={(o) => setSelectedVoice(VOICE_OPTS[o.id].value as string)}
+                                                    />
+                                                );
+                                            })()}
+                                        </div>
+                                    )}
+
+                                    {/* Company website → logo */}
+                                    <div>
+                                        <label className="block text-button mb-3 text-t-primary">
+                                            Company website
+                                        </label>
+                                        <div className="flex gap-3 items-center">
+                                            <input
+                                                type="url"
+                                                value={companyWebsite}
+                                                onChange={(e) => setCompanyWebsite(e.target.value)}
+                                                onBlur={handleFetchLogo}
+                                                placeholder="https://acme.com"
+                                                className="flex-1 h-10 px-3 border border-s-stroke2 rounded-2xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight placeholder:text-t-secondary/50"
+                                            />
+                                            <Button
+                                                isStroke
+                                                className="!h-10 !px-4 shrink-0"
+                                                onClick={handleFetchLogo}
+                                                disabled={fetchingLogo || !companyWebsite.trim()}
                                             >
-                                                {voices.map((v) => (
-                                                    <option key={v.voice_id} value={v.voice_id}>
-                                                        {v.name}
-                                                    </option>
-                                                ))}
-                                            </select>
+                                                {fetchingLogo ? (
+                                                    <span className="inline-flex items-center gap-2">
+                                                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                                        </svg>
+                                                        Fetching…
+                                                    </span>
+                                                ) : "Fetch logo"}
+                                            </Button>
+                                        </div>
+                                        {companyLogo ? (
+                                            <div className="mt-3 flex items-center gap-3">
+                                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                <img
+                                                    src={companyLogo}
+                                                    alt="Company logo"
+                                                    className="size-10 rounded-xl object-contain bg-b-surface2 ring-1 ring-inset ring-s-subtle p-1"
+                                                    onError={() => setCompanyLogo("")}
+                                                />
+                                                <span className="text-caption text-t-tertiary">Logo found — saved to the campaign.</span>
+                                            </div>
+                                        ) : (
+                                            <p className="mt-2 text-caption text-t-tertiary">
+                                                Optional — we’ll grab the company logo from the site (used in reports &amp; WhatsApp). Leave blank to skip.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {/* Industry & Persona (multi-vertical layer — additive/optional) */}
+                                    {verticalsCat && (
+                                        <div className="border-t border-s-subtle pt-4">
+                                            <label className="block text-button mb-1 text-t-primary">Industry &amp; Persona (optional)</label>
+                                            <p className="text-caption text-t-tertiary mb-3">
+                                                Adapt the agent to a field + use-case, a named persona and a language.
+                                            </p>
+                                            <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+                                                <div>
+                                                    <label className="block text-caption text-t-secondary mb-1.5">Field</label>
+                                                    <CodeSelect value={verticalKey} onChange={onPickVertical} placeholder="— none —"
+                                                        items={[{ code: "", label: "— none —" }, ...verticalsCat.fields.map((f) => ({ code: f.key, label: f.label }))]} />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-caption text-t-secondary mb-1.5">Use-case</label>
+                                                    <CodeSelect value={subOptionKey} onChange={setSubOptionKey} disabled={!verticalKey} placeholder="— optional —"
+                                                        items={[{ code: "", label: "— optional —" }, ...subOptionsFor(verticalsCat, verticalKey).map((s) => ({ code: s.key, label: s.label }))]} />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-caption text-t-secondary mb-1.5">Persona</label>
+                                                    <CodeSelect value={personaKey} onChange={setPersonaKey} placeholder="— field default —"
+                                                        items={[{ code: "", label: "— field default —" }, ...verticalsCat.personas.map((p) => ({ code: p.key, label: `${p.display} · ${p.gender === "male" ? "M" : "F"} · ${p.tone.split(",")[0]}` }))]} />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-caption text-t-secondary mb-1.5">Language</label>
+                                                    <CodeSelect value={languageCode} onChange={setLanguageCode} placeholder="— field default —"
+                                                        items={[{ code: "", label: "— field default —" }, ...verticalsCat.languages.map((l) => ({ code: l.code, label: l.international ? `${l.name} · International` : `${l.name}${!l.el_speakable ? " · Sarvam-only" : ""}` }))]} />
+                                                </div>
+                                            </div>
+                                            {(() => {
+                                                const sub = verticalKey ? subOptionsFor(verticalsCat, verticalKey).find((s) => s.key === subOptionKey) : undefined;
+                                                const lang = languageCode ? languageByCode(verticalsCat, languageCode) : undefined;
+                                                return (
+                                                    <div className="mt-2 space-y-1">
+                                                        {sub && <p className="text-caption text-t-tertiary">🎯 {sub.goal}</p>}
+                                                        {lang && !lang.el_speakable && (
+                                                            <p className="text-caption text-primary-03">
+                                                                {lang.name} is spoken only on the Sarvam engine; on ElevenLabs the call speaks Hindi (text still mirrors the caller).
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     )}
 
@@ -522,16 +733,22 @@ export default function CampaignsPage() {
                                                             placeholder="agent_name override (optional)"
                                                             className="w-full h-9 px-3 border border-s-stroke2 rounded-xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
                                                         />
-                                                        <select
-                                                            value={(v.fields_override.voice_id as string) || ""}
-                                                            onChange={(e) => updateOverride(idx, "voice_id", e.target.value)}
-                                                            className="w-full h-9 px-3 border border-s-stroke2 rounded-xl text-body-2 text-t-primary outline-none bg-transparent hover:border-s-highlight focus:border-s-highlight"
-                                                        >
-                                                            <option value="">voice_id override (default)</option>
-                                                            {voices.map((vo) => (
-                                                                <option key={vo.voice_id} value={vo.voice_id}>{vo.name}</option>
-                                                            ))}
-                                                        </select>
+                                                        {(() => {
+                                                            const VOICE_OVERRIDE_OPTS = [
+                                                                { id: 0, name: "voice_id override (default)", value: "" },
+                                                                ...voices.map((vo, i) => ({ id: i + 1, name: vo.name, value: vo.voice_id })),
+                                                            ];
+                                                            const current = (v.fields_override.voice_id as string) || "";
+                                                            return (
+                                                                <Select
+                                                                    className="w-full"
+                                                                    classButton="!h-9"
+                                                                    value={VOICE_OVERRIDE_OPTS.find((o) => o.value === current) ?? null}
+                                                                    options={VOICE_OVERRIDE_OPTS}
+                                                                    onChange={(o) => updateOverride(idx, "voice_id", VOICE_OVERRIDE_OPTS[o.id].value as string)}
+                                                                />
+                                                            );
+                                                        })()}
                                                         <textarea
                                                             value={(v.fields_override.opener as string) || ""}
                                                             onChange={(e) => updateOverride(idx, "opener", e.target.value)}
@@ -638,14 +855,6 @@ export default function CampaignsPage() {
                     onSaved={refreshCampaigns}
                 />
             )}
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={confirmDelete}
-                title="Delete this campaign?"
-                message="This permanently deletes the campaign and its configuration. This action cannot be undone."
-            />
         </Layout>
     );
 }

@@ -30,15 +30,6 @@ import {
     Tooltip,
 } from "recharts";
 
-// Clamp a 0..100 percentage to [0,100] — guards against a backend that returns a
-// step-conversion or share above 100 from a coarse fallback count.
-const clampPct = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
-
-// A 0..1 conversion_prob -> a sane 0..100 % string-number. lib/report already
-// normalizes hot-lead probs to 0..1, but this is a belt-and-suspenders clamp so the
-// report can NEVER render "8000%" even if an un-normalized value slips through.
-const convPct = (p: number) => clampPct((p > 1 ? p / 100 : p) * 100);
-
 // Business-friendly funnel-stage labels (the ONE vocabulary — mirrors the Dashboard).
 const FUNNEL_LABEL: Record<string, string> = {
     uploaded: "Uploaded",
@@ -59,17 +50,18 @@ const TEMP_COLORS = [
     "var(--text-tertiary)",
 ];
 
-// 8-stage funnel ramp: top stages cool/blue, deepening toward warm/green as the
-// lead progresses to converted (a visual "heating up" down the funnel).
+// 8-stage funnel ramp — single-hue GEIST clay: light Manilla at the top,
+// deepening to rich Book Cloth + deep clay at converted (the funnel "warms up"
+// toward the win). ONE accent colour, legible on both light + dark surfaces.
 const FUNNEL_COLORS: string[] = [
-    "#7CB1FF", // uploaded  — light blue
-    "#5A9CFF", // dialed
-    "#2A85FF", // connected — brand
-    "#7F5FFF", // interested — purple
-    "#FF9D34", // warm      — amber
-    "#FF6B3D", // hot       — orange-red
-    "#22B07D", // booked    — green
-    "#00A656", // converted — deep green
+    "#ecdcc0", // uploaded — Manilla
+    "#e3c7a3", // dialed
+    "#dcb088", // connected
+    "#d99c72", // interested
+    "#d48860", // warm
+    "#cc785c", // hot — Book Cloth
+    "#b35f44", // booked
+    "#974c34", // converted — deep clay
 ];
 
 // Order matters: matches lib/report FUNNEL_ORDER.
@@ -471,79 +463,71 @@ function ReportsInner() {
                         </div>
                     </Card>
 
-                    {/* Funnel details (left) + Hot leads (right) — SIDE-BY-SIDE on
-                        desktop (was stacked with a big empty gap), stacking only on
-                        small screens. Each table is `table-fixed` with explicit per-
-                        column widths so the numeric columns sit in tidy aligned
-                        columns instead of being stretched to the far right of a wide
-                        auto-width table. */}
-                    {(hasFunnel || (report?.hot_leads?.length ?? 0) > 0) && (
-                        <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1 items-start">
-                            {hasFunnel && (
-                                <Card title="Funnel details">
-                                    <div className="p-1 pt-3 max-lg:px-0 [&_table]:table-fixed">
-                                        <Table
-                                            cellsThead={
-                                                <>
-                                                    <th style={{ width: "40%" }}>Stage</th>
-                                                    <th className="text-right" style={{ width: "20%" }}>Count</th>
-                                                    <th className="text-right" style={{ width: "20%" }}>Step conv.</th>
-                                                    <th className="text-right" style={{ width: "20%" }}>% of top</th>
-                                                </>
-                                            }
-                                        >
-                                            {funnel.map((row, i) => (
-                                                <TableRow key={i}>
-                                                    <td className="font-medium text-t-primary capitalize">
-                                                        {FUNNEL_LABEL[row.stage] ?? row.stage.replace(/_/g, " ")}
-                                                    </td>
-                                                    <td className="text-t-primary tabular-nums text-right">
-                                                        {row.count.toLocaleString()}
-                                                    </td>
-                                                    <td className="text-t-secondary tabular-nums text-right">
-                                                        {i === 0 || row.stage === "uploaded" ? "—" : `${clampPct(row.step_conv)}%`}
-                                                    </td>
-                                                    <td className="text-t-secondary tabular-nums text-right">
-                                                        {clampPct(row.pct_of_top)}%
-                                                    </td>
-                                                </TableRow>
-                                            ))}
-                                        </Table>
-                                    </div>
-                                </Card>
-                            )}
-
-                            {(report?.hot_leads?.length ?? 0) > 0 && (
-                                <Card
-                                    title="Hot leads"
-                                    headContent={
-                                        <span className="mr-3 text-caption text-t-tertiary">Top {report!.hot_leads.length}</span>
+                    {/* Funnel details table — COUNTS + step-conversion + share of top */}
+                    {hasFunnel && (
+                        <Card title="Funnel details">
+                            <div className="p-1 pt-3 max-lg:px-0">
+                                <Table
+                                    cellsThead={
+                                        <>
+                                            <th>Stage</th>
+                                            <th className="text-right">Count</th>
+                                            <th className="text-right">Step conv.</th>
+                                            <th className="text-right">% of top</th>
+                                        </>
                                     }
                                 >
-                                    <div className="p-1 pt-3 max-lg:px-0 [&_table]:table-fixed">
-                                        <Table
-                                            cellsThead={
-                                                <>
-                                                    <th style={{ width: "45%" }}>Name</th>
-                                                    <th style={{ width: "30%" }}>Phone</th>
-                                                    <th className="text-right" style={{ width: "25%" }}>Conversion prob.</th>
-                                                </>
-                                            }
-                                        >
-                                            {report!.hot_leads.map((l, i) => (
-                                                <TableRow key={l.call_id || i}>
-                                                    <td className="font-medium text-t-primary truncate" title={l.name || ""}>{l.name || "—"}</td>
-                                                    <td className="text-t-secondary tabular-nums truncate">{l.phone_masked || l.phone || "—"}</td>
-                                                    <td className="text-t-primary tabular-nums text-right">
-                                                        {l.conversion_prob != null ? `${convPct(l.conversion_prob)}%` : "—"}
-                                                    </td>
-                                                </TableRow>
-                                            ))}
-                                        </Table>
-                                    </div>
-                                </Card>
-                            )}
-                        </div>
+                                    {funnel.map((row, i) => (
+                                        <TableRow key={i}>
+                                            <td className="font-medium text-t-primary capitalize">
+                                                {FUNNEL_LABEL[row.stage] ?? row.stage.replace(/_/g, " ")}
+                                            </td>
+                                            <td className="text-t-primary tabular-nums text-right">
+                                                {row.count.toLocaleString()}
+                                            </td>
+                                            <td className="text-t-secondary tabular-nums text-right">
+                                                {i === 0 || row.stage === "uploaded" ? "—" : `${row.step_conv}%`}
+                                            </td>
+                                            <td className="text-t-secondary tabular-nums text-right">
+                                                {row.pct_of_top}%
+                                            </td>
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            </div>
+                        </Card>
+                    )}
+
+                    {/* Hot leads surfaced by the report */}
+                    {(report?.hot_leads?.length ?? 0) > 0 && (
+                        <Card
+                            title="Hot leads"
+                            headContent={
+                                <span className="mr-3 text-caption text-t-tertiary">Top {report!.hot_leads.length}</span>
+                            }
+                        >
+                            <div className="p-1 pt-3 max-lg:px-0">
+                                <Table
+                                    cellsThead={
+                                        <>
+                                            <th>Name</th>
+                                            <th>Phone</th>
+                                            <th className="text-right">Conversion prob.</th>
+                                        </>
+                                    }
+                                >
+                                    {report!.hot_leads.map((l, i) => (
+                                        <TableRow key={l.call_id || i}>
+                                            <td className="font-medium text-t-primary">{l.name || "—"}</td>
+                                            <td className="text-t-secondary tabular-nums">{l.phone_masked || "—"}</td>
+                                            <td className="text-t-primary tabular-nums text-right">
+                                                {l.conversion_prob != null ? `${Math.round(l.conversion_prob * 100)}%` : "—"}
+                                            </td>
+                                        </TableRow>
+                                    ))}
+                                </Table>
+                            </div>
+                        </Card>
                     )}
                 </div>
             )}

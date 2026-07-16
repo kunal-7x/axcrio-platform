@@ -1,0 +1,37 @@
+# TLS layer for Haptica AI — Caddy (with Cloudflare DNS plugin) reverse proxy
+# providing HTTPS for haptica.famit.in. Overlay on the base compose:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml \
+#     --env-file deploy/.env.deploy up -d
+# Needs CF_API_TOKEN in deploy/.env.deploy (Cloudflare token, DNS:Edit) so Caddy
+# can solve the ACME DNS-01 challenge and auto-renew the cert.
+name: haptica-ai
+
+services:
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.caddy
+    image: haptica-caddy:latest
+    restart: unless-stopped
+    # Use a real recursive resolver for external lookups: the host runs
+    # systemd-resolved (127.0.0.53), which SERVFAILs on the SOA queries the
+    # Cloudflare ACME plugin makes for zone detection. Service names (frontend)
+    # still resolve via Docker's embedded DNS.
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
+    environment:
+      CF_API_TOKEN: ${CF_API_TOKEN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:

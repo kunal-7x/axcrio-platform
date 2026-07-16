@@ -136,19 +136,17 @@ export function useLeadsInfinite(opts?: {
     pageSize?: number;
     hot?: boolean;
     sort?: string;
-    // ROUND-5 LANE A — column-header sort across ALL records (like CRM). Re-keys the
-    // query so a header click starts a fresh page-0 fetch; the page keeps a client
-    // sort fallback for when the box ignores these params.
-    sort_by?: string;
-    order?: "asc" | "desc";
+    // Temperature band (hot|warm|cold|dead) -> the backend ?status= filter, so EVERY
+    // band pages server-side (no more client-only partial filter that broke Warm/Cold/
+    // Dead). `hot` stays for back-compat; when `status` is set it is the source of truth.
+    status?: string;
 }) {
     const pageSize = opts?.pageSize ?? 60;
     const base = {
         limit: pageSize,
-        hot: opts?.hot,
+        hot: opts?.status ? undefined : opts?.hot,
         sort: opts?.sort,
-        sort_by: opts?.sort_by,
-        order: opts?.order,
+        status: opts?.status || undefined,
     };
     return useInfiniteQuery<LeadsPage, Error>({
         queryKey: qk.leadsInfinite(base),

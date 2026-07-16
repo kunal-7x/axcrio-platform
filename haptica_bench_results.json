@@ -1,0 +1,902 @@
+{
+  "params": {
+    "repeats": 3,
+    "stress": [
+      8,
+      2
+    ],
+    "cap_probe": 24,
+    "weights": [
+      0.5,
+      0.3,
+      0.2
+    ],
+    "brain_chars": 8446,
+    "groq_pool": 12,
+    "judge": "google/gemini-2.0-flash-001"
+  },
+  "ranked": [
+    {
+      "name": "sarvam-105b",
+      "model": "sarvam-105b",
+      "temp": 0.3,
+      "latency": {
+        "summary": {
+          "p50_ttft_ms": 291,
+          "p90_ttft_ms": 325,
+          "p99_ttft_ms": 325,
+          "median_total_ms": 611,
+          "thinking_leaked": false,
+          "errors": 0
+        },
+        "rows": [
+          {
+            "tag": "opener",
+            "ttft_ms": 315,
+            "total_ms": 602,
+            "leaked": false,
+            "q": "हाँ जी बताइए, क्या बात है?",
+            "a": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+          },
+          {
+            "tag": "price",
+            "ttft_ms": 325,
+            "total_ms": 424,
+            "leaked": false,
+            "q": "2 BHK का price क्या है?",
+            "a": "जी बता देती हूँ। दो BHK चौरासी point नौ-नौ लाख से शुरू है।"
+          },
+          {
+            "tag": "emi-complex",
+            "ttft_ms": 307,
+            "total_ms": 648,
+            "leaked": false,
+            "q": "85 लाख का घर लूँ, 20% down, बाकी 8.5% पे 20 साल — monthly EMI लगभग कितनी?",
+            "a": "जी Nikhil जी, दो BHK चौरासी point नौ-नौ लाख से शुरू है। आप जो 85 लाख का घर सोच रहे हैं, उस पर 20% down payment लगभग 17 लाख रुपये होगी। बाकी 68 लाख का loan 20 साल के लिए 8.5% interest पर होगा, तो आपकी monthly EMI लगभग 59,000 रुपये के आसपास आएगी।"
+          },
+          {
+            "tag": "compare",
+            "ttft_ms": 260,
+            "total_ms": 858,
+            "leaked": false,
+            "q": "2 BHK और 3 BHK में investment के लिए rental yield किसका better और क्यों?",
+            "a": "जी Nikhil जी, ये बहुत सही सवाल है। Hinjawadi जैसे IT hub में दोनों के अपने फ़ायदे हैं, पर 2 BHK का rental yield अक्सर बेहतर रहता है।\n\n2 BHK का किराया ज़्यादा लोगों के बजट में आता है — जैसे young professionals या छोटे परिवार। इससे occupancy rate ज़्यादा रहता है, यानी घर खाली रहने का डर कम होता है।\n\n3 BHK में किराया ज़्यादा मिलता है, पर tenant ढूँढने में समय लगता है और vacancy period लंबा हो सकता है। Investment के लिए 2 BHK ज़्यादा steady और predictable return देता है।"
+          },
+          {
+            "tag": "objection",
+            "ttft_ms": 291,
+            "total_ms": 620,
+            "leaked": false,
+            "q": "भाई बहुत महँगा है, पास में सस्ता project मिल रहा है।",
+            "a": "जी Nikhil जी, मैं समझ सकती हूँ कि आपको यह दाम ज़्यादा लग रहे हैं। पर एक बात देखिए, Hinjawadi में जो location और connectivity मिल रही है, उसके हिसाब से यह दाम बिल्कुल सही हैं। Shapoorji Pallonji का नाम ही बहुत कुछ कहता है।\n\nफिर भी, अगर आप देखना चाहें तो मैं आपको एक site visit पर ले जा सकती हूँ। एक बार आकर देख लीजिए, फिर आप खुद ही समझ जाएँगे कि यह project आपके लिए सही है या नहीं। आप weekend में free हैं या weekday?"
+          },
+          {
+            "tag": "lang-en",
+            "ttft_ms": 286,
+            "total_ms": 665,
+            "leaked": false,
+            "q": "Can you tell me the amenities and possession date in English?",
+            "a": "Of course. The project offers a 24/7 security system, a fully equipped gym, a swimming pool, and a children's play area. For the possession date, it's scheduled for December 2026, but I can confirm the exact date once we finalize your booking. Would you like me to send you the detailed brochure with all amenities listed?"
+          },
+          {
+            "tag": "trust",
+            "ttft_ms": 252,
+            "total_ms": 558,
+            "leaked": false,
+            "q": "आप log genuine हो ना? पहले एक builder ने धोखा दिया था।",
+            "a": "जी Nikhil जी, मैं समझ सकती हूँ। पहले का experience बुरा रहा होगा, पर मैं assure करती हूँ कि यहाँ सब genuine है। Shapoorji Pallonji का नाम ही इसकी guarantee है।"
+          },
+          {
+            "tag": "book",
+            "ttft_ms": 291,
+            "total_ms": 553,
+            "leaked": false,
+            "q": "ठीक है, इस Saturday शाम site देखनी है।",
+            "a": "बहुत बढ़िया जी! तो Saturday शाम पक्का। मैं Anurag जी को बता देती हूँ कि आप आ रहे हैं, वो आपके लिए time रख लेंगे। पहुँचिएगा तो मेरा नाम बता दीजिएगा, रिया ने भेजा है। मिलते हैं फिर Saturday को, अपना ख़याल रखिएगा।"
+          }
+        ]
+      },
+      "conversation": {
+        "scenarios": {
+          "normal-flow": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "हाँ बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "2 BHK में interest है"
+              },
+              {
+                "role": "agent",
+                "text": "जी बिल्कुल, 2 BHK में क्या-क्या features चाहिए आपको?"
+              },
+              {
+                "role": "user",
+                "text": "खुद के रहने के लिए"
+              },
+              {
+                "role": "agent",
+                "text": "वाह, खुद का घर तो सबसे प्यारा सपना होता है। फिर तो जगह सोच-समझकर चुननी चाहिए, और location ही इसकी सबसे बड़ी खूबी है।"
+              },
+              {
+                "role": "user",
+                "text": "price क्या रहेगा?"
+              },
+              {
+                "role": "agent",
+                "text": "जी बता देती हूँ। दो BHK चौरासी point नौ-नौ लाख से शुरू है।"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है, एक बार देखना चाहूँगा"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! हमारी Joyville Sensorium Sales Lounge पर हमारे Deputy Manager Sales, Anurag Saxena जी आपको पूरा project आराम से घुमाएँगे। आप weekend में free हैं या weekday सूट करता है?"
+              }
+            ],
+            "median_ttft_ms": 252,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "ambiguous-loop-trap": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "हाँ जी बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी शुक्रिया। बस ये समझना चाहती थी कि आप अपने रहने के लिए घर देख रहे हैं, या investment के नज़रिए से?"
+              },
+              {
+                "role": "user",
+                "text": "आगे बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "वाह, खुद का घर — सच में सबसे प्यारा सपना यही होता है। फिर तो जगह सोच-समझकर चुननी चाहिए, और location ही इसकी सबसे बड़ी खूबी है।"
+              },
+              {
+                "role": "user",
+                "text": "हाँ हाँ आगे"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, आपने जो Hinjawadi चुना है, वो Pune का सबसे तेज़ी से बढ़ता हुआ IT hub है। यहाँ से IT parks बस पाँच मिनट की दूरी पर हैं।"
+              },
+              {
+                "role": "user",
+                "text": "और बताओ"
+              },
+              {
+                "role": "agent",
+                "text": "project में सबसे खास बात ये है कि यहाँ के towers angled रखे हैं, जिससे आमने-सामने की खिड़कियाँ नहीं हैं। हर घर में सीधी हवा और रोशनी आती है। पूरे एक acre पर बस सौ residences हैं, तो भीड़ बिल्कुल नहीं।"
+              }
+            ],
+            "median_ttft_ms": 267,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "price-objection": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "price बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, दो BHK चौरासी point नौ-नौ लाख से शुरू है, तीन BHK एक करोड़ बत्तीस लाख से, और premium चाहिए तो duplex भी है, एक करोड़ नवासी लाख का। आपके मन में कौन सा size चल रहा है?"
+              },
+              {
+                "role": "user",
+                "text": "अरे बहुत महँगा है"
+              },
+              {
+                "role": "agent",
+                "text": "देखिए जी, पहली बार सबको ऐसा लगता है, ये normal है। पर एक बार जगह और quality देखेंगे, तो इस location पर ये बहुत reasonable लगेगा — Shapoorji Pallonji का नाम ही काफ़ी है।"
+              },
+              {
+                "role": "user",
+                "text": "पास में दूसरा project सस्ता मिल रहा है"
+              },
+              {
+                "role": "agent",
+                "text": "अच्छा जी, तो फिर आप बता दीजिए कि वो project कहाँ है और वहाँ क्या-क्या मिल रहा है। मैं भी देख लेती हूँ कि क्या फर्क है।"
+              },
+              {
+                "role": "user",
+                "text": "अच्छा फिर 2 BHK ही दिखाओ"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा। आप weekend में free हैं या weekday सूट करता है?"
+              }
+            ],
+            "median_ttft_ms": 267,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "code-switch": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "can you explain the project in English?"
+              },
+              {
+                "role": "agent",
+                "text": "Of course. It's Shapoorji Pallonji's new launch in Hinjawadi, Pune — 2 and 3 BHK homes, with angled towers so every flat gets direct light and air. And the new Mumbai-Pune Missing Link brings Mumbai down to about forty-five minutes. Would you like the pricing first, or the amenities?"
+              },
+              {
+                "role": "user",
+                "text": "अब Hindi में amenities बताओ"
+              },
+              {
+                "role": "agent",
+                "text": "जी, बिल्कुल। project में swimming pool, gym, और बच्चों के खेलने के लिए एक खास garden है। साथ ही, 24 घंटे security और parking की भी पूरी व्यवस्था है। और सबसे खास, हर घर में modular kitchen और Italian marble flooring है।"
+              },
+              {
+                "role": "user",
+                "text": "2 BHK की EMI कितनी बनेगी?"
+              },
+              {
+                "role": "agent",
+                "text": "जी, दो BHK की कीमत चौरासी point नौ-नौ लाख से शुरू है। EMI का हिसाब बैंक के interest rate पर निर्भर करता है, पर लगभग छह से सात लाख तक की EMI बन सकती है। आपका करीब-करीब budget क्या रहता है, उसी हिसाब से सही option निकाल देती हूँ?"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा। आप weekend में free हैं या weekday आपको सूट करता है?"
+              }
+            ],
+            "median_ttft_ms": 275,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "adversarial-repeat": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "आपने क्यों call किया है?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, आपने कुछ दिन पहले Joyville Sensorium project में interest दिखाया था, इसीलिए follow-up करने के लिए call किया है।"
+              },
+              {
+                "role": "user",
+                "text": "क्यों call किया?"
+              },
+              {
+                "role": "agent",
+                "text": "जी, project के बारे में कुछ जानकारी देने के लिए और आपकी सुविधा के लिए site visit का समय तय करने के लिए call किया है।"
+              },
+              {
+                "role": "user",
+                "text": "मतलब क्या?"
+              },
+              {
+                "role": "agent",
+                "text": "मतलब जी, आपके लिए project का पूरा layout और design समझाना और आपको घर देखने के लिए invite करना है।"
+              },
+              {
+                "role": "user",
+                "text": "हाँ पर असल में क्यों?"
+              },
+              {
+                "role": "agent",
+                "text": "जी, क्योंकि आपने खुद project में interest दिखाया था, तो मैं follow-up कर रही हूँ।"
+              },
+              {
+                "role": "user",
+                "text": "ओके समझ गया"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी। तो आप site visit के लिए कब free हैं?"
+              }
+            ],
+            "median_ttft_ms": 267,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "hello-recovery": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "Hello?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "आवाज़ नहीं आ रही थी"
+              },
+              {
+                "role": "agent",
+                "text": "जी सुनाई दे रहा है? मैं पूछ रही थी — आप weekend में free हैं या weekday आपको सूट करता है?"
+              },
+              {
+                "role": "user",
+                "text": "हाँ अब बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "जी शुक्रिया। बस ये समझना चाहती थी कि आप अपने रहने के लिए घर देख रहे हैं, या investment के नज़रिए से?"
+              },
+              {
+                "role": "user",
+                "text": "क्या project है ये?"
+              },
+              {
+                "role": "agent",
+                "text": "अच्छा सवाल जी। project Hinjawadi Phase एक में है, IT hub बिल्कुल पास। और सबसे खास — towers angled रखे हैं, आमने-सामने खिड़कियाँ नहीं, तो हर घर में हवा-रोशनी सीधी। पूरे एक acre पर बस सौ residences, तो भीड़ बिल्कुल नहीं।"
+              }
+            ],
+            "median_ttft_ms": 277,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "trust-rapport": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "आप genuine हो ना? पहले एक builder ने पैसा लेके project लटका दिया था"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं समझ सकती हूँ। इसीलिए तो मैं आपको Shapoorji Pallonji के बारे में बता रही हूँ — ये नाम ही भरोसे का है। आप चिंता मत कीजिए, मैं आपको project की सारी सही जानकारी दूँगी।"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है पर guarantee क्या है?"
+              },
+              {
+                "role": "agent",
+                "text": "जी, ये बहुत सही सवाल है। Shapoorji Pallonji जैसे बड़े नाम के साथ आपको guarantee की ज़रूरत नहीं है। पर फिर भी, मैं आपको एक बात बताती हूँ — आपका पैसा RERA registered project में जाएगा, और सारी काग़ज़ी कार्रवाई पूरी होगी। आप एक बार आकर देख लीजिए, फिर खुद ही समझ आ जाएगा।"
+              },
+              {
+                "role": "user",
+                "text": "अच्छा site कहाँ है?"
+              },
+              {
+                "role": "agent",
+                "text": "जी, project Hinjawadi Phase One में है। ये IT hub के बिल्कुल पास है, और नया Mumbai-Pune Missing Link road से Mumbai सिर्फ़ forty-five minutes में पहुँच जाएगा। आप weekend में आ सकते हैं, मैं Anurag जी से बात कर लेती हूँ कि वो आपके लिए time रख लें।"
+              }
+            ],
+            "median_ttft_ms": 283,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "complex-q": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "2 vs 3 BHK में rental income के लिए कौन better रहेगा और क्यों?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, rental income के लिए 3 BHK अक्सर ज़्यादा बेहतर रहता है। क्योंकि Hinjawadi जैसे IT hub में ज़्यादातर families और working professionals रहते हैं, और वे तीन कमरे वाले घर को ज़्यादा पसंद करते हैं। इससे आपको ज़्यादा किराया मिलता है और घर भी जल्दी बिकता है।\n\n2 BHK से कम किराया मिलता है और उसे किराए पर देना भी थोड़ा मुश्किल हो सकता है, ख़ासकर अगर आप single tenant ढूँढ रहे हैं। 3 BHK में आपको ज़्यादा options मिलते हैं।"
+              },
+              {
+                "role": "user",
+                "text": "और resale value के हिसाब से?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, resale value के लिए भी 3 BHK ही बेहतर माना जाता है। Hinjawadi जैसे prime location में, जहाँ families ज़्यादा रहती हैं, 3 BHK की माँग हमेशा बनी रहती है।\n\n2 BHK की value भी तो है, पर 3 BHK में आपको ज़्यादा फ़ायदा मिलता है क्योंकि यह लंबे समय के लिए एक सुरक्षित investment है। ज़्यादा जगह और बेहतर layout की वजह से इसकी resale value हमेशा अच्छी रहती है।"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है weekend पे आता हूँ"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो शनिवार पक्का। मैं Anurag जी को बता देती हूँ कि आप आ रहे हैं, वो आपके लिए time रख लेंगे। पहुँचिएगा तो मेरा नाम बता दीजिएगा, रिया ने भेजा है। मिलते हैं फिर शनिवार को, अपना ख़याल रखिएगा।"
+              }
+            ],
+            "median_ttft_ms": 253,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          }
+        },
+        "avg_repetition_score": 0.0,
+        "errors": 0
+      },
+      "stress": {
+        "concurrency": {
+          "p50_ms": 493,
+          "p95_ms": 642,
+          "p99_ms": 642,
+          "ok": 16,
+          "total": 16,
+          "error_rate": 0.0
+        },
+        "concurrency_errors": [],
+        "cap_probe": {
+          "n": 24,
+          "rate_limit_hits": 0,
+          "other_errors": 0
+        },
+        "key_failovers": 0
+      },
+      "judge": {
+        "error": "NotFoundError: Error code: 404 - {'error': {'message': 'No endpoints found for google/gemini-2.0-flash-001.', 'code': 404}, 'user_id': 'user_3F5d3BqNOeLSPr2OOplml2iyvrG'}"
+      },
+      "scores": {
+        "quality": 0.0,
+        "latency": 1.0,
+        "reliability": 1.0
+      },
+      "composite": 1.0
+    },
+    {
+      "name": "groq-70b",
+      "model": "llama-3.3-70b-versatile",
+      "temp": 0.4,
+      "latency": {
+        "summary": {
+          "p50_ttft_ms": 309,
+          "p90_ttft_ms": 403,
+          "p99_ttft_ms": 403,
+          "median_total_ms": 680,
+          "thinking_leaked": false,
+          "errors": 0
+        },
+        "rows": [
+          {
+            "tag": "opener",
+            "ttft_ms": 303,
+            "total_ms": 444,
+            "leaked": false,
+            "q": "हाँ जी बताइए, क्या बात है?",
+            "a": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+          },
+          {
+            "tag": "price",
+            "ttft_ms": 297,
+            "total_ms": 384,
+            "leaked": false,
+            "q": "2 BHK का price क्या है?",
+            "a": "जी Nikhil जी, दो BHK चौरासी point नौ-नौ लाख से शुरू है, और एक बार देख लें तो खुद ही समझ आ जाता है।"
+          },
+          {
+            "tag": "emi-complex",
+            "ttft_ms": 308,
+            "total_ms": 622,
+            "leaked": false,
+            "q": "85 लाख का घर लूँ, 20% down, बाकी 8.5% पे 20 साल — monthly EMI लगभग कितनी?",
+            "a": "जी Nikhil जी, 85 लाख का घर लेने के लिए अगर आप 20% down payment करते हैं, तो वो होगा 17 लाख। बाकी 68 लाख के लिए 8.5% की दर से 20 साल के लिए लोन लेते हैं तो monthly EMI लगभग 58 हजार होगी।"
+          },
+          {
+            "tag": "compare",
+            "ttft_ms": 353,
+            "total_ms": 850,
+            "leaked": false,
+            "q": "2 BHK और 3 BHK में investment के लिए rental yield किसका better और क्यों?",
+            "a": "जी Nikhil जी, देखिए 2 BHK और 3 BHK में से कौन सा बेहतर है ये कई चीज़ों पर निर्भर करता है, जैसे कि आपका budget, आपकी investment strategy, और आपके target audience। लेकिन आमतौर पर, 2 BHK का rental yield 3 BHK के मुक़ाबले थोड़ा बेहतर होता है।\n\nइसकी वजह यह है कि 2 BHK फ़्लैट्स की माँग ज़्यादा होती है, ख़ासकर उन लोगों में जो अपने परिवार के साथ रहते हैं य"
+          },
+          {
+            "tag": "objection",
+            "ttft_ms": 313,
+            "total_ms": 782,
+            "leaked": false,
+            "q": "भाई बहुत महँगा है, पास में सस्ता project मिल रहा है।",
+            "a": "जी Nikhil जी, समझती हूँ। पहली बार सबको ऐसा लगता है, ये normal है। पर एक बार जगह और quality देखेंगे, तो इस location पर ये बहुत reasonable लगेगा — Shapoorji Pallonji का नाम ही काफ़ी है। और सस्ता project हो सकता है कि थोड़ा दूर हो या कोई और कमी हो, जो लंबे समय में परेशानी बन सकती है। यहाँ तो Hinjawadi Phase वन में है, IT hub बिल्कुल पास, और सबसे खास — towers angled रखे हैं, आमने-सामन"
+          },
+          {
+            "tag": "lang-en",
+            "ttft_ms": 403,
+            "total_ms": 730,
+            "leaked": false,
+            "q": "Can you tell me the amenities and possession date in English?",
+            "a": "Of course, let me tell you about the amenities and possession date. The project offers a range of luxurious amenities, including a fully equipped clubhouse, swimming pool, gymnasium, children's play area, and landscaped gardens. Additionally, there are amenities like a jogging track, yoga deck, and community hall. The possession date for the project is expected to be around December 2025, but I can give you a more precise update when you visit our Sales Lounge. Would you like to schedule a visit to see the project and its amenities in person?"
+          },
+          {
+            "tag": "trust",
+            "ttft_ms": 309,
+            "total_ms": 901,
+            "leaked": false,
+            "q": "आप log genuine हो ना? पहले एक builder ने धोखा दिया था।",
+            "a": "बिल्कुल समझती हूँ जी, आपकी चिंता वाजिब है। Shapoorji Pallonji की तो पूरी मार्केट में अलग ही पहचान है, इतने बड़े और पुराने builder के साथ धोखाधड़ी की बात सोचना भी मुश्किल है। हमारे प्रोजेक्ट की हर चीज़ पारदर्शी है, और हमारे साथ जुड़ने वाले हर ग्राहक को हम पूरी जानकारी देते हैं। आप जब site visit पर आएंगे, तो आप खुद देखेंगे कि कैसे"
+          },
+          {
+            "tag": "book",
+            "ttft_ms": 292,
+            "total_ms": 630,
+            "leaked": false,
+            "q": "ठीक है, इस Saturday शाम site देखनी है।",
+            "a": "बहुत बढ़िया जी! तो शनिवार शाम पक्का है। मैं Anurag जी को बता देती हूँ कि आप आ रहे हैं, वो आपके लिए समय रख लेंगे। पहुँचिएगा तो मेरा नाम बता दीजिएगा, रिया ने भेजा है। शनिवार शाम को Joyville Sensorium Sales Lounge पर मिलते हैं।"
+          }
+        ]
+      },
+      "conversation": {
+        "scenarios": {
+          "normal-flow": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "हाँ बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "2 BHK में interest है"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, दो BHK चौरासी point नौ-नौ लाख से शुरू है, और एक बार देख लें तो खुद ही समझ आ जाता है। हमारे Joyville Sensorium में location और design दोनों बहुत अच्छे हैं, और Shapoorji Pallonji का नाम ही काफ़ी है। आप weekend में free हैं या weekday सूट करता है? मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा।"
+              },
+              {
+                "role": "user",
+                "text": "खुद के रहने के लिए"
+              },
+              {
+                "role": "agent",
+                "text": "वाह, खुद का घर — सच में सबसे प्यारा सपना यही होता है। फिर तो जगह सोच-समझकर चुननी चाहिए, और location ही इसकी सबसे बड़ी खूबी है। Hinjawadi में जो connectivity है, वो बहुत अच्छी है, और हमारे project में भी सभी सुविधाएँ हैं। आप अपने घर के लिए कौन सी सुविधाएँ सबसे ज्यादा महत्वपूर्ण मानते हैं?"
+              },
+              {
+                "role": "user",
+                "text": "price क्या रहेगा?"
+              },
+              {
+                "role": "agent",
+                "text": "जी बता देती हूँ। दो BHK चौरासी point नौ-नौ लाख से शुरू है, और यह दाम बहुत ही reasonable है इस location और quality के हिसाब से। आप चाहें तो मैं आपको EMI का भी calculation बता सकती हूँ, ताकि आपको अपने budget के हिसाब से समझने में आसानी हो।"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है, एक बार देखना चाहूँगा"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! हमारी Joyville Sensorium Sales Lounge पर हमारे Deputy Manager Sales, Anurag Saxena जी आपको पूरा project आराम से घुमाएँगे। आप weekend में free हैं या weekday सूट करता है? मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा।"
+              }
+            ],
+            "median_ttft_ms": 320,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "ambiguous-loop-trap": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "हाँ जी बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट लूँगी, फिर आप ही बताइएगा कि आगे बढ़ें या नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी बता देती हूँ। दो BHK चौरासी point नौ-नौ लाख से शुरू, तीन BHK एक करोड़ बत्तीस लाख, और premium चाहिए तो duplex भी है, एक करोड़ नवासी लाख का। आपके मन में कौन सा size चल रहा है?"
+              },
+              {
+                "role": "user",
+                "text": "आगे बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, तो ये project Hinjawadi Phase वन में है, IT hub बिल्कुल पास। और सबसे खास — towers angled रखे हैं, आमने-सामने खिड़कियाँ नहीं, तो हर घर में हवा-रोशनी सीधी। पूरे एक acre पर बस सौ residences, तो भीड़ बिल्कुल नहीं। और नया Mumbai-Pune Missing Link बन गया है, उससे Mumbai अब सिर्फ़ पैंतालीस minute रह गया है।"
+              },
+              {
+                "role": "user",
+                "text": "हाँ हाँ आगे"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, तो अब मैं आपको बता दूँ कि हमारी Sales Lounge पर आपका स्वागत है। हमारे Deputy Manager Sales, Anurag Saxena जी आपको पूरा project आराम से घुमाएँगे। आप weekend में free हैं या weekday सूट करता है?"
+              },
+              {
+                "role": "user",
+                "text": "और बताओ"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, हमारी Joyville Sensorium Sales Lounge पर आपको पूरा project दिखाया जाएगा, और आपके सभी सवालों का जवाब दिया जाएगा। और अगर आप घर लेने का फैसला करते हैं, तो हम आपको बहुत अच्छा offer देंगे। तो क्या आप शनिवार को हमारी Sales Lounge पर आकर project देखना चाहेंगे?"
+              }
+            ],
+            "median_ttft_ms": 311,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "price-objection": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "price बताइए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, दो BHK चौरासी point नौ-नौ लाख से शुरू है, तीन BHK एक करोड़ बत्तीस लाख, और premium चाहिए तो duplex भी है, एक करोड़ नवासी लाख का। आपके मन में कौन सा size चल रहा है?"
+              },
+              {
+                "role": "user",
+                "text": "अरे बहुत महँगा है"
+              },
+              {
+                "role": "agent",
+                "text": "बिल्कुल समझती हूँ जी, पहली बार सबको ऐसा लगता है, ये normal है। पर एक बार जगह और quality देखेंगे, तो इस location पर ये बहुत reasonable लगेगा — Shapoorji Pallonji का नाम ही काफ़ी है।"
+              },
+              {
+                "role": "user",
+                "text": "पास में दूसरा project सस्ता मिल रहा है"
+              },
+              {
+                "role": "agent",
+                "text": "हम्म, समझ रही हूँ जी। पर एक बात बताऊँ — Joyville Sensorium की location और quality का कोई मुकाबला नहीं है। Hinjawadi में यही सबसे अच्छी जगह है, और Shapoorji Pallonji का नाम ही काफ़ी है कि यहाँ की प्रॉपर्टी की value कभी घटेगी नहीं। दूसरे project में क्या खास है, वो बता सकते हैं?"
+              },
+              {
+                "role": "user",
+                "text": "अच्छा फिर 2 BHK ही दिखाओ"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा। आप weekend में free हैं या weekday सूट करता है?"
+              }
+            ],
+            "median_ttft_ms": 307,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "code-switch": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "can you explain the project in English?"
+              },
+              {
+                "role": "agent",
+                "text": "Of course. It's Shapoorji Pallonji's new launch in Hinjawadi, Pune — 2 and 3 BHK homes, with angled towers so every flat gets direct light and air. And the new Mumbai-Pune Missing Link brings Mumbai down to about forty-five minutes. Would you like the pricing first, or the amenities?"
+              },
+              {
+                "role": "user",
+                "text": "अब Hindi में amenities बताओ"
+              },
+              {
+                "role": "agent",
+                "text": "बिल्कुल जी। तो हमारे Joyville Sensorium में आपको बहुत सारी अच्छी amenities मिलेंगी — जैसे कि clubhouse, swimming pool, gym, kids' play area, और बहुत सारे green spaces। और सबसे अच्छी बात ये है कि ये सारी सुविधाएँ बहुत ही अच्छी quality में हैं, ताकि आप और आपका परिवार आराम से रह सकें।"
+              },
+              {
+                "role": "user",
+                "text": "2 BHK की EMI कितनी बनेगी?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, दो BHK की कीमत चौरासी point नौ-नौ लाख है, तो EMI की गणना करके बता देती हूँ। मान लीजिए आप पूरी कीमत का बीस प्रतिशत down payment करते हैं, तो बाकी की राशि पर लोन लेते हैं। तो EMI लगभग पचास हज़ार से शुरू होगी, लेकिन ये बैंक और लोन की शर्तों पर भी निर्भर करता है। आप चाहें तो मैं आपको हमारे financial partner से भी जोड़ सकती ह"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो मैं आपकी एक site visit लगा देती हूँ, वहीं 2 BHK का पूरा sample घर देख लीजिएगा। आप weekend में free हैं या weekday सूट करता है?"
+              }
+            ],
+            "median_ttft_ms": 311,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "adversarial-repeat": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "आपने क्यों call किया है?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं Joyville Sensorium के सिलसिले में बात कर रही थी — Shapoorji Pallonji का Hinjawadi project, आपने इसमें interest दिखाया था। बस दो मिनट बात करनी थी कि क्या आप अभी भी इस project में दिलचस्पी रखते हैं और आगे बढ़ने के बारे में क्या सोचते हैं।"
+              },
+              {
+                "role": "user",
+                "text": "क्यों call किया?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, आपने Joyville Sensorium में interest दिखाया था, तो बस उसी के बारे में दो मिनट बात करनी थी। दो BHK चौरासी point नौ-नौ लाख से शुरू है, और एक बार देख लें तो खुद ही समझ आ जाता है।"
+              },
+              {
+                "role": "user",
+                "text": "मतलब क्या?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मतलब यह है कि हमारे पास आपकी जानकारी थी कि आपने Joyville Sensorium में रुचि दिखाई थी, और मैं यह जानना चाहती थी कि क्या आप अभी भी इस प्रोजेक्ट में दिलचस्पी रखते हैं और आगे की जानकारी चाहते हैं।"
+              },
+              {
+                "role": "user",
+                "text": "हाँ पर असल में क्यों?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, असल में हम चाहते हैं कि आप Joyville Sensorium को अपने घर के रूप में देखें और इसकी सारी सुविधाओं और खूबियों को जानें। हमारा मकसद है कि आप यहाँ आकर देखें और अपने लिए सबसे अच्छा निर्णय लें।"
+              },
+              {
+                "role": "user",
+                "text": "ओके समझ गया"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, अच्छा जी! तो अब मैं आपको बता देती हूँ कि हमारे पास क्या विकल्प हैं। हमारे पास दो BHK, तीन BHK, और तीन BHK डुप्लेक्स हैं। दो BHK की कीमत चौरासी point नौ-नौ लाख से शुरू होती है। क्या आप इनमें से कोई विकल्प देखना चाहेंगे?"
+              }
+            ],
+            "median_ttft_ms": 408,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "hello-recovery": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "Hello?"
+              },
+              {
+                "role": "agent",
+                "text": "जी सुनाई दे रहा है? मैं रिया बोल रही हूँ, Joyville Sensorium की senior sales consultant। आपने हमारे project में interest दिखाया था, बस उसी के बारे में दो मिनट बात करनी थी।"
+              },
+              {
+                "role": "user",
+                "text": "आवाज़ नहीं आ रही थी"
+              },
+              {
+                "role": "agent",
+                "text": "जी सुनाई दे रहा है? मैं रिया बोल रही हूँ, Joyville Sensorium की senior sales consultant। आपने हमारे project में interest दिखाया था, बस उसी के बारे में दो मिनट बात करनी थी।"
+              },
+              {
+                "role": "user",
+                "text": "हाँ अब बोलिए"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, मैं बता रही थी कि Joyville Sensorium का project Hinjawadi Phase वन में है, IT hub बिल्कुल पास। और सबसे खास — towers angled रखे हैं, आमने-सामने खिड़कियाँ नहीं, तो हर घर में हवा-रोशनी सीधी। पूरे एक acre पर बस सौ residences, तो भीड़ बिल्कुल नहीं।"
+              },
+              {
+                "role": "user",
+                "text": "क्या project है ये?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, ये Shapoorji Pallonji का नया project है, जिसमें 2 और 3 BHK के घर हैं। दो BHK चौरासी point नौ-नौ लाख से शुरू है, और तीन BHK एक करोड़ बत्तीस लाख से। और एक खास बात — ये Hinjawadi में है, तो Mumbai-Pune Missing Link से Mumbai सिर्फ़ पैंतालीस मिनट की दूरी पर है।"
+              }
+            ],
+            "median_ttft_ms": 310,
+            "repetition_score": 0.25,
+            "leaked": false,
+            "error": null
+          },
+          "trust-rapport": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "आप genuine हो ना? पहले एक builder ने पैसा लेके project लटका दिया था"
+              },
+              {
+                "role": "agent",
+                "text": "बिल्कुल समझती हूँ, Nikhil जी। आपकी चिंता वाजिब है। कई बार ऐसा होता है कि builders पैसा लेकर project को लटका देते हैं और घर खरीदने वालों को परेशानी होती है। लेकिन मैं आपको बता दूँ कि Joyville Sensorium के builder Shapoorji Pallonji एक बहुत ही विश्वसनीय और अनुभवी नाम हैं। उनकी पिछली परियोजनाओं को देखकर आप समझ सकते हैं कि वे समय पर पूरा करने और गुणवत्ता के म"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है पर guarantee क्या है?"
+              },
+              {
+                "role": "agent",
+                "text": "बिल्कुल सही सवाल जी! Shapoorji Pallonji के साथ हमारे पास RERA registration है, जो कि एक सरकारी गारंटी है कि project समय पर पूरा होगा और सभी नियमों का पालन किया जाएगा। साथ ही, हमारे पास एक स्पष्ट construction timeline है जिसे हम अपने ग्राहकों के साथ साझा करते हैं। और सबसे महत्वपूर्ण बात, हमारे पास एक strong after-sales support system है जो आपको पूरी तरह से संतुष्ट करने के लिए हमेशा तैय"
+              },
+              {
+                "role": "user",
+                "text": "अच्छा site कहाँ है?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, Joyville Sensorium का site Hinjawadi Phase 1 में है, जो कि पुणे का एक बहुत ही विकसित और सुविधाजनक इलाका है। यहाँ से पुणे के सभी मुख्य इलाकों में आसानी से पहुँचा जा सकता है, और साथ ही यहाँ पर कई बड़े IT कंपनियों के office भी हैं। साइट का पता है - Hinjawadi Phase 1, Near Shivaji Chowk, Pune। आप यहाँ आसानी से पहुँच सकते हैं और अपने आप को project की सुंदर"
+              }
+            ],
+            "median_ttft_ms": 318,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          },
+          "complex-q": {
+            "transcript": [
+              {
+                "role": "user",
+                "text": "2 vs 3 BHK में rental income के लिए कौन better रहेगा और क्यों?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, अगर rental income की बात करें तो दोनों ही विकल्प अच्छे हैं, पर 2 BHK और 3 BHK में थोड़ा अंतर है। 2 BHK की demand ज्यादा रहती है क्योंकि ज्यादातर लोग छोटे परिवार के साथ रहते हैं और उन्हें दो कमरे काफी लगते हैं। इससे 2 BHK की rental income थोड़ी स्थिर रहती है और आसानी से किराए पर मिल जाती है।\n\nदूसरी तरफ, 3 BHK ज्यादा बड़े परिव"
+              },
+              {
+                "role": "user",
+                "text": "और resale value के हिसाब से?"
+              },
+              {
+                "role": "agent",
+                "text": "जी Nikhil जी, resale value के हिसाब से देखें तो 3 BHK की resale value ज्यादा अच्छी रहती है। बड़े घरों की demand हमेशा रहती है, खासकर उन परिवारों में जो बड़े हैं या जिन्हें ज्यादा जगह चाहिए। इससे 3 BHK की resale value में ज्यादा बढ़ोतरी होती है और यह एक अच्छा investment विकल्प बन जाता है।\n\nएक और बात, जो लोग 3 BHK लेते हैं वो अक्सर अपने घर को बहुत सारी सुविध"
+              },
+              {
+                "role": "user",
+                "text": "ठीक है weekend पे आता हूँ"
+              },
+              {
+                "role": "agent",
+                "text": "बहुत बढ़िया जी! तो शनिवार को आप आ रहे हैं, मैं Anurag जी को बता देती हूँ कि आप आ रहे हैं, वो आपके लिए समय रख लेंगे। पहुँचिएगा तो मेरा नाम बता दीजिएगा, रिया ने भेजा है। मिलते हैं फिर शनिवार को, अपना ख़याल रखिएगा।"
+              }
+            ],
+            "median_ttft_ms": 312,
+            "repetition_score": 0.0,
+            "leaked": false,
+            "error": null
+          }
+        },
+        "avg_repetition_score": 0.031,
+        "errors": 0
+      },
+      "stress": {
+        "concurrency": {
+          "p50_ms": 5608,
+          "p95_ms": 13779,
+          "p99_ms": 13779,
+          "ok": 16,
+          "total": 16,
+          "error_rate": 0.0
+        },
+        "concurrency_errors": [],
+        "cap_probe": {
+          "n": 24,
+          "rate_limit_hits": 0,
+          "other_errors": 0
+        },
+        "key_failovers": 0
+      },
+      "judge": {
+        "error": "NotFoundError: Error code: 404 - {'error': {'message': 'No endpoints found for google/gemini-2.0-flash-001.', 'code': 404}, 'user_id': 'user_3F5d3BqNOeLSPr2OOplml2iyvrG'}"
+      },
+      "scores": {
+        "quality": 0.0,
+        "latency": 0.0,
+        "reliability": 0.988
+      },
+      "composite": 0.395
+    }
+  ]
+}

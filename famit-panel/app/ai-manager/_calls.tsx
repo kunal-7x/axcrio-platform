@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
+import Select from "@/components/Select";
 import { DormantPanel, ErrorBanner, fmt, statusVariant } from "./_shared";
 import {
     getAimSessions,
@@ -453,20 +454,13 @@ function FilterPill({
     onChange: (v: string) => void;
     options: { value: string; label: string }[];
 }) {
+    const opts = options.map((o, i) => ({ id: i, name: o.label, value: o.value }));
     return (
-        <div className="relative">
-            <select
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="appearance-none h-9 pl-3.5 pr-9 rounded-full border border-s-subtle bg-b-surface2 text-button text-t-secondary outline-none transition-colors hover:border-s-highlight hover:text-t-primary focus:border-primary-01/60 cursor-pointer"
-            >
-                {options.map((o) => (
-                    <option key={o.value} value={o.value}>
-                        {o.label}
-                    </option>
-                ))}
-            </select>
-            <Icon name="chevron" className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 size-4 fill-t-tertiary" />
-        </div>
+        <Select
+            classButton="!h-9 !rounded-full !pl-3.5 !pr-3 !border-s-subtle !bg-b-surface2 !text-button !text-t-secondary"
+            value={opts.find((o) => o.value === value) ?? null}
+            options={opts}
+            onChange={(o) => onChange(opts[o.id].value)}
+        />
     );
 }

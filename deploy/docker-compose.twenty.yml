@@ -1,0 +1,110 @@
+# Self-hosted Twenty CRM — the engine behind Haptica's Sales CRM.
+#
+# Joins the SAME `haptica-ai` project/network as the panel+backend (and the voice
+# stack), so Haptica's backend reaches it at http://twenty:3000 on the internal
+# Docker network. NOTHING here is published to the host — Twenty is internal-only;
+# the browser never touches it (Haptica proxies /twenty/* server-side).
+#
+# Bring up:
+#   docker compose -f deploy/docker-compose.twenty.yml --env-file deploy/.env.deploy up -d
+# Running just this file warns about orphan containers (the panel/voice services) —
+# harmless, they keep running (same pattern as docker-compose.voice.yml).
+#
+# Self-host facts (verified from the Twenty source, current main):
+#   * server + worker share ONE image (twentycrm/twenty); worker runs `worker:prod`
+#     and MUST NOT run migrations (DISABLE_DB_MIGRATIONS=true).
+#   * the server entrypoint self-inits + self-migrates the DB on boot (gated by
+#     DISABLE_DB_MIGRATIONS) — no separate init container needed.
+#   * IS_MULTIWORKSPACE_ENABLED=true → each signUp/new-workspace is an isolated
+#     workspace (Haptica provisions one per tenant). Cap = 5 workspaces/server
+#     without an enterprise key.
+#   * IS_EMAIL_VERIFICATION_REQUIRED=false + no CAPTCHA_DRIVER → headless signup
+#     works with no SMTP/captcha.
+#   * IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS=false → each tenant's own user
+#     can create its own workspace (no shared-admin dance).
+
+name: haptica-ai
+
+services:
+  twenty-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${TWENTY_PG_PASSWORD:-twenty_pg_changeme}
+      POSTGRES_DB: default
+    volumes:
+      - twenty-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d default"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  twenty-redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  twenty:
+    image: twentycrm/twenty:${TWENTY_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    environment:
+      NODE_PORT: "3000"
+      PG_DATABASE_URL: postgres://postgres:${TWENTY_PG_PASSWORD:-twenty_pg_changeme}@twenty-db:5432/default
+      REDIS_URL: redis://twenty-redis:6379
+      SERVER_URL: ${TWENTY_SERVER_URL:-http://twenty:3000}
+      APP_SECRET: ${TWENTY_APP_SECRET:?set TWENTY_APP_SECRET}
+      ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY:?set TWENTY_ENCRYPTION_KEY}
+      STORAGE_TYPE: local
+      # headless multi-tenant provisioning (see header)
+      IS_MULTIWORKSPACE_ENABLED: "true"
+      IS_EMAIL_VERIFICATION_REQUIRED: "false"
+      IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS: "false"
+    volumes:
+      - twenty-local-data:/app/packages/twenty-server/.local-storage
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:3000/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+
+  twenty-worker:
+    image: twentycrm/twenty:${TWENTY_TAG:-latest}
+    restart: unless-stopped
+    command: ["yarn", "worker:prod"]
+    depends_on:
+      twenty:
+        condition: service_healthy
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    environment:
+      PG_DATABASE_URL: postgres://postgres:${TWENTY_PG_PASSWORD:-twenty_pg_changeme}@twenty-db:5432/default
+      REDIS_URL: redis://twenty-redis:6379
+      SERVER_URL: ${TWENTY_SERVER_URL:-http://twenty:3000}
+      APP_SECRET: ${TWENTY_APP_SECRET:?set TWENTY_APP_SECRET}
+      ENCRYPTION_KEY: ${TWENTY_ENCRYPTION_KEY:?set TWENTY_ENCRYPTION_KEY}
+      STORAGE_TYPE: local
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+    volumes:
+      - twenty-local-data:/app/packages/twenty-server/.local-storage
+
+volumes:
+  twenty-db-data:
+  twenty-local-data:

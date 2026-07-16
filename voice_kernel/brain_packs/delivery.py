@@ -53,11 +53,13 @@ def name_directive(lead_name: str = "") -> str:
     )
     return (
         f"{NAME_DIRECTIVE_CUE} {name_clause}use it AT MOST once or twice in the WHOLE call "
-        "(e.g. once at the greeting to confirm identity) — never prefix every turn with their "
-        f"name. Say the name at the SAME calm volume/pace as the rest: {NO_EMPHASIS_CUE} — no "
-        "exclamation mark, no ALL-CAPS, no louder/faster delivery on the name. SAME no-shout "
-        "rule for EVERY word: never write a whole Hindi/Hinglish word in CAPITALS and never put "
-        "'!' on a filler/acknowledgement (write 'ठीक है', NEVER 'ठीक है!') — keep them soft and even."
+        "(naturally, e.g. once at the greeting to confirm identity) — NEVER prefix every turn "
+        "with their name and never repeat it line after line. Say the name at the SAME normal, "
+        f"calm volume and pace as the rest of the sentence: {NO_EMPHASIS_CUE} — no exclamation "
+        "mark, no ALL-CAPS, no drawn-out or louder/faster delivery on the name token. The SAME "
+        "no-shout rule applies to EVERY word: never write a whole Hindi/Hinglish word in CAPITALS "
+        "and never put an exclamation mark ('!') on a filler or acknowledgement (e.g. write "
+        "'ठीक है', NEVER 'ठीक है!' or ' बढ़िया!') — keep all fillers/acknowledgements soft and even."
     )
 
 
@@ -82,41 +84,37 @@ def single_greeting_directive(lead_name: str = "") -> str:
         "confirm you are speaking with the right person by their name if you have it"
     )
     return (
-        f"{SINGLE_GREETING_CUE} greet EXACTLY ONCE, in the opening turn: a warm time-of-day wish "
-        "in plain ENGLISH words (\"good morning\" before noon, \"good afternoon\" till evening, "
-        "else \"good evening\") + a soft \"hello sir\"/\"hello ji\"/\"hello ma'am\". The wish "
-        "itself MUST be the English phrase (a little Hindi-English mix around it is fine). "
-        "BANNED as the greeting (never say/write): 'नमस्ते'/'namaste', 'नमस्कार'/'namaskar', "
-        "'सुप्रभात', 'शुभ रात्रि'/'shubh ratri'. "
-        f"Then briefly say who you are + the company, {confirm} -> WAIT for their reply -> then "
-        "the reason for calling + permission. This is an OUTBOUND call — YOU called the caller, "
-        "they did NOT call you — so frame the reason in the first person (\"मैंने आपको <product> "
-        "के बारे में call किया है\" / \"आपने <product> में interest dikhaya tha इसलिए call कर रही/रहा "
-        "हूँ\"); NEVER say \"आपने call किया था\" / \"you contacted us\" (that is inbound framing and is "
-        "wrong). After that opening turn NEVER greet again and NEVER repeat your name/company/intro "
-        "— you have ALREADY greeted; just answer what they said and move the conversation forward."
+        f"{SINGLE_GREETING_CUE} greet the caller EXACTLY ONCE, in your opening turn, like this: "
+        "open with a warm time-of-day wish written in plain ENGLISH words — \"good morning\" "
+        "before noon, \"good afternoon\" till evening, else \"good evening\" — immediately "
+        "followed by a soft \"hello sir\" / \"hello ji\" (or \"hello ma'am\"). Keep the "
+        "time-of-day wish in ENGLISH ('good morning'/'good afternoon'/'good evening'); a tiny "
+        "Hindi-English mix around it is natural, but the wish itself MUST be the English phrase. "
+        "STRICTLY BANNED greeting words — NEVER say or write any of these: 'सुप्रभात', "
+        "'शुभ प्रभात', 'शुभ रात्रि', 'शुभ संध्या', 'subah', 'subratri', 'shubh ratri', "
+        "'namaste', 'namaskar', 'नमस्ते', 'नमस्कार'. They are forbidden as the greeting. "
+        f"Then briefly say who you are and the company, {confirm} -> WAIT for their reply -> "
+        "then the reason for calling + permission. After that opening turn, do NOT greet again, "
+        "do NOT say any greeting ('hello'/'good morning') again, and do NOT repeat your "
+        "name/company/intro — just respond to what they said and move the conversation forward. "
+        "If the conversation has already started, you have ALREADY greeted: never restate the "
+        "intro or greeting."
     )
 
 
 def closing_directive() -> str:
-    """How to END the call — a PRINCIPLE, never a ready-to-speak line (R5-P1.2).
-
-    The old version baked a verbatim farewell EXAMPLE ('...आपका दिन अच्छा रहे' /
-    'thank you for your time, have a great day'). agent.py's `_FAREWELL_MARKERS`
-    matched that exact phrasing and converted it into a REAL hangup — so the brain
-    could be nudged into speaking the example string and ending the call mid-
-    engagement. We now state the close as a PRINCIPLE only: close ONLY when the
-    outcome is clearly resolved (a next step agreed, or the caller declined / asked
-    to stop), with ONE short warm self-authored line in the caller's language — and
-    we give NO line to copy. The banned word 'अलविदा' (heavy/formal farewell) stays
-    banned. The "when to close" gate lives in the L0 engagement block; this only
-    governs HOW the close sounds when it is genuinely time."""
+    """How to END the call (founder hard-rule): a warm, natural, LLM-authored goodbye
+    ('thank you for your time, good day' style) — but the word 'अलविदा' (Alvida) is
+    STRICTLY BANNED, along with its transliterations. The goodbye must never sound like
+    a formal 'farewell'; keep it the way a friendly Indian telecaller signs off."""
     return (
-        f"{CLOSING_DIRECTIVE_CUE} when it is genuinely time to end (see the ENGAGEMENT rule for "
-        "WHEN), confirm the agreed next step in a line, then sign off with ONE short warm line in "
-        "the caller's language, thanking them in your OWN words — do NOT recite a fixed/canned "
-        "phrase and do NOT repeat the intro. BANNED closing word: NEVER say 'अलविदा' / 'alvida' "
-        "(heavy/formal). No second pitch or new question after the close."
+        f"{CLOSING_DIRECTIVE_CUE} when the call ends, sign off with ONE short, warm, natural "
+        "closing line — thank them for their time and wish them a good day (e.g. "
+        "'आपका समय देने के लिए शुक्रिया, आपका दिन अच्छा रहे' or 'thank you for your time, have "
+        "a great day'), in whatever language they spoke. STRICTLY BANNED closing word — NEVER "
+        "say or write 'अलविदा', 'alvida', or 'alavida' (it sounds like a heavy, formal "
+        "farewell). End politely and warmly, never with 'अलविदा' and never with a second pitch "
+        "or a new question."
     )
 
 
@@ -125,10 +123,13 @@ def english_names_directive() -> str:
     Latin/English form — never transliterated to Devanagari, never mangled into garbled
     or Cyrillic look-alikes. Generalizes the Agaro fix to ALL English proper nouns."""
     return (
-        f"{ENGLISH_NAMES_CUE} write every company/product/brand and English proper noun in its "
-        "ORIGINAL English spelling (e.g. 'Agaro', 'Godrej', 'WhatsApp') — never transliterate to "
-        "Devanagari (never 'गोदरेज') and never garble it. Only the surrounding Hindi words are in "
-        "Devanagari; the English names stay in clean English letters so they are spoken correctly."
+        f"{ENGLISH_NAMES_CUE} write every company name, product name, brand and English "
+        "proper noun in its ORIGINAL English/Latin spelling exactly (e.g. 'Agaro', 'Godrej', "
+        "'Shapoorji Pallonji', 'WhatsApp', 'iPhone') — do NOT transliterate them into "
+        "Devanagari (never 'अगारो', never 'गोदरेज'), and never render them as garbled, "
+        "broken, or Cyrillic-look-alike characters. Only the surrounding Hindi/Hinglish words "
+        "are in Devanagari; the English names stay in clean English letters so they are spoken "
+        "correctly."
     )
 
 

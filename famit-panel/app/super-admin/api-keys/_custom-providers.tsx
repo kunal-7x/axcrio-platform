@@ -25,6 +25,7 @@ import {
     addCustomProvider,
     updateCustomProvider,
     deleteCustomProvider,
+    fetchCompanyLogo,
     type CustomProvider,
 } from "@/lib/api";
 import { ghostBtnCls } from "../_shared";
@@ -187,6 +188,9 @@ function AddCustomModal({
     const [baseUrl, setBaseUrl] = useState("");
     const [model, setModel] = useState("");
     const [key, setKey] = useState("");
+    const [website, setWebsite] = useState("");
+    const [logoUrl, setLogoUrl] = useState("");
+    const [fetchingLogo, setFetchingLogo] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -197,9 +201,24 @@ function AddCustomModal({
             setBaseUrl("");
             setModel("");
             setKey("");
+            setWebsite("");
+            setLogoUrl("");
+            setFetchingLogo(false);
             setError("");
         }
     }, [open]);
+
+    // Website → logo: best-effort, never blocks the form (Clearbit → favicon fallback on the backend).
+    const grabLogo = async (u: string) => {
+        const url = (u || "").trim();
+        if (!url) return;
+        setFetchingLogo(true);
+        try {
+            const r = await fetchCompanyLogo(url);
+            if (r.logo_url) setLogoUrl(r.logo_url);
+        } catch { /* ignore — logo is optional */ }
+        finally { setFetchingLogo(false); }
+    };
 
     const submit = async () => {
         if (!name.trim() || !baseUrl.trim() || !model.trim()) {
@@ -215,6 +234,7 @@ function AddCustomModal({
                 base_url: baseUrl.trim(),
                 model: model.trim(),
                 key: key.trim(),
+                logo_url: logoUrl.trim(),
             });
             await onAdded();
             onClose();
@@ -240,6 +260,32 @@ function AddCustomModal({
                 onChange={(e) => setName(e.target.value)}
                 className="mb-4"
             />
+            <div className="mb-4">
+                <Field
+                    label="Website (for logo)"
+                    placeholder="https://provider.com"
+                    value={website}
+                    onChange={(e) => setWebsite(e.target.value)}
+                    className="mb-2"
+                />
+                <div className="flex items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => grabLogo(website)}
+                        disabled={fetchingLogo || !website.trim()}
+                        className={ghostBtnCls}
+                    >
+                        {fetchingLogo ? "Fetching…" : "Fetch logo"}
+                    </button>
+                    {logoUrl && (
+                        <>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={logoUrl} alt="" className="size-8 rounded-lg object-contain bg-b-surface1 ring-1 ring-inset ring-s-subtle" onError={() => setLogoUrl("")} />
+                            <span className="text-caption text-t-tertiary">Logo fetched</span>
+                        </>
+                    )}
+                </div>
+            </div>
             <div className="mb-4">
                 <Select label="Kind" value={kind} onChange={setKind} options={KIND_OPTS} />
             </div>

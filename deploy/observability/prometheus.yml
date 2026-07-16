@@ -1,0 +1,43 @@
+# Prometheus scrape config for the Haptica observability droplet.
+# - obs-local exporters (this droplet's own host + containers) are scraped by service name.
+# - haptica-prod targets scrape the prod box's exporters + the backend's /metrics. They go
+#   over the BLR backbone; the prod DO firewall must allow the obs droplet's IP to the
+#   relevant ports (node-exporter 9100, cadvisor 8085, backend metrics 8091). See README.md
+#   "Wire haptica-prod scraping". Until those are opened they simply show as 'down' — harmless.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: haptica
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ---- this observability droplet's own health ----
+  - job_name: obs-node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: { host: observability }
+  - job_name: obs-containers
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels: { host: observability }
+
+  # ---- haptica-prod (fill HAPTICA_PROD_IP; opened to the obs droplet in Phase 3b wiring) ----
+  # The Haptica backend exposes Prometheus metrics at /metrics (additive endpoint). Exporters
+  # (node-exporter, cadvisor) are added to the prod box's compose + firewalled to the obs IP.
+  - job_name: haptica-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["168.144.85.191:8091"]
+        labels: { host: haptica-prod, service: backend }
+  - job_name: haptica-prod-node
+    static_configs:
+      - targets: ["168.144.85.191:9100"]
+        labels: { host: haptica-prod }
+  - job_name: haptica-prod-containers
+    static_configs:
+      - targets: ["168.144.85.191:8085"]
+        labels: { host: haptica-prod }

@@ -1,0 +1,166 @@
+# Voice layer for Haptica AI — self-hosted LiveKit + SIP + Redis + the agent
+# worker, identical to selfhost/docker-compose.yaml but joined to the haptica-ai
+# project network so backend/worker/sip all reach ws://livekit:7880.
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tls.yml \
+#     -f deploy/docker-compose.voice.yml --env-file deploy/.env.deploy up -d
+#
+# LiveKit runs in --dev (devkey/secret) and is NOT published to the host — only
+# reachable on the internal network. SIP (5060) + RTP (10000-10100/udp) ARE
+# published; Vobiz reaches them over the firewall. Vobiz auth is credential-based
+# so no IP whitelisting is needed.
+name: haptica-ai
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command: --dev --bind 0.0.0.0 --redis-host redis:6379
+    depends_on:
+      redis:
+        condition: service_started
+
+  sip:
+    image: livekit/sip:latest
+    restart: unless-stopped
+    environment:
+      SIP_CONFIG_BODY: |
+        api_key: 'devkey'
+        api_secret: 'secret'
+        ws_url: 'ws://livekit:7880'
+        redis:
+          address: 'redis:6379'
+        sip_port: 5060
+        rtp_port: 10000-10100
+        use_external_ip: true
+        logging:
+          level: debug
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "10000-10100:10000-10100/udp"
+    depends_on:
+      redis:
+        condition: service_started
+      livekit:
+        condition: service_started
+
+  # Recorder — fulfils the RoomCompositeEgress requests the backend embeds in
+  # CreateRoom (audio-only OGG -> DO Spaces). Without this, recordings sit at
+  # "Preparing recording…" forever because nothing executes the egress job.
+  egress:
+    image: livekit/egress:latest
+    restart: unless-stopped
+    environment:
+      EGRESS_CONFIG_BODY: |
+        redis:
+          address: redis:6379
+        api_key: 'devkey'
+        api_secret: 'secret'
+        ws_url: 'ws://livekit:7880'
+        insecure: true
+        logging:
+          level: info
+    cap_add:
+      - CAP_SYS_ADMIN          # Chrome sandbox for room-composite egress
+    shm_size: 1gb              # Chrome shared memory
+    depends_on:
+      redis:
+        condition: service_started
+      livekit:
+        condition: service_started
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    image: haptica-worker:latest
+    restart: unless-stopped
+    env_file:
+      - .env.deploy
+    # these override .env.deploy and exactly mirror run_worker.py
+    environment:
+      # /app on the path so the agent can import voice_kernel/voice_ops (it runs
+      # from droplet_work/; locally run_worker.py runs from the repo root). Matches
+      # local parity — without it the agent falls back to the legacy adapter.
+      PYTHONPATH: /app
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_AGENT_NAME: famit-local
+      AGENT_HTTP_PORT: "8092"
+      GROQ_MAX_TOKENS: "80"
+      # REVERTED to the original working config (0.55). Lowering it to 0.35 made 8b MORE repetitive
+      # (low temp = deterministic looping), not less — that was a mistake.
+      GROQ_LLM_TEMPERATURE: "0.55"
+      # OFF: back to the original full build_system_prompt brain that tested well on 8b, with NO extra
+      # hardening — byte-identical to what worked. The minimal persona + hardening made it worse, not
+      # better. (Flip MINIMAL_PERSONA=1 / PROMPT_HARDEN=1 only to re-try those experiments.)
+      MINIMAL_PERSONA: "0"
+      PROMPT_HARDEN: "0"
+      # FIX for "Nikhil जी repeating" + intro re-greeting: the opener (greeting+naam+company) is spoken
+      # ONCE via session.say, but the brain's OPENER section makes the LLM RE-greet on turn 1 and re-say
+      # the naam every turn. OPENER_ALREADY_SAID=1 tells the model it has already opened → never greet or
+      # repeat the naam again, just continue. OPENER_IN_CTX=0 keeps the opener OUT of the LLM context so
+      # it can't echo it back. Both are gated, additive, cache-safe one-line instructions (reversible: =0).
+      OPENER_ALREADY_SAID: "1"
+      OPENER_IN_CTX: "0"
+      LANG_MIRROR_V2: "1"
+      # STT: Deepgram nova-3 'multi' (Hindi/English code-switching, ~0.3s finalize vs Sarvam's ~1.2s) —
+      # the snappier turn-detect. Key comes from the Services store (provider "deepgram") via
+      # _resolve_key. Flip to "sarvam" to revert instantly (Sarvam = best Hinglish, slower turn-detect).
+      STT_PROVIDER: "deepgram"
+      EL_STABILITY: "0.65"
+      # RESTORED to llama-3.3-70b-versatile — the model the agent ran at commit c88ef01 ("best").
+      # The 8b-instant swap (done to cut first-token latency 1.5s→0.3s) is what made the dialogue
+      # dumb/repetitive/"horrible": 8b is a far weaker model than 70b and NO prompt change can close
+      # that gap. 70b actually listens, doesn't repeat, and books correctly. It costs ~1.4-1.7s first
+      # token (acceptable for the quality). 70b free-tier = 12K TPM (2x the 8b 6K bucket → fewer 429s).
+      # Per-campaign override still wins (Run Campaign → Advanced → LLM model / fields.llm_model).
+      GROQ_LLM_MODEL: llama-3.3-70b-versatile
+      # Cerebras primary slot: pass the key THROUGH from .env.deploy (env_file). It was previously
+      # force-empty because the old CEREBRAS_LLM_MODEL (Scout-17B) couldn't be served — but we now run
+      # gpt-oss-120b with reasoning_effort=low, which Cerebras DOES serve fast (~0.1s in the playground).
+      # The empty override was the real reason every "Cerebras" call silently fell back to Groq.
+      # To disable Cerebras again, just clear CEREBRAS_API_KEY in deploy/.env.deploy (no need to touch this).
+      CEREBRAS_API_KEY: ""
+      # FREEZE-FIX (FF1): the agent now wraps one groq.LLM PER key in a FallbackAdapter so a
+      # rate-limited key fails over INSTANTLY instead of dead-air (root cause of the 2026-06-23
+      # booking freeze). Groq's 429 TPM limit is per (org, MODEL): if the keys share an org,
+      # key-failover alone can't beat the cap — so we ALSO fail over to a DIFFERENT model (its
+      # own TPM bucket) as the last resort, so the call NEVER goes silent. 8b-instant is fast +
+      # high-TPM; the normal path stays on 70B for quality. GROQ_LLM_FALLBACK=0 reverts to the
+      # old single-key LLM; GROQ_FALLBACK_MODEL="" disables only the cross-model last resort.
+      GROQ_LLM_FALLBACK: "1"
+      # cross-model last resort (its OWN TPM bucket) when every 70b key is capped. Was scout-17b but
+      # the user measured scout's first-token as SLOW; 8b-instant is the fastest model + own 6K bucket,
+      # so the rare last-resort turn stays snappy instead of stalling. Only fires when all 70b keys cap.
+      GROQ_FALLBACK_MODEL: ""
+      # less twitchy barge-in: 0.25s falsely cut Riya off mid-word; 0.5s still lets
+      # the caller interrupt but ignores a brief "haan"/background blip.
+      MIN_INT_DUR: "0.5"
+      # a single deliberate word ("hello"/"ruko"/2-word phrase) must be able to interrupt the
+      # agent — was 3 (default), which ignored a caller's "hello?" while Riya monologued.
+      MIN_INT_WORDS: "2"
+      FAMIT_VAR: /data
+      # Voice Analytics write path → the self-hosted ClickHouse in docker-compose.yml (same
+      # haptica-ai network). VOICE_ANALYTICS_ENABLED turns on the agent's per-call/per-turn
+      # capture (a single batched INSERT on a daemon thread at call end — OFF the speech path,
+      # best-effort, never raises into the live call). Set to "0" to instantly silence capture.
+      VOICE_ANALYTICS_ENABLED: "1"
+      CLICKHOUSE_URL: http://haptica:${CLICKHOUSE_PASSWORD}@clickhouse:8123
+    volumes:
+      - haptica-data:/data
+    depends_on:
+      livekit:
+        condition: service_started
+      redis:
+        condition: service_started
+
+volumes:
+  redis-data:
+  haptica-data:

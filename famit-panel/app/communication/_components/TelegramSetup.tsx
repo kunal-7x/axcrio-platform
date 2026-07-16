@@ -163,7 +163,7 @@ export default function TelegramSetup({
                 to_ref: to,
                 kind: "text",
                 purpose: "service",
-                text: "✅ This is a test from your Famit Communication setup. Real reach confirmed.",
+                text: "✅ This is a test from your Haptica AI Communication setup. Real reach confirmed.",
             });
             if (r.ok) onToast("Sent — check your Telegram.");
             else onToast(r.error_code ? `Send: ${r.error_code}` : "Send failed.", "error");

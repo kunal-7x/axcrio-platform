@@ -3,6 +3,8 @@ import Button from "@/components/Button";
 import Select from "@/components/Select";
 import Logo from "@/components/Logo";
 import User from "./User";
+import DemoBadge from "./DemoBadge";
+import NotificationBell from "@/components/NotificationBell";
 
 const times = [
     { id: 1, name: "Publish now" },
@@ -107,6 +109,10 @@ const Header = ({
                             Run a Campaign
                         </Button>
                     )}
+                    {/* Realtime demo-account countdown (only for demo clients). */}
+                    <DemoBadge />
+                    {/* System logs & errors bell (super-admins only; renders null otherwise). */}
+                    <NotificationBell />
                     {/* Theme toggle removed from the top navbar (lives in the
                         sidebar footer / floating toggle instead). */}
                     <User />

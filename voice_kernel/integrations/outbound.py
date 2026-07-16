@@ -45,37 +45,6 @@ from typing import Any, Callable, Optional, Sequence
 log = logging.getLogger("voice_kernel.integrations.outbound")
 
 
-# --------------------------------------------------------------------------- #
-# R5-P1.1 — THE ENGAGEMENT DISCIPLINE (the premature-closure fix).
-#
-# The kernel-ON build previously passed `safety_rules=""` (below), so the L0
-# PLATFORM safety slot rendered EMPTY and the brain lost the "ONE reply THEN STOP
-# / never exit while the buyer is engaged / close only when the outcome is clearly
-# resolved" discipline that the founder-perfect OFF-path brain carries (the
-# SHARED_RULES engagement block, prompt.py). That dropped guard is the deepest
-# cause of the live mid-call premature hangups. This is the LEAN distilled
-# engagement block — the same disciplines as prompt.py:467-491 + the SHARED_RULES
-# turn-taking rules, compressed to a few hundred tokens so it restores the guard
-# WITHOUT re-bloating the prefix (R5-P1.4). PLATFORM-authored (we wrote it), so it
-# renders FIRST in L0, above every fenced untrusted source. The `ENGAGEMENT:` cue
-# is what the offline render proof asserts is present.
-SHARED_RULES_ENGAGEMENT = (
-    "ENGAGEMENT: this is a two-way phone call, not a monologue. "
-    "ONE assistant turn = ONE reply: make ONE point OR ask ONE thing in one or at "
-    "most two short sentences, THEN STOP and let the caller speak — never deliver "
-    "the whole pitch in one breath, never stack location + price + all USPs in a "
-    "single turn. If the caller cuts in, stop instantly and answer in one line. "
-    "STAY ENGAGED — NEVER exit, end, or say goodbye while the caller is buying, "
-    "interested, asking a question, raising an objection, or otherwise still in the "
-    "conversation: keep the line open and carry the discussion forward. "
-    "Close ONLY when the outcome is clearly resolved — a next step is agreed (a "
-    "site visit / callback / WhatsApp), or the caller has clearly said no / asked "
-    "to stop / it is a wrong number. When (and only when) it is genuinely time to "
-    "end, say ONE short, warm, natural closing line and then stop — never a second "
-    "pitch, never a new question after the close, never a closing line mid-engagement."
-)
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -111,22 +80,6 @@ def w5_speech_enabled() -> bool:
     import os
 
     return os.getenv("W5_SPEECH", "0") in ("1", "true", "True")
-
-
-def w4_rag_inject_enabled() -> bool:
-    """W4 RAG-INJECT gate (R5-P1.5, INDEPENDENT of KERNEL_OUTBOUND, DEFAULT OFF).
-
-    When OFF (default) the outbound kernel does NOT wire the corpus-backed
-    StageAwareRagRuntime — it keeps the kernel's NullRagRuntime, so no per-turn
-    corpus retrieval can fire (a `RELEVANT:` retrieved-knowledge block never
-    reaches a turn) regardless of the per-turn stage. This is the first-flip-test
-    posture (corpus retrieval fully disabled). Set RAG_INJECT_ENABLED=1 ONLY when
-    the facts-only re-enable (doc_type FACTS filter, excluding behavioral/script
-    chunks) lands — same codebase-native flag pattern as W5_SPEECH / the kernel
-    flags, so RAG can be re-enabled WITHOUT touching the brain wiring."""
-    import os
-
-    return os.getenv("RAG_INJECT_ENABLED", "0") in ("1", "true", "True")
 
 
 @dataclass
@@ -278,8 +231,7 @@ def _build_kernel_with_impls(cfg, tenant_id: str, campaign_id: str, fields: dict
             tenant_id=tenant_id, campaign_id=campaign_id, brief=brief, fields=fields,
         )
         impls["context"] = ContextEngineImpl(
-            {campaign_id: compiled}, vendor_script=vs,
-            safety_rules=SHARED_RULES_ENGAGEMENT,  # R5-P1.1: restore the engagement discipline (was "")
+            {campaign_id: compiled}, vendor_script=vs, safety_rules="",
         )
         impls["vendor_script"] = vs
     except Exception as exc:
@@ -306,35 +258,21 @@ def _build_kernel_with_impls(cfg, tenant_id: str, campaign_id: str, fields: dict
     # Still degrade-to-empty + voice byte-identical: with the kernel OFF nothing is
     # retrieved into a live prompt; the per-turn retrieve is cache-only with a hard
     # timeout, so a slow/empty corpus can never block or alter the hot voice path.
-    #
-    # R5-P1.5 — RAG INJECT GATE (default OFF). For the first KERNEL_OUTBOUND=1
-    # flip-test the corpus retrieval is gated entirely OFF: we DO NOT wire the
-    # StageAwareRagRuntime + KbCorpusBackend unless RAG_INJECT_ENABLED=1, so the
-    # kernel keeps its default NullRagRuntime (kernel.py:76) whose retrieve()
-    # always returns an EMPTY TurnLayer. No per-turn corpus retrieval can fire,
-    # regardless of the per-turn `stage`. (The on-box default GREET stage already
-    # short-circuits via is_retrieval_stage(GREET)=False, but this gate makes
-    # "no retrieval" deterministic for the flip-test even if a stage is ever
-    # passed.) Facts-only RAG re-enable is a later phase: flip RAG_INJECT_ENABLED=1
-    # once a doc_type FACTS filter excludes behavioral/script chunks.
-    if w4_rag_inject_enabled():
-        try:
-            from voice_kernel.rag import (
-                KbCorpusBackend,
-                RedisHotCache,
-                build_rag_runtime,
-            )
+    try:
+        from voice_kernel.rag import (
+            KbCorpusBackend,
+            RedisHotCache,
+            build_rag_runtime,
+        )
 
-            try:
-                _rag_cache = RedisHotCache.from_env()
-            except Exception as _cexc:  # noqa: BLE001 — cache build must never break rag wiring
-                log.warning("W4 rag cache build failed -> default InProc: %r", _cexc)
-                _rag_cache = None
-            impls["rag"] = build_rag_runtime(corpus=KbCorpusBackend(), cache=_rag_cache)
-        except Exception as exc:
-            log.warning("W4 rag unavailable -> Null: %r", exc)
-    else:
-        log.info("W4 rag inject gated OFF (RAG_INJECT_ENABLED!=1) -> NullRagRuntime (no retrieval)")
+        try:
+            _rag_cache = RedisHotCache.from_env()
+        except Exception as _cexc:  # noqa: BLE001 — cache build must never break rag wiring
+            log.warning("W4 rag cache build failed -> default InProc: %r", _cexc)
+            _rag_cache = None
+        impls["rag"] = build_rag_runtime(corpus=KbCorpusBackend(), cache=_rag_cache)
+    except Exception as exc:
+        log.warning("W4 rag unavailable -> Null: %r", exc)
 
     # W5 provider router (the Sarvam authoritative-routing fix) — always wired.
     try:
@@ -617,7 +555,6 @@ async def persist_post_call(
 __all__ = [
     "kernel_outbound_enabled",
     "w5_speech_enabled",
-    "w4_rag_inject_enabled",
     "OutboundKernel",
     "build_for_call",
     "bind_box_memory",

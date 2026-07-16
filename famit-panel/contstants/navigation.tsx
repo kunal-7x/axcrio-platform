@@ -85,10 +85,12 @@ export const navigation = [
             // tab inside /crm; the CRM link is the home. Keep BOTH keys live so an
             // entitlement that hides either page still resolves (the page self-gates).
             { title: "Leads & CRM", href: "/crm", feature_key: "sell.crm" },
-            // ROUND-5: the standalone "Lead" page MOVED OUT of Work into GROW (it is
-            // an acquisition surface — the raw dialing queue you grow). The /leads
-            // route is unchanged and the page is NOT deleted; only the nav parent
-            // moves. See the Grow group below for the re-parented entry.
+            // Auto Lead + Sales CRM — RESTORED (senior's V2 work; pages exist on disk).
+            { title: "Auto Lead", href: "/auto-lead", feature_key: "sell.crm" },
+            { title: "Sales CRM", href: "/crm/sales", feature_key: "sell.crm" },
+            // Leads — RESTORED standalone people page (was folded into a CRM tab; the
+            // standalone route is real on disk).
+            { title: "Leads", href: "/leads", feature_key: "sell.leads" },
             // Call Logs — ONE call surface. The calls page owns Callbacks + Do-Not-Call
             // as in-page tabs now, so the standalone Callbacks rail child is RETIRED
             // (the route still resolves; it is just not duplicated in the rail).
@@ -119,36 +121,41 @@ export const navigation = [
         icon: "promote",
         feature_key: "mod.grow",
         list: [
-            // ROUND-5 ORDER: Lead → Campaign → Run Campaign (the acquisition flow:
-            // load the leads, build the campaign, then run it).
-            // Lead — RE-PARENTED here from Work (the standalone people page is real on
-            // disk; only the nav home moved, the page/route are untouched). Keeps the
-            // verbatim sell.leads page key so per-page entitlements still gate it.
-            { title: "Lead", href: "/leads", feature_key: "sell.leads" },
-            { title: "Campaign", href: "/campaigns", feature_key: "grow.campaigns" },
+            { title: "Campaigns", href: "/campaigns", feature_key: "grow.campaigns" },
             // Run Campaign — the founder's named multi-card audience+config launcher.
             // Lives in GROW next to Campaigns (build → run). Relabelled "Run Campaign".
             { title: "Run Campaign", href: "/run", feature_key: "engage.run" },
         ],
     },
     {
-        // REVENUE TOOLS — the ad-acquisition cluster (Ad Automation + Funnels + Form
-        // Builder) promoted out of Grow into its OWN top-level section. The whole
-        // group carries `feature_key:"mod.revenue_tools"` so a SUPER-ADMIN can
-        // HIDE/LOCK it for a vendor that shouldn't see the ad tooling: when the
-        // backend /me/entitlements resolves mod.revenue_tools → HIDE, resolveNav
-        // drops the entire section (the same mechanism every keyed group uses).
-        // Each child KEEPS its original page key (grow.ads / grow.funnels /
-        // grow.forms) so per-page entitlements still gate individually. Ad
-        // Automation stays `roles:"manager"` (spend-sensitive). BACKEND DEPENDENCY:
-        // the module-level HIDE/LOCK needs the backend entitlement map to register
-        // `mod.revenue_tools`; until then the group hides only when all three child
-        // page-keys are hidden (which the backend already supports).
+        // AD AUTOMATION — V2-W5: promoted from a single child link to its OWN
+        // top-level expandable SECTION (mirrors every other app section: click the
+        // parent → it expands to its sub-pages). Each child is a real route with the
+        // app-native transparent <Tabs> inside. The group keeps `mod.revenue_tools`
+        // (so a super-admin still hides/locks the whole ad tooling per-vendor) and
+        // each child keeps `grow.ads` so per-page entitlements gate individually.
+        // `roles:"manager"` stays on the group — every sub-page is spend-sensitive.
+        // The Sidebar/Dropdown component already renders this shape (auto-expands on
+        // path match, folded-active dot) — NO new component.
+        title: "Ad Automation",
+        icon: "promote",
+        feature_key: "mod.revenue_tools",
+        roles: "manager",
+        list: [
+            { title: "Command & Analytics", href: "/ads/command", feature_key: "grow.ads" },
+            { title: "Run a Campaign", href: "/ads/run", feature_key: "grow.ads" },
+            { title: "Creative", href: "/ads/creative", feature_key: "grow.ads" },
+            { title: "Connections & Vault", href: "/ads/connections", feature_key: "grow.ads" },
+        ],
+    },
+    {
+        // REVENUE TOOLS — slimmed to the two non-ad acquisition tools (Funnels +
+        // Form Builder) now that Ad Automation is its own section above. Keys
+        // preserved verbatim so per-page entitlements still gate individually.
         title: "Revenue Tools",
         icon: "income",
         feature_key: "mod.revenue_tools",
         list: [
-            { title: "Ad Automation", href: "/ads", roles: "manager", feature_key: "grow.ads" },
             { title: "Funnels", href: "/funnels", feature_key: "grow.funnels" },
             { title: "Form Builder", href: "/forms", feature_key: "grow.forms" },
         ],
@@ -220,16 +227,6 @@ export const navigation = [
         ],
     },
     {
-        // SETTINGS — ROUND-6 LANE 4: a first-class sidebar link to the unified
-        // Profile & Settings page (previously only reachable from the avatar
-        // dropdown footer). Founder wanted Settings visible in the rail too.
-        // UNKEYED + role-free (core surface) so every user can always reach their
-        // own account settings; the page self-gates anything sensitive.
-        title: "Settings",
-        icon: "edit-profile",
-        href: "/settings",
-    },
-    {
         // SUPER ADMIN — ROUND-2: collapsed to a SINGLE LINK. The control plane page
         // renders its own sub-nav via AdminHeader (Overview/Vendors/Flags/Plans/Usage/
         // Audit/API-Keys/Integrations as in-page tabs), so the 8-child rail group is
@@ -253,14 +250,9 @@ export const navigation = [
 // `foundation.suppression`; admin Vendors keeps `roles:"admin"` (the User menu does
 // not role-filter, but the page itself is admin-gated server-side + the rail-level
 // gate is preserved for parity). Settings remains the home.
-// ROUND-6 LANE 4 — "Do-Not-Call" REMOVED from this footer menu: it is now a
-// first-class TAB inside Call Logs (/calls?tab=dnc — see app/calls/page.tsx
-// CALL_TABS "Do-Not-Call"), so a duplicate footer link was the "wrongly placed"
-// entry. The /suppression route is NOT deleted (still reachable directly); only
-// the redundant nav pointer is dropped. "Profile" is added as the avatar-menu
-// home alongside Settings (both land on the unified Profile & Settings page).
 export const navigationUser = [
-    { title: "Profile", icon: "profile", href: "/settings" },
+    { title: "Profile", icon: "profile", href: "/profile" },
     { title: "Settings", icon: "edit-profile", href: "/settings" },
+    { title: "Do-Not-Call", icon: "profile", href: "/suppression", feature_key: "foundation.suppression" },
     { title: "Vendors", icon: "wallet", href: "/vendors", roles: "admin" },
 ];

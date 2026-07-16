@@ -8,6 +8,7 @@ import Button from "@/components/Button";
 import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import NoFound from "@/components/NoFound";
+import ProviderLogo from "@/components/ProviderLogo";
 import { getBillingOverview, type BillingOverview } from "@/lib/api";
 import {
     money,
@@ -18,7 +19,6 @@ import {
     StatStrip,
     StatItem,
     BillingTabs,
-    VENDOR_COLORS,
 } from "../_shared";
 
 const tableHead = ["Vendor", "Status", "Cost", "Share"];
@@ -123,7 +123,6 @@ export default function BillingOverviewPage() {
                                             totalForShare > 0
                                                 ? (Math.max(v.cost, 0) / totalForShare) * 100
                                                 : 0;
-                                        const color = VENDOR_COLORS[i % VENDOR_COLORS.length];
                                         return (
                                             <TableRow
                                                 key={v.vendor || i}
@@ -136,10 +135,11 @@ export default function BillingOverviewPage() {
                                             >
                                                 <td>
                                                     <div className="flex items-center gap-3">
-                                                        <span
-                                                            className="size-3 rounded-sm shrink-0"
-                                                            style={{ background: color }}
-                                                        />
+                                                        {v.vendor ? (
+                                                            <ProviderLogo provider={v.vendor} size={38} className="!rounded-xl" />
+                                                        ) : (
+                                                            <span className="size-7 rounded-lg bg-b-surface1 shrink-0" />
+                                                        )}
                                                         <span className="text-sub-title-2">
                                                             {v.display_name || "—"}
                                                         </span>
@@ -187,9 +187,10 @@ export default function BillingOverviewPage() {
                                     Vendor costs appear here once calls have been metered.
                                 </div>
                             ) : (
-                                sorted.map((v, i) => (
+                                sorted.map((v) => (
                                     <BarRow
                                         key={v.vendor}
+                                        provider={v.vendor}
                                         label={v.display_name}
                                         value={money(v.cost, currency)}
                                         pct={
@@ -197,7 +198,7 @@ export default function BillingOverviewPage() {
                                                 ? (Math.max(v.cost, 0) / totalForShare) * 100
                                                 : 0
                                         }
-                                        color={VENDOR_COLORS[i % VENDOR_COLORS.length]}
+                                        color="var(--primary-01)"
                                         badge={
                                             v.status !== "configured" ? (
                                                 <StatusBadge status={v.status} />

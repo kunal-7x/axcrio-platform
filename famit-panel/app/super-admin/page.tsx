@@ -14,10 +14,17 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Icon from "@/components/Icon";
-import { getFleetVendors, type FleetVendor, type FleetSummary } from "@/lib/api";
+import { getFleetVendors, getOverviewGeo, type FleetVendor, type FleetSummary, type OverviewGeo } from "@/lib/api";
+
+// three.js globe — client-only (WebGL); skip SSR so `three` never loads on the server payload.
+const Globe = dynamic(() => import("@/components/Globe"), {
+    ssr: false,
+    loading: () => <div className="grid place-items-center h-full text-caption text-t-tertiary">Initialising globe…</div>,
+});
 import {
     AdminHeader,
     HeroCard,
@@ -32,6 +39,7 @@ import {
 function ControlOverviewInner() {
     const [vendors, setVendors] = useState<FleetVendor[]>([]);
     const [summary, setSummary] = useState<FleetSummary | null>(null);
+    const [geo, setGeo] = useState<OverviewGeo | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
 
@@ -45,6 +53,8 @@ function ControlOverviewInner() {
             })
             .catch((e) => setError(e instanceof Error ? e.message : "Failed to load fleet"))
             .finally(() => setLoading(false));
+        // geo is best-effort + independent — the globe never blocks the KPIs.
+        getOverviewGeo().then(setGeo).catch(() => setGeo(null));
     }, []);
 
     useEffect(() => {
@@ -166,6 +176,67 @@ function ControlOverviewInner() {
                         </>
                     }
                 />
+            </div>
+
+            {/* Live call geography — three.js realtime globe + technical telemetry (#26) */}
+            <div className="grid grid-cols-3 gap-3 mb-3 max-2xl:grid-cols-1">
+                <div className="col-span-2 max-2xl:col-span-1 relative rounded-3xl bg-b-surface1 ring-1 ring-s-subtle ring-inset overflow-hidden dark:bg-shade-04/30" style={{ minHeight: 400 }}>
+                    <div className="absolute top-4 left-5 z-10 pointer-events-none">
+                        <div className="text-button text-t-primary">Live Call Geography</div>
+                        <div className="text-caption text-t-tertiary">
+                            {geo
+                                ? `${num(geo.live)} in flight · ${num(geo.cities)} cities · ${num(geo.mapped_calls)} located calls`
+                                : "Resolving geo signal…"}
+                        </div>
+                    </div>
+                    <div className="absolute inset-0">
+                        <Globe points={geo?.points ?? []} hub={geo?.hub} className="w-full h-full" />
+                    </div>
+                    {geo && geo.points.length === 0 && (
+                        <div className="absolute bottom-4 left-5 right-5 z-10 pointer-events-none text-caption text-t-tertiary">
+                            Awaiting geo-locatable call activity — cities light up as campaigns dial mapped locations.
+                        </div>
+                    )}
+                </div>
+
+                {/* Top regions + dense technical telemetry */}
+                <div className="rounded-3xl bg-b-surface1 ring-1 ring-s-subtle ring-inset p-5 dark:bg-shade-04/30 flex flex-col">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="text-button text-t-primary">Top regions</div>
+                        <span className="text-caption text-t-tertiary">by call volume</span>
+                    </div>
+                    <div className="space-y-2.5">
+                        {(geo?.points ?? []).slice(0, 6).map((p) => (
+                            <div key={p.city}>
+                                <div className="flex items-center justify-between text-caption mb-1">
+                                    <span className="text-t-secondary truncate">{p.city}</span>
+                                    <span className="text-t-primary tabular-nums">{num(p.calls)}</span>
+                                </div>
+                                <div className="h-1.5 rounded-full bg-b-surface3 overflow-hidden">
+                                    <div className="h-full rounded-full bg-primary-01" style={{ width: `${Math.max(4, Math.round((p.weight || 0) * 100))}%` }} />
+                                </div>
+                            </div>
+                        ))}
+                        {(!geo || geo.points.length === 0) && (
+                            <div className="text-caption text-t-tertiary py-6 text-center">No located call activity yet.</div>
+                        )}
+                    </div>
+                    <div className="mt-auto pt-4 border-t border-s-subtle grid grid-cols-2 gap-x-4 gap-y-2.5">
+                        {[
+                            { k: "Concurrency", v: num(activeNow) },
+                            { k: "Calls today", v: num(kpis.calls_today) },
+                            { k: "Minutes · 30d", v: num(kpis.minutes_30d) },
+                            { k: "Cities reached", v: num(geo?.cities ?? 0) },
+                            { k: "Active vendors", v: num(kpis.active) },
+                            { k: "Open alerts", v: num(kpis.alerts ?? 0) },
+                        ].map((m) => (
+                            <div key={m.k}>
+                                <div className="text-caption text-t-tertiary">{m.k}</div>
+                                <div className="text-button text-t-primary tabular-nums">{m.v}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
             </div>
 
             {/* Busiest vendors leaderboard */}

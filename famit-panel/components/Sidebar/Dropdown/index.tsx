@@ -14,6 +14,9 @@ type DropdownChild = {
     // LOCK. Renders the dimmed non-link row with a "Locked" pill (mirrors the
     // comingSoon precedent). Cosmetic — the backend 402 is the real lock.
     locked?: boolean;
+    // Stage pill (Super-Admin Sidebar Builder, applyNavConfig): cosmetic
+    // "Beta"/"Premium" label on an otherwise-normal child.
+    _stage?: "beta" | "premium";
 };
 
 type DropdownProps = {
@@ -105,6 +108,7 @@ const Dropdown = ({ value }: DropdownProps) => {
                                         title: item.title,
                                         href: item.href,
                                         counter: item.counter,
+                                        badge: item._stage,
                                     }}
                                     onClick={() => setHeight("auto")}
                                 />

@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Layout from "@/components/Layout";
+import AudioPlayer from "@/components/AudioPlayer";
 import Icon from "@/components/Icon";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
@@ -14,13 +15,14 @@ import Table from "@/components/Table";
 import TableRow from "@/components/TableRow";
 import Tabs from "@/components/Tabs";
 import VirtualRows from "@/components/VirtualRows";
-import ConfirmDeleteModal from "@/components/ConfirmDeleteModal";
 import { StatusBadge, OutcomeBadge, InterestBadge } from "@/lib/badges";
 import { useCallsInfinite } from "@/lib/queries";
 import {
     getCalls,
     getCallDetail,
     getCallRecording,
+    getCallTranscriptTimed,
+    type TimedTurnApi,
     getCallbacks,
     addCallback,
     cancelCallback,
@@ -166,9 +168,13 @@ function CallDetailModal({
     // Spaces almost immediately after hangup, then self-heals on read).
     const [recording, setRecording] = useState<CallRecording | null>(null);
 
-    // Audio playback state drives the karaoke highlight + auto-scroll.
+    // Audio playback state drives the synced highlight + auto-scroll.
     const audioRef = useRef<HTMLAudioElement>(null);
     const [playhead, setPlayhead] = useState(0);
+    // The duration the PLAYER actually uses (reported back) — the highlight timeline
+    // is built over this exact value, so the highlight can never drift from the
+    // playhead even when the file's metadata duration is wrong/inflated.
+    const [audioDur, setAudioDur] = useState(0);
 
     useEffect(() => {
         getCallDetail(callId)
@@ -235,37 +241,110 @@ function CallDetailModal({
     // Still waiting on the recording to finalize+upload (call may have just ended).
     const recordingPending = !recordingUrl && recording != null && !recording.playable;
 
-    // Karaoke is available ONLY when we have audio AND every turn carries a
-    // numeric t0. Otherwise we render the existing (non-synced) bubble list.
-    const karaokeReady =
-        !!recordingUrl &&
-        turnCount > 0 &&
-        turns.every((turn) => turnStart(turn) != null);
+    // WORD-ACCURATE timing: the backend re-transcribes the recording (cached) for
+    // per-word timestamps. When present we render that transcript with a word-by-word
+    // highlight; otherwise we fall back to the estimate below. Never blocks the UI.
+    const [timedTurns, setTimedTurns] = useState<TimedTurnApi[] | null>(null);
+    useEffect(() => {
+        if (!recordingUrl || !callId) {
+            setTimedTurns(null);
+            return;
+        }
+        let alive = true;
+        getCallTranscriptTimed(callId)
+            .then((r) => {
+                if (alive) setTimedTurns(r.timed && r.turns && r.turns.length ? r.turns : null);
+            })
+            .catch(() => {});
+        return () => {
+            alive = false;
+        };
+    }, [recordingUrl, callId]);
 
-    // Which turn is "active" for the current playhead (last turn whose t0 <= now,
-    // bounded by t1 when present). -1 = none yet.
+    // Per-turn [t0,t1] timeline for the synced ("karaoke") highlight. Uses the real
+    // per-turn times when the backend emits them; otherwise ESTIMATES by spreading
+    // the turns across the recording length in proportion to how much each one says
+    // (longer turns take more time) — so the highlight tracks the audio for EVERY
+    // call, inbound or outbound.
+    const playDur =
+        audioDur > 0
+            ? audioDur
+            : call?.duration_s && call.duration_s > 0
+            ? call.duration_s
+            : recording?.duration_s || 0;
+    const timed = useMemo<{ t0: number; t1: number }[]>(() => {
+        if (!playDur || turns.length === 0) return [];
+        const allReal = turns.every((t) => turnStart(t) != null);
+        if (allReal) {
+            return turns.map((t, i) => ({
+                t0: turnStart(t) as number,
+                t1: turnEnd(t) ?? (i + 1 < turns.length ? (turnStart(turns[i + 1]) as number) : playDur),
+            }));
+        }
+        // Model each line's real speaking TIME (words ÷ speaking-rate) plus the
+        // pause before a turn, then normalise so the whole thing fills the true
+        // recording length. Far closer to reality than raw character length — short
+        // acknowledgements ("haan", "okay") get a fair slice, long lines get more.
+        const WPS = 2.6; // natural speech ≈ 2.6 words/sec (Hinglish/Hindi)
+        const GAP = 0.45; // ~pause before each turn (turn-taking latency)
+        const secs = turns.map((t) => {
+            const words = (t.content || "").trim().split(/\s+/).filter(Boolean).length;
+            return GAP + words / WPS;
+        });
+        const total = secs.reduce((a, b) => a + b, 0) || 1;
+        let acc = 0;
+        return turns.map((_, i) => {
+            const t0 = (playDur * acc) / total;
+            acc += secs[i];
+            return { t0, t1: (playDur * acc) / total };
+        });
+    }, [turns, playDur]);
+
+    // Unified view: prefer the word-accurate Scribe transcript (with per-word times);
+    // otherwise the stored turns timed by the estimate above.
+    type ViewTurn = {
+        role: string;
+        text: string;
+        t0: number;
+        t1: number;
+        words?: { w: string; s: number; e: number }[];
+    };
+    const viewTurns = useMemo<ViewTurn[]>(() => {
+        if (timedTurns && timedTurns.length) {
+            return timedTurns.map((t) => ({ role: t.role, text: t.text, t0: t.t0, t1: t.t1, words: t.words }));
+        }
+        if (!playDur || turns.length === 0) return [];
+        return turns.map((t, i) => ({
+            role: (t.role || "").toLowerCase(),
+            text: t.content || "",
+            t0: timed[i]?.t0 ?? 0,
+            t1: timed[i]?.t1 ?? 0,
+        }));
+    }, [timedTurns, turns, timed, playDur]);
+
+    const karaokeReady = !!recordingUrl && viewTurns.length > 0;
+
+    // Which turn is "active" for the current playhead — the last turn that has begun.
     const activeIdx = useMemo(() => {
         if (!karaokeReady) return -1;
+        for (let i = viewTurns.length - 1; i >= 0; i--) {
+            if (playhead + 0.05 >= viewTurns[i].t0) return i;
+        }
+        return -1;
+    }, [karaokeReady, viewTurns, playhead]);
+
+    // Which WORD inside the active turn is being spoken (the word-by-word highlight).
+    const activeWordIdx = useMemo(() => {
+        if (activeIdx < 0) return -1;
+        const ws = viewTurns[activeIdx]?.words;
+        if (!ws || ws.length === 0) return -1;
         let idx = -1;
-        for (let i = 0; i < turns.length; i++) {
-            const start = turnStart(turns[i]);
-            if (start == null) continue;
-            if (start <= playhead + 0.15) {
-                const end = turnEnd(turns[i]);
-                // If we have an end and we're past it AND a later turn has started,
-                // the later turn wins (handled naturally by the loop overwriting idx).
-                if (end != null && playhead > end + 0.5) {
-                    // keep as candidate only if no later turn starts before now
-                    idx = i;
-                } else {
-                    idx = i;
-                }
-            } else {
-                break;
-            }
+        for (let i = 0; i < ws.length; i++) {
+            if (ws[i].s <= playhead + 0.03) idx = i;
+            else break;
         }
         return idx;
-    }, [karaokeReady, turns, playhead]);
+    }, [activeIdx, viewTurns, playhead]);
 
     // Auto-scroll the active turn into view as the audio plays.
     const turnRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -275,7 +354,7 @@ function CallDetailModal({
         if (el)
             el.scrollIntoView({
                 behavior: "smooth",
-                block: "nearest",
+                block: "center",
             });
     }, [activeIdx]);
 
@@ -361,6 +440,24 @@ function CallDetailModal({
                                     Opted out / DND
                                 </Badge>
                             )}
+                            {t?.opt_out && call?.phone && (
+                                <button
+                                    onClick={async (e) => {
+                                        const el = e.currentTarget;
+                                        if (!confirm(`Remove ${call.phone} from the Do-Not-Call list? It can be dialed again.`)) return;
+                                        el.disabled = true; el.textContent = "Removing…";
+                                        try {
+                                            await deleteSuppression(String(call.phone));
+                                            el.textContent = "✓ Removed from DND";
+                                        } catch {
+                                            el.disabled = false; el.textContent = "Remove from DND";
+                                        }
+                                    }}
+                                    className="inline-flex items-center h-7 px-2.5 rounded-lg border border-s-stroke2 text-caption text-t-secondary transition-colors hover:text-t-primary hover:border-s-highlight disabled:opacity-60"
+                                >
+                                    Remove from DND
+                                </button>
+                            )}
                             <OutcomeBadge outcome={t?.outcome ?? ""} />
                             <InterestBadge interest={t?.interest ?? ""} />
                         </div>
@@ -436,26 +533,15 @@ function CallDetailModal({
                                             </span>
                                         )}
                                     </div>
-                                    <audio
-                                        ref={audioRef}
+                                    <AudioPlayer
                                         src={recordingUrl}
-                                        controls
-                                        preload="metadata"
-                                        className="w-full"
-                                        onTimeUpdate={(e) =>
-                                            setPlayhead(
-                                                e.currentTarget.currentTime
-                                            )
+                                        audioRef={audioRef}
+                                        onTime={setPlayhead}
+                                        onDuration={setAudioDur}
+                                        durationFallback={
+                                            call?.duration_s || recording?.duration_s || undefined
                                         }
-                                        onSeeked={(e) =>
-                                            setPlayhead(
-                                                e.currentTarget.currentTime
-                                            )
-                                        }
-                                    >
-                                        Your browser does not support audio
-                                        playback.
-                                    </audio>
+                                    />
                                 </div>
                             ) : (
                                 // Recording not (yet) attached to this call. While
@@ -516,12 +602,17 @@ function CallDetailModal({
                                 </div>
                             )}
 
-                            {/* Transcript — karaoke when timed, plain bubbles else */}
-                            {turns.length > 0 && (
+                            {/* Transcript — word-synced when timed, line-synced else */}
+                            {viewTurns.length > 0 && (
                                 <div>
                                     <div className="flex items-center justify-between mb-3">
                                         <div className="eyebrow">
                                             Transcript
+                                            {timedTurns && (
+                                                <span className="ml-2 normal-case tracking-normal text-caption text-primary-01">
+                                                    · synced to audio
+                                                </span>
+                                            )}
                                             {karaokeReady && (
                                                 <span className="ml-2 normal-case tracking-normal text-caption text-t-tertiary">
                                                     tap a line to jump there
@@ -529,12 +620,12 @@ function CallDetailModal({
                                             )}
                                         </div>
                                         <span className="text-caption text-t-tertiary tabular-nums">
-                                            {turnCount} turn
-                                            {turnCount === 1 ? "" : "s"}
+                                            {viewTurns.length} turn
+                                            {viewTurns.length === 1 ? "" : "s"}
                                         </span>
                                     </div>
                                     <div className="relative space-y-3 pl-1">
-                                        {turns.map((turn, i) => {
+                                        {viewTurns.map((turn, i) => {
                                             // Backend normalises roles to `ai`/`customer`
                                             // (also accept agent/assistant + user/caller/lead).
                                             // AI → LEFT, customer/lead → RIGHT (mirrors the
@@ -550,13 +641,9 @@ function CallDetailModal({
                                             const isAI = !isCustomer;
                                             const custLabel =
                                                 call?.name || "Customer";
-                                            const start = turnStart(turn);
+                                            const start = karaokeReady ? turn.t0 : null;
                                             const isActive =
                                                 karaokeReady && i === activeIdx;
-                                            const isPast =
-                                                karaokeReady &&
-                                                activeIdx >= 0 &&
-                                                i < activeIdx;
                                             return (
                                                 <div
                                                     key={i}
@@ -578,11 +665,13 @@ function CallDetailModal({
                                                             : ""
                                                     } ${
                                                         isActive
-                                                            ? "bg-primary-01/[0.06] ring-1 ring-primary-01/20"
+                                                            ? "bg-primary-01/[0.08] ring-1 ring-primary-01/30"
                                                             : ""
                                                     } ${
-                                                        isPast && !isActive
-                                                            ? "opacity-60"
+                                                        karaokeReady &&
+                                                        activeIdx >= 0 &&
+                                                        !isActive
+                                                            ? "opacity-45"
                                                             : ""
                                                     }`}
                                                 >
@@ -632,7 +721,24 @@ function CallDetailModal({
                                                                     : "bg-primary-01/12 rounded-3xl rounded-br-lg"
                                                             }`}
                                                         >
-                                                            {turn.content}
+                                                            {turn.words && turn.words.length && isActive ? (
+                                                                turn.words.map((wd, wi) => (
+                                                                    <span
+                                                                        key={wi}
+                                                                        className={`transition-colors duration-150 ${
+                                                                            wi === activeWordIdx
+                                                                                ? "text-primary-01 font-semibold"
+                                                                                : wi < activeWordIdx
+                                                                                ? "text-t-primary"
+                                                                                : "text-t-tertiary/70"
+                                                                        }`}
+                                                                    >
+                                                                        {wd.w}{" "}
+                                                                    </span>
+                                                                ))
+                                                            ) : (
+                                                                turn.text
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -762,59 +868,19 @@ function CallLogsInner() {
 /* Sorting                                                             */
 /* ------------------------------------------------------------------ */
 
-type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "temp" | "score";
+type SortKey = "lead" | "campaign" | "status" | "placed" | "duration" | "score";
 type SortDir = "asc" | "desc";
 
 // Map the UI sort key onto the backend sort_by column so the cursor query sorts
 // across ALL records server-side (the client sort stays as a graceful fallback).
-// `temp` (Hot/Warm/Cold) is derived from the same `interest` score, so it sorts
-// on the same backend column — the client sort handles the tier bucketing.
 const SORT_COLUMN: Record<SortKey, string> = {
     lead: "name",
     campaign: "campaign_name",
     status: "status",
     placed: "started_at",
     duration: "duration_s",
-    temp: "interest",
     score: "interest",
 };
-
-/* ------------------------------------------------------------------ */
-/* Lead temperature (Hot / Warm / Cold) — derived from the interest    */
-/* score, the SAME 70 / 40 thresholds the CRM + Warm-leads tab use.    */
-/* ------------------------------------------------------------------ */
-
-type LeadTemp = "hot" | "warm" | "cold" | "none";
-
-function leadTemp(interest?: number | null): LeadTemp {
-    if (interest == null) return "none";
-    if (interest >= 70) return "hot";
-    if (interest >= 40) return "warm";
-    return "cold";
-}
-
-// Numeric rank for sorting: hot > warm > cold > none.
-const TEMP_RANK: Record<LeadTemp, number> = { hot: 3, warm: 2, cold: 1, none: 0 };
-
-const TEMP_META: Record<
-    Exclude<LeadTemp, "none">,
-    { label: string; variant: "success" | "warning" | "info" }
-> = {
-    hot: { label: "Hot", variant: "success" },
-    warm: { label: "Warm", variant: "warning" },
-    cold: { label: "Cold", variant: "info" },
-};
-
-function TempBadge({ interest }: { interest?: number | null }) {
-    const t = leadTemp(interest);
-    if (t === "none") return <span className="text-t-tertiary">—</span>;
-    const { label, variant } = TEMP_META[t];
-    return (
-        <Badge variant={variant} dot={t === "hot"}>
-            {label}
-        </Badge>
-    );
-}
 
 function cmp(a: number | string, b: number | string): number {
     if (typeof a === "number" && typeof b === "number") return a - b;
@@ -833,8 +899,6 @@ function sortKeyValue(c: CallLog, key: SortKey): number | string {
             return c.started_at ? new Date(toUTC(c.started_at)).getTime() : 0;
         case "duration":
             return c.duration_s ?? -1;
-        case "temp":
-            return TEMP_RANK[leadTemp(c.interest)];
         case "score":
             return c.interest ?? -1;
     }
@@ -889,15 +953,14 @@ function CallsListPanel() {
     // The bounded scroll box the table virtualizes against (sticky <thead> on top).
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // PERF: cursor-paged newest-first slim pages (backend UNIT-1 contract).
-    // Loads ONE SMALL page (10 slim rows) at a time and only fetches the next when
-    // the user clicks "Load more" — NOT auto-on-scroll. This fixes the prior bug
-    // where the viewport-triggered onEndReached fired repeatedly and pulled
-    // 300-400 rows at once → the table hung. Tab-back is instant (react-query
-    // keeps the fetched pages cached + revalidates in bg). Map the clicked column
-    // onto the backend sort column so sorting spans ALL records (not just loaded
-    // pages); a new sort re-keys the cursor query → fresh page-0 fetch.
-    const PAGE_SIZE = 10;
+    // PERF UNIT-4: cursor-paged newest-first slim pages (backend UNIT-1 contract).
+    // Loads ONE page (~60 slim rows) at a time and fetches the next as you scroll
+    // near the end — the call-logs page no longer loads every row at once. Tab-back
+    // is instant (react-query keeps the fetched pages cached + revalidates in bg).
+    // Map the clicked column onto the backend sort column so sorting spans ALL
+    // records (not just the loaded pages). A new sort re-keys the cursor query →
+    // fresh page-0 fetch in the chosen order; the client sort below is the fallback
+    // for a backend that ignores sort_by.
     const {
         data,
         isLoading,
@@ -905,7 +968,7 @@ function CallsListPanel() {
         hasNextPage,
         isFetchingNextPage,
     } = useCallsInfinite({
-        pageSize: PAGE_SIZE,
+        pageSize: 60,
         sort_by: SORT_COLUMN[sortKey],
         order: sortDir,
     });
@@ -969,7 +1032,6 @@ function CallsListPanel() {
             <SortTh label="Campaign" sortKey="campaign" active={sortKey === "campaign"} dir={sortDir} onSort={onSort} className="max-lg:hidden" />
             <SortTh label="Status" sortKey="status" active={sortKey === "status"} dir={sortDir} onSort={onSort} />
             <SortTh label="Placed" sortKey="placed" active={sortKey === "placed"} dir={sortDir} onSort={onSort} />
-            <SortTh label="Lead temp" sortKey="temp" active={sortKey === "temp"} dir={sortDir} onSort={onSort} className="max-md:hidden" />
             <th className="text-right max-md:hidden">Recording</th>
             <SortTh label="Duration" sortKey="duration" active={sortKey === "duration"} dir={sortDir} onSort={onSort} className="text-right [&>button]:flex-row-reverse" />
             <SortTh label="Score" sortKey="score" active={sortKey === "score"} dir={sortDir} onSort={onSort} className="text-right max-md:hidden [&>button]:flex-row-reverse" />
@@ -1027,7 +1089,7 @@ function CallsListPanel() {
                         <Table cellsThead={tableHead}>
                             {[...Array(8)].map((_, i) => (
                                 <tr key={i}>
-                                    {[...Array(8)].map((__, j) => (
+                                    {[...Array(7)].map((__, j) => (
                                         <td key={j}>
                                             <div className="skeleton h-4 w-20" />
                                         </td>
@@ -1059,34 +1121,22 @@ function CallsListPanel() {
                                     items={visibleCalls}
                                     rowKey={(c) => c.id}
                                     scrollRef={scrollRef}
-                                    colSpan={8}
+                                    colSpan={7}
                                     estimateRowH={73}
+                                    onEndReached={
+                                        searching || !hasNextPage || isFetchingNextPage
+                                            ? undefined
+                                            : () => fetchNextPage()
+                                    }
                                     renderRow={(c) => renderCallRow(c, setSelectedCallId)}
                                 />
                             </tbody>
                         </table>
                     )}
-                    {/* Explicit "Load more" — NOT auto-on-scroll (that was the bug
-                        that yanked 300-400 rows at once and hung the table). When a
-                        search/custom-sort narrows what's loaded we hide it (the user
-                        is filtering loaded rows, not paging further). */}
-                    {!loading && visibleCalls.length > 0 && hasNextPage && !searching && (
-                        <div className="flex items-center justify-center py-4">
-                            <Button
-                                isStroke
-                                className="!h-10 !px-6"
-                                onClick={() => fetchNextPage()}
-                                disabled={isFetchingNextPage}
-                            >
-                                {isFetchingNextPage ? (
-                                    <span className="inline-flex items-center gap-2">
-                                        <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
-                                        Loading…
-                                    </span>
-                                ) : (
-                                    `Load more${total != null ? ` (${calls.length} of ${total})` : ""}`
-                                )}
-                            </Button>
+                    {isFetchingNextPage && (
+                        <div className="flex items-center justify-center gap-2 py-3 text-caption text-t-tertiary">
+                            <span className="size-3.5 rounded-full border-2 border-s-subtle border-t-primary-01 animate-spin" />
+                            Loading more…
                         </div>
                     )}
                 </div>
@@ -1095,122 +1145,42 @@ function CallsListPanel() {
     );
 }
 
-/* ------------------------------------------------------------------ */
-/* Callback status + reason derivation (ROUND5 lane-B)                 */
-/* ------------------------------------------------------------------ */
-/* The backend callback/retry row carries no explicit `status`; it is   */
-/* derived from next_attempt_at (future = scheduled, past = due now)    */
-/* and attempts vs max_attempts (exhausted). A row whose reason is       */
-/* literally "callback" is an explicit in-call "call me at X" / panel    */
-/* request; any OTHER reason (no_answer, busy, warm follow-up, …) is an  */
-/* AI-auto-scheduled retry/follow-up. Both are surfaced in one section.  */
-
-type CbStatus = "scheduled" | "due" | "exhausted";
-
-function cbStatus(item: CallbackEntry): CbStatus {
-    if (
-        typeof item.attempts === "number" &&
-        typeof item.max_attempts === "number" &&
-        item.max_attempts > 0 &&
-        item.attempts >= item.max_attempts
-    )
-        return "exhausted";
-    const at = item.next_attempt_at
-        ? new Date(toUTC(item.next_attempt_at)).getTime()
-        : NaN;
-    if (!isNaN(at) && at <= Date.now()) return "due";
-    return "scheduled";
-}
-
-const CB_STATUS_META: Record<
-    CbStatus,
-    { label: string; variant: "info" | "warning" | "neutral" }
-> = {
-    scheduled: { label: "Scheduled", variant: "info" },
-    due: { label: "Due now", variant: "warning" },
-    exhausted: { label: "Exhausted", variant: "neutral" },
-};
-
-function CbStatusBadge({ item }: { item: CallbackEntry }) {
-    const { label, variant } = CB_STATUS_META[cbStatus(item)];
-    return (
-        <Badge variant={variant} dot={variant === "info"}>
-            {label}
-        </Badge>
-    );
-}
-
-// Human reason + whether this row is an AI-auto-scheduled follow-up (vs an
-// explicit "callback" request the customer/agent asked for).
-function cbReason(item: CallbackEntry): { label: string; auto: boolean } {
-    const r = (item.reason || "").toLowerCase();
-    if (r === "callback") return { label: "Callback requested", auto: false };
-    const MAP: Record<string, string> = {
-        no_answer: "Auto follow-up · no answer",
-        busy: "Auto follow-up · line busy",
-        failed: "Auto follow-up · call failed",
-        voicemail: "Auto follow-up · voicemail",
-        warm: "Warm-lead follow-up",
-        warm_lead: "Warm-lead follow-up",
-        follow_up: "Warm-lead follow-up",
-    };
-    return {
-        label: MAP[r] || `Auto follow-up${r ? ` · ${r.replace(/_/g, " ")}` : ""}`,
-        auto: true,
-    };
-}
-
 // W15 — Callbacks panel (folded in from the old /callbacks page). Same Core_2
-// Card + Tabs + Table chrome. Lists explicit "call me at X" callbacks AND the
-// AI-auto-scheduled warm-lead / retry follow-ups the dialer queued, each with a
-// derived live status (Scheduled / Due now / Exhausted). Real-time: polls every
-// 20s so a callback an in-call agent just queued appears without a refresh.
+// Card + Tabs + Table chrome; the scheduled callbacks/retries the dialer queued.
 function CallbacksPanel() {
     const [items, setItems] = useState<CallbackEntry[]>([]);
     const [loading, setLoading] = useState(true);
-    // Default to the full follow-up view so AI-auto-scheduled warm follow-ups are
-    // visible alongside explicit callback requests (the section's whole point).
-    const [showAll, setShowAll] = useState(true);
+    const [showAll, setShowAll] = useState(false);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
-    const [cancelTarget, setCancelTarget] = useState<string | null>(null);
 
     const VIEWS: TabsOption[] = useMemo(
         () => [
-            { id: 2, name: "All follow-ups" },
-            { id: 1, name: "Callback requests" },
+            { id: 1, name: "Callbacks" },
+            { id: 2, name: "All retries" },
         ],
         []
     );
-    const view = showAll ? VIEWS[0] : VIEWS[1];
+    const view = showAll ? VIEWS[1] : VIEWS[0];
 
     const showToast = (msg: string, ok = true) => {
         setToast({ msg, ok });
         setTimeout(() => setToast(null), 4000);
     };
 
-    const load = useCallback(
-        (silent = false) => {
-            if (!silent) setLoading(true);
-            getCallbacks(showAll)
-                .then((r) => setItems(r.items))
-                .catch(() => {})
-                .finally(() => setLoading(false));
-        },
-        [showAll]
-    );
+    const load = useCallback(() => {
+        setLoading(true);
+        getCallbacks(showAll)
+            .then((r) => setItems(r.items))
+            .catch(() => {})
+            .finally(() => setLoading(false));
+    }, [showAll]);
 
     useEffect(() => {
         load();
-        // Real-time: background refresh so a just-queued callback/follow-up appears
-        // within seconds (no manual reload). Silent = keeps current rows on screen.
-        const t = setInterval(() => load(true), 20000);
-        return () => clearInterval(t);
     }, [load]);
 
-    async function confirmCancel() {
-        const id = cancelTarget;
-        if (!id) return;
-        setCancelTarget(null);
+    async function handleCancel(id: string) {
+        if (!confirm("Cancel this scheduled callback/retry?")) return;
         try {
             await cancelCallback(id);
             showToast("Cancelled");
@@ -1222,10 +1192,11 @@ function CallbacksPanel() {
 
     const tableHead = (
         <>
-            <th>Lead</th>
+            <th>Name</th>
+            <th>Phone</th>
+            <th className="max-lg:hidden">Campaign</th>
             <th>Scheduled for</th>
-            <th>Reason</th>
-            <th>Status</th>
+            <th className="max-md:hidden">Reason</th>
             <th className="max-lg:hidden">Attempts</th>
             <th className="text-right">Action</th>
         </>
@@ -1251,13 +1222,7 @@ function CallbacksPanel() {
 
             <div className="card">
                 <div className="flex items-center min-h-12 max-md:flex-wrap">
-                    <div className="mr-auto pl-5 max-lg:pl-3">
-                        <div className="text-h6">Callbacks &amp; follow-ups</div>
-                        <div className="text-caption text-t-tertiary">
-                            Scheduled callbacks and AI-auto-scheduled warm-lead
-                            follow-ups the dialer will dial automatically
-                        </div>
-                    </div>
+                    <div className="mr-auto pl-5 text-h6 max-lg:pl-3">Scheduled callbacks</div>
                     <Tabs items={VIEWS} value={view} setValue={(t) => setShowAll(t.id === 2)} />
                 </div>
 
@@ -1267,7 +1232,7 @@ function CallbacksPanel() {
                             <Table cellsThead={tableHead}>
                                 {[...Array(4)].map((_, i) => (
                                     <TableRow key={i}>
-                                        {[...Array(6)].map((__, j) => (
+                                        {[...Array(7)].map((__, j) => (
                                             <td key={j}>
                                                 <div className="skeleton h-4 w-20" />
                                             </td>
@@ -1281,87 +1246,46 @@ function CallbacksPanel() {
                             <span className="state-glyph">
                                 <Icon name="calendar" className="fill-inherit" />
                             </span>
-                            <div className="state-title">
-                                {showAll
-                                    ? "No callbacks or follow-ups scheduled"
-                                    : "No callback requests"}
-                            </div>
+                            <div className="state-title">No scheduled callbacks</div>
                             <div className="state-sub">
-                                {showAll
-                                    ? "Explicit callbacks (“call me at 5pm”) and AI-auto-scheduled warm-lead follow-ups appear here the moment the dialer queues them."
-                                    : "When a lead asks to be called back at a specific time, it lands here. Switch to All follow-ups to see AI-scheduled retries."}
+                                Callbacks and automatic retries scheduled by the dialer appear here.
                             </div>
                         </div>
                     ) : (
                         <div className="px-1 max-lg:px-0">
                             <Table cellsThead={tableHead}>
-                                {items.map((item) => {
-                                    const reason = cbReason(item);
-                                    return (
-                                        <TableRow key={item.id}>
-                                            <td className="text-sub-title-1">
-                                                <div className="truncate">
-                                                    {item.name || "Unknown"}
-                                                </div>
-                                                <div className="text-caption text-t-tertiary td-num">
-                                                    {item.phone}
-                                                </div>
-                                            </td>
-                                            <td className="text-t-secondary whitespace-nowrap">
-                                                <div>{fmtShort(item.next_attempt_at)}</div>
-                                                {fmtRelative(item.next_attempt_at) && (
-                                                    <div className="text-caption text-t-tertiary">
-                                                        {fmtRelative(item.next_attempt_at)}
-                                                    </div>
-                                                )}
-                                            </td>
-                                            <td>
-                                                <span className="text-body-2 text-t-secondary">
-                                                    {reason.label}
-                                                </span>
-                                                {reason.auto && (
-                                                    <span className="ml-2 inline-flex items-center gap-1 text-caption text-primary-01 align-middle">
-                                                        <Icon
-                                                            name="feather"
-                                                            className="size-3 fill-primary-01"
-                                                        />
-                                                        AI
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td>
-                                                <CbStatusBadge item={item} />
-                                            </td>
-                                            <td className="text-t-secondary td-num max-lg:hidden">
-                                                {item.attempts} / {item.max_attempts}
-                                            </td>
-                                            <td className="text-right">
-                                                <Button
-                                                    isStroke
-                                                    className="!h-9 !px-4"
-                                                    onClick={() => setCancelTarget(item.id)}
-                                                >
-                                                    Cancel
-                                                </Button>
-                                            </td>
-                                        </TableRow>
-                                    );
-                                })}
+                                {items.map((item) => (
+                                    <TableRow key={item.id}>
+                                        <td className="text-sub-title-1">{item.name || "—"}</td>
+                                        <td className="text-t-secondary td-num">{item.phone}</td>
+                                        <td className="text-t-secondary text-caption max-lg:hidden">
+                                            {item.campaign_id}
+                                        </td>
+                                        <td className="text-t-secondary whitespace-nowrap">
+                                            {fmtShort(item.next_attempt_at)}
+                                        </td>
+                                        <td className="max-md:hidden">
+                                            <StatusBadge status={item.reason} />
+                                        </td>
+                                        <td className="text-t-secondary td-num max-lg:hidden">
+                                            {item.attempts} / {item.max_attempts}
+                                        </td>
+                                        <td className="text-right">
+                                            <Button
+                                                isStroke
+                                                className="!h-9 !px-4"
+                                                onClick={() => handleCancel(item.id)}
+                                            >
+                                                Cancel
+                                            </Button>
+                                        </td>
+                                    </TableRow>
+                                ))}
                             </Table>
                         </div>
                     )}
                 </div>
             </div>
-
-            <ConfirmDeleteModal
-                open={!!cancelTarget}
-                onClose={() => setCancelTarget(null)}
-                onConfirm={confirmCancel}
-                title="Cancel this follow-up?"
-                message="This cancels the scheduled callback/retry. It won't be dialed."
-                confirmLabel="Cancel it"
-                cancelLabel="Keep"
-            />
         </>
     );
 }
@@ -1743,7 +1667,6 @@ function DoNotCallPanel() {
     const [file, setFile] = useState<File | null>(null);
     const [adding, setAdding] = useState(false);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
-    const [delTarget, setDelTarget] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const showToast = (msg: string, ok = true) => {
@@ -1783,10 +1706,8 @@ function DoNotCallPanel() {
         }
     }
 
-    async function confirmDelete() {
-        const phone = delTarget;
-        if (!phone) return;
-        setDelTarget(null);
+    async function handleDelete(phone: string) {
+        if (!confirm(`Remove ${phone} from the Do-Not-Call list?`)) return;
         try {
             await deleteSuppression(phone);
             showToast(`Removed ${phone}`);
@@ -1891,7 +1812,7 @@ function DoNotCallPanel() {
                                                 <Button
                                                     isStroke
                                                     className="!h-9 !px-4 !text-body-2 !font-normal hover:!border-primary-03/40 hover:!text-primary-03"
-                                                    onClick={() => setDelTarget(e.phone)}
+                                                    onClick={() => handleDelete(e.phone)}
                                                 >
                                                     Remove
                                                 </Button>
@@ -1957,24 +1878,6 @@ function DoNotCallPanel() {
                     </Card>
                 </div>
             </div>
-
-            <ConfirmDeleteModal
-                open={!!delTarget}
-                onClose={() => setDelTarget(null)}
-                onConfirm={confirmDelete}
-                title="Remove from Do-Not-Call?"
-                message={
-                    <>
-                        Remove{" "}
-                        <span className="text-t-primary tabular-nums">
-                            {delTarget}
-                        </span>{" "}
-                        from the Do-Not-Call list? This number can be dialed
-                        again.
-                    </>
-                }
-                confirmLabel="Remove"
-            />
         </>
     );
 }
@@ -1992,24 +1895,10 @@ function ScorePill({ score }: { score: number }) {
 // One call row as a plain <tr> (so the virtualizer can attach its measurement ref —
 // a native <tr> forwards refs; the <TableRow> wrapper does not). Classes mirror the
 // Core_2 <TableRow> + the shared <Table> cell rules so the look is unchanged.
-// A recording is shown for a row when the slim CallLog already carries a URL
-// OR the call clearly connected + produced talk time (the .ogg is uploaded for
-// every answered call; the player URL is minted on open via /calls/{id}/recording).
-// This is why the cell is no longer perpetually empty — it surfaces the recording
-// the moment a call has real duration, then plays on row-click.
-const CONNECTED = new Set([
-    "answered", "done", "called", "qualified", "interested",
-    "not_interested", "callback", "no_human", "voicemail",
-]);
-function hasRecording(c: CallLog): boolean {
-    if (recordingUrlOf(c)) return true;
-    return (c.duration_s ?? 0) > 0 && CONNECTED.has((c.status ?? "").toLowerCase());
-}
-
 function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
     const status = c.status ?? "";
     const isLive = LIVE.has(status);
-    const recUrl = hasRecording(c);
+    const recUrl = recordingUrlOf(c);
     return (
         <tr
             className="group relative cursor-pointer [&_td:not(:first-child)]:relative [&_td]:z-2 [&_td]:border-t [&_td]:border-s-subtle [&_td]:pl-5 [&_td]:py-4 [&_td]:first:pl-4 [&_td]:last:pr-4 max-lg:[&_td]:first:pl-3 max-md:[&_td]:p-3"
@@ -2050,21 +1939,16 @@ function renderCallRow(c: CallLog, onOpen: (id: string) => void) {
                     </div>
                 )}
             </td>
-            {/* Lead temperature — Hot / Warm / Cold from the AI interest score. */}
-            <td className="max-md:hidden">
-                <TempBadge interest={c.interest} />
-            </td>
-            {/* Recording — a play/recording BADGE (reuses the AI-Manager call-
-                history "camera-video" recording chip) when a recording exists,
-                em-dash else. The row click opens the detail modal where it plays. */}
+            {/* Recording — icon + clock when a recording exists, em-dash else.
+                The row click opens the detail modal where it actually plays. */}
             <td className="text-right max-md:hidden">
                 {recUrl ? (
-                    <span className="inline-flex items-center gap-1.5 h-7 pl-2 pr-2.5 rounded-full bg-primary-01/10 text-primary-01 text-caption font-medium tabular-nums">
+                    <span className="inline-flex items-center gap-1.5 text-t-secondary tabular-nums">
                         <Icon
-                            name="camera-video"
+                            name="video"
                             className="size-3.5 fill-primary-01"
                         />
-                        {fmtClock(c.duration_s) || "Play"}
+                        {fmtClock(c.duration_s)}
                     </span>
                 ) : (
                     <span className="text-t-tertiary">—</span>
