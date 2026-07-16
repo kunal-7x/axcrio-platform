@@ -10,7 +10,7 @@
 #      ./deploy/bootstrap.sh --no-deploy          # prepare host only
 #
 #  PREREQUISITE — the one thing this script cannot do for you:
-#      cp deploy/.env.deploy.example deploy/.env.deploy   # then fill in the 66 secrets
+#      cp deploy/.env.deploy.example deploy/.env.deploy   # then fill in the 100 empty values
 #
 #  Idempotent: safe to re-run. Every step checks before it acts.
 # =============================================================================
@@ -60,7 +60,7 @@ DISK_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
 ok "RAM ${MEM_MB}MB, disk ${DISK_GB}GB free"
 
 [ -f "$ENV_FILE" ] || die "$ENV_FILE missing.
-    cp deploy/.env.deploy.example $ENV_FILE  and fill in the 66 secret values.
+    cp deploy/.env.deploy.example $ENV_FILE  and fill in the 100 empty values.
     That file is the ONLY thing not reconstructible from this repo — by design."
 
 MISSING=$(grep -cE '^[A-Z0-9_]+=$' "$ENV_FILE" 2>/dev/null || echo 0)

@@ -43,7 +43,7 @@ git checkout live/do-prod-truth-20260717        # the branch that matches produc
 
 # 2. supply the one thing that isn't in git
 cp deploy/.env.deploy.example deploy/.env.deploy
-#    fill in the 66 empty values (the 172 non-empty ones are real production defaults)
+#    fill in the 100 empty values (138 carry real production defaults — leave them)
 
 # 3. go
 sudo ./deploy/bootstrap.sh --data /path/to/haptica-data-bundle-YYYYMMDD.tar.gz
@@ -65,7 +65,7 @@ Next.js build OOMs below it without swap (bootstrap adds 4GB swap for this reaso
 
 | | What | Where to get it |
 |---|---|---|
-| 1 | **`deploy/.env.deploy`** — 238 keys, 66 of them secret (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_*`, `ELEVEN_API_KEY`, `VOBIZ_PASSWORD`, `LIVEKIT_API_SECRET`, `CF_API_TOKEN`, AWS keys…) | the owner's vault. `.env.deploy.example` has every key name + all non-secret defaults |
+| 1 | **`deploy/.env.deploy`** — 238 keys, 100 empty (66 stripped secrets + 34 empty in prod too) (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_*`, `ELEVEN_API_KEY`, `VOBIZ_PASSWORD`, `LIVEKIT_API_SECRET`, `CF_API_TOKEN`, AWS keys…) | the owner's vault. `.env.deploy.example` has every key name + all 138 non-secret defaults |
 | 2 | **Data bundle** (~3MB) — `calls.json`, `cost_ledger.json`, ClickHouse rows, Twenty CRM | `./deploy/backup-data.sh` on the old host |
 | 3 | **DNS + TLS** — `haptica.famit.in` A-record | Cloudflare. Caddy issues TLS itself via DNS-01 once `CF_API_TOKEN` is set |
 
